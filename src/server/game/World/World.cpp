@@ -33,6 +33,7 @@
 #include "BattlegroundMgr.h"
 #include "BattlenetRpcErrorCodes.h"
 #include "BlackMarketMgr.h"
+#include "BotMgr.h"
 #include "CalendarMgr.h"
 #include "ChannelMgr.h"
 #include "CharacterCache.h"
@@ -694,6 +695,7 @@ void World::LoadConfigSettings(bool reload)
         { .Name = "AllowLoggingIPAddressesInDatabase"sv, .DefaultValue = true, .Index = CONFIG_ALLOW_LOGGING_IP_ADDRESSES_IN_DATABASE },
         { .Name = "Loot.EnableAELoot"sv, .DefaultValue = true, .Index = CONFIG_ENABLE_AE_LOOT },
         { .Name = "Load.Locales"sv, .DefaultValue = true, .Index = CONFIG_LOAD_LOCALES },
+        { .Name = "Bot.Enabled"sv, .DefaultValue = true, .Index = CONFIG_BOT_ENABLED },
     } };
 
     static constexpr ConfigOptionLoadDefinitionArray<uint32, INT_CONFIG_VALUE_COUNT> ints =
@@ -2269,6 +2271,10 @@ void World::Update(uint32 diff)
         sAuctionBot->Update();
         m_timers[WUPDATE_AHBOT].Reset();
     }
+
+    /// <li> Handle player-bot operations (Phase 0 scaffold, see docs/playerbots/implementation-plan.md)
+    if (m_bool_configs[CONFIG_BOT_ENABLED])
+        sBotMgr->Update(diff);
 
     /// Synchronize all scripts with their ids before updating the sScriptReloadMgr
     sScriptMgr->SyncScripts();

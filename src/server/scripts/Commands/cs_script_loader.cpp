@@ -24,6 +24,7 @@ void AddSC_ban_commandscript();
 void AddSC_battlenet_account_commandscript();
 void AddSC_bf_commandscript();
 void AddSC_bg_commandscript();
+void AddSC_bot_commandscript();
 void AddSC_cast_commandscript();
 void AddSC_character_commandscript();
 void AddSC_cheat_commandscript();
@@ -72,6 +73,7 @@ void AddCommandsScripts()
     AddSC_battlenet_account_commandscript();
     AddSC_bf_commandscript();
     AddSC_bg_commandscript();
+    AddSC_bot_commandscript();
     AddSC_cast_commandscript();
     AddSC_character_commandscript();
     AddSC_cheat_commandscript();

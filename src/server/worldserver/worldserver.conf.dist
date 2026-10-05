@@ -4466,3 +4466,17 @@ Recap.Announce = 3
 #                     1 - (Enabled)
 
 Classic.GuildFinder = 0
+
+###################################################################################################
+# PLAYER BOTS (work in progress, see docs/playerbots/)
+#
+#    Bot.Enabled
+#        Description: Master switch for the player-bot subsystem (BotMgr). Phase 0: only gates
+#                      whether BotMgr::Update is ticked from the world loop; no bot characters
+#                      exist yet.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+Bot.Enabled = 1
+#
+###################################################################################################
