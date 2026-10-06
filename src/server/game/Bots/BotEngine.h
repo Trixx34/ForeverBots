@@ -241,6 +241,7 @@ void RegisterBuiltinBotObjects(BotRegistry& registry);
 void RegisterPhase3BotObjects(BotRegistry& registry);
 // Defined in BotCombat.cpp: the basic combat strategy ("combat").
 void RegisterCombatBotObjects(BotRegistry& registry);
+void RegisterQuestBotObjects(BotRegistry& registry);
 
 // One engine: the active strategies of one BotState, the merged trigger/action wiring and the action queue.
 class BotEngine

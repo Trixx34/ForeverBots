@@ -68,7 +68,7 @@ event; config is read once (no reload); trace rows are INFO severity by design (
   sample taken; at 360 ticks/s that is 0.2 ms of CPU per second (0.02 % of a core). Whole-tick average stayed about 2.1 us (it was 0.96 us
   in the Phase 2 run; the two extra clock reads and the position checks account for part of it, rest is noise between runs).
 
-## Phase 3: non-combat basics (verified on the sim 2026-10-06)
+## Phase 3: non-combat basics (verified on the sim 2026-10-06, not committed)
 
 - Walking with mmaps, arrival, NO_PATH, stuck (NO_PROGRESS then UNREACHABLE_TARGET), eat, drink, eat+drink together (EAT_START/DRINK_START/
   EAT_DONE/DRINK_DONE/REST_END rows), follow, stay, bot_pos moving flag: all seen in bot_event/bot_pos.
@@ -90,7 +90,7 @@ event; config is read once (no reload); trace rows are INFO severity by design (
 - Not verified: far (cross-map) teleport handshake, instance/battleground deaths, Hardcore path, killer capture in the death event, real
   consumables from bags (FreeFood placeholder), grid-load memory for many far goals, follow across maps, a long partial-path goto.
 
-## Death post-mortem and combat events (verified on the sim 2026-10-06)
+## Death post-mortem and combat events (verified on the sim 2026-10-06, not committed)
 
 - `death` rows (reason DIED) carry: `killer` (guid, entry, name, level, rank, type creature/player/environment/self, last hit melee/spell, lvl_diff, hp_before), `damage` (last 10 s per source and per spell, hits, total, fight_s, started_by, first_hit_s_before_death), `hp_traj` ([ms before death, hp]), `auras` and `cc`, `resources` (power at death and 10 s ago, armor, gear summary), `combat` (attackers, hostiles_30yd, dealt_10s, strategies per engine, activity), `bots_30yd` and `bots_30yd_fighting`, `repeat` (per bot and per killer entry+zone), `source` (`test_command` for bot kill/hurt/aggro/envdmg, else `bot`), `fight_id`. Header: zone_id, level, target_entry = killer entry. `recent_decisions` limited to 15 s / 10 entries.
 - `combat` rows: COMBAT_START (target, first=bot/mob, hp, power, hostiles_30yd, dist, activity) and COMBAT_END (outcome died/target_killed/fled/reset/other, duration_s, dealt, taken, hp_start/end/min, kills), linked by `fight_id = "<botguid>-<unix_ms>"`; END after 2 s without combat or hits (flapping coalesced).
@@ -99,7 +99,7 @@ event; config is read once (no reload); trace rows are INFO severity by design (
 - Test aids: `bot aggro <name> [radius]`, `bot envdmg <name> <type 0-6> <amount>`.
 - Cost, 180 bots (`bot ai status`): tick steady windows 3.28 us before, 3.17-3.42 us after; hooks outside the tick avg 4.76 us/call; death row 0.8-2.1 KB.
 
-## Goto navigation fixes (verified on the sim 2026-10-06)
+## Goto navigation fixes (verified on the sim 2026-10-06, not committed)
 
 - Root cause of the NO_PATH / stuck bursts: (1) `bot nudge` moved bots in straight lines off the navmesh and they were saved there (every later goto
   NO_PATH, `start_off_navmesh`); (2) burst goals at a fixed offset landed on navmesh holes (gnome, Skyborne) or on ledges 46 yd above/below
@@ -124,7 +124,28 @@ event; config is read once (no reload); trace rows are INFO severity by design (
   paths return 0x0A; Skyborne goals at 108 yd (only holes tested).
 
 
-## Basic combat (BotCombat.*), verified on the sim 2026-10-06
+## A2 chat commands (built, NOT yet verified on the sim, not committed)
+
+- Code: `src/server/game/Bots/BotChat.h/.cpp` (parser, authorization, verbs follow/stay/goto/rest/release/status/strategy/verbose, aggregated replies,
+  per-bot `chat_command` bot_event with issuer, channel, match, outcome, reason; unauthorized attempts rate limited per issuer), test path
+  `bot say <issuer> <party|raid|whisper> <text>` and `bot group form|move|list|disband|disbandall` (cs_bot.cpp), three one-line hooks in
+  `Handlers/ChatHandler.cpp` (party, raid, whisper), documented `Bot.Chat.*` keys in `worldserver.conf.dist`.
+- Builds clean (worldserver, RelWithDebInfo). Not deployed: the sim was live with 180 bots and the permission classifier blocked the sim restart (the request to class-ai for a window got no answer), so none of the
+  verify steps (g-prefix/role routing on a 10-40 bot raid, unauthorized issuer logged, verbose toggle, tick cost at 180 bots) have run yet.
+- Known gaps: `rest` only toggles the strategy (no forced rest without editing BotBehavior), role selectors map classes via `Bot.Chat.Role.*`
+  (hybrids are not split by spec), the unauthorized event is logged against the first bot of the group (or the whispered bot).
+- Owner decisions applied: selectors combine as follows. Subgroup parts union among themselves (`g1,g3`), role/class parts union among themselves (`tank,dps`), and a subgroup plus a role/class is an INTERSECTION (`g1,tank` = tanks inside subgroup 1). Only the party/raid leader commands bots; verbose defaults to off. Selector change rebuilt but not yet verified on the sim.
+
+## Quest pipeline (BotQuest.*), verified on the sim 2026-10-06 (partially), not committed
+- New: `src/server/game/Bots/BotQuest.{h,cpp}`; hunks in BotEngine.h, BotStrategies.cpp, BotMgr.cpp (EnsureIndex in StartLogin), worldserver.conf.dist (Bot.Quest.*).
+- Enable with "quest" in Bot.AI.Default.NonCombat (sim worldserver.conf has it; the .dist default is unchanged).
+- Static index at startup (starter grid, spawns, kill credit, quest-item drop sources from one world-thread query); per-bot task state in `quest_ctx`.
+- Events: `decision` (QUEST_PICK, QUEST_PICK_FAR, QUEST_WORK, QUEST_TURNIN_PLAN, QUEST_TURNED_IN, QUEST_PULL trace), `quest_blocked` codes: NEEDS_GROUP, TIMED_UNSUPPORTED, SKILL_REQUIRED, REPUTATION_REQUIRED, NEEDS_EVENT, OBJECTIVE_UNSUPPORTED, NO_TARGET_SPAWN, MISSING_ITEM_SOURCE, NO_ENDER_ROW, NO_ENDER_SPAWN, QUEST_LEVEL, QUEST_PREREQ, NO_QUEST_AVAILABLE, NO_PATH, PATH_PARTIAL_FAR, UNREACHABLE, TARGET_UNREACHABLE, ELITE_TOO_STRONG, TARGET_LEVEL_TOO_HIGH, ITEM_NOT_DROPPING, GIVER_NOT_INTERACTABLE, QUEST_LOG_FULL, BAG_FULL, DATA_ERROR.
+- Auto-equip of quest rewards (armour/weapons only, clear upgrades usable by the bot), logged as decision QUEST_REWARD_EQUIPPED.
+- Fixes found by the 1-5 run: (1) MoveChase does not move a Player, the approach now uses BotMotion goals; (2) PathGenerator returns NOPATH|SHORTCUT on routes longer than about 300 yd (74 point buffer), Travel now hops via validated intermediate waypoints (FindHop), NO_PATH dropped from about 150 to about 20 per run; (3) bots with a left-over auto-repeat spell (Auto Shot/Shoot) counted as casting and froze the quest tick, now skipAutorepeat; (4) melee pull range. `bot state` shows task diagnostics (calls/why).
+- Known gaps: game-object objectives and area triggers, trainer visits (extension point: walk-to-NPC visit in RunNpcVisit), no grind fallback and no quest-hub travel (bots idle when nothing is takeable locally, next-plan E3), no spell training (E1).
+
+## Basic combat (BotCombat.*), verified on the sim 2026-10-06, not committed
 - Strategy `combat` (Combat engine, default `Bot.AI.Default.Combat = "combat"`): triggers `combat_engaged`, `combat_need_heal`, `combat_fleeing`; actions `combat_flee` (Emergency, BotMotion SetGoal+Step), `combat_heal` (SELF_HEAL below `HealBelowPct`), `combat_engage` (pick nearest opponent that is not too strong, Attack + MoveChase, ranged classes stop at `CasterRangePct` of spell range), `combat_cast` (per class table of 27 vanilla rank-1 spell ids, resolved against what the bot knows incl. rank chain; `bot spells <name>` shows it). Only level-gated spells are known: trainer spells (Serpent Sting, Arcane Shot, Battle Shout, Rend, Frostbolt, Fire Blast, Earth Shock, Immolate, Corruption, Moonfire, SWP, Judgement ...) are NOT known at level 1 and bots never train, so L1 rotations are 1-2 spells.
 - Config (`Bot.AI.Combat.*`, documented in worldserver.conf.dist): Flee.Enabled, Flee.LevelDiff (4), EliteLevelBonus (3), Flee.MaxSec, Flee.Yards, ApproachTimeoutSec, HealBelowPct, CasterRangePct.
 - Events: TARGET_PICKED, FLEE_LEVEL_DIFF / FLEE_ENDED / FLEE_GAVE_UP / FLEE_BLOCKED, FIGHT_TOO_STRONG, APPROACH_TIMEOUT, RANGED_TO_MELEE, CAST_FAILED (deduped, with result name), CAST_NO_POWER, SELF_HEAL, NO_TARGET (diagnostic), COMBAT_SUMMARY (casts per spell, targets, heals) next to plumber's COMBAT_START/END.

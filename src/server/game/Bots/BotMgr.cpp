@@ -19,6 +19,7 @@
 #include "AccountMgr.h"
 #include "BotAI.h"
 #include "BotLogDatabase.h"
+#include "BotQuest.h"
 #include "CharacterCache.h"
 #include "CharacterPackets.h"
 #include "Config.h"
@@ -954,6 +955,7 @@ std::vector<BotInfo> BotMgr::ListBots()
 
 void BotMgr::StartLogin(BotInfo& bot)
 {
+    BotQuest::EnsureIndex(); // world thread, once; static quest data for the quest strategy
     bot.Session = MakeBotSession(bot.AccountId, std::string(bot.AccountName));
     bot.State = BOT_LOGGING_IN;
     bot.LoginStartedMs = _uptimeMs;

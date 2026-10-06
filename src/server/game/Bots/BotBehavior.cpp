@@ -816,7 +816,7 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
         return Result::Idle;
 
     uint32 const now = ai->GetNowMs();
-    bool const quiet = !std::strcmp(_tag, "follow"); // follow goals retarget constantly: only failures are logged
+    bool const quiet = !std::strcmp(_tag, "follow") || !std::strcmp(_tag, "quest"); // quest legs are re-issued constantly (BotQuest logs its own decisions) // follow goals retarget constantly: only failures are logged
 
     if (bot->GetMapId() != _mapId)
         return Fail(ai, bot, "path_fail", "WRONG_MAP", "goal is on another map", StringFormat(R"("bot_map":{})", bot->GetMapId()));

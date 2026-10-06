@@ -697,6 +697,65 @@ path_type, hops, distance, remaining}; `stuck` rows keep `NO_PROGRESS`, `GEOMETR
 New codes are proposals for `plumber`; the console's demo reason lists (`QUEST_PREREQ`, `TARGET_ELITE`, `OBJECT_NOT_FOUND`) are
 placeholders, map `TARGET_ELITE` to `ELITE_TOO_STRONG` and `OBJECT_NOT_FOUND` to `NO_TARGET_SPAWN`.
 
+#### 6.2.1 Implemented codes (BotQuest.cpp, registered)
+
+`quest_blocked` reasons currently emitted by `BotQuest.cpp` (meanings confirmed against the code):
+
+| Code | Meaning in the implementation |
+|---|---|
+| `NO_QUEST_AVAILABLE` | pick pass found no takeable quest within `FarRadius` at the bot's level (quest_id 0) |
+| `NO_PATH` | giver/ender/target path check returned no path (`info.NoPath`); drop for a cool-down |
+| `PATH_PARTIAL_FAR` | path is partial and the goal is far from a walkable poly (same code as the `path_fail` row, see engine-design) |
+| `UNREACHABLE` | gave up walking to a giver/ender after 15 min, or the pre-check dropped the target |
+| `TARGET_UNREACHABLE` | could not reach the target NPC, or no progress on an objective for `StallSec` with no better explanation |
+| `ELITE_TOO_STRONG` | stalled objective: every live target seen was too strong and at least one was elite |
+| `TARGET_LEVEL_TOO_HIGH` | stalled objective: every live target seen was too strong, none elite |
+| `ITEM_NOT_DROPPING` | stalled item objective after at least 6 kills of valid sources |
+| `MISSING_ITEM_SOURCE` | item objective with no creature/GO source |
+| `NO_TARGET_SPAWN` | objective creature/GO (or item source) has no spawn, or the NPC has no spawn on this map |
+| `OBJECTIVE_UNSUPPORTED` | area-trigger completion, item from a game object, or another unsupported objective type |
+| `NEEDS_GROUP` | `SuggestedPlayers` above 1 (details: suggested players) |
+| `GIVER_NOT_INTERACTABLE` | at the NPC: not at its spawn point, seen but never interactable, or `CanTakeQuest` passes but the NPC will not give it |
+| `TIMED_UNSUPPORTED` | timed quest |
+| `SKILL_REQUIRED` | required skill (target_entry = skill id) |
+| `REPUTATION_REQUIRED` | minimum reputation faction (target_entry = faction id) |
+| `NEEDS_EVENT` | quest completes through an event/script |
+| `NO_ENDER_ROW` | no creature/GO takes the quest, or the NPC does not take it at turn-in |
+| `NO_ENDER_SPAWN` | ender rows exist but none has a spawn (also used for a complete quest nobody can take) |
+| `DATA_ERROR` | quest marked complete but cannot be rewarded |
+| `QUEST_LEVEL` | bot level outside the quest's level window (informational) |
+| `QUEST_PREREQ` | earlier quest or other `CanTakeQuest` prerequisite missing |
+| `QUEST_LOG_FULL` | no free slot in the quest log |
+| `BAG_FULL` | no room for the source item or the reward (details: `reward_item`) |
+
+Also emitted: `NO_STARTER_SPAWN` (giver NPC has no spawn on this map). `REPEATABLE` is a silent block (never logged).
+
+`decision` reasons (BotQuest.cpp):
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `QUEST_PICK` | info | picked a quest from a giver found in the near pass |
+| `QUEST_PICK_FAR` | info | picked a quest from a giver found in the far pass (pass 1) |
+| `QUEST_WORK` | info | chose which open quest to work next (summary says N of M open quests) |
+| `QUEST_TURNIN_PLAN` | info | heading to an ender to turn in a completed quest |
+| `QUEST_TURNED_IN` | info | quest turned in |
+| `QUEST_REWARD_EQUIPPED` | info | the chosen quest reward was equipped |
+| `QUEST_PULL` | trace | bot pulls a quest target mob (summary: name and level) |
+
+#### 6.2.2 Reserved codes (planned, not emitted yet)
+
+Names are reserved so analysts and the console can rely on them; severity and details are provisional until implemented (see next-plan.md E1, E3).
+
+| Code | event_type | Planned meaning |
+|---|---|---|
+| `TRAINED` | decision | bot learned spells at its class trainer (details: trainer entry, spell ids, copper spent) |
+| `TRAIN_NO_MONEY` | decision (warn) | trainer reached but no affordable spell (details: copper, cheapest cost) |
+| `TRAIN_NO_TRAINER` | quest_blocked-style block (warn) | no class trainer known for this class/faction |
+| `TRAIN_UNREACHABLE` | path_fail / block (warn) | trainer known but not reachable |
+| `QUEST_NO_LOCAL` | decision | no quests left near the bot (chain ended or nothing available) |
+| `QUEST_HUB_TRAVEL` | decision | travelling to the next quest hub (details: hub id, area, level range) |
+| `QUEST_HUB_NONE` | decision (warn) | no hub fits the level, falling back to grinding |
+
 ### 6.3 Choices and alternatives
 
 `decision` rows (the engine already writes `engine, trigger, action, relevance, band, effective, alternatives[]`) with the action's own

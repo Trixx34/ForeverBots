@@ -147,6 +147,11 @@ Defaults come from config: NonCombat `rest,goto,follow`, Combat empty, Dead `rec
   RECLAIM_WAIT, CORPSE_RUN_START, CORPSE_RECLAIMED, SPIRIT_HEALER_PLAN/FOUND, SPIRIT_HEALED, state_change REVIVED, death DIED;
   `stuck` (NO_PROGRESS, UNREACHABLE_TARGET, NO_SPIRIT_HEALER), `path_fail` (NO_PATH, MMAP_MISSING, WRONG_MAP). Plan reasons: NO_CORPSE,
   CORPSE_OTHER_MAP, CORPSE_NEAR, CORPSE_TOO_FAR, CORPSE_PATH_OK, CORPSE_UNREACHABLE, CORPSE_OFF_NAVMESH, MMAP_MISSING, CORPSE_RUN_FAILED.
+  `path_fail` also emits PATH_PARTIAL_FAR (partial path, goal far from a walkable poly). Quest codes (quest_blocked reasons such as
+  NO_QUEST_AVAILABLE, GIVER_NOT_INTERACTABLE, NO_STARTER_SPAWN, QUEST_LOG_FULL, BAG_FULL, NEEDS_EVENT, OBJECTIVE_UNSUPPORTED, and decision
+  tags QUEST_PICK, QUEST_PICK_FAR, QUEST_WORK, QUEST_TURNIN_PLAN, QUEST_TURNED_IN, QUEST_PULL, QUEST_REWARD_EQUIPPED) are registered in
+  quest-design.md 6.2.1; reserved planned codes (TRAINED, TRAIN_*, QUEST_NO_LOCAL, QUEST_HUB_*) in 6.2.2. There is no code-side registry:
+  reasons are free strings in the VARCHAR(64) column.
 - Test commands: `bot goto <name> x y z [arrive]`, `bot follow <name> <leader|off>`, `bot stay <name|all> on|off`, `bot hurt <name> hp% [mana%]`,
   `bot root <name> on|off`, `bot level <name> lvl`, `bot tele <name> map x y z`, `bot state <name>`, `bot path <name> x y z`.
 - Config: `Bot.AI.Default.NonCombat/Combat/Dead`, `Bot.AI.Rest.EatBelowPct/DrinkBelowPct/DonePct/FreeFood`, `Bot.AI.Release.MinSec/MaxSec`,

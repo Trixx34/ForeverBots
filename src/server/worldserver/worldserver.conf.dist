@@ -4598,6 +4598,37 @@ Bot.AI.TestStrategy = 0
 Bot.AI.Test.IdleSec = 30
 Bot.AI.Test.CombatSec = 5
 Bot.AI.Default.NonCombat = "rest,goto,follow"
+
+#
+#    Bot.Quest.MaxActive
+#        Description: Quests a bot keeps in its log before it only works and turns in.
+#        Default:     12
+#
+#    Bot.Quest.StallSec
+#        Description: Seconds without objective progress before a quest is dropped with a quest_blocked reason.
+#        Default:     240
+#
+#    Bot.Quest.MaxMobLevelDiff
+#        Description: Kill targets more than this many levels above the bot (elites count +Bot.AI.Combat.EliteLevelBonus) are skipped.
+#        Default:     2
+#
+#    Bot.Quest.SelectRadius / Bot.Quest.FarRadius
+#        Description: Yards searched for a quest giver (near pass, then far pass).
+#        Default:     350 / 1500
+#
+#    Bot.Quest.SelectionBlockLogCap
+#        Description: Maximum quest_blocked rows per bot written while choosing quests (nearby givers only).
+#        Default:     40
+#
+#    Enable the quest behavior by adding "quest" to Bot.AI.Default.NonCombat (e.g. "rest,goto,follow,quest").
+#
+
+Bot.Quest.MaxActive = 12
+Bot.Quest.StallSec = 240
+Bot.Quest.MaxMobLevelDiff = 2
+Bot.Quest.SelectRadius = 350
+Bot.Quest.FarRadius = 1500
+Bot.Quest.SelectionBlockLogCap = 40
 Bot.AI.Default.Combat = "combat"
 Bot.AI.Default.Dead = "recover"
 Bot.AI.Rest.EatBelowPct = 60
@@ -4609,5 +4640,49 @@ Bot.AI.Release.MaxDelaySec = 8
 Bot.AI.Recover.MaxCorpseRunYards = 1200
 Bot.AI.Move.StuckSec = 8
 Bot.AI.Move.StuckRepaths = 3
+#
+#    Bot.Chat.Enabled
+#        Description: Bots obey chat commands from the leader of their group (party, raid, whisper to a bot).
+#                     Syntax: [selector] verb [args]; selectors: all, g1, g3-g4, g1,g3 (raid subgroups, read live),
+#                     tank, healer, dps, or a class name; g1,g3 = union of subgroups, g1,tank = intersection (tanks inside subgroup 1). Party chat without selector = all bots of that party
+#                     (in a raid: the issuer's subgroup); raid chat needs a selector.
+#                     Verbs: follow, stay, goto <x y [z]|here>, rest, release, status, strategy [+name -name],
+#                     verbose on|off. Anyone but the group leader is ignored and logged.
+#        Default:     1 - Enabled
+#
+#    Bot.Chat.VerboseDefault
+#        Description: Acknowledgements and refusals are sent back to the leader (aggregated, one line per
+#                     command). Toggled per leader with the chat command "verbose on|off". Status always replies.
+#        Default:     0 - Off
+#
+#    Bot.Chat.MaxReplyLines
+#        Description: Maximum reply lines for status / strategy listings (1-10).
+#        Default:     4
+#
+#    Bot.Chat.UnauthorizedLogSec
+#        Description: Log at most one bot_event per issuer per this many seconds for non-leader attempts (0 = every one).
+#        Default:     30
+#
+#    Bot.Chat.LogEvents
+#        Description: Log a bot_event (type chat_command) per bot for every accepted or refused command.
+#        Default:     1
+#
+#    Bot.Chat.GotoArriveYards
+#        Description: Arrival distance of the "goto" chat command (1-50).
+#        Default:     3
+#
+#    Bot.Chat.Role.Tank / Bot.Chat.Role.Healer / Bot.Chat.Role.Dps
+#        Description: Comma separated class lists behind the tank, healer and dps selectors.
+#        Default:     "warrior" / "priest" / "rogue,mage,warlock,hunter"
+#
+Bot.Chat.Enabled = 1
+Bot.Chat.VerboseDefault = 0
+Bot.Chat.MaxReplyLines = 4
+Bot.Chat.UnauthorizedLogSec = 30
+Bot.Chat.LogEvents = 1
+Bot.Chat.GotoArriveYards = 3
+Bot.Chat.Role.Tank = "warrior"
+Bot.Chat.Role.Healer = "priest"
+Bot.Chat.Role.Dps = "rogue,mage,warlock,hunter"
 #
 ###################################################################################################

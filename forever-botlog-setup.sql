@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS bot (
 -- Everything a bot does or fails to do. Fixed columns for filtering, JSON for the rest.
 --   event_type examples: decision, state_change, death, quest_blocked, quest_done, stuck, path_fail, combat, error
 --   reason:  short machine-readable code (e.g. NO_PATH, QUEST_PREREQ, TARGET_ELITE) so it can be grouped
+--   Full reason-code registry (quest_blocked, decision, path_fail, stuck): docs/playerbots/quest-design.md section 6.2 / 6.2.1 (implemented) and 6.2.2 (reserved)
+--   and docs/playerbots/engine-design.md. path_fail also has PATH_PARTIAL_FAR (partial path, goal far from a walkable poly).
 --   details: free-form JSON (alternatives considered, killer, damage log, quest step, ...)
 -- Partitioned by day so old data is dropped instantly (see botlog_roll_partitions below).
 CREATE TABLE IF NOT EXISTS bot_event (

@@ -17,6 +17,8 @@
 
 #include "ScriptMgr.h"
 #include "BotAI.h"
+#include "BotQuest.h"
+#include "BotChat.h"
 #include "BotCombat.h"
 #include "BotMgr.h"
 #include "BotQuestLog.h"
@@ -84,6 +86,8 @@ public:
             { "goto",    HandleBotGotoCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "follow",  HandleBotFollowCommand,  rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "stay",    HandleBotStayCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "say",     HandleBotSayCommand,     rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "group",   HandleBotGroupCommand,   rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "hurt",    HandleBotHurtCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "root",    HandleBotRootCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "aggro",   HandleBotAggroCommand,   rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
@@ -441,6 +445,19 @@ public:
         return true;
     }
 
+    // bot say <issuer> <party|raid|whisper> <text>: feeds the text to the bot chat commands as if the issuer had typed it
+    // (whisper: the text starts with the bot name). Test path for scripted raids without a client.
+    static bool HandleBotSayCommand(ChatHandler* handler, std::string issuer, std::string channel, Trinity::ChatCommands::Tail text)
+    {
+        return BotChat::TestSay(handler, issuer, channel, std::string_view(text));
+    }
+
+    // bot group form|move|list|disband|disbandall ...: builds and tears down bot-only test groups and raids.
+    static bool HandleBotGroupCommand(ChatHandler* handler, std::string op, Trinity::ChatCommands::Tail args)
+    {
+        return BotChat::TestGroup(handler, op, std::string_view(args));
+    }
+
     // bot stay <name|all> on|off: toggles the stay strategy (hold position).
     static bool HandleBotStayCommand(ChatHandler* handler, std::string name, std::string onOff)
     {
@@ -575,7 +592,7 @@ public:
         if (ai)
         {
             extra = Trinity::StringFormat(" engine {} goal {} rest {} plan {}({})", BotStateName(ai->GetState()), ai->Motion().HasGoal() ? ai->Motion().GetTag() : "none",
-                uint32(ai->Rest().Bits), uint32(ai->Recover().Plan), ai->Recover().PlanReason);
+                uint32(ai->Rest().Bits), uint32(ai->Recover().Plan), ai->Recover().PlanReason) + " | " + BotQuest::DescribeTask(ai);
         }
         WorldLocation const& corpse = player->GetCorpseLocation();
         handler->PSendSysMessage("%s L%u %s%s map %u (%.1f, %.1f, %.1f) hp %u/%u mana %u/%u moving %d corpse %s (map %u, %.1f, %.1f)%s", player->GetName().c_str(), uint32(player->GetLevel()),
