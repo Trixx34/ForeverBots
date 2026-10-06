@@ -149,6 +149,7 @@ BotAIConfig const& BotAI::Config()
         _config.MaxCorpseRunYards = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Recover.MaxCorpseRunYards", 1200), 50, 100000));
         _config.StuckSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.StuckSec", 8), 2, 600));
         _config.StuckRepaths = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.StuckRepaths", 3), 1, 20));
+        _config.CorpseRunMaxFails = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Death.CorpseRunMaxFails", 3), 1, 20));
         _config.TickStatsSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.AiTickStatsSec", 60), 0, 3600));
         _enabled.store(_config.Enabled, std::memory_order_relaxed);
         TC_LOG_INFO("server.worldserver", "Bot AI: {}, tick {} ms, test strategy {}", _config.Enabled ? "enabled" : "disabled", _config.TickMs,

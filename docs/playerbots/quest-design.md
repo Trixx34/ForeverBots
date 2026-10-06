@@ -742,19 +742,50 @@ Also emitted: `NO_STARTER_SPAWN` (giver NPC has no spawn on this map). `REPEATAB
 | `QUEST_REWARD_EQUIPPED` | info | the chosen quest reward was equipped |
 | `QUEST_PULL` | trace | bot pulls a quest target mob (summary: name and level) |
 
-#### 6.2.2 Reserved codes (planned, not emitted yet)
+#### 6.2.2 Economy, hub and survival codes (emitted by BotQuest.cpp / BotBehavior.cpp, registered)
 
-Names are reserved so analysts and the console can rely on them; severity and details are provisional until implemented (see next-plan.md E1, E3).
+Formerly reserved; all now emitted. `blk` = `quest_blocked` row (WARN unless noted), `dec` = `decision` row (goes to `bot_event_hot` when HotSplit is on).
 
-| Code | event_type | Planned meaning |
+| Code | Type | Meaning |
 |---|---|---|
-| `TRAINED` | decision | bot learned spells at its class trainer (details: trainer entry, spell ids, copper spent) |
-| `TRAIN_NO_MONEY` | decision (warn) | trainer reached but no affordable spell (details: copper, cheapest cost) |
-| `TRAIN_NO_TRAINER` | quest_blocked-style block (warn) | no class trainer known for this class/faction |
-| `TRAIN_UNREACHABLE` | path_fail / block (warn) | trainer known but not reachable |
-| `QUEST_NO_LOCAL` | decision | no quests left near the bot (chain ended or nothing available) |
-| `QUEST_HUB_TRAVEL` | decision | travelling to the next quest hub (details: hub id, area, level range) |
-| `QUEST_HUB_NONE` | decision (warn) | no hub fits the level, falling back to grinding |
+| `QUEST_NO_LOCAL` | dec | no takeable quest within FarRadius at the bot's level |
+| `QUEST_HUB_TRAVEL` | dec | walking to the next quest hub (hub idx, takeable count, distance, zone) |
+| `QUEST_HUB_NONE` | blk | no hub on the map fits the level, grinding instead |
+| `QUEST_GRIND` | dec | no quest to do, grinding mobs of the bot's level |
+| `NO_GRIND_TARGET` | blk | no hostile spawn within 500 yd to grind |
+| `TRAIN_TRIP` | dec | walking to the class trainer |
+| `TRAINED` | dec | learned spells (trainer entry, copper spent) |
+| `TRAIN_NO_MONEY` | blk | spells available, none affordable (or nothing learned at the trainer) |
+| `TRAIN_NO_TRAINER` | blk | no reachable class trainer within 4000 yd, or the NPC has no trainer data |
+| `TRAIN_UNREACHABLE` | blk | trainer known but the walk failed (quarantine path, Svc=1) |
+| `VENDOR_TRIP` | dec | walking to a vendor (free slots, repair cost, bag upgrade) |
+| `SOLD_ITEMS` | dec | sold grey/unusable stacks |
+| `REPAIRED` | dec | repaired equipment |
+| `BAG_BOUGHT` | dec | bought (and maybe equipped) a bag |
+| `BAG_NO_MONEY` | blk | cannot afford a bag (spell reserve counted) |
+| `BAG_BUY_FAILED` | blk | bag purchase refused or no inventory space |
+| `VENDOR_NONE` | blk | no reachable vendor within range |
+| `VENDOR_UNREACHABLE` | blk | vendor known but the walk failed (quarantine path, Svc!=1) |
+| `REWARD_ITEM_MISSING` | blk | reward item not in item data, quest turned in without it |
+| `QUEST_QUARANTINED` | blk | quest failed N times for this bot (UNREACHABLE/TARGET_UNREACHABLE etc.), skipped 6 h |
+| `QUEST_QUARANTINED_GLOBAL` | blk | quest failed across bots (DEAD_FAILS drops), skipped by all bots 1 h |
+| `CORPSE_RUN_GAVE_UP` | dec WARN | corpse run failed repeatedly, falls back to the spirit healer |
+| `SPIRIT_HEAL_GAVE_UP` | dec WARN | no reachable spirit healer, resurrects in place |
+
+#### 6.2.3 Social event types (BotSocial.cpp, BotAlts.cpp)
+
+These types are not in `Bot.Log.HotTypes`, so they stay in `bot_event` (14 days). `success`/refusal is carried in `outcome`/severity; refusal reason is the code.
+
+| event_type | Codes |
+|---|---|
+| `invite` | `INVITE_ACCEPTED`, `INVITE_REFUSED_DISABLED`, `INVITE_REFUSED_NOT_OWNER`, `INVITE_REFUSED_ALREADY_GROUPED` |
+| `trade` | `TRADE_ACCEPTED`, `TRADE_REFUSED_DISABLED`, `_WORLD_BOT`, `_NOT_OWNER`, `_BUSY` (in combat), `_EMPTY`, `_CORE_FAILED`, `_TIMEOUT` |
+| `quest_share` | `QUEST_SHARE_SENT`, `QUEST_SHARE_ACCEPTED`, `QUEST_SHARE_REFUSED_` + `BUSY, DEAD, DONE, ON_QUEST, LOG_FULL, BAG_FULL, LEVEL_LOW, LEVEL_HIGH, CLASS, RACE, REP_LOW, REP_HIGH, PREREQ, EXPANSION, NOT_ELIGIBLE, REPEATABLE` |
+| `alt_command` | `ALT_ADDED`, `ALT_REMOVED`, `ALT_RESTORED` (startup), `ALT_REFUSED_` + `NOT_OWNER, ONLINE, LOADING, ALREADY, CAP, BOT, NOT_OWNER_DESPAWN` |
+
+Chat `share` verb failure reasons (returned to the chat handler, not logged as rows): `NOT_GROUPED`, `NOT_ON_QUEST`, `NOT_SHAREABLE`.
+
+Consumers: query `bot_event_all` (view over `bot_event` + `bot_event_hot`), never `bot_event` alone, for decision/state_change/trace rows; the social types above are only in `bot_event` but the view is still correct for them.
 
 ### 6.3 Choices and alternatives
 

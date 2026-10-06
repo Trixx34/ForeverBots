@@ -548,9 +548,14 @@ public:
         BotMotion::Result result = motion.Step(ai, bot);
         if (result == BotMotion::Result::Failed)
         {
-            r.Plan = BotRecover::Mode::Healer;
-            std::strcpy(r.PlanReason, "CORPSE_RUN_FAILED");
-            ai->EmitEvent(bot, "decision", BOTLOG_WARN, "SPIRIT_HEALER_PLAN", "corpse run failed, falling back to the spirit healer", R"({"reason":"CORPSE_RUN_FAILED"})");
+            // retry (the goal is re-issued) until the cap, then fall back to the spirit healer, logged once
+            if (++r.CorpseFails >= BotAI::Config().CorpseRunMaxFails)
+            {
+                r.Plan = BotRecover::Mode::Healer;
+                std::strcpy(r.PlanReason, "CORPSE_RUN_GAVE_UP");
+                ai->EmitEvent(bot, "decision", BOTLOG_WARN, "CORPSE_RUN_GAVE_UP", "corpse run failed repeatedly, falling back to the spirit healer",
+                    StringFormat(R"({{"reason":"CORPSE_RUN_GAVE_UP","fails":{}}})", r.CorpseFails));
+            }
         }
         return true;
     }
@@ -671,6 +676,15 @@ public:
             {
                 r.Healer.Clear();
                 r.NextTryMs = now + 20000;
+                if (++r.HealerFails >= BotAI::Config().CorpseRunMaxFails)
+                {
+                    // nothing reachable: resurrect where the ghost stands instead of looping forever
+                    ai->EmitEvent(bot, "decision", BOTLOG_WARN, "SPIRIT_HEAL_GAVE_UP", "cannot reach a spirit healer, resurrecting in place",
+                        StringFormat(R"({{"reason":"SPIRIT_HEAL_GAVE_UP","fails":{},"pos":{}}})", r.HealerFails, Pos3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ())));
+                    motion.ClearGoal();
+                    bot->ResurrectPlayer(0.5f);
+                    bot->SpawnCorpseBones();
+                }
             }
             return true;
         }
@@ -804,10 +818,26 @@ void BotMotion::Issue(Player* bot, uint32 now)
     init.Launch();
 }
 
+bool BotMotion::RepeatFail(char const* reason, uint32 now)
+{
+    uint32 key = 2166136261u;
+    for (char const* s = _tag; *s; ++s)
+        key = (key ^ uint8(*s)) * 16777619u;
+    for (char const* s = reason; *s; ++s)
+        key = (key ^ uint8(*s)) * 16777619u;
+    if (key == _lastFailKey && _lastFailMs && now - _lastFailMs < 60000)
+        return true;
+    _lastFailKey = key;
+    _lastFailMs = now ? now : 1;
+    return false;
+}
+
 BotMotion::Result BotMotion::Fail(BotAI* ai, Player* bot, char const* type, char const* reason, std::string const& summary, std::string const& extra)
 {
     Halt(bot);
     _active = false;
+    if (RepeatFail(reason, ai->GetNowMs()))
+        return Result::Failed;
     ai->EmitEvent(bot, type, BOTLOG_WARN, reason, summary, StringFormat(R"({{"tag":"{}","goal":{},"goal_map":{},"distance":{:.0f},"seconds":{},"issues":{}{}}})",
         _tag, Pos3(_x, _y, _z), _mapId, bot->GetExactDist2d(_x, _y), (ai->GetNowMs() - _startMs) / 1000, _issues, extra.empty() ? std::string() : "," + extra));
     return Result::Failed;
@@ -899,7 +929,7 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
         if (_episodes >= cfg.StuckRepaths)
             return Fail(ai, bot, "stuck", "UNREACHABLE_TARGET", StringFormat("no progress to the {} goal after {} attempts", _tag, _episodes), info);
 
-        if (_episodes == 1)
+        if (_episodes == 1 && !RepeatFail("NO_PROGRESS", now))
             ai->EmitEvent(bot, "stuck", BOTLOG_WARN, "NO_PROGRESS", StringFormat("no progress to the {} goal for {} s", _tag, cfg.StuckSec),
                 StringFormat(R"({{"tag":"{}","goal":{},"distance":{:.0f},{}}})", _tag, Pos3(_x, _y, _z), dist, info));
         _bestMs = now;

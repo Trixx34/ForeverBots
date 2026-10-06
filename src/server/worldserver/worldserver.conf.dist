@@ -4644,6 +4644,12 @@ Classic.GuildFinder = 0
 #        Description: Seconds without getting closer to the goal before a stuck event, and how many such episodes
 #                     (each re-issues the path) pass before the goal is given up (stuck/UNREACHABLE_TARGET).
 #        Default:     8 / 3
+#
+#    Bot.AI.Death.CorpseRunMaxFails
+#        Description: Failed corpse-run goals (and failed spirit healer walks) before the bot gives up: a failed corpse run
+#                     falls back to the spirit healer, and when that fails too the bot is resurrected where it stands
+#                     (decision CORPSE_RUN_GAVE_UP / SPIRIT_HEAL_GAVE_UP, logged once).
+#        Default:     3
 
 Bot.Enabled = 1
 Bot.Log.PosIntervalSec = 5
@@ -4706,6 +4712,7 @@ Bot.AI.Release.MaxDelaySec = 8
 Bot.AI.Recover.MaxCorpseRunYards = 1200
 Bot.AI.Move.StuckSec = 8
 Bot.AI.Move.StuckRepaths = 3
+Bot.AI.Death.CorpseRunMaxFails = 3
 #
 #    Bot.Chat.Enabled
 #        Description: Bots obey chat commands from the leader of their group (party, raid, whisper to a bot).

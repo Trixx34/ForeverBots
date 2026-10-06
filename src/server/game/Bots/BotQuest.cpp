@@ -1858,8 +1858,27 @@ private:
                 if (c.NoTrainerLevel != level)
                 {
                     c.NoTrainerLevel = level;
-                    Blocked(ai, bot, c, 0, "TRAIN_NO_TRAINER", StringFormat("no reachable class trainer on map {} within 4000 yd (class {}, level {})", bot->GetMapId(), bot->GetClass(), level),
-                        StringFormat(R"({{"map":{},"class":{},"level":{},"x":{:.0f},"y":{:.0f}}})", bot->GetMapId(), bot->GetClass(), level, bot->GetPositionX(), bot->GetPositionY()), 0, false);
+                    // classify the gap: no trainer of the class at all, none friendly to this race anywhere (data gap, e.g. Undead paladin has no Horde
+                    // paladin trainer), none on this map, or only blacklisted/too far ones
+                    uint32 onMap = 0, friendlyOnMap = 0, friendlyAny = 0;
+                    if (tl != g.Trainers.end())
+                        for (SvcPt const& p : tl->second)
+                        {
+                            bool const fr = FriendlyNpc(bot, p.Faction);
+                            friendlyAny += fr;
+                            if (p.Map == bot->GetMapId())
+                            {
+                                ++onMap;
+                                friendlyOnMap += fr;
+                            }
+                        }
+                    char const* why = tl == g.Trainers.end() ? "no_trainer_of_class_in_world" : !friendlyAny ? "no_friendly_trainer_for_race_in_world" :
+                        !friendlyOnMap ? "no_friendly_trainer_on_map" : "friendly_trainers_blacklisted_or_far";
+                    Blocked(ai, bot, c, 0, "TRAIN_NO_TRAINER", StringFormat("no reachable class trainer on map {} within 4000 yd (class {}, race {}, level {}): {}", bot->GetMapId(), bot->GetClass(), bot->GetRace(), level, why),
+                        StringFormat(R"({{"map":{},"class":{},"race":{},"level":{},"x":{:.0f},"y":{:.0f},"why":"{}","on_map":{},"friendly_on_map":{},"friendly_any":{}}})", bot->GetMapId(), bot->GetClass(), bot->GetRace(), level, bot->GetPositionX(), bot->GetPositionY(), why, onMap, friendlyOnMap, friendlyAny), 0, false);
+                    // no point re-checking every level when the world has no friendly trainer for this class and race
+                    if (!friendlyAny)
+                        c.TrainRetryMs = now + 10 * MINUTE * IN_MILLISECONDS;
                 }
             }
             else

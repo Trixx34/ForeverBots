@@ -91,6 +91,9 @@ private:
     uint32 _issues = 0;
     uint32 _episodes = 0;       // stuck episodes of this goal
     bool _everMoved = false;
+    uint32 _lastFailMs = 0;     // identical failure rows (same tag and reason) are written once per minute
+    uint32 _lastFailKey = 0;
+    bool RepeatFail(char const* reason, uint32 now);
     ObjectGuid _follow;
 };
 
@@ -115,6 +118,8 @@ struct BotRecover
     char PlanReason[32] = "";
     uint32 NextTryMs = 0;
     uint32 Attempts = 0;
+    uint32 CorpseFails = 0;      // failed corpse-run goals this death
+    uint32 HealerFails = 0;      // failed spirit healer walks this death
     bool ReleaseFailedLogged = false;
     bool WaitLogged = false;
     bool NoHealerLogged = false;
