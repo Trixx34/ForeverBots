@@ -997,6 +997,9 @@ class TC_GAME_API WorldSession
         // Player bots (see BotMgr): a session without any socket, owned by BotMgr and never added to World's session list.
         bool IsBot() const { return _isBot; }
         void SetBot() { _isBot = true; }
+        // A player's alt logged in as a bot (BotAlts): its account has other, real characters, so logout must not mark them offline.
+        bool IsAltBot() const { return _isAltBot; }
+        void SetAltBot() { _isAltBot = true; }
         // The bot's AI (engine), owned by the session so it dies with it; see Bots/BotAI.h. Null for real players.
         BotAI* GetBotAI() const { return _botAI; }
         void SetBotAI(BotAI* ai);   // takes ownership, deletes the previous one
@@ -2070,6 +2073,7 @@ class TC_GAME_API WorldSession
         uint32 expireTime;
         bool forceExit;
         bool _isBot = false;
+        bool _isAltBot = false;
         BotAI* _botAI = nullptr;
 
         std::unique_ptr<boost::circular_buffer<std::pair<int64, uint32>>> _timeSyncClockDeltaQueue; // first member: clockDelta. Second member: latency of the packet exchange that was used to compute that clockDelta.

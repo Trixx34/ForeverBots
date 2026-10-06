@@ -26,6 +26,7 @@
 #include "Battleground.h"
 #include "BattlegroundPackets.h"
 #include "CalendarMgr.h"
+#include "BotAlts.h"
 #include "CharacterCache.h"
 #include "CharacterPackets.h"
 #include "Chat.h"
@@ -1247,6 +1248,13 @@ void WorldSession::HandlePlayerLoginOpcode(WorldPackets::Character::PlayerLogin&
     {
         TC_LOG_ERROR("network", "Account ({}) can't login with that character ({}).", GetAccountId(), playerLogin.Guid.ToString());
         KickPlayer("WorldSession::HandlePlayerLoginOpcode Trying to login with a character of another account");
+        return;
+    }
+
+    if (BotAlts::IsLoggedInAsBot(playerLogin.Guid.GetCounter())) // A3: a character that is a bot right now cannot also be a player
+    {
+        TC_LOG_INFO("network", "Account {} tried to log in {} which is logged in as a bot", GetAccountId(), playerLogin.Guid.ToString());
+        AbortLogin(WorldPackets::Character::LoginFailureReason::DuplicateCharacter);
         return;
     }
 
