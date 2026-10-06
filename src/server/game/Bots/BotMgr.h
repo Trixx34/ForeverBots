@@ -143,6 +143,9 @@ public:
     // Snapshot for `.bot list` (positions of online bots are read from the Player).
     std::vector<BotInfo> ListBots();
 
+    // Counts per faction, class and race over all known bot characters, one text line each (`.bot stats`).
+    std::vector<std::string> GetStats();
+
     static uint8 ParseClass(std::string const& text);          // 0 when unknown
     static int8 ParseFaction(std::string const& text);         // -1 any/unknown, 0 alliance, 1 horde
     static char const* ClassName(uint8 classId);

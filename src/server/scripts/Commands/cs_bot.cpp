@@ -40,6 +40,7 @@ public:
             { "spawn",   HandleBotSpawnCommand,   rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "despawn", HandleBotDespawnCommand, rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "list",    HandleBotListCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "stats",   HandleBotStatsCommand,   rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "logtest", HandleBotLogTestCommand, rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
         };
 
@@ -104,6 +105,14 @@ public:
         uint32 count = sBotMgr->DespawnBots(name ? *name : std::string());
         handler->PSendSysMessage("Bot despawn: %u bots logged out or queued for logout.", count);
         return count > 0 || !name || StringEqualI(*name, "all");
+    }
+
+    // bot stats: counts per faction, class and race over all known bots (to check a batch is balanced).
+    static bool HandleBotStatsCommand(ChatHandler* handler)
+    {
+        for (std::string const& line : sBotMgr->GetStats())
+            handler->PSendSysMessage("%s", line.c_str());
+        return true;
     }
 
     // bot list: one line per known bot character (online bots show their live position, offline ones the saved one).

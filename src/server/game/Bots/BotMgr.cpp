@@ -138,6 +138,78 @@ void FillCustomizations(WorldSession* session, WorldPackets::Character::Characte
         info.Customizations.resize(0); // the default look is always accepted
 }
 
+// Balanced pick for `bot spawn` (faction first). Candidates are the table's (class, faction) pairs that match the filters.
+// The faction with the fewest bots so far wins (ties random), then, among that faction's candidate classes, the class with the
+// fewest bots IN THAT FACTION so far (ties random), so every (class, faction) cell is filled evenly (within one bot). A class that
+// exists on one faction only can only be chosen for that faction. Counts include the bots already picked in the call.
+bool PickBalanced(uint8 classFilter, int8 factionFilter, uint32 const (&factionCount)[2], std::map<uint8, uint32> const (&classCount)[2], uint8& outClass, int8& outFaction)
+{
+    bool hasPair[2][12] = {};
+    bool hasFaction[2] = {};
+    for (BotComboRow const& row : BotCombos)
+    {
+        if (classFilter && row.ClassId != classFilter)
+            continue;
+
+        for (uint8 raceId : row.Races)
+        {
+            int8 const raceFaction = IsHordeRace(raceId) ? 1 : 0;
+            if (factionFilter >= 0 && raceFaction != factionFilter)
+                continue;
+
+            hasPair[raceFaction][row.ClassId] = true;
+            hasFaction[raceFaction] = true;
+        }
+    }
+
+    if (!hasFaction[0] && !hasFaction[1])
+        return false;
+
+    if (hasFaction[0] && hasFaction[1])
+        outFaction = factionCount[0] < factionCount[1] ? 0 : factionCount[1] < factionCount[0] ? 1 : int8(urand(0, 1));
+    else
+        outFaction = hasFaction[1] ? 1 : 0;
+
+    std::vector<uint8> best;
+    uint32 bestCount = 0;
+    for (uint8 classId = 0; classId < 12; ++classId)
+    {
+        if (!hasPair[outFaction][classId])
+            continue;
+
+        auto itr = classCount[outFaction].find(classId);
+        uint32 const count = itr != classCount[outFaction].end() ? itr->second : 0;
+        if (best.empty() || count < bestCount)
+        {
+            best.assign(1, classId);
+            bestCount = count;
+        }
+        else if (count == bestCount)
+            best.push_back(classId);
+    }
+
+    outClass = best[urand(0, best.size() - 1)];
+    return true;
+}
+
+char const* RaceName(uint8 raceId)
+{
+    switch (raceId)
+    {
+        case RACE_HUMAN: return "human";
+        case RACE_ORC: return "orc";
+        case RACE_DWARF: return "dwarf";
+        case RACE_NIGHTELF: return "nightelf";
+        case RACE_UNDEAD_PLAYER: return "undead";
+        case RACE_TAUREN: return "tauren";
+        case RACE_GNOME: return "gnome";
+        case RACE_TROLL: return "troll";
+        case 95: return "skyborne_alliance";
+        case 96: return "skyborne_horde";
+        default: return "unknown";
+    }
+}
+
 WorldSession* MakeBotSession(uint32 accountId, std::string name)
 {
     WorldSession* session = new WorldSession(accountId, std::move(name), 0, std::string(), nullptr, SEC_PLAYER, uint8(0), time_t(0),
@@ -589,14 +661,23 @@ BotSpawnResult BotMgr::SpawnBots(uint32 count, uint8 classId, int8 faction, std:
         ++result.Reused;
     }
 
+    uint32 factionCount[2] = { 0, 0 };
+    std::map<uint8, uint32> classCount[2]; // per faction
+    for (BotInfo const* bot : targets)
+    {
+        ++factionCount[bot->Horde ? 1 : 0];
+        ++classCount[bot->Horde ? 1 : 0][bot->Class];
+    }
+
     while (targets.size() < count)
     {
-        uint8 const botClass = classId ? classId : BotClasses[urand(0, BotClasses.size() - 1)];
-        uint8 const raceId = PickRace(botClass, faction);
+        uint8 botClass = 0;
+        int8 botFaction = -1;
+        uint8 const raceId = PickBalanced(classId, faction, factionCount, classCount, botClass, botFaction) ? PickRace(botClass, botFaction) : 0;
         if (!raceId)
         {
             ++result.Failed;
-            result.Error = Trinity::StringFormat("no race can be a {} {}", faction == 0 ? "alliance" : "horde", ClassName(botClass));
+            result.Error = Trinity::StringFormat("no race can be a {} {}", faction == 0 ? "alliance" : faction == 1 ? "horde" : "bot", classId ? ClassName(classId) : "of any class");
             break;
         }
 
@@ -611,6 +692,8 @@ BotSpawnResult BotMgr::SpawnBots(uint32 count, uint8 classId, int8 faction, std:
 
         BotInfo& bot = _bots.emplace(created.Guid, std::move(created)).first->second;
         targets.push_back(&bot);
+        ++factionCount[bot.Horde ? 1 : 0];
+        ++classCount[bot.Horde ? 1 : 0][bot.Class];
         ++result.Created;
     }
 
@@ -690,6 +773,49 @@ void BotMgr::LogoutAll(char const* reason)
         TC_LOG_INFO("server.worldserver", "BotMgr: {} bots saved and logged out ({})", count, reason);
         FlushLog(true); // the logout events must not be lost with the buffer
     }
+}
+
+// Counts per faction, class and race over every known bot character (online or not).
+std::vector<std::string> BotMgr::GetStats()
+{
+    LoadRegistry();
+
+    uint32 factions[2] = { 0, 0 };
+    std::map<uint8, uint32> classes, races;
+    for (auto const& [guid, bot] : _bots)
+    {
+        ++factions[bot.Horde ? 1 : 0];
+        ++classes[bot.Class];
+        ++races[bot.Race];
+    }
+
+    std::vector<std::string> lines;
+    lines.push_back(Trinity::StringFormat("Bots known: {}, online: {}", _bots.size(), _onlineCount));
+    lines.push_back(Trinity::StringFormat("Faction: alliance {}, horde {}", factions[0], factions[1]));
+
+    std::string text = "Class:";
+    for (uint8 classId : BotClasses)
+        text += Trinity::StringFormat(" {} {}{}", ClassName(classId), classes[classId], classId == BotClasses.back() ? "" : ",");
+    lines.push_back(std::move(text));
+
+    text = "Race:";
+    for (auto const& [raceId, count] : races)
+        text += Trinity::StringFormat(" {} {},", RaceName(raceId), count);
+    if (text.back() == ',')
+        text.pop_back();
+    lines.push_back(std::move(text));
+
+    // class by faction, to check that each class is spread over both factions where the table allows it
+    for (uint8 classId : BotClasses)
+    {
+        uint32 alliance = 0, horde = 0;
+        for (auto const& [guid, bot] : _bots)
+            if (bot.Class == classId)
+                ++(bot.Horde ? horde : alliance);
+        lines.push_back(Trinity::StringFormat("  {}: alliance {}, horde {}", ClassName(classId), alliance, horde));
+    }
+
+    return lines;
 }
 
 std::vector<BotInfo> BotMgr::ListBots()
