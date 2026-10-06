@@ -20,6 +20,10 @@
 #include "BotMgr.h"
 #include "BotQuestLog.h"
 #include "Chat.h"
+#include "CellImpl.h"
+#include "Creature.h"
+#include "CreatureAI.h"
+#include "GridNotifiersImpl.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -80,6 +84,8 @@ public:
             { "stay",    HandleBotStayCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "hurt",    HandleBotHurtCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "root",    HandleBotRootCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "aggro",   HandleBotAggroCommand,   rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "envdmg",  HandleBotEnvDmgCommand,  rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "level",   HandleBotLevelCommand,   rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "tele",    HandleBotTeleCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "state",   HandleBotStateCommand,   rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
@@ -282,6 +288,8 @@ public:
         if (!player)
             return false;
 
+        if (BotAI* ai = player->GetSession()->GetBotAI())
+            ai->NoteTestCommand("bot kill");
         if (player->IsAlive())
             player->KillSelf();
         handler->PSendSysMessage("Bot %s killed.", player->GetName().c_str());
@@ -306,6 +314,7 @@ public:
     {
         BotAIStats& st = BotAI::Stats();
         st.Ticks = 0; st.TickNs = 0; st.MaxTickNs = 0; st.LogNs = 0; st.ActionsRun = 0; st.StateChanges = 0; st.Events = 0;
+        st.HookNs = 0; st.HookCalls = 0; st.Fights = 0; st.Deaths = 0; st.DeathNs = 0;
         _aiSnapshot = AiStatusSnapshot();
         handler->PSendSysMessage("%s", "Bot AI counters reset.");
         return true;
@@ -431,11 +440,52 @@ public:
         Player* player = FindOneBot(handler, name);
         if (!player || !player->IsAlive())
             return false;
+        if (BotAI* ai = player->GetSession()->GetBotAI())
+            ai->NoteTestCommand("bot hurt");
         player->SetHealth(std::max<uint32>(1, uint32(player->GetMaxHealth() * std::clamp(hpPct, 0.0f, 100.0f) / 100.0f)));
         if (manaPct && player->GetMaxPower(POWER_MANA) > 0)
             player->SetPower(POWER_MANA, uint32(player->GetMaxPower(POWER_MANA) * std::clamp(*manaPct, 0.0f, 100.0f) / 100.0f));
         handler->PSendSysMessage("%s: health %u/%u, mana %u/%u.", player->GetName().c_str(), uint32(player->GetHealth()), uint32(player->GetMaxHealth()),
             player->GetPower(POWER_MANA), player->GetMaxPower(POWER_MANA));
+        return true;
+    }
+
+    // bot aggro <name> [radius]: test aid, makes hostile creatures within radius (default 30) attack the bot (combat/death telemetry tests).
+    static bool HandleBotAggroCommand(ChatHandler* handler, std::string name, Optional<float> radius)
+    {
+        Player* player = FindOneBot(handler, name);
+        if (!player || !player->IsAlive())
+            return false;
+        if (BotAI* ai = player->GetSession()->GetBotAI())
+            ai->NoteTestCommand("bot aggro");
+        std::list<Creature*> creatures;
+        Trinity::AnyUnfriendlyUnitInObjectRangeCheck check(player, player, radius ? *radius : 30.0f);
+        std::list<Unit*> units;
+        Trinity::UnitListSearcher<Trinity::AnyUnfriendlyUnitInObjectRangeCheck> searcher(player, units, check);
+        Cell::VisitAllObjects(player, searcher, radius ? *radius : 30.0f);
+        uint32 count = 0;
+        for (Unit* unit : units)
+            if (Creature* creature = unit->ToCreature())
+                if (creature->IsAlive() && creature->AI())
+                {
+                    creature->EngageWithTarget(player);
+                    creature->AI()->AttackStart(player);
+                    ++count;
+                }
+        handler->PSendSysMessage("%u creature(s) now attack %s.", count, player->GetName().c_str());
+        return count > 0;
+    }
+
+    // bot envdmg <name> <type 0-6> <amount>: test aid, environmental damage (0 fatigue, 1 drowning, 2 fall, 3 lava, 4 slime, 5 fire).
+    static bool HandleBotEnvDmgCommand(ChatHandler* handler, std::string name, uint8 type, uint32 amount)
+    {
+        Player* player = FindOneBot(handler, name);
+        if (!player || !player->IsAlive() || type > DAMAGE_FALL_TO_VOID)
+            return false;
+        if (BotAI* ai = player->GetSession()->GetBotAI())
+            ai->NoteTestCommand("bot envdmg");
+        player->EnvironmentalDamage(EnviromentalDamage(type), amount);
+        handler->PSendSysMessage("%s took %u environmental damage (type %u), health %u/%u.", player->GetName().c_str(), amount, uint32(type), uint32(player->GetHealth()), uint32(player->GetMaxHealth()));
         return true;
     }
 
@@ -550,6 +600,10 @@ public:
             sBotMgr->GetPosIntervalMs() / 1000, (unsigned long long)st.PosSamples, double(st.PosNs) / 1.0e6);
         handler->PSendSysMessage("Actions run %llu, state changes %llu, engine log events %llu", (unsigned long long)st.ActionsRun, (unsigned long long)st.StateChanges,
             (unsigned long long)st.Events);
+        uint64 const hookCalls = st.HookCalls, deaths = st.Deaths;
+        handler->PSendSysMessage("Combat hooks (outside the tick): %llu calls, avg %.2f us, total %.1f ms; fights %llu; death snapshots %llu, avg %.1f us",
+            (unsigned long long)hookCalls, hookCalls ? double(st.HookNs) / double(hookCalls) / 1000.0 : 0.0, double(st.HookNs) / 1.0e6,
+            (unsigned long long)st.Fights, (unsigned long long)deaths, deaths ? double(st.DeathNs) / double(deaths) / 1000.0 : 0.0);
         return true;
     }
 

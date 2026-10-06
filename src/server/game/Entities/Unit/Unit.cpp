@@ -17,6 +17,7 @@
 
 #include "Unit.h"
 #include "DeathRecap.h"
+#include "BotAI.h"
 #include "AbstractFollower.h"
 #include "Battlefield.h"
 #include "BattlefieldMgr.h"
@@ -1076,6 +1077,18 @@ bool Unit::HasBreakableByDamageCrowdControlAura(Unit const* excludeCasterChannel
 
     if (spellProto && spellProto->HasAttribute(SPELL_ATTR3_NO_DURABILITY_LOSS))
         durabilityLoss = false;
+
+    // bot telemetry (cheap ring-buffer appends, see Bots/BotAI.cpp)
+    if (damagetype != NODAMAGE)
+    {
+        if (Player* botVictim = victim->ToPlayer())
+            if (BotAI* botAI = botVictim->GetSession()->GetBotAI())
+                botAI->OnDamageTaken(botVictim, attacker, damageTaken, health, uint8(damagetype), spellProto);
+        if (attacker && attacker != victim)
+            if (Player* botAttacker = attacker->ToPlayer())
+                if (BotAI* botAI = botAttacker->GetSession()->GetBotAI())
+                    botAI->OnDamageDealt(botAttacker, victim, damageTaken);
+    }
 
     if (killed)
         Unit::Kill(attacker, victim, durabilityLoss, skipSettingDeathState);
@@ -11421,6 +11434,15 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
     // Prevent killing unit twice (and giving reward from kill twice)
     if (!victim->GetHealth())
         return;
+
+    // bot telemetry: snapshot before the death state strips auras, power and combat references
+    if (Player* botVictim = victim->ToPlayer())
+        if (BotAI* botAI = botVictim->GetSession()->GetBotAI())
+            botAI->OnDying(botVictim, attacker);
+    if (attacker && attacker != victim)
+        if (Player* botKiller = attacker->ToPlayer())
+            if (BotAI* botAI = botKiller->GetSession()->GetBotAI())
+                botAI->OnKilled(botKiller, victim);
 
     if (attacker && !attacker->IsInMap(victim))
         attacker = nullptr;

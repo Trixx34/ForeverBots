@@ -88,3 +88,12 @@ event; config is read once (no reload); trace rows are INFO severity by design (
   detector fired as designed). The NO_PATH causes (goal region unconnected vs start isolated) were not investigated further.
 - Not verified: far (cross-map) teleport handshake, instance/battleground deaths, Hardcore path, killer capture in the death event, real
   consumables from bags (FreeFood placeholder), grid-load memory for many far goals, follow across maps, a long partial-path goto.
+
+## Death post-mortem and combat events (verified on the sim 2026-10-06, not committed)
+
+- `death` rows (reason DIED) carry: `killer` (guid, entry, name, level, rank, type creature/player/environment/self, last hit melee/spell, lvl_diff, hp_before), `damage` (last 10 s per source and per spell, hits, total, fight_s, started_by, first_hit_s_before_death), `hp_traj` ([ms before death, hp]), `auras` and `cc`, `resources` (power at death and 10 s ago, armor, gear summary), `combat` (attackers, hostiles_30yd, dealt_10s, strategies per engine, activity), `bots_30yd` and `bots_30yd_fighting`, `repeat` (per bot and per killer entry+zone), `source` (`test_command` for bot kill/hurt/aggro/envdmg, else `bot`), `fight_id`. Header: zone_id, level, target_entry = killer entry. `recent_decisions` limited to 15 s / 10 entries.
+- `combat` rows: COMBAT_START (target, first=bot/mob, hp, power, hostiles_30yd, dist, activity) and COMBAT_END (outcome died/target_killed/fled/reset/other, duration_s, dealt, taken, hp_start/end/min, kills), linked by `fight_id = "<botguid>-<unix_ms>"`; END after 2 s without combat or hits (flapping coalesced).
+- REVIVED rows carry `dead_s`, `attempts`, `recovery` (corpse_run or spirit_healer), `plan_reason`.
+- Tracking: per-bot ring buffers (hits 32, dealt 32, vitals 12 at 1 Hz); heavy work only at death (snapshot avg 146 us). Hooks in Unit::DealDamage / Unit::Kill, env type stashed in Player::EnvironmentalDamage; no core header changed.
+- Test aids: `bot aggro <name> [radius]`, `bot envdmg <name> <type 0-6> <amount>`.
+- Cost, 180 bots (`bot ai status`): tick steady windows 3.28 us before, 3.17-3.42 us after; hooks outside the tick avg 4.76 us/call; death row 0.8-2.1 KB.

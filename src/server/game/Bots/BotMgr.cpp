@@ -1126,6 +1126,10 @@ void BotMgr::LogoutBot(BotInfo& bot, char const* reason)
     LogLifecycle(bot, "state_change", reason, "bot logged out", BOTLOG_INFO, Trinity::StringFormat(
         R"({{"online_ms":{}}})", _uptimeMs - bot.LoginStartedMs));
 
+    if (BotAI* ai = bot.Session->GetBotAI())
+        if (Player* player = bot.Session->GetPlayer())
+            ai->OnLogout(player, reason); // closes an open combat row
+
     bot.Session->SetBotAI(nullptr); // no AI tick may see the player while it is being removed
     bot.Session->LogoutPlayer(true);
     delete bot.Session;

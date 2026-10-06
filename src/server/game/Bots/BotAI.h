@@ -60,9 +60,17 @@ struct BotAIStats
     std::atomic<uint64> ActionsRun{0};
     std::atomic<uint64> StateChanges{0};
     std::atomic<uint64> Events{0};        // log events produced by the engine
+    std::atomic<uint64> HookNs{0};        // wall time in the damage/kill hooks (Unit::DealDamage/Kill, outside the AI tick)
+    std::atomic<uint64> HookCalls{0};
+    std::atomic<uint64> Fights{0};        // fights opened
+    std::atomic<uint64> Deaths{0};        // death snapshots taken
+    std::atomic<uint64> DeathNs{0};       // wall time building the death snapshots (part of HookNs)
 };
 
 // One per bot, owned by the bot's WorldSession (so it dies with the session), ticked from Player::Update on the map thread.
+class Unit;
+class SpellInfo;
+
 class TC_GAME_API BotAI
 {
 public:
@@ -123,16 +131,66 @@ public:
 
     BotEvent MakeEvent(Player* bot, char const* type, uint8 severity, std::string reason, std::string summary) const;
 
+    // --- combat/death telemetry hooks (map thread of the bot; see docs/playerbots/progress.md "Death and combat events") ---
+    // Unit::DealDamage, victim is this bot / attacker is this bot. `type` is DamageEffectType.
+    void OnDamageTaken(Player* bot, Unit* attacker, uint32 damage, uint32 hpBefore, uint8 type, SpellInfo const* spell);
+    void OnDamageDealt(Player* bot, Unit* victim, uint32 damage);
+    void OnKilled(Player* bot, Unit* victim);                 // this bot killed `victim`
+    void SetPendingEnv(uint8 environmentalType) { _pendingEnv = environmentalType; } // Player::EnvironmentalDamage, just before DealDamage
+    void OnDying(Player* bot, Unit* attacker);                // Unit::Kill, before the death state strips auras/power/combat
+    void OnLogout(Player* bot, char const* reason);           // BotMgr::LogoutBot: closes an open fight row
+    // Test commands call this so a death (and the fight) within 120 s is tagged source=test_command.
+    void NoteTestCommand(char const* command);
+
 private:
     void Tick(Player* bot);
     BotState DesiredState(Player* bot, char const*& cause) const;
     void SamplePosition(Player* bot);  // bot_pos telemetry, see docs/playerbots/progress.md
     void ChangeState(Player* bot, BotState to, char const* cause); // the ONLY place the engine state changes
     void Emit(BotEvent&& event);
-    std::string RecentDecisionsJson() const;
+    std::string RecentDecisionsJson(uint32 maxAgeMs = 15000, uint32 maxCount = 10) const;
+    bool IsTestSource() const;
+    void UpdateFight(Player* bot);
+    void OpenFight(Player* bot, uint8 first, Unit* other, uint32 hp);
+    void EmitFightStart(Player* bot);
+    void EmitFightEnd(Player* bot, char const* outcome, uint32 endMs);
+    void SampleVitals(Player* bot);
+    std::string ActivityJson(Player* bot) const;
+    uint32 CountHostiles(Player* bot) const;
+    void SnapshotDeath(Player* bot, Unit* attacker);
 
     struct Decision { uint32 Ms; Action const* Act; char Reason[24]; };
-    static constexpr uint32 DECISION_RING = 8;
+    static constexpr uint32 DECISION_RING = 10;
+
+    // damage taken (newest at _hitNext-1); 32 hits is far more than 10 s of normal fighting
+    struct HitRec { uint32 Ms; ObjectGuid Src; uint32 Entry; uint32 Spell; uint32 Dmg; uint32 HpBefore; uint8 Level; uint8 Kind; uint8 Env; };
+    static constexpr uint32 HIT_RING = 32;
+    struct DealtRec { uint32 Ms; uint32 Dmg; };
+    struct VitalSample { uint32 Ms; uint32 Hp; uint32 Power; };
+    static constexpr uint32 SAMPLE_RING = 12;
+    std::array<HitRec, HIT_RING> _hits{};
+    std::array<DealtRec, HIT_RING> _dealt{};
+    std::array<VitalSample, SAMPLE_RING> _samples{};
+    uint32 _hitNext = 0, _hitCount = 0, _dealtNext = 0, _dealtCount = 0, _sampleNext = 0, _sampleCount = 0, _sampleLastMs = 0;
+    uint8 _pendingEnv = 0xFF;
+    std::atomic<char const*> _testCmd{nullptr};
+    std::atomic<uint32> _testAtMs{0};
+
+    struct Fight
+    {
+        bool Active = false, StartLogged = false;
+        uint8 First = 0;                 // 0 unknown, 1 mob, 2 bot
+        uint32 StartMs = 0, LastCombatMs = 0, HpStart = 0, HpMin = 0, Dealt = 0, Taken = 0, Kills = 0, LastKillMs = 0, TargetEntry = 0, TargetLevel = 0;
+        uint64 StartUnixMs = 0;
+        ObjectGuid Target;
+        std::string Id;
+    } _fight;
+
+    // death snapshot taken in Unit::Kill and consumed by ChangeState when the engine notices the death
+    bool _deathSnap = false;
+    uint32 _deathKillerEntry = 0;
+    std::string _deathJson;
+    std::string _deathFightId;
 
     uint64 _guid;
     Player* _tickBot = nullptr;

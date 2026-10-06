@@ -150,3 +150,6 @@ Defaults come from config: NonCombat `rest,goto,follow`, Combat empty, Dead `rec
   `bot root <name> on|off`, `bot level <name> lvl`, `bot tele <name> map x y z`, `bot state <name>`, `bot path <name> x y z`.
 - Config: `Bot.AI.Default.NonCombat/Combat/Dead`, `Bot.AI.Rest.EatBelowPct/DrinkBelowPct/DonePct/FreeFood`, `Bot.AI.Release.MinSec/MaxSec`,
   `Bot.AI.Recover.MaxCorpseRunYards`, `Bot.AI.Move.StuckSec/StuckRepaths` (see worldserver.conf.dist).
+
+## Death and combat telemetry
+BotAI keeps ring buffers of damage taken, damage dealt and 1 Hz vitals; `Unit::Kill` calls `OnDying` before `setDeathState` strips auras/power, and `SnapshotDeath` builds the death details JSON. Fights are tracked by `UpdateFight` (fight_id, 2 s coalescing). See progress.md, "Death post-mortem and combat events".
