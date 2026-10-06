@@ -35,6 +35,11 @@ void BotLogDatabaseConnection::DoPrepareStatements()
         "pos_x, pos_y, pos_z, quest_id, target_entry, details) "
         "VALUES (FROM_UNIXTIME(?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, IF(JSON_VALID(?), ?, JSON_QUOTE(?)))",
         CONNECTION_BOTH);
+
+    // Parameters: 1 ts (unix seconds, fractional), 2 bot_guid, 3 map_id, 4 zone_id, 5-7 x/y/z, 8 flags (bit0 moving, bit1 combat, bit2 dead)
+    PrepareStatement(BOTLOG_INS_POS,
+        "INSERT INTO bot_pos (ts, bot_guid, map_id, zone_id, x, y, z, flags) VALUES (FROM_UNIXTIME(?), ?, ?, ?, ?, ?, ?, ?)",
+        CONNECTION_BOTH);
 }
 
 BotLogDatabaseConnection::BotLogDatabaseConnection(MySQLConnectionInfo& connInfo, ConnectionFlags connectionFlags)

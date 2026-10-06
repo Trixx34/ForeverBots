@@ -29,6 +29,8 @@
 #include "Battlefield.h"
 #include "BattlefieldMgr.h"
 #include "Battleground.h"
+#include "BotAI.h"
+#include "BotQuestLog.h"
 #include "BattlegroundMgr.h"
 #include "BattlegroundPackets.h"
 #include "BattlegroundScore.h"
@@ -925,6 +927,10 @@ void Player::Update(uint32 p_time)
     if (!IsInWorld())
         return;
 
+    // player bots: tick the bot AI (cheap pointer check for real players)
+    if (BotAI* botAI = GetSession()->GetBotAI())
+        botAI->Update(this, p_time);
+
     // undelivered mail
     if (m_nextMailDelivereTime && m_nextMailDelivereTime <= GameTime::GetGameTime())
     {
@@ -1003,7 +1009,10 @@ void Player::Update(uint32 p_time)
             {
                 uint32 quest_id  = *iter;
                 ++iter;                                     // current iter will be removed in FailQuest
-                FailQuest(quest_id);
+                {
+                    BotQuestLog::Scope scope("timeout");
+                    FailQuest(quest_id);
+                }
             }
             else
             {
@@ -4349,7 +4358,10 @@ void Player::BuildPlayerRepop()
         CastSpell(this, 20584, true);
     CastSpell(this, 8326, true);
 
-    FailQuestsWithFlag(QUEST_FLAGS_COMPLETION_NO_DEATH);
+    {
+        BotQuestLog::Scope scope("died");
+        FailQuestsWithFlag(QUEST_FLAGS_COMPLETION_NO_DEATH);
+    }
 
     RemoveAurasWithInterruptFlags(SpellAuraInterruptFlags::Release);
 
@@ -15392,6 +15404,9 @@ void Player::AddQuest(Quest const* quest, Object* questGiver)
     if (updateVisibility)
         UpdateObjectVisibility();
 
+    if (GetSession()->IsBot())
+        BotQuestLog::OnAccepted(this, quest, questGiver);
+
     sScriptMgr->OnQuestStatusChange(this, quest_id);
     sScriptMgr->OnQuestStatusChange(this, quest, oldStatus, questStatusData.Status);
 }
@@ -15402,7 +15417,11 @@ void Player::CompleteQuest(uint32 quest_id)
     {
         SendForceSpawnTrackingUpdate(quest_id);
 
+        bool const botNewlyComplete = GetSession()->IsBot() && GetQuestStatus(quest_id) != QUEST_STATUS_COMPLETE;
         SetQuestStatus(quest_id, QUEST_STATUS_COMPLETE);
+        if (botNewlyComplete)
+            if (Quest const* botQuest = sObjectMgr->GetQuestTemplate(quest_id))
+                BotQuestLog::OnComplete(this, botQuest);
 
         if (QuestStatusData const* questStatus = Trinity::Containers::MapGetValuePtr(m_QuestStatus, quest_id))
             SetQuestSlotState(questStatus->Slot, QUEST_STATE_COMPLETE);
@@ -15802,6 +15821,9 @@ void Player::RewardQuest(Quest const* quest, LootItemType rewardType, uint32 rew
             goQGiver->AI()->OnQuestReward(this, quest, rewardType, rewardId);
     }
 
+    if (GetSession()->IsBot())
+        BotQuestLog::OnRewarded(this, quest, rewardType, rewardId, questGiver, XP, moneyRew);
+
     sScriptMgr->OnQuestStatusChange(this, quest_id);
     sScriptMgr->OnQuestStatusChange(this, quest, oldStatus, QUEST_STATUS_REWARDED);
 
@@ -15832,6 +15854,8 @@ void Player::FailQuest(uint32 questId)
         }
 
         SetQuestStatus(questId, QUEST_STATUS_FAILED);
+        if (GetSession()->IsBot())
+            BotQuestLog::OnFailed(this, quest);
 
         uint16 log_slot = FindQuestSlot(questId);
 
@@ -15883,6 +15907,9 @@ void Player::AbandonQuest(uint32 questId)
 {
     if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
     {
+        if (GetSession()->IsBot())
+            BotQuestLog::OnAbandoned(this, quest);
+
         // Destroy quest items on quest abandon.
         for (QuestObjective const& obj : quest->GetObjectives())
             if (obj.Type == QUEST_OBJECTIVE_ITEM)
@@ -17600,7 +17627,11 @@ void Player::SetQuestObjectiveData(QuestObjective const& objective, int32 data)
         RemoveQuestSlotObjectiveFlag(status.Slot, objective.StorageIndex);
 
     if (Quest const* quest = sObjectMgr->GetQuestTemplate(objective.QuestID))
+    {
+        if (GetSession()->IsBot())
+            BotQuestLog::OnObjectiveChange(this, quest, objective, oldData, data);
         sScriptMgr->OnQuestObjectiveChange(this, quest, objective, oldData, data);
+    }
 }
 
 bool Player::IsQuestObjectiveCompletable(uint16 slot, Quest const* quest, QuestObjective const& objective) const

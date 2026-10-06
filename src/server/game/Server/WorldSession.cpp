@@ -16,10 +16,12 @@
  */
 
 #include "WorldSession.h"
+#include "BotQuestLog.h"
 #include "Account.h"
 #include "AccountMgr.h"
 #include "AuthenticationPackets.h"
 #include "Bag.h"
+#include "BotAI.h"
 #include "BattlePetMgr.h"
 #include "BattlegroundMgr.h"
 #include "BattlenetPackets.h"
@@ -161,11 +163,21 @@ WorldSession::WorldSession(uint32 id, std::string&& name, uint32 battlenetAccoun
 }
 
 /// WorldSession destructor
+void WorldSession::SetBotAI(BotAI* ai)
+{
+    delete _botAI;
+    _botAI = ai;
+}
+
 WorldSession::~WorldSession()
 {
     ///- unload player if not unloaded
     if (_player)
         LogoutPlayer (true);
+
+    // bot AI dies with the session (after the Player is gone, the AI never touches it on destruction)
+    delete _botAI;
+    _botAI = nullptr;
 
     /// - If have unclosed socket, close it
     for (uint8 i = 0; i < 2; ++i)
@@ -645,7 +657,10 @@ void WorldSession::LogoutPlayer(bool save)
         ///- Clear whisper whitelist
         _player->ClearWhisperWhiteList();
 
-        _player->FailQuestsWithFlag(QUEST_FLAGS_FAIL_ON_LOGOUT);
+        {
+            BotQuestLog::Scope scope("logout");
+            _player->FailQuestsWithFlag(QUEST_FLAGS_FAIL_ON_LOGOUT);
+        }
 
         // exit areatriggers before saving to remove auras applied by them
         _player->ExitAllAreaTriggers();

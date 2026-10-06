@@ -23,3 +23,13 @@ nbproject/*
 cmake-build-*/*
 .vs
 *.user
+
+# Forever: build/server output and extracted client data are never committed
+/run/
+/dbc/
+/gt/
+/maps/
+/vmaps/
+/mmaps/
+/Buildings/
+/cameras/

@@ -29,6 +29,7 @@
 #include "DatabaseEnvFwd.h"
 #include "Transaction.h"
 
+class Player;
 class WorldSession;
 
 // Severity levels for BotEvent::Severity (stored as bot_event.severity).
@@ -58,6 +59,17 @@ struct BotEvent
     std::optional<uint32> TargetEntry;
     std::string Details;    // JSON text, may be empty
     double Timestamp = 0.0; // unix seconds; filled in by LogEvent when 0
+};
+
+// One position sample (table bot_pos), used by the sim console map. Flags: bit 0 moving, bit 1 in combat, bit 2 dead.
+struct BotPosSample
+{
+    uint64 BotGuid = 0;
+    uint16 MapId = 0;
+    uint16 ZoneId = 0;
+    float X = 0.0f, Y = 0.0f, Z = 0.0f;
+    uint8 Flags = 0;
+    double Timestamp = 0.0;
 };
 
 // Lifecycle of one bot character inside BotMgr.
@@ -140,6 +152,9 @@ public:
     // Immediately saves and logs out every bot (worldserver shutdown).
     void LogoutAll(char const* reason = "LOGOUT_SHUTDOWN");
 
+    // Online bot players (world thread only; names match case-insensitively, empty or "all" = every online bot).
+    std::vector<Player*> GetOnlineBotPlayers(std::string const& name = std::string());
+
     // Snapshot for `.bot list` (positions of online bots are read from the Player).
     std::vector<BotInfo> ListBots();
 
@@ -159,6 +174,12 @@ public:
     // Thread-safe (map update threads may call it). No-op when the log database is not configured
     // or the event is below BotLog.MinSeverity. Rows are written asynchronously in batches.
     void LogEvent(BotEvent&& event);
+
+    // Thread-safe, same contract as LogEvent (buffered, written by the world thread). No-op when logging is off.
+    void LogPosition(BotPosSample&& sample);
+
+    // Bot.Log.PosIntervalSec in milliseconds (0 = position telemetry off, also 0 while the log database is not available).
+    uint32 GetPosIntervalMs() const { return _posIntervalMs.load(std::memory_order_relaxed); }
 
     // Registers or refreshes a bot in the `bot` table (one row per bot, events carry only the guid).
     void LogBotRegistration(uint64 guid, std::string const& name, uint8 classId, uint8 raceId, bool horde);
@@ -204,6 +225,8 @@ private:
     std::atomic<uint32> _logSinceFlushMs{0}; // also bumped by map threads to request an early flush
     mutable std::mutex _logMutex;
     std::vector<BotEvent> _logBuffer;
+    std::atomic<uint32> _posIntervalMs{0};
+    std::vector<BotPosSample> _posBuffer; // guarded by _logMutex
 };
 
 #define sBotMgr BotMgr::instance()

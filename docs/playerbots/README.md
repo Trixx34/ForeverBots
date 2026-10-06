@@ -14,6 +14,8 @@ better.
   bot-implementation approach needs to account for.
 - [implementation-plan.md](implementation-plan.md) — phased native-implementation
   plan, and what Phase 0 (the hello-world scaffold) actually adds to the tree.
+- [feature-plan.md](feature-plan.md) — what mod-playerbots contains (engine, managers, behaviors) and a
+  phased plan to implement the applicable parts natively here, with the bot log built into the engine.
 - [environment-setup.md](environment-setup.md) — what to provide (toolchain,
   databases, config, optional client/game-data) to build and test it.
 - [login-flow-notes.md](login-flow-notes.md) — Phase 1 de-risking: exactly what

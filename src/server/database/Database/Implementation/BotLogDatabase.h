@@ -30,6 +30,7 @@ enum BotLogDatabaseStatements : uint32
 {
     BOTLOG_REP_BOT,
     BOTLOG_INS_EVENT,
+    BOTLOG_INS_POS,
 
     MAX_BOTLOGDATABASE_STATEMENTS
 };

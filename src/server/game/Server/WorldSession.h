@@ -39,6 +39,7 @@
 #include <unordered_map>
 
 class BlackMarketEntry;
+class BotAI;
 class CollectionMgr;
 class Creature;
 class InstanceLock;
@@ -996,6 +997,9 @@ class TC_GAME_API WorldSession
         // Player bots (see BotMgr): a session without any socket, owned by BotMgr and never added to World's session list.
         bool IsBot() const { return _isBot; }
         void SetBot() { _isBot = true; }
+        // The bot's AI (engine), owned by the session so it dies with it; see Bots/BotAI.h. Null for real players.
+        BotAI* GetBotAI() const { return _botAI; }
+        void SetBotAI(BotAI* ai);   // takes ownership, deletes the previous one
         // Loads permissions and queues the character load; BotMgr polls ProcessBotLoginCallbacks() until the player is in world.
         void BeginBotLogin(ObjectGuid guid);
         void ProcessBotLoginCallbacks();
@@ -2066,6 +2070,7 @@ class TC_GAME_API WorldSession
         uint32 expireTime;
         bool forceExit;
         bool _isBot = false;
+        BotAI* _botAI = nullptr;
 
         std::unique_ptr<boost::circular_buffer<std::pair<int64, uint32>>> _timeSyncClockDeltaQueue; // first member: clockDelta. Second member: latency of the packet exchange that was used to compute that clockDelta.
         int64 _timeSyncClockDelta;

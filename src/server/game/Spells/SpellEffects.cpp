@@ -16,6 +16,7 @@
  */
 
 #include "Spell.h"
+#include "BotQuestLog.h"
 #include "AccountMgr.h"
 #include "AreaTrigger.h"
 #include "AzeriteEmpoweredItem.h"
@@ -4875,6 +4876,7 @@ void Spell::EffectQuestFail()
     if (!unitTarget || unitTarget->GetTypeId() != TYPEID_PLAYER)
         return;
 
+    BotQuestLog::Scope scope("event_failed");
     unitTarget->ToPlayer()->FailQuest(effectInfo->MiscValue);
 }
 

@@ -17,6 +17,7 @@
 
 #include "BotMgr.h"
 #include "AccountMgr.h"
+#include "BotAI.h"
 #include "BotLogDatabase.h"
 #include "CharacterCache.h"
 #include "CharacterPackets.h"
@@ -239,6 +240,21 @@ void BotMgr::Update(uint32 diff)
         FlushLog();
 }
 
+std::vector<Player*> BotMgr::GetOnlineBotPlayers(std::string const& name)
+{
+    std::vector<Player*> players;
+    bool const all = name.empty() || StringEqualI(name, "all");
+    for (auto& [guid, bot] : _bots)
+    {
+        if (bot.State != BOT_ONLINE || !bot.Session || !bot.Session->GetPlayer())
+            continue;
+        if (!all && !StringEqualI(bot.Name, name))
+            continue;
+        players.push_back(bot.Session->GetPlayer());
+    }
+    return players;
+}
+
 std::string BotMgr::GetStatus() const
 {
     std::ostringstream out;
@@ -259,11 +275,37 @@ void BotMgr::SetLogDatabaseAvailable(bool available)
         _logMinSeverity = uint8(std::clamp<int32>(minSeverity, BOTLOG_TRACE, BOTLOG_ERROR));
         _logFlushIntervalMs = uint32(std::max<int32>(100, sConfigMgr->GetIntDefault("BotLog.FlushIntervalMs", 1000)));
         _logMaxBatch = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("BotLog.MaxBatch", 500)));
+        int32 const posSec = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.PosIntervalSec", 5), 0, 3600);
+        _posIntervalMs.store(uint32(posSec) * 1000, std::memory_order_relaxed);
+        TC_LOG_INFO("server.worldserver", "Bot position samples: {}", posSec ? Trinity::StringFormat("every {} s per moving bot", posSec) : std::string("off"));
         TC_LOG_INFO("server.worldserver", "Bot log enabled (min severity {}, flush every {} ms, batches of up to {} events)",
             _logMinSeverity, _logFlushIntervalMs, _logMaxBatch);
     }
 
+    if (!available)
+        _posIntervalMs.store(0, std::memory_order_relaxed);
     _logAvailable.store(available, std::memory_order_relaxed);
+}
+
+void BotMgr::LogPosition(BotPosSample&& sample)
+{
+    if (!IsLogDatabaseAvailable())
+        return;
+
+    if (sample.Timestamp == 0.0)
+        sample.Timestamp = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+    bool flushNow;
+    {
+        std::lock_guard<std::mutex> lock(_logMutex);
+        if (_posBuffer.size() >= 100000) // database stalled: drop samples rather than grow without limit
+            return;
+        _posBuffer.push_back(sample);
+        flushNow = _posBuffer.size() >= _logMaxBatch;
+    }
+
+    if (flushNow)
+        _logSinceFlushMs = _logFlushIntervalMs;
 }
 
 void BotMgr::LogEvent(BotEvent&& event)
@@ -311,12 +353,40 @@ void BotMgr::FlushLog(bool sync)
     _logSinceFlushMs = 0;
 
     std::vector<BotEvent> batch;
+    std::vector<BotPosSample> posBatch;
     {
         std::lock_guard<std::mutex> lock(_logMutex);
         batch.swap(_logBuffer);
+        posBatch.swap(_posBuffer);
     }
 
-    if (batch.empty() || !IsLogDatabaseAvailable())
+    if (!IsLogDatabaseAvailable())
+        return;
+
+    if (!posBatch.empty())
+    {
+        BotLogDatabaseTransaction posTrans = BotLogDatabase.BeginTransaction();
+        for (BotPosSample const& p : posBatch)
+        {
+            BotLogDatabasePreparedStatement* stmt = BotLogDatabase.GetPreparedStatement(BOTLOG_INS_POS);
+            uint8 i = 0;
+            stmt->setDouble(i++, p.Timestamp);
+            stmt->setUInt64(i++, p.BotGuid);
+            stmt->setUInt16(i++, p.MapId);
+            stmt->setUInt16(i++, p.ZoneId);
+            stmt->setFloat(i++, p.X);
+            stmt->setFloat(i++, p.Y);
+            stmt->setFloat(i++, p.Z);
+            stmt->setUInt8(i++, p.Flags);
+            posTrans->Append(stmt);
+        }
+        if (sync)
+            BotLogDatabase.DirectCommitTransaction(posTrans);
+        else
+            BotLogDatabase.CommitTransaction(posTrans);
+    }
+
+    if (batch.empty())
         return;
 
     BotLogDatabaseTransaction trans = BotLogDatabase.BeginTransaction();
@@ -965,6 +1035,9 @@ void BotMgr::FinishLogin(BotInfo& bot)
     }
     bot.PendingLevel.reset();
 
+    // the bot AI (engine) lives in the session and is ticked from Player::Update; Bot.AI.Enabled can still pause it at runtime
+    bot.Session->SetBotAI(BotAI::Create(player).release());
+
     bot.Level = player->GetLevel();
     bot.MapId = uint16(player->GetMapId());
     bot.ZoneId = uint16(player->GetZoneId());
@@ -1016,6 +1089,7 @@ void BotMgr::LogoutBot(BotInfo& bot, char const* reason)
     LogLifecycle(bot, "state_change", reason, "bot logged out", BOTLOG_INFO, Trinity::StringFormat(
         R"({{"online_ms":{}}})", _uptimeMs - bot.LoginStartedMs));
 
+    bot.Session->SetBotAI(nullptr); // no AI tick may see the player while it is being removed
     bot.Session->LogoutPlayer(true);
     delete bot.Session;
     bot.Session = nullptr;

@@ -4504,11 +4504,48 @@ Classic.GuildFinder = 0
 #        Default:     1 - (Enabled)
 #                     0 - (Disabled)
 #
+#    Bot.Log.PosIntervalSec
+#        Description: Position telemetry for the sim console map (table bot_pos in the bot log database, kept 2 days). Every
+#                     online bot is sampled at most once per this many seconds, and only when it moved more than 2 yards since its
+#                     last sample; one extra sample is written on login and on map/zone change. 0 = off. Needs the bot log
+#                     database (BotLogDatabaseInfo) and its bot_pos table (forever-botlog-setup.sql); read once at startup.
+#        Default:     5
+#
 #    Bot.Login.MaxPerTick
 #        Description: Bot logins started per world update tick (spreads a large `bot spawn`).
 #        Default:     5
 
+#    Bot.AI.Enabled
+#        Description: Bot AI engine (Phase 2): every online bot gets an AI that is ticked from Player::Update on the map thread.
+#                     With no strategies active a tick only tracks the engine state (non-combat/combat/dead) and logs changes.
+#                     Can also be paused at runtime with the console command `bot ai on|off`.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+#
+#    Bot.AI.TickMs
+#        Description: Interval between AI ticks of one bot, in milliseconds (50-10000). Bots start at random offsets.
+#        Default:     500
+#
+#    Bot.AI.TestStrategy
+#        Description: New bots get the built-in test strategies (idle log, combat log, dead log). Off by default: they only prove
+#                     the engine and write log rows. Strategies can also be toggled per bot with `bot strategy <name> +test_idle`.
+#        Default:     0 - (Disabled)
+#
+#    Bot.AI.Test.IdleSec
+#        Description: Seconds without any executed action before the test strategy's idle trigger fires.
+#        Default:     30
+#
+#    Bot.AI.Test.CombatSec
+#        Description: Interval in seconds of the test strategy's combat trigger while the combat engine is active.
+#        Default:     5
+#
 Bot.Enabled = 1
+Bot.Log.PosIntervalSec = 5
 Bot.Login.MaxPerTick = 5
+Bot.AI.Enabled = 1
+Bot.AI.TickMs = 500
+Bot.AI.TestStrategy = 0
+Bot.AI.Test.IdleSec = 30
+Bot.AI.Test.CombatSec = 5
 #
 ###################################################################################################
