@@ -35,7 +35,7 @@ struct BotAIConfig
     uint32 TestCombatSec = 5;     // Bot.AI.Test.CombatSec
     // Phase 3 behaviors
     std::string DefaultNonCombat = "rest,goto,follow"; // Bot.AI.Default.NonCombat (comma separated strategy names)
-    std::string DefaultCombat;                         // Bot.AI.Default.Combat
+    std::string DefaultCombat = "combat";              // Bot.AI.Default.Combat
     std::string DefaultDead = "recover";               // Bot.AI.Default.Dead
     uint32 EatBelowPct = 60;      // Bot.AI.Rest.EatBelowPct: start eating below this health percent (out of combat)
     uint32 DrinkBelowPct = 40;    // Bot.AI.Rest.DrinkBelowPct: start drinking below this mana percent

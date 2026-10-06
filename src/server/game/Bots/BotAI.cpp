@@ -131,7 +131,7 @@ BotAIConfig const& BotAI::Config()
         _config.TestIdleSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Test.IdleSec", 30), 1, 86400));
         _config.TestCombatSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Test.CombatSec", 5), 1, 86400));
         _config.DefaultNonCombat = sConfigMgr->GetStringDefault("Bot.AI.Default.NonCombat", "rest,goto,follow");
-        _config.DefaultCombat = sConfigMgr->GetStringDefault("Bot.AI.Default.Combat", "");
+        _config.DefaultCombat = sConfigMgr->GetStringDefault("Bot.AI.Default.Combat", "combat");
         _config.DefaultDead = sConfigMgr->GetStringDefault("Bot.AI.Default.Dead", "recover");
         _config.EatBelowPct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Rest.EatBelowPct", 60), 1, 99));
         _config.DrinkBelowPct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Rest.DrinkBelowPct", 40), 1, 99));

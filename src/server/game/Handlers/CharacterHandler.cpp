@@ -1767,6 +1767,10 @@ void WorldSession::HandleBotPlayerLogin(LoginQueryHolder const& holder)
 
     pCurrChar->SetInGameTime(GameTime::GetGameTimeMS());
 
+    // Player::CanNeverSee hides every object from a player without this flag (normally set by the client time sync, which a bot never
+    // does): without it a bot sees nothing, so IsValidAttackTarget / spell target checks fail against every creature.
+    pCurrChar->SetPlayerLocalFlag(PLAYER_LOCAL_FLAG_OVERRIDE_TRANSPORT_SERVER_TIME);
+
     if (Group* group = pCurrChar->GetGroup())
     {
         group->SendUpdate();

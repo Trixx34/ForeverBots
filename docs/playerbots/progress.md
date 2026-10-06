@@ -68,7 +68,7 @@ event; config is read once (no reload); trace rows are INFO severity by design (
   sample taken; at 360 ticks/s that is 0.2 ms of CPU per second (0.02 % of a core). Whole-tick average stayed about 2.1 us (it was 0.96 us
   in the Phase 2 run; the two extra clock reads and the position checks account for part of it, rest is noise between runs).
 
-## Phase 3: non-combat basics (verified on the sim 2026-10-06, not committed)
+## Phase 3: non-combat basics (verified on the sim 2026-10-06)
 
 - Walking with mmaps, arrival, NO_PATH, stuck (NO_PROGRESS then UNREACHABLE_TARGET), eat, drink, eat+drink together (EAT_START/DRINK_START/
   EAT_DONE/DRINK_DONE/REST_END rows), follow, stay, bot_pos moving flag: all seen in bot_event/bot_pos.
@@ -90,7 +90,7 @@ event; config is read once (no reload); trace rows are INFO severity by design (
 - Not verified: far (cross-map) teleport handshake, instance/battleground deaths, Hardcore path, killer capture in the death event, real
   consumables from bags (FreeFood placeholder), grid-load memory for many far goals, follow across maps, a long partial-path goto.
 
-## Death post-mortem and combat events (verified on the sim 2026-10-06, not committed)
+## Death post-mortem and combat events (verified on the sim 2026-10-06)
 
 - `death` rows (reason DIED) carry: `killer` (guid, entry, name, level, rank, type creature/player/environment/self, last hit melee/spell, lvl_diff, hp_before), `damage` (last 10 s per source and per spell, hits, total, fight_s, started_by, first_hit_s_before_death), `hp_traj` ([ms before death, hp]), `auras` and `cc`, `resources` (power at death and 10 s ago, armor, gear summary), `combat` (attackers, hostiles_30yd, dealt_10s, strategies per engine, activity), `bots_30yd` and `bots_30yd_fighting`, `repeat` (per bot and per killer entry+zone), `source` (`test_command` for bot kill/hurt/aggro/envdmg, else `bot`), `fight_id`. Header: zone_id, level, target_entry = killer entry. `recent_decisions` limited to 15 s / 10 entries.
 - `combat` rows: COMBAT_START (target, first=bot/mob, hp, power, hostiles_30yd, dist, activity) and COMBAT_END (outcome died/target_killed/fled/reset/other, duration_s, dealt, taken, hp_start/end/min, kills), linked by `fight_id = "<botguid>-<unix_ms>"`; END after 2 s without combat or hits (flapping coalesced).
@@ -99,7 +99,7 @@ event; config is read once (no reload); trace rows are INFO severity by design (
 - Test aids: `bot aggro <name> [radius]`, `bot envdmg <name> <type 0-6> <amount>`.
 - Cost, 180 bots (`bot ai status`): tick steady windows 3.28 us before, 3.17-3.42 us after; hooks outside the tick avg 4.76 us/call; death row 0.8-2.1 KB.
 
-## Goto navigation fixes (verified on the sim 2026-10-06, not committed)
+## Goto navigation fixes (verified on the sim 2026-10-06)
 
 - Root cause of the NO_PATH / stuck bursts: (1) `bot nudge` moved bots in straight lines off the navmesh and they were saved there (every later goto
   NO_PATH, `start_off_navmesh`); (2) burst goals at a fixed offset landed on navmesh holes (gnome, Skyborne) or on ledges 46 yd above/below
@@ -123,3 +123,13 @@ event; config is read once (no reload); trace rows are INFO severity by design (
 - Not verified: the gnome start (-4983, 878, 274) has no complete path in any of 16 headings at 108 yd (not investigated); why some 400-500 yd
   paths return 0x0A; Skyborne goals at 108 yd (only holes tested).
 
+
+## Basic combat (BotCombat.*), verified on the sim 2026-10-06
+- Strategy `combat` (Combat engine, default `Bot.AI.Default.Combat = "combat"`): triggers `combat_engaged`, `combat_need_heal`, `combat_fleeing`; actions `combat_flee` (Emergency, BotMotion SetGoal+Step), `combat_heal` (SELF_HEAL below `HealBelowPct`), `combat_engage` (pick nearest opponent that is not too strong, Attack + MoveChase, ranged classes stop at `CasterRangePct` of spell range), `combat_cast` (per class table of 27 vanilla rank-1 spell ids, resolved against what the bot knows incl. rank chain; `bot spells <name>` shows it). Only level-gated spells are known: trainer spells (Serpent Sting, Arcane Shot, Battle Shout, Rend, Frostbolt, Fire Blast, Earth Shock, Immolate, Corruption, Moonfire, SWP, Judgement ...) are NOT known at level 1 and bots never train, so L1 rotations are 1-2 spells.
+- Config (`Bot.AI.Combat.*`, documented in worldserver.conf.dist): Flee.Enabled, Flee.LevelDiff (4), EliteLevelBonus (3), Flee.MaxSec, Flee.Yards, ApproachTimeoutSec, HealBelowPct, CasterRangePct.
+- Events: TARGET_PICKED, FLEE_LEVEL_DIFF / FLEE_ENDED / FLEE_GAVE_UP / FLEE_BLOCKED, FIGHT_TOO_STRONG, APPROACH_TIMEOUT, RANGED_TO_MELEE, CAST_FAILED (deduped, with result name), CAST_NO_POWER, SELF_HEAL, NO_TARGET (diagnostic), COMBAT_SUMMARY (casts per spell, targets, heals) next to plumber's COMBAT_START/END.
+- ROOT CAUSE found on the way (fixed in CharacterHandler.cpp, HandleBotPlayerLogin, one line): `Player::CanNeverSee` hides every object from a player lacking PLAYER_LOCAL_FLAG_OVERRIDE_TRANSPORT_SERVER_TIME (normally set by the client time sync). Bots never got it, so a bot saw NOTHING: IsValidAttackTarget and spell target checks failed against every creature. Now set at bot login. Anything else that depends on bot visibility was affected before.
+- Evidence (sim, n = 4 bots per class = 36 bots, one run each, teleported next to Elwynn Young Wolf spawns, `bot aggro 30`, 4-5 min, same protocol both runs; "kills" = mobs killed per the combat_end rows): combat strategy removed (`bot strategy all -combat`): 44 fights, 0 kills, 0 damage dealt, 43 deaths. Combat on: 45 fights, 41 mobs killed (18 fights ended target_killed), 26 deaths; every class dealt damage (mobs killed per class: warrior 0, paladin 1, hunter 3, rogue 7, priest 6, shaman 6, mage 6, warlock 6, druid 6; deaths: warrior 6, paladin 6, hunter 6, rogue 0, others 1-2). Why warriors/paladins/hunters die more was not investigated (hypothesis: empty rage/mana at start, no ranged pull). A second run (all 180 bots `bot aggro 30` plus the same 36 teleported onto wolves): 120 fights, 30 ended target_killed, 21 deaths, 10 FLEE_LEVEL_DIFF each followed by FLEE_ENDED, but all 12 fights that had a FLEE_LEVEL_DIFF still ended `died` (Northshire Guard L55 one-shots, wolves outrun): the `bot_fled` outcome (set by BotAI.cpp when the bot is still moving to a goal at fight end) was NOT observed. Casts seen: Heroic Strike, Wrath, Healing Touch, Seal of Righteousness, Auto Shot, Raptor Strike, Sinister Strike, Eviscerate, Smite, Lightning Bolt, Fireball, Shadow Bolt.
+- Tick cost, 180 bots in combat: avg 14.2 us (baseline idle/no-combat 10.4-11.9 us); combat hooks 8 us avg per call outside the tick. Whole-server cost of the visibility fix (bots now get visibility updates) is NOT measured; `server info` showed update time diff 2 ms at 180 bots idle on this build, with no A/B against the old build.
+- Fight then `bot goto` on the same bot: GOTO_START/GOTO_ARRIVED fine (2 of 2), eat/drink after the fight works (EAT/DRINK_START/DONE/REST_END). Corpse run after a death works.
+- Not verified: Judgement (not known at L1), hunter ammo/Auto Shot failures at scale, rogue EQUIPPED_ITEM_CLASS (seen once for Sinister Strike), higher levels, groups, pets, PvP (CanFight uses IsValidAttackTarget, so neutral NPCs that are not at war are skipped with NO_TARGET).

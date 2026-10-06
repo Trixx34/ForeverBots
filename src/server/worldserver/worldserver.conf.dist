@@ -4543,7 +4543,28 @@ Classic.GuildFinder = 0
 #        Description: Comma separated strategies every new bot gets per engine (Phase 3 behaviors:
 #                     goto, follow, stay, rest in the non-combat engine; recover in the dead engine).
 #                     Strategies can be changed per bot at runtime with `bot strategy`.
-#        Default:     "rest,goto,follow" / "" / "recover"
+#        Default:     "rest,goto,follow" / "combat" / "recover"
+#
+#    Bot.AI.Combat.Flee.Enabled / Bot.AI.Combat.Flee.LevelDiff / Bot.AI.Combat.EliteLevelBonus
+#        Description: Basic combat strategy ("combat"). A bot attacked by mobs that are all too strong runs away
+#                     (flee goal, logged as FLEE_LEVEL_DIFF) instead of fighting. Too strong = mob level minus bot
+#                     level (+ EliteLevelBonus for elites/rare elites) above LevelDiff, or a world boss. Mobs that
+#                     are not too strong are fought first. Flee off, already tried, or no navmesh path = fight back
+#                     (FIGHT_TOO_STRONG).
+#        Default:     1 / 4 / 3
+#
+#    Bot.AI.Combat.Flee.MaxSec / Bot.AI.Combat.Flee.Yards
+#        Description: Seconds a bot runs before it gives up and fights, and the distance of the flee destination.
+#        Default:     10 / 35
+#
+#    Bot.AI.Combat.ApproachTimeoutSec
+#        Description: A target the bot cannot get into range of within this many seconds is given up (APPROACH_TIMEOUT).
+#        Default:     15
+#
+#    Bot.AI.Combat.HealBelowPct / Bot.AI.Combat.CasterRangePct
+#        Description: Health percent below which a bot with a heal spell casts it on itself in combat; percent of the
+#                     spell range at which casters/hunters stand while chasing their target.
+#        Default:     45 / 80
 #
 #    Bot.AI.Rest.EatBelowPct / Bot.AI.Rest.DrinkBelowPct / Bot.AI.Rest.DonePct
 #        Description: Health percent below which a bot out of combat sits and eats, mana percent below which it
@@ -4577,7 +4598,7 @@ Bot.AI.TestStrategy = 0
 Bot.AI.Test.IdleSec = 30
 Bot.AI.Test.CombatSec = 5
 Bot.AI.Default.NonCombat = "rest,goto,follow"
-Bot.AI.Default.Combat = ""
+Bot.AI.Default.Combat = "combat"
 Bot.AI.Default.Dead = "recover"
 Bot.AI.Rest.EatBelowPct = 60
 Bot.AI.Rest.DrinkBelowPct = 40

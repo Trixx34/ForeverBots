@@ -239,6 +239,8 @@ private:
 void RegisterBuiltinBotObjects(BotRegistry& registry);
 // Defined in BotBehavior.cpp (Phase 3): movement, follow/stay, rest (eat/drink) and death recovery.
 void RegisterPhase3BotObjects(BotRegistry& registry);
+// Defined in BotCombat.cpp: the basic combat strategy ("combat").
+void RegisterCombatBotObjects(BotRegistry& registry);
 
 // One engine: the active strategies of one BotState, the merged trigger/action wiring and the action queue.
 class BotEngine

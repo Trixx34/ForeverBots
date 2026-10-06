@@ -17,6 +17,7 @@
 
 #include "ScriptMgr.h"
 #include "BotAI.h"
+#include "BotCombat.h"
 #include "BotMgr.h"
 #include "BotQuestLog.h"
 #include "Chat.h"
@@ -91,6 +92,7 @@ public:
             { "tele",    HandleBotTeleCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "state",   HandleBotStateCommand,   rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "path",    HandleBotPathCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "spells",  HandleBotSpellsCommand,  rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "ai",      botAiCommandTable },
         };
 
@@ -195,6 +197,17 @@ public:
             return nullptr;
         }
         return players.front();
+    }
+
+    // bot spells <name>: known spells and what the combat strategy resolved (BotCombat.cpp)
+    static bool HandleBotSpellsCommand(ChatHandler* handler, std::string name)
+    {
+        Player* bot = FindOneBot(handler, name);
+        if (!bot)
+            return false;
+        for (std::string const& line : BotCombatDescribeSpells(bot))
+            handler->PSendSysMessage("%s", line.c_str());
+        return true;
     }
 
     // bot strategy <name|all> [+name|-name[,+name...]]: no change argument lists the strategies per engine.
