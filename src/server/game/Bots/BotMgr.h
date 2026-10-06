@@ -21,13 +21,17 @@
 #include "Define.h"
 #include <atomic>
 #include <deque>
+#include <future>
+#include <list>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 #include "DatabaseEnvFwd.h"
 #include "Transaction.h"
+#include <unordered_map>
 
 class Player;
 class WorldSession;
@@ -59,6 +63,7 @@ struct BotEvent
     std::optional<uint32> TargetEntry;
     std::string Details;    // JSON text, may be empty
     double Timestamp = 0.0; // unix seconds; filled in by LogEvent when 0
+    uint64 SessionSeq = 0;  // login session id of the bot (bot_event.session_seq); filled in by LogEvent when 0
 };
 
 // One position sample (table bot_pos), used by the sim console map. Flags: bit 0 moving, bit 1 in combat, bit 2 dead.
@@ -101,7 +106,9 @@ struct BotInfo
     std::optional<uint8> PendingLevel;    // applied right after login
     uint32 NotBeforeMs = 0;               // BotMgr uptime before which no login may start (previous save must land first)
     uint32 LoginStartedMs = 0;
+    uint64 SessionSeq = 0;                // id of the current login session, new at every BOT_LOGIN (0 = never logged in)
     bool JustCreated = false;
+    bool Alt = false;                     // a player's alt (real account) logged in as a bot by BotAlts (step A3); never touched by spawn/despawn all
 
     // last known place (refreshed from the Player while online and when the bot logs out)
     uint16 MapId = 0;
@@ -152,6 +159,17 @@ public:
     // Immediately saves and logs out every bot (worldserver shutdown).
     void LogoutAll(char const* reason = "LOGOUT_SHUTDOWN");
 
+    // --- Alts (step A3, policy in BotAlts.cpp; world thread only) ----------------------------------------
+    // Queues a character of a real account for login as a bot (same login path as other bots). Fails when it is already a bot.
+    bool StartAlt(uint64 guid, uint32 accountId, std::string const& accountName, std::string const& name, uint8 race, uint8 classId, uint8 gender, uint8 level, std::string& error);
+    // Logs one alt out (saves) or drops it from the queue. Returns false when it is not an active alt.
+    bool StopAlt(uint64 guid);
+    // True while the character is queued, logging in or online as an alt bot (also blocks the normal player login).
+    bool IsActiveAlt(uint64 guid) const;
+    uint32 CountActiveAlts(uint32 accountId) const;
+    // Names of the active alts of an account.
+    std::vector<std::string> GetActiveAltNames(uint32 accountId) const;
+
     // Online bot players (world thread only; names match case-insensitively, empty or "all" = every online bot).
     std::vector<Player*> GetOnlineBotPlayers(std::string const& name = std::string());
 
@@ -181,11 +199,18 @@ public:
     // Bot.Log.PosIntervalSec in milliseconds (0 = position telemetry off, also 0 while the log database is not available).
     uint32 GetPosIntervalMs() const { return _posIntervalMs.load(std::memory_order_relaxed); }
 
+    // Flushes the suppressed-repeat counters of a bot as one LOG_SUPPRESSED row (see Bot.Log.RepeatCap). Thread-safe, called by
+    // LogoutBot; other code never needs it (LogEvent flushes on the next different event).
+    void FlushSuppressed(uint64 botGuid);
+
     // Registers or refreshes a bot in the `bot` table (one row per bot, events carry only the guid).
     void LogBotRegistration(uint64 guid, std::string const& name, uint8 classId, uint8 raceId, bool horde);
 
     // Writes buffered events now. sync = true blocks until committed (use at shutdown).
     void FlushLog(bool sync = false);
+
+    // Why logging is off (empty while on): shown by .bot status. Set by worldserver when the optional pool could not be opened.
+    void SetLogOffReason(std::string reason) { _logOffReason = std::move(reason); }
 
     // Number of events buffered and waiting for the next flush (diagnostics).
     size_t GetBufferedLogEvents() const;
@@ -202,6 +227,8 @@ private:
     void FinishLogin(BotInfo& bot);
     void FailLogin(BotInfo& bot, char const* reason);
     void LogoutBot(BotInfo& bot, char const* reason);
+    void BeginLogSession(BotInfo& bot);                       // new session id + repeat counters reset (world thread)
+    bool ApplyRepeatCap(BotEvent const& event, std::vector<BotEvent>& extra); // _logMutex held; true = drop the event
     void LogLifecycle(BotInfo const& bot, char const* type, char const* reason, char const* summary, uint8 severity, std::string details);
     static bool IsValidCombo(uint8 raceId, uint8 classId);
     static uint8 PickRace(uint8 classId, int8 faction);
@@ -223,11 +250,54 @@ private:
     uint8 _logMinSeverity = BOTLOG_INFO;
     uint32 _logFlushIntervalMs = 1000;
     uint32 _logMaxBatch = 500;
+    uint32 _logBufferMax = 200000;        // Bot.Log.BufferMax: events held while the database is slow; over it events are dropped and counted
+    uint32 _posBufferMax = 100000;        // Bot.Log.PosBufferMax
+    uint32 _flushRetries = 3;             // Bot.Log.FlushRetries: re-submissions of a failed batch before it is dropped
+    bool _hotSplit = false;               // Bot.Log.HotSplit
+    std::set<std::string> _hotTypes;      // Bot.Log.HotTypes (lower case)
+    uint32 _posBaseMs = 5000, _posSlowMs = 15000, _posScaleBots = 500;
+    std::string _logOffReason;
+    // Dropped-row accounting (guarded by _logMutex): written as one log_dropped event when the database accepts rows again.
+    uint64 _droppedEvents = 0, _droppedPos = 0, _droppedFailed = 0;
+    double _dropWindowStart = 0.0;
+    // Batches handed to the async pool, kept until the result is known so that a failed transaction can be re-submitted.
+    struct InFlight
+    {
+        TransactionCallback Callback;
+        std::vector<BotEvent> Events;
+        std::vector<BotPosSample> Pos;
+        uint32 Attempts = 1;
+        InFlight(TransactionCallback&& cb) : Callback(std::move(cb)) { }
+    };
+    std::list<InFlight> _inFlight;        // world thread only
+    // Reachability probe (Bot.Log.ProbeIntervalSec): a TCP connect to the bot log host on a helper thread, polled by the world thread.
+    // The core DB layer aborts the process when a reconnect fails, so rows must not be submitted while the server is unreachable.
+    std::string _probeHost, _probePort;
+    uint32 _probeIntervalMs = 10000, _probeSinceMs = 0;
+    bool _probeDown = false;              // logging was switched off by the probe (and is switched back on by it)
+    std::future<bool> _probeFuture;
+    void UpdateProbe(uint32 diff);
+    void PollInFlight();
+    void SubmitBatch(std::vector<BotEvent>&& events, std::vector<BotPosSample>&& pos, uint32 attempts, bool sync);
+    void NoteDropped(uint64 events, uint64 pos, bool failed);
+    bool IsHotEvent(BotEvent const& e) const;
     std::atomic<uint32> _logSinceFlushMs{0}; // also bumped by map threads to request an early flush
     mutable std::mutex _logMutex;
     std::vector<BotEvent> _logBuffer;
     std::atomic<uint32> _posIntervalMs{0};
     std::vector<BotPosSample> _posBuffer; // guarded by _logMutex
+
+    // Per-bot log state, guarded by _logMutex: session id and the repeat cap bookkeeping.
+    struct LogRepeat { std::string Type, Reason; uint32 QuestId = 0, Entry = 0; uint32 Suppressed = 0; double LastTs = 0.0; };
+    struct BotLogState
+    {
+        uint64 Session = 0;
+        std::unordered_map<std::string, uint32> Counts;            // events let through per key this session
+        std::unordered_map<std::string, LogRepeat> Pending;        // suppressed since the last flush row
+    };
+    std::unordered_map<uint64, BotLogState> _botLogState;
+    uint32 _repeatCap = 3;                                          // Bot.Log.RepeatCap, 0 = no cap
+    uint64 _nextSession = 0;
 };
 
 #define sBotMgr BotMgr::instance()

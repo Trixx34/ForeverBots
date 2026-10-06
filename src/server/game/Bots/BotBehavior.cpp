@@ -24,6 +24,7 @@
 // Every piece is a strategy built from triggers and actions; they are switched with `bot strategy <bot> +name|-name`.
 
 #include "BotAI.h"
+#include "BotCombat.h"
 #include "Config.h"
 #include "Corpse.h"
 #include "Creature.h"
@@ -43,6 +44,7 @@
 #include "SpellMgr.h"
 #include "StringFormat.h"
 #include "WorldSession.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -240,7 +242,8 @@ bool NeedEat(BotAI* ai, Player* bot)
 
 bool NeedDrink(BotAI* ai, Player* bot)
 {
-    return !(ai->Rest().Bits & BotRest::DRINK) && bot->IsAlive() && !bot->IsInCombat() && UsesMana(bot) && PowerPct(bot) < float(BotAI::Config().DrinkBelowPct);
+    return !(ai->Rest().Bits & BotRest::DRINK) && bot->IsAlive() && !bot->IsInCombat() && UsesMana(bot) &&
+        PowerPct(bot) < float(std::max(BotAI::Config().DrinkBelowPct, BotCombatPrePullManaPct()));
 }
 
 bool RestingNow(BotAI* ai, Player*) { return ai->Rest().Resting(); }

@@ -4511,6 +4511,43 @@ Classic.GuildFinder = 0
 #                     database (BotLogDatabaseInfo) and its bot_pos table (forever-botlog-setup.sql); read once at startup.
 #        Default:     5
 #
+#    Bot.Log.PosIntervalSlowSec / Bot.Log.PosScaleBots
+#        Description: Above PosScaleBots bots online the position sample interval grows to PosIntervalSlowSec (keeps bot_pos small
+#                     with large populations). Re-evaluated every world tick.
+#        Default:     15 / 500
+#
+#    Bot.Log.RepeatCap
+#        Description: Identical repeating rows (quest_blocked, NO_PROGRESS, UNREACHABLE_TARGET, TEST_IDLE, TEST_IDLE_NOTE; same bot,
+#                     type, reason, quest and target) written per login; the rest are counted and written as one LOG_SUPPRESSED row.
+#                     0 = no cap.
+#        Default:     3
+#
+#    Bot.Log.AiTickStatsSec
+#        Description: Interval of the AI_TICK_STATS row (engine tick cost per state). 0 = off.
+#        Default:     60
+#
+#    Bot.Log.BufferMax / Bot.Log.PosBufferMax
+#        Description: Rows held in memory while the bot log database is slow or down. Over the cap rows are dropped and counted
+#                     (an error is logged once; a log_dropped event with the counts is written when the database recovers).
+#        Default:     200000 / 100000
+#
+#    Bot.Log.FlushRetries
+#        Description: Re-submissions of a failed log batch before its rows are dropped and counted.
+#        Default:     3
+#
+#    Bot.Log.ProbeIntervalSec
+#        Description: Seconds between reachability probes (TCP connect to the BotLogDatabaseInfo host). When the host stops answering,
+#                     bot logging is switched off (shown by `.bot status`) instead of letting the core DB layer abort the server on a
+#                     failed reconnect; the probe switches it back on. 0 = no probing. Skipped for socket/"." hosts.
+#        Default:     10
+#
+#    Bot.Log.HotSplit / Bot.Log.HotTypes
+#        Description: 1 = event types in HotTypes (except COMBAT_SUMMARY/LOG_SUPPRESSED rows) are written to bot_event_hot (5 days
+#                     retention) instead of bot_event (14 days). Needs the bot_event_hot table (forever-botlog-migrate-1.sql);
+#                     query bot_event_all to see both. Ignored with a warning when the table does not exist.
+#        Default:     0 / decision,state_change,trace
+#
+#
 #    Bot.Login.MaxPerTick
 #        Description: Bot logins started per world update tick (spreads a large `bot spawn`).
 #        Default:     5
@@ -4549,9 +4586,28 @@ Classic.GuildFinder = 0
 #        Description: Basic combat strategy ("combat"). A bot attacked by mobs that are all too strong runs away
 #                     (flee goal, logged as FLEE_LEVEL_DIFF) instead of fighting. Too strong = mob level minus bot
 #                     level (+ EliteLevelBonus for elites/rare elites) above LevelDiff, or a world boss. Mobs that
-#                     are not too strong are fought first. Flee off, already tried, or no navmesh path = fight back
-#                     (FIGHT_TOO_STRONG).
-#        Default:     1 / 4 / 3
+#                     are not too strong are fought first. Flee off, MaxAttempts used up, or no navmesh path = fight back
+#                     (FIGHT_TOO_STRONG). FLEE_START and COMBAT_END (bot_fled) carry flee_reason.
+#        Default:     1 / 2 / 3
+#
+#    Bot.AI.Combat.Flee.MaxAttempts
+#        Description: How many times per fight a bot may start fleeing before it fights back.
+#        Default:     3
+#
+#    Bot.AI.Combat.Flee.LowHpPct
+#        Description: A bot in a fight whose health falls below this percent runs away (flee_reason low_hp, counts
+#                     against Flee.MaxAttempts; not when its target is nearly dead). 0 = off.
+#        Default:     15
+#
+#    Bot.AI.Combat.PrePullManaPct
+#        Description: A mana user drinks before pulling when its mana is below this percent (the higher of this and
+#                     Bot.AI.Rest.DrinkBelowPct applies).
+#        Default:     40
+#
+#    Bot.AI.Combat.FreeRepair
+#        Description: A bot with a broken (0 durability) equipped item repairs everything for free (REPAIR_FREE) so
+#                     weapon spells (Heroic Strike, Raptor Strike, Auto Shot) do not fail with EQUIPPED_ITEM_CLASS.
+#        Default:     1
 #
 #    Bot.AI.Combat.Flee.MaxSec / Bot.AI.Combat.Flee.Yards
 #        Description: Seconds a bot runs before it gives up and fights, and the distance of the flee destination.
@@ -4591,6 +4647,16 @@ Classic.GuildFinder = 0
 
 Bot.Enabled = 1
 Bot.Log.PosIntervalSec = 5
+Bot.Log.PosIntervalSlowSec = 15
+Bot.Log.PosScaleBots = 500
+Bot.Log.RepeatCap = 3
+Bot.Log.AiTickStatsSec = 60
+Bot.Log.BufferMax = 200000
+Bot.Log.PosBufferMax = 100000
+Bot.Log.FlushRetries = 3
+Bot.Log.ProbeIntervalSec = 10
+Bot.Log.HotSplit = 0
+Bot.Log.HotTypes = "decision,state_change,trace"
 Bot.Login.MaxPerTick = 5
 Bot.AI.Enabled = 1
 Bot.AI.TickMs = 500
@@ -4684,5 +4750,18 @@ Bot.Chat.GotoArriveYards = 3
 Bot.Chat.Role.Tank = "warrior"
 Bot.Chat.Role.Healer = "priest"
 Bot.Chat.Role.Dps = "rogue,mage,warlock,hunter"
+#
+#    Bot.Alt.Enabled
+#        Description: Players may log in characters of their own account as bots (".bot alt add|remove|list <name>").
+#                     Never while the character is online as a player; a bot character cannot log in as a player.
+#                     Alts are not remembered across a restart. The group leader controls them like other bots.
+#        Default:     1 - Enabled
+#
+#    Bot.Alt.MaxPerAccount
+#        Description: Maximum alt bots logged in at the same time per account (protects the tick budget).
+#        Default:     4
+#
+Bot.Alt.Enabled = 1
+Bot.Alt.MaxPerAccount = 4
 #
 ###################################################################################################

@@ -154,3 +154,10 @@ event; config is read once (no reload); trace rows are INFO severity by design (
 - Tick cost, 180 bots in combat: avg 14.2 us (baseline idle/no-combat 10.4-11.9 us); combat hooks 8 us avg per call outside the tick. Whole-server cost of the visibility fix (bots now get visibility updates) is NOT measured; `server info` showed update time diff 2 ms at 180 bots idle on this build, with no A/B against the old build.
 - Fight then `bot goto` on the same bot: GOTO_START/GOTO_ARRIVED fine (2 of 2), eat/drink after the fight works (EAT/DRINK_START/DONE/REST_END). Corpse run after a death works.
 - Not verified: Judgement (not known at L1), hunter ammo/Auto Shot failures at scale, rogue EQUIPPED_ITEM_CLASS (seen once for Sinister Strike), higher levels, groups, pets, PvP (CanFight uses IsValidAttackTarget, so neutral NPCs that are not at war are skipped with NO_TARGET).
+
+## bot-nav: E3 hubs, E1 trainers, E4 vendors, Skyborne data gap, quarantine (sim-verified, 60 bots, 20 min)
+- E3: startup index (starter quests, hubs, grind spawns). Events QUEST_NO_LOCAL, QUEST_HUB_TRAVEL, QUEST_HUB_NONE, QUEST_GRIND.
+- E1: class trainers cached at startup (Index.Trainers, key is class id; profession trainers would use 0x100|skill). Events TRAIN_TRIP, TRAINED, TRAIN_NO_MONEY, TRAIN_NO_TRAINER, TRAIN_UNREACHABLE. Trainer.h: GetSpell/CanTeachSpell/GetSpellState made public, GetSpells() added.
+- E4: vendors cached at startup. Sells greys then unusable armor/weapons (never quest items, bags), repairs, buys bigger bags after spell reserve. Events VENDOR_TRIP, SOLD_ITEMS, REPAIRED, BAG_BOUGHT, BAG_NO_MONEY, BAG_BUY_FAILED, VENDOR_NONE, VENDOR_UNREACHABLE. BAG_BOUGHT not yet seen in a run.
+- Skyborne: quest 92460 'Coming of Age' reward item 264908 has no item template; TurnIn now logs REWARD_ITEM_MISSING and rewards anyway. Data gap still needs a data-extractor/db-keeper fix.
+- Quarantine: per-bot escalation (quest blacklisted 6 h after 3 reach failures, QUEST_QUARANTINED) and global (10 drops across bots, 1 h, QUEST_QUARANTINED_GLOBAL).

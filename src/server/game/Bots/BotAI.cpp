@@ -31,6 +31,7 @@
 #include "Random.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StringFormat.h"
 #include "Unit.h"
 #include "WorldSession.h"
@@ -142,6 +143,7 @@ BotAIConfig const& BotAI::Config()
         _config.MaxCorpseRunYards = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Recover.MaxCorpseRunYards", 1200), 50, 100000));
         _config.StuckSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.StuckSec", 8), 2, 600));
         _config.StuckRepaths = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.StuckRepaths", 3), 1, 20));
+        _config.TickStatsSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.AiTickStatsSec", 60), 0, 3600));
         _enabled.store(_config.Enabled, std::memory_order_relaxed);
         TC_LOG_INFO("server.worldserver", "Bot AI: {}, tick {} ms, test strategy {}", _config.Enabled ? "enabled" : "disabled", _config.TickMs,
             _config.TestStrategy ? "on" : "off");
@@ -264,7 +266,25 @@ void BotAI::Tick(Player* bot)
         UpdateFight(bot);
     }
 
+    uint64 const engStart = NowNs();
     _engines[uint32(_state)]->DoNextAction();
+    {
+        EngStat& es = _engStat[uint32(_state)];
+        uint64 const ns = NowNs() - engStart;
+        es.Ns += ns;
+        es.MaxNs = std::max(es.MaxNs, ns);
+        ++es.N;
+    }
+    if (!_spellsLogged)
+    {
+        _spellsLogged = true;
+        _levelSinceMs = _nowMs;
+        _tickStatsMs = _nowMs;
+        EmitSpellsKnown(bot, "LOGIN");
+    }
+    else if (uint32 const statsSec = Config().TickStatsSec)
+        if (_nowMs - _tickStatsMs >= statsSec * 1000)
+            EmitTickStats(bot);
     uint64 const posStart = NowNs();
     SamplePosition(bot);
     _stats.PosNs.fetch_add(NowNs() - posStart, std::memory_order_relaxed);
@@ -807,9 +827,14 @@ void BotAI::OnDamageTaken(Player* bot, Unit* attacker, uint32 damage, uint32 hpB
     _stats.HookNs.fetch_add(NowNs() - t0, std::memory_order_relaxed);
 }
 
-void BotAI::OnDamageDealt(Player* bot, Unit* victim, uint32 damage)
+void BotAI::OnDamageDealt(Player* bot, Unit* victim, uint32 damage, SpellInfo const* spell)
 {
     uint64 const t0 = NowNs();
+    {
+        SpellStat& st = StatFor(spell ? spell->Id : 0);
+        ++st.Hits;
+        st.Dmg += damage;
+    }
     _dealt[_dealtNext] = { _nowMs, damage };
     _dealtNext = (_dealtNext + 1) % HIT_RING;
     _dealtCount = std::min(_dealtCount + 1, HIT_RING);
@@ -918,7 +943,7 @@ void BotAI::UpdateFight(Player* bot)
         outcome = "target_killed";
     else if (!_fight.Dealt && !_fight.Taken)
         outcome = "target_left_combat";
-    else if (_motion.HasGoal() && bot->isMoving())
+    else if (_fight.FleeReason || (_motion.HasGoal() && bot->isMoving()))
         outcome = "bot_fled";
     else if (_fight.Dealt > 0)
         outcome = "target_evaded_or_reset";
@@ -951,6 +976,47 @@ void BotAI::EmitFightStart(Player* bot)
         _fight.Id, IsTestSource() ? "test_command" : "bot", FirstName(_fight.First), tj,
         uint32(bot->GetHealth()), bot->GetHealthPct(), PowerName(pt), bot->GetPower(pt), bot->GetMaxPower(pt), CountHostiles(bot), ActivityJson(bot));
 
+    {
+        // Crowding: other bots within 40 yd, and whether another bot already tagged or is fighting this mob.
+        uint32 nearBots = 0;
+        if (Map* map = bot->GetMap())
+            for (MapReference const& ref : map->GetPlayers())
+            {
+                Player* p = ref.GetSource();
+                if (p && p != bot && p->GetSession() && p->GetSession()->GetBotAI() && bot->IsWithinDist(p, 40.0f))
+                    ++nearBots;
+            }
+        bool claimed = false;
+        ObjectGuid claimer;
+        if (Creature* c = target ? target->ToCreature() : nullptr)
+        {
+            for (ObjectGuid const& g : c->GetTapList())
+            {
+                if (g == bot->GetGUID())
+                    continue;
+                Player* p = ObjectAccessor::FindPlayer(g);
+                if (p && p->GetSession() && p->GetSession()->GetBotAI())
+                {
+                    claimed = true;
+                    claimer = g;
+                    break;
+                }
+            }
+            if (!claimed)
+                if (Unit* v = c->GetVictim())
+                    if (v != bot && v->IsPlayer() && v->ToPlayer()->GetSession() && v->ToPlayer()->GetSession()->GetBotAI())
+                    {
+                        claimed = true;
+                        claimer = v->GetGUID();
+                    }
+        }
+        d.pop_back();
+        d += Trinity::StringFormat(R"(,"nearby_bots":{},"nearby_bots_yd":40,"claimed_by_other_bot":{})", nearBots, claimed ? "true" : "false");
+        if (claimed)
+            d += Trinity::StringFormat(R"(,"claimed_by":"{}")", claimer.ToString());
+        d += '}';
+    }
+
     BotEvent event = MakeEvent(bot, "combat", BOTLOG_INFO, "COMBAT_START", Trinity::StringFormat("combat start vs {} L{}", name, level));
     if (entry)
         event.TargetEntry = entry;
@@ -969,6 +1035,11 @@ void BotAI::EmitFightEnd(Player* bot, char const* outcome, uint32 endMs)
         _fight.Id, IsTestSource() ? "test_command" : "bot", outcome, FirstName(_fight.First), float(duration) / 1000.0f,
         _fight.Dealt, _fight.Taken, _fight.Kills, _fight.HpStart, alive ? uint32(bot->GetHealth()) : 0u, _fight.HpMin, 100.0f * float(_fight.HpMin) / float(maxHp),
         _fight.Target.ToString(), _fight.TargetEntry, _fight.TargetLevel);
+    if (_fight.FleeReason)
+    {
+        d.pop_back();
+        d += Trinity::StringFormat(R"(,"flee_reason":"{}"}})", _fight.FleeReason);
+    }
     if (alive)
     {
         Powers const pt = bot->GetPowerType();
@@ -1002,29 +1073,75 @@ void BotAI::SnapshotDeath(Player* bot, Unit* attacker)
     if (!_fight.Active)
         j += R"(,"in_fight":false)";
 
-    // --- killer ---
+    // --- killer: always resolved, even for non-melee / out-of-window kills (resolved_by says how) ---
     ObjectGuid ksrc;
     uint32 kentry = 0, klevel = 0;
-    if (lethal && last->Kind != 3)
+    char const* resolvedBy = "none";
+    if (lethal && last->Kind != 3 && !last->Src.IsEmpty())
     {
         ksrc = last->Src;
         kentry = last->Entry;
         klevel = last->Level;
+        resolvedBy = "lethal_hit";
     }
     else if (attacker && attacker != bot)
     {
         ksrc = attacker->GetGUID();
         kentry = attacker->GetEntry();
         klevel = attacker->GetLevel();
+        resolvedBy = "attacker";
+    }
+    if (ksrc.IsEmpty())
+    {
+        // newest non-environment hit with a known source inside the window
+        for (uint32 i = 0; i < _hitCount; ++i)
+        {
+            HitRec const& h = _hits[(_hitNext + HIT_RING - 1 - i) % HIT_RING];
+            if (now - h.Ms > WINDOW)
+                break;
+            if (h.Kind != 3 && !h.Src.IsEmpty())
+            {
+                ksrc = h.Src;
+                kentry = h.Entry;
+                klevel = h.Level;
+                resolvedBy = "recent_hit";
+                break;
+            }
+        }
+    }
+    if (ksrc.IsEmpty() && !_fight.Target.IsEmpty())
+    {
+        ksrc = _fight.Target;
+        kentry = _fight.TargetEntry;
+        klevel = _fight.TargetLevel;
+        resolvedBy = "fight_target";
+    }
+    if (ksrc.IsEmpty() && !bot->getAttackers().empty())
+    {
+        Unit* a = *bot->getAttackers().begin();
+        ksrc = a->GetGUID();
+        kentry = a->GetEntry();
+        klevel = a->GetLevel();
+        resolvedBy = "attackers_set";
     }
     char const* ktype = lethal && last->Kind == 3 ? "environment" : !ksrc.IsEmpty() ? (ksrc.IsPlayer() ? "player" : "creature") : attacker == bot ? "self" : "unknown";
     Unit* k = ksrc.IsEmpty() ? nullptr : (attacker && attacker->GetGUID() == ksrc ? attacker : ObjectAccessor::GetUnit(*bot, ksrc));
+    if (k)
+    {
+        kentry = k->GetEntry();
+        klevel = k->GetLevel();
+    }
 
     std::string kj = Trinity::StringFormat(R"({{"type":"{}")", ktype);
     if (!ksrc.IsEmpty())
     {
         std::string const name = k ? JsonEscape(k->GetName()) : CreatureNameOf(kentry);
-        kj += Trinity::StringFormat(R"(,"guid":"{}","entry":{},"name":"{}","level":{},"lvl_diff":{})", ksrc.ToString(), kentry, name, klevel, int32(klevel) - int32(bot->GetLevel()));
+        kj += Trinity::StringFormat(R"(,"guid":"{}","entry":{},"name":"{}","level":{},"lvl_diff":{},"resolved_by":"{}")", ksrc.ToString(), kentry, name.empty() ? std::string("?") : name, klevel, int32(klevel) - int32(bot->GetLevel()), resolvedBy);
+        if (k)
+            kj += Trinity::StringFormat(R"(,"faction":{})", k->GetFaction());
+        else if (!ksrc.IsPlayer())
+            if (CreatureTemplate const* ft = sObjectMgr->GetCreatureTemplate(kentry))
+                kj += Trinity::StringFormat(R"(,"faction":{})", ft->faction);
         if (!ksrc.IsPlayer())
             if (CreatureTemplate const* t = sObjectMgr->GetCreatureTemplate(kentry))
                 kj += Trinity::StringFormat(R"(,"rank":"{}","elite":{})", RankName(t->Classification),
@@ -1268,4 +1385,155 @@ void BotAI::SnapshotDeath(Player* bot, Unit* attacker)
     _deathFightId = _fight.Id;
     _deathJson = std::move(j);
     _deathSnap = true;
+}
+
+
+// ---------------------------------------------------------------------------------------------------------------------
+// progression and spell telemetry (docs/playerbots/engine-design.md "Progression and spell events")
+// ---------------------------------------------------------------------------------------------------------------------
+BotAI::SpellStat& BotAI::StatFor(uint32 id)
+{
+    for (SpellStat& st : _spellStats)
+        if (st.Id == id)
+            return st;
+    _spellStats.push_back({ id, 0, 0, 0, 0 });
+    return _spellStats.back();
+}
+
+void BotAI::OnSpellCast(Player* /*bot*/, SpellInfo const* spell, uint32 power)
+{
+    if (!spell)
+        return;
+    SpellStat& st = StatFor(spell->Id);
+    ++st.Casts;
+    st.Power += power;
+}
+
+void BotAI::OnXpGain(Player* bot, uint32 amount, uint32 bonus, Unit* victim)
+{
+    char const* source = victim ? "kill" : (_xpSource ? _xpSource : "other");
+    uint32 const questId = victim ? 0 : _xpQuest;
+    _xpSource = nullptr;
+    _xpQuest = 0;
+    if (victim)
+        _killXpTotal += amount;
+
+    std::string d = Trinity::StringFormat(R"({{"source":"{}","amount":{},"bonus":{},"xp_now":{},"xp_max":{},"level":{},"elapsed_s":{})",
+        source, amount, bonus, bot->GetXP(), bot->GetXPForNextLevel(), uint32(bot->GetLevel()), _nowMs / 1000);
+    if (victim)
+        d += Trinity::StringFormat(R"(,"victim":{{"entry":{},"level":{},"name":"{}"}})", victim->GetEntry(), uint32(victim->GetLevel()), JsonEscape(victim->GetName()));
+    d += '}';
+    BotEvent event = MakeEvent(bot, "xp", BOTLOG_INFO, "XP_GAIN", Trinity::StringFormat("+{} xp ({})", amount + bonus, source));
+    if (victim)
+        event.TargetEntry = victim->GetEntry();
+    if (questId)
+        event.QuestId = questId;
+    event.Details = std::move(d);
+    Emit(std::move(event));
+}
+
+void BotAI::OnLevelUp(Player* bot, uint8 oldLevel, uint8 newLevel)
+{
+    uint32 const sinceLast = _nowMs - _levelSinceMs;
+    _levelSinceMs = _nowMs;
+    BotEvent event = MakeEvent(bot, "level_up", BOTLOG_INFO, "LEVEL_UP", Trinity::StringFormat("level {} -> {}", uint32(oldLevel), uint32(newLevel)));
+    event.Details = Trinity::StringFormat(R"({{"from":{},"to":{},"elapsed_s":{},"level_time_s":{},"kill_xp_total":{}}})",
+        uint32(oldLevel), uint32(newLevel), _nowMs / 1000, sinceLast / 1000, _killXpTotal);
+    Emit(std::move(event));
+    EmitSpellsKnown(bot, "LEVEL_UP");
+}
+
+// Highest-rank, non-passive spells with a class spell family: a cheap stand-in for "the class spells this bot could cast".
+std::vector<uint32> BotAI::KnownSpellIds(Player* bot) const
+{
+    std::vector<uint32> ids;
+    for (auto const& [id, ps] : bot->GetSpellMap())
+    {
+        if (ps.state == PLAYERSPELL_REMOVED || ps.disabled || !ps.active)
+            continue;
+        SpellInfo const* si = sSpellMgr->GetSpellInfo(id, DIFFICULTY_NONE);
+        if (!si || si->IsPassive() || si->SpellFamilyName == SPELLFAMILY_GENERIC)
+            continue;
+        uint32 const next = sSpellMgr->GetNextSpellInChain(id);
+        if (next && bot->HasSpell(next))
+            continue;
+        ids.push_back(id);
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+
+void BotAI::EmitSpellsKnown(Player* bot, char const* cause)
+{
+    std::vector<uint32> const ids = KnownSpellIds(bot);
+    std::string list;
+    uint32 shown = 0;
+    for (uint32 id : ids)
+    {
+        if (shown++ >= 80)
+            break;
+        if (!list.empty())
+            list += ',';
+        list += Trinity::StringFormat(R"({{"id":{},"name":"{}","rank":{}}})", id, SpellNameOf(id), uint32(sSpellMgr->GetSpellRank(id)));
+    }
+    BotEvent event = MakeEvent(bot, "spells", BOTLOG_INFO, "SPELLS_KNOWN", Trinity::StringFormat("{} class spells known at L{}", ids.size(), uint32(bot->GetLevel())));
+    event.Details = Trinity::StringFormat(R"({{"cause":"{}","count":{},"spellbook_total":{},"spells":[{}]}})", cause, ids.size(), bot->GetSpellMap().size(), list);
+    Emit(std::move(event));
+}
+
+// Returns JSON members (no braces) to append inside the COMBAT_SUMMARY details object, and resets the per-stay counters.
+std::string BotAI::TakeSpellBreakdownJson(Player* bot)
+{
+    std::vector<SpellStat> stats = std::move(_spellStats);
+    _spellStats.clear();
+    std::sort(stats.begin(), stats.end(), [](SpellStat const& a, SpellStat const& b) { return a.Dmg + a.Casts > b.Dmg + b.Casts; });
+    std::string j = "\"spell_stats\":[";
+    for (size_t i = 0; i < stats.size() && i < 16; ++i)
+    {
+        SpellStat const& st = stats[i];
+        if (i)
+            j += ',';
+        j += Trinity::StringFormat(R"({{"id":{},"name":"{}","casts":{},"hits":{},"dmg":{},"power":{}}})", st.Id, st.Id ? SpellNameOf(st.Id) : std::string("melee"), st.Casts, st.Hits, st.Dmg, st.Power);
+    }
+    j += Trinity::StringFormat(R"(],"power_type":"{}","unused_spells":[)", PowerName(bot->GetPowerType()));
+    uint32 shown = 0;
+    for (uint32 id : KnownSpellIds(bot))
+    {
+        bool used = false;
+        for (SpellStat const& st : stats)
+            if (st.Id == id && st.Casts)
+            {
+                used = true;
+                break;
+            }
+        if (used)
+            continue;
+        if (shown >= 15)
+            break;
+        j += Trinity::StringFormat(R"({}{{"id":{},"name":"{}"}})", shown++ ? "," : "", id, SpellNameOf(id));
+    }
+    j += ']';
+    return j;
+}
+
+void BotAI::EmitTickStats(Player* bot)
+{
+    uint32 const windowS = (_nowMs - _tickStatsMs) / 1000;
+    _tickStatsMs = _nowMs;
+    std::string engines;
+    uint32 total = 0;
+    for (uint32 st = 0; st < 3; ++st)
+    {
+        EngStat& e = _engStat[st];
+        total += e.N;
+        if (e.N)
+            engines += Trinity::StringFormat(R"({}"{}":{{"n":{},"avg_ms":{:.3f},"max_ms":{:.3f}}})", engines.empty() ? "" : ",", BotStateName(BotState(st)), e.N,
+                double(e.Ns) / double(e.N) / 1e6, double(e.MaxNs) / 1e6);
+        e = EngStat();
+    }
+    if (!total)
+        return;
+    BotEvent event = MakeEvent(bot, "ai_stats", BOTLOG_INFO, "AI_TICK_STATS", Trinity::StringFormat("engine tick cost over {} s ({} ticks)", windowS, total));
+    event.Details = Trinity::StringFormat(R"({{"window_s":{},"engines":{{{}}}}})", windowS, engines);
+    Emit(std::move(event));
 }

@@ -45,6 +45,7 @@ struct BotAIConfig
     uint32 ReleaseMaxSec = 8;
     uint32 MaxCorpseRunYards = 1200; // Bot.AI.Recover.MaxCorpseRunYards: farther corpses use the spirit healer
     uint32 StuckSec = 8;          // Bot.AI.Move.StuckSec: seconds without progress before a stuck episode
+    uint32 TickStatsSec = 60;     // Bot.Log.AiTickStatsSec: AI_TICK_STATS row per bot every N s (0 = off)
     uint32 StuckRepaths = 3;      // Bot.AI.Move.StuckRepaths: episodes (each re-issues the path) before the goal is given up
 };
 
@@ -104,6 +105,8 @@ public:
 
     // Phase 3 per-bot behavior state (map thread during ticks; the goal/follow setters from console commands on the world thread)
     BotMotion& Motion() { return _motion; }
+    // the combat strategy records why it ran away; reported in COMBAT_END (flee_reason) and decides the bot_fled outcome
+    void NoteFlee(char const* reason) { _fight.FleeReason = reason; }
     BotRest& Rest() { return _rest; }
     BotRecover& Recover() { return _recover; }
     // Logs an event of any type for this bot (stuck, path_fail, decision, ...), position and level filled in from the bot.
@@ -134,11 +137,22 @@ public:
     // --- combat/death telemetry hooks (map thread of the bot; see docs/playerbots/progress.md "Death and combat events") ---
     // Unit::DealDamage, victim is this bot / attacker is this bot. `type` is DamageEffectType.
     void OnDamageTaken(Player* bot, Unit* attacker, uint32 damage, uint32 hpBefore, uint8 type, SpellInfo const* spell);
-    void OnDamageDealt(Player* bot, Unit* victim, uint32 damage);
+    void OnDamageDealt(Player* bot, Unit* victim, uint32 damage, SpellInfo const* spell = nullptr);
     void OnKilled(Player* bot, Unit* victim);                 // this bot killed `victim`
     void SetPendingEnv(uint8 environmentalType) { _pendingEnv = environmentalType; } // Player::EnvironmentalDamage, just before DealDamage
     void OnDying(Player* bot, Unit* attacker);                // Unit::Kill, before the death state strips auras/power/combat
     void OnLogout(Player* bot, char const* reason);           // BotMgr::LogoutBot: closes an open fight row
+    // --- progression / spell telemetry hooks (map thread of the bot) ---
+    // Spell::_cast: a non-triggered cast by this bot; power = cost of the bot's own power type actually due.
+    void OnSpellCast(Player* bot, SpellInfo const* spell, uint32 power);
+    // Player::GiveXP (after the xp was added) -> XP_GAIN row. The source is "kill" with a victim, else the hint set by NoteXpSource, else "other".
+    void NoteXpSource(char const* source, uint32 questId = 0) { _xpSource = source; _xpQuest = questId; }
+    void OnXpGain(Player* bot, uint32 amount, uint32 bonus, Unit* victim);
+    // Player::GiveLevel (end) -> LEVEL_UP row and a fresh SPELLS_KNOWN row.
+    void OnLevelUp(Player* bot, uint8 oldLevel, uint8 newLevel);
+    // For BotCombatCtx::End (COMBAT_SUMMARY): JSON members (no braces, no leading comma) with the per-spell breakdown of the current
+    // Combat engine stay ("spell_stats":[{id,name,casts,hits,dmg,power}], "power_type", "unused_spells":[{id,name}]). Resets the stats.
+    std::string TakeSpellBreakdownJson(Player* bot);
     // Test commands call this so a death (and the fight) within 120 s is tagged source=test_command.
     void NoteTestCommand(char const* command);
 
@@ -158,6 +172,9 @@ private:
     std::string ActivityJson(Player* bot) const;
     uint32 CountHostiles(Player* bot) const;
     void SnapshotDeath(Player* bot, Unit* attacker);
+    void EmitSpellsKnown(Player* bot, char const* cause);
+    void EmitTickStats(Player* bot);
+    std::vector<uint32> KnownSpellIds(Player* bot) const;   // top-rank, non-passive class spells (heuristic: spell family set)
 
     struct Decision { uint32 Ms; Action const* Act; char Reason[24]; };
     static constexpr uint32 DECISION_RING = 10;
@@ -173,6 +190,18 @@ private:
     std::array<VitalSample, SAMPLE_RING> _samples{};
     uint32 _hitNext = 0, _hitCount = 0, _dealtNext = 0, _dealtCount = 0, _sampleNext = 0, _sampleCount = 0, _sampleLastMs = 0;
     uint8 _pendingEnv = 0xFF;
+
+    struct SpellStat { uint32 Id; uint32 Casts, Hits, Dmg, Power; };
+    std::vector<SpellStat> _spellStats;       // current Combat engine stay, reset on entering Combat
+    SpellStat& StatFor(uint32 id);
+    char const* _xpSource = nullptr;
+    uint32 _xpQuest = 0;
+    uint32 _levelSinceMs = 0;                 // AI clock at login / last level-up
+    uint32 _killXpTotal = 0;
+    bool _spellsLogged = false;
+    struct EngStat { uint64 Ns = 0, MaxNs = 0; uint32 N = 0; };
+    std::array<EngStat, 3> _engStat{};        // per engine, window of Bot.Log.AiTickStatsSec
+    uint32 _tickStatsMs = 0;
     std::atomic<char const*> _testCmd{nullptr};
     std::atomic<uint32> _testAtMs{0};
 
@@ -184,6 +213,7 @@ private:
         uint64 StartUnixMs = 0;
         ObjectGuid Target;
         std::string Id;
+        char const* FleeReason = nullptr; // static string from NoteFlee
     } _fight;
 
     // death snapshot taken in Unit::Kill and consumed by ChangeState when the engine notices the death

@@ -153,9 +153,75 @@ Defaults come from config: NonCombat `rest,goto,follow`, Combat empty, Dead `rec
   quest-design.md 6.2.1; reserved planned codes (TRAINED, TRAIN_*, QUEST_NO_LOCAL, QUEST_HUB_*) in 6.2.2. There is no code-side registry:
   reasons are free strings in the VARCHAR(64) column.
 - Test commands: `bot goto <name> x y z [arrive]`, `bot follow <name> <leader|off>`, `bot stay <name|all> on|off`, `bot hurt <name> hp% [mana%]`,
-  `bot root <name> on|off`, `bot level <name> lvl`, `bot tele <name> map x y z`, `bot state <name>`, `bot path <name> x y z`.
+  `bot root <name> on|off`, `bot level <name> lvl`, `bot tele <name> map x y z [force]` (refused inside the start zone of the other faction without force, logged as TELE_REFUSED_FACTION), `bot state <name>`, `bot path <name> x y z`.
 - Config: `Bot.AI.Default.NonCombat/Combat/Dead`, `Bot.AI.Rest.EatBelowPct/DrinkBelowPct/DonePct/FreeFood`, `Bot.AI.Release.MinSec/MaxSec`,
   `Bot.AI.Recover.MaxCorpseRunYards`, `Bot.AI.Move.StuckSec/StuckRepaths` (see worldserver.conf.dist).
 
 ## Death and combat telemetry
 BotAI keeps ring buffers of damage taken, damage dealt and 1 Hz vitals; `Unit::Kill` calls `OnDying` before `setDeathState` strips auras/power, and `SnapshotDeath` builds the death details JSON. Fights are tracked by `UpdateFight` (fight_id, 2 s coalescing). See progress.md, "Death post-mortem and combat events".
+
+## Log additions from the sim analysis (session id, XP, spells, caps, MySQL plumbing)
+All rows below go to `bot_event`; `bot_guid`, `level`, map/zone and position are filled by `MakeEvent` as for every BotAI event.
+
+### New events and reasons
+| event_type | reason | when | details (JSON) |
+|---|---|---|---|
+| (lifecycle) | BOT_LOGIN | a bot logs in | now also starts the session: `session_seq` is allocated here (`BotMgr::BeginLogSession`, unix seconds x 1000 + counter, so unique across restarts) |
+| xp | XP_GAIN | `Player::GiveXP` (hook `BotAI::OnXpGain`) | source (`kill`, `quest`, `explore`, `other`), amount, bonus, xp_now, xp_max, level, elapsed_s (since login), victim{entry,level,name} for kills; `target_entry` column = victim, `quest_id` column = quest. Quest/explore sources are tagged by `NoteXpSource` just before the core's `GiveXP` |
+| level_up | LEVEL_UP | end of `Player::GiveLevel` | from, to, elapsed_s (since login), level_time_s (since the previous level-up or login), kill_xp_total |
+| spells | SPELLS_KNOWN | first AI tick after login, and at every level-up | cause (`LOGIN`/`LEVEL_UP`), count, spellbook_total, spells[{id,name,rank}] (max 80, highest rank of each chain, non-passive, class families only). The level-up row is written before trainer-learned spells exist: the next login row is the full picture |
+| ai_stats | AI_TICK_STATS | every `Bot.Log.AiTickStatsSec` (60) per bot | window_s, engines{noncombat/combat/dead:{n,avg_ms,max_ms}} |
+| decision | LOG_SUPPRESSED | a repeat-capped row was suppressed and a different row ended the run, or at logout | total, cap, suppressed[{type,reason,quest_id,target_entry,count}] |
+| log | LOG_DROPPED | the database accepted a batch again after rows were dropped (bot_guid 0, WARN) | events_dropped, pos_dropped, rows_in_failed_batches, window_start, window_end, window_s |
+
+COMBAT_START details gain `nearby_bots` (bots within 40 yd, `nearby_bots_yd`) and `claimed_by_other_bot` (the mob's tap list holds another bot; `claimed_by` = that guid). COMBAT_SUMMARY details gain
+`spell_stats[{id,name,casts,hits,dmg,power}]` (top 16; id 0 = melee/auto attack, per-stay, filled by `Unit::DealDamage` and `Spell::cast` hooks), `power_type`
+and `unused_spells[{id,name}]` (known class spells with no cast in that fight, max 15). No extra rows. `BotCombatCtx::End` (BotCombat.cpp, class-ai) appends them via `BotAI::TakeSpellBreakdownJson`.
+
+Death rows (`death`/`DIED`) always carry `details.killer{guid,entry,name,level,lvl_diff,resolved_by,...}`. `resolved_by` says how it was found: the lethal hit (`lethal_hit`), the attacker, a recent hit, the fight target or the attackers set;
+`none` when nothing could be resolved.
+
+### Repeat cap (`Bot.Log.RepeatCap`, default 3, 0 = off)
+Per bot, per login (reset at BOT_LOGIN) and per key `type|reason|quest_id|target_entry`: the first N rows of `quest_blocked`, NO_PROGRESS, UNREACHABLE_TARGET, TEST_IDLE and
+TEST_IDLE_NOTE are written, the rest are counted and flushed as one LOG_SUPPRESSED row. The cap sits in `BotMgr::LogEvent`, so direct emitters (BotQuest.cpp) are covered without changes.
+
+### Schema (forever-botlog-setup.sql, upgrade with forever-botlog-migrate-1.sql)
+- `bot_event.session_seq` (BIGINT UNSIGNED, set from BOT_LOGIN on; index `(bot_guid, session_seq)`).
+- STORED generated columns, indexed: `killer_entry`, `killer_level` (`$.killer.entry/level`), `xp_amount` (xp rows), `spell_id` (`$.killer.spell` else `$.spell_id`). They are BIGINT on purpose:
+  an out-of-range value in a narrower generated column raises ERROR 1264 and would fail the whole batch. VIRTUAL, not indexed: `outcome` (`$.outcome`), `lvl_diff` (`$.killer.lvl_diff` else `$.target.lvl_diff`).
+  `JSON_VALUE ... RETURNING` yields NULL on a conversion error instead of failing.
+- Index `idx_type_sev_ts (event_type, severity, ts)`. `idx_reason` and `idx_quest` are kept: the console filters by reason, the analysts group by reason and quest_id.
+- `bot_event_hot` (same columns, `CREATE TABLE ... LIKE`, ids start at 10^12) and the view `bot_event_all` (`src` 0 = bot_event, 1 = hot). Query the view for anything that must see all rows.
+- Summaries kept after partitions drop: `bot_event_hourly` (hour, src, bot, event_type, severity, n) and `bot_death_daily` (day, class, level, zone, killer_entry, n).
+  `botlog_roll_table` summarises the 3 days before the cutoff (so a missed run is caught up; re-runs overwrite) and then drops the partitions.
+- `botlog_roll_partitions2(keep, hot_keep)` is the daily call (14 and 5 days; bot_pos 2 days). `botlog_roll_partitions(keep)` is a compat wrapper.
+
+### Hot/archive split (`Bot.Log.HotSplit`, default 0)
+With 1, rows whose type is in `Bot.Log.HotTypes` (default decision,state_change,trace) go to `bot_event_hot` (5 days) instead of `bot_event` (14 days), except COMBAT_SUMMARY, LOG_SUPPRESSED and
+LOG_DROPPED. Turn it on only after the console and analyst queries read `bot_event_all`. It is ignored with a warning when the table does not exist. State changes of the engine
+stay queryable for 5 days; deaths, quests, xp, combat summaries stay 14 days.
+
+### Writer behaviour (BotMgr)
+- `LogEvent`/`LogPosition` are non-blocking (mutex + vector push). The world thread flushes in `Update` every `BotLog.FlushIntervalMs`: one async transaction per flush (positions + events), at most 16 in flight.
+- Buffers are capped (`Bot.Log.BufferMax` 200000 events, `Bot.Log.PosBufferMax` 100000). Over the cap rows are dropped and counted; one error is logged at the first drop and a `log_dropped` event is written when the
+  database accepts a batch again. A failed transaction is resubmitted `Bot.Log.FlushRetries` times (3) and then counted as lost. At shutdown `FlushLog(true)` waits up to 15 s for the batches in flight.
+- A configured but unreachable bot log database no longer aborts the worldserver start: it has its own loader, logging stays off and `.bot status` shows the reason. A missing hot table or session column is detected when the statements are prepared.
+- `bot_pos` interval: `Bot.Log.PosIntervalSec` (5) up to `Bot.Log.PosScaleBots` (500) bots online, `Bot.Log.PosIntervalSlowSec` (15) above.
+
+### Reachability probe (`Bot.Log.ProbeIntervalSec`, default 10)
+The core DB layer calls ABORT() when a reconnect fails, so a NAS outage mid-run would kill the worldserver if rows were still being submitted. `BotMgr::UpdateProbe` (world thread, helper thread
+does a 3 s TCP connect to the `BotLogDatabaseInfo` host:port) switches logging off when the host stops answering (`.bot status` shows "off (bot log database host:port unreachable ...)")
+and back on when it answers again; nothing is submitted while it is off, buffered rows are kept (capped) and written on recovery. Limits: it checks the port, not a SQL login, and a failure
+in the seconds between two probes can still reach the core path. Skipped for socket or "." hosts and when set to 0.
+
+## A3: alts as bots (BotAlts.cpp/.h, written, not yet run)
+
+Design: `.bot alt add|remove|list <name>` (RBAC_PERM_COMMAND_BOT_ALT 1001, granted to players by `sql/custom/auth/2026_10_06_00_auth_rbac_bot_alt.sql`) calls `BotMgr::StartAlt`, which puts the character into `_bots` with `Alt = true` on its real account and queues it through the normal bot login (same `HandleBotPlayerLogin`, same `LogoutBot` save path). Rules: character must belong to the issuer's account (same refusal text for unknown names); refused while online as a player or while a real session of the account is mid-login; refused when already a bot; cap `Bot.Alt.MaxPerAccount` (4) of active alts; `Bot.Alt.Enabled`. `HandlePlayerLoginOpcode` refuses a player login of an active alt (DuplicateCharacter). Alts are skipped by `.bot spawn` reuse, `.bot despawn all` and `.bot stats`; `LogoutAll` (shutdown) saves them. Nothing is persisted: alts are not re-logged in after a restart. After login the alt joins its owner's group when the owner leads it or is alone (a group is created), because bots cannot accept invites. WorldSession gets `IsAltBot()`: logout then marks only that character offline (the stock statement marks every character of the account offline, which would hit the owner's own online character). All bot_event rows of an alt carry `"source":"alt"` in details (tagged in `BotMgr::LogEvent`). Reason codes in `alt_command` events: ALT_ADDED, ALT_REMOVED, ALT_REFUSED_NOT_OWNER, ALT_REFUSED_ONLINE, ALT_REFUSED_LOADING, ALT_REFUSED_ALREADY, ALT_REFUSED_CAP, ALT_REFUSED_BOT (to be accepted by plumber).
+
+Test plan (sim, throwaway characters only; apply the auth SQL on the sim auth DB first; console has no session, so use the `test` word):
+1. Create 2 throwaway accounts with 3 characters each (sim DB). `bot alt add <charA1> test`: bot login event with source alt, level/position kept, `.bot list` shows it online.
+2. `bot alt add <charA1> test` again: ALT_REFUSED_ALREADY. Cap: add 5 alts of one account: the 5th gives ALT_REFUSED_CAP.
+3. Not-owner and player-online: needs a client logged in as a character of the account (add it: ALT_REFUSED_ONLINE) and the same client trying to add a character of the other account from the in-game chat (ALT_REFUSED_NOT_OWNER). Player login of an active alt from a client: refused.
+4. Save path: give the alt some change (`bot level`, move, loot), `bot alt remove`, compare `characters` row (level, xp, position, money, inventory count) before and after, and `online = 0`; restart-less relog shows the same state. Then a worldserver restart (sim, when free) with 2 alts online: rows saved, not re-logged in.
+5. Group and commands: alt joins the owner's group; `bot say <owner> party follow` obeyed; a non-leader is ignored and logged (A2 behavior).
+6. Owner's other character online as a player while an alt logs out: its `characters.online` stays 1.

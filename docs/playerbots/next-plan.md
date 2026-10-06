@@ -47,6 +47,26 @@ Owner request (2026-10-06): when a quest chain ends or nothing is available near
 
 Owner request (2026-10-06): bags (step E4, bot-nav): when bags are full (or nearly), bots travel to the nearest town/hub vendor, sell junk (greys, then unusable items), repair if needed, then resume (replaces the plain BAG_FULL log). Bots also upgrade bags: when they can afford a bigger bag and have an empty bag slot or a smaller bag to replace, they buy one from a vendor (bag vendors indexed at startup like trainers) and equip it. Codes planned: VENDOR_TRIP, SOLD_ITEMS, BAG_BOUGHT, BAG_NO_MONEY.
 
+Owner idea (2026-10-06): bots use the auction house (step E5, bot-nav, after E4): they list unusable green-or-better gear (and surplus loot) instead of vendoring it, price it from the vendor value and recent sales, and buy upgrades they can use and afford. Needs: auction house NPC index per faction at startup, a visit via `RunNpcVisit`, a price policy (undercut by a few percent, floor at vendor price), a cap on listings per bot, codes AH_LISTED / AH_BOUGHT / AH_NO_MONEY / AH_UNREACHABLE, and a check that the Classic 1.60 auction handlers work in this fork. Owner decision (2026-10-06): bots also seed the AH (stock it to bootstrap the economy), not only trade surplus. Needs a seeding policy: which items and how many, price bands, listing cap per bot and in total, so seeding does not crash prices or flood the house; tune with bot-analyst data.
+
+## Queued fixes from the 1-5 run (owner, 2026-10-06: "add fixes to the queue")
+Start after A3 hands back and the build is committed; max two C++ editors at a time.
+1. Item 264908 (Coming of Age reward, races 95/96) has no item template: db-keeper adds it to the sim DB first (data-extractor checks the source), then the REWARD_ITEM_MISSING workaround stays as a fallback only.
+2. `corpse_run` NO_PROGRESS / UNREACHABLE_TARGET flood in the death code (BotBehavior.cpp): class-ai caps the repeats and falls back (release and respawn at the graveyard after N failed attempts).
+3. Skyborne spawn goto NO_PATH at (4100,1850) on map 2991: bot-nav investigates (nav data or a start-position nudge).
+4. TRAIN_NO_TRAINER (15 rows, e.g. class 2 on map 0): bot-nav checks the trainer index for the missing class/zone combinations.
+5. Plumber registers the 21 new reason codes (QUEST_NO_LOCAL, QUEST_HUB_TRAVEL, QUEST_HUB_NONE, QUEST_GRIND, NO_GRIND_TARGET, TRAIN_TRIP, TRAINED, TRAIN_NO_MONEY, TRAIN_NO_TRAINER, TRAIN_UNREACHABLE, VENDOR_TRIP, SOLD_ITEMS, REPAIRED, BAG_BOUGHT, BAG_NO_MONEY, BAG_BUY_FAILED, VENDOR_NONE, VENDOR_UNREACHABLE, REWARD_ITEM_MISSING, QUEST_QUARANTINED, QUEST_QUARANTINED_GLOBAL).
+6. Controlled 180-bot run (bot-sim) to measure tick cost, the 10-per-race cap effect and a bag purchase (BAG_BOUGHT); bot-analyst reads the result, including a reliable level split.
+
+## Target: Deadmines with 5 boosted bots (owner, 2026-10-06)
+Not doable yet (bots only know level-1 spells, combat is solo-only, no gearing, no group/role behavior). Path, in order:
+1. E1 trainer visits plus a wider combat spell table (class-ai), so trained spells are cast.
+2. Gearing and spell setup for boosted bots (factory step D): 5 bots, level 10-16, class-appropriate gear and trained spells.
+3. Party and role behavior: form a group, follow, tank, heal, assist; chat commands (A2) verified.
+4. First milestone: the 5 bots complete an open-world group quest together.
+5. Dungeon strategy (bot-sim / class-ai): enter Deadmines, pull in packs, handle adds, loot, run back after a wipe.
+Done when: 5 bots clear Deadmines unattended in a sim run, outcome (clear/wipe/timeout), duration and deaths logged per run.
+
 ## Decisions (owner, 2026-10-06)
 - Selector `g1,tank` = intersection (tanks inside group 1); `g1,g3` stays a union of subgroups.
 - Leader only; raid assistants do not command bots.

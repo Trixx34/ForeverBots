@@ -30,6 +30,7 @@
 #include "CombatManager.h"
 #include "Config.h"
 #include "Creature.h"
+#include "Item.h"
 #include "Log.h"
 #include "Map.h"
 #include "MotionMaster.h"
@@ -55,13 +56,17 @@ using Trinity::StringFormat;
 struct CombatConfig
 {
     bool FleeEnabled = true;       // Bot.AI.Combat.Flee.Enabled
-    int32 FleeLevelDiff = 4;       // Bot.AI.Combat.Flee.LevelDiff: effective mob level minus bot level above this = too strong
+    int32 FleeLevelDiff = 2;       // Bot.AI.Combat.Flee.LevelDiff: effective mob level minus bot level above this = too strong (2 = +3 or more)
     int32 EliteLevelBonus = 3;     // Bot.AI.Combat.EliteLevelBonus: elites count as this many levels higher
     uint32 FleeMaxSec = 10;        // Bot.AI.Combat.Flee.MaxSec: after this long the bot stops running and fights back
     uint32 FleeYards = 35;         // Bot.AI.Combat.Flee.Yards: distance of the flee destination
     uint32 ApproachSec = 15;       // Bot.AI.Combat.ApproachTimeoutSec: give up a target that cannot be reached
     uint32 HealBelowPct = 45;      // Bot.AI.Combat.HealBelowPct: self-heal under this health percent
     uint32 CasterRangePct = 80;    // Bot.AI.Combat.CasterRangePct: casters stand at this percent of the spell range
+    uint32 FleeMaxAttempts = 3;    // Bot.AI.Combat.Flee.MaxAttempts: flee runs per fight before the bot fights back as a last resort
+    uint32 PrePullManaPct = 40;    // Bot.AI.Combat.PrePullManaPct: mana users drink out of combat below this mana percent (before pulling)
+    bool FreeRepair = true;        // Bot.AI.Combat.FreeRepair: broken equipment is repaired for free (placeholder until the economy phase)
+    uint32 LowHpFleePct = 15;      // Bot.AI.Combat.Flee.LowHpPct: flee (flee_reason low_hp) below this health percent, 0 = off
 };
 
 CombatConfig const& Cfg()
@@ -71,13 +76,17 @@ CombatConfig const& Cfg()
     std::call_once(once, []()
     {
         cfg.FleeEnabled = sConfigMgr->GetBoolDefault("Bot.AI.Combat.Flee.Enabled", true);
-        cfg.FleeLevelDiff = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.LevelDiff", 4), 0, 60);
+        cfg.FleeLevelDiff = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.LevelDiff", 2), 0, 60);
         cfg.EliteLevelBonus = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.EliteLevelBonus", 3), 0, 20);
         cfg.FleeMaxSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.MaxSec", 10), 1, 120));
         cfg.FleeYards = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.Yards", 35), 10, 100));
         cfg.ApproachSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.ApproachTimeoutSec", 15), 3, 120));
         cfg.HealBelowPct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.HealBelowPct", 45), 0, 100));
         cfg.CasterRangePct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.CasterRangePct", 80), 30, 100));
+        cfg.FleeMaxAttempts = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.MaxAttempts", 3), 1, 10));
+        cfg.PrePullManaPct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.PrePullManaPct", 40), 0, 95));
+        cfg.FreeRepair = sConfigMgr->GetBoolDefault("Bot.AI.Combat.FreeRepair", true);
+        cfg.LowHpFleePct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.LowHpPct", 15), 0, 60));
     });
     return cfg;
 }
@@ -96,6 +105,8 @@ std::string Json(std::string const& s)
     return out;
 }
 
+bool RepairIfBroken(BotAI* ai, Player* bot, uint32 seq);
+
 // ---------------------------------------------------------------------------------------------------------------------
 // per-class spell table. Vanilla Classic rank-1 spell ids (the highest known rank is found by walking the rank chain).
 // An entry whose id does not exist or whose name differs from the expected one is dropped at startup and logged.
@@ -108,6 +119,7 @@ enum class Kind : uint8
     Dot,        // cast while the target does not carry our aura
     Finisher,   // needs combo points
     AutoShot,   // auto-repeat ranged attack (hunter)
+    Wand,       // auto-repeat wand attack (Shoot): filler of a caster that cannot afford its spells (needs a wand equipped)
     Heal        // self-heal (combat_heal)
 };
 
@@ -143,14 +155,17 @@ constexpr SpellDef SPELLS[] =
     { CLASS_MAGE,    2136,  "Fire Blast",           Kind::Direct },
     { CLASS_MAGE,    116,   "Frostbolt",            Kind::Direct },
     { CLASS_MAGE,    133,   "Fireball",             Kind::Direct },
+    { CLASS_MAGE,    5019,  "Shoot",                Kind::Wand },
     // Priest
     { CLASS_PRIEST,  589,   "Shadow Word: Pain",    Kind::Dot },
     { CLASS_PRIEST,  585,   "Smite",                Kind::Direct },
     { CLASS_PRIEST,  2050,  "Lesser Heal",          Kind::Heal },
+    { CLASS_PRIEST,  5019,  "Shoot",                Kind::Wand },
     // Warlock
     { CLASS_WARLOCK, 348,   "Immolate",             Kind::Dot },
     { CLASS_WARLOCK, 172,   "Corruption",           Kind::Dot },
     { CLASS_WARLOCK, 686,   "Shadow Bolt",          Kind::Direct },
+    { CLASS_WARLOCK, 5019,  "Shoot",                Kind::Wand },
     // Shaman
     { CLASS_SHAMAN,  8042,  "Earth Shock",          Kind::Direct },
     { CLASS_SHAMAN,  403,   "Lightning Bolt",       Kind::Direct },
@@ -269,6 +284,10 @@ struct FightData
     bool FleeGaveUp = false;
     bool FleeNoPath = false;
     uint32 FleeStartMs = 0;
+    uint32 FleeAttempts = 0;         // flee runs started in this fight
+    char const* FleeReason = "";     // why the current/last flee started (level_diff, elite_level_diff, world_boss)
+    uint32 LowHpNextMs = 0;          // earliest time the low-hp flee is evaluated again (after a failed attempt)
+    bool WeaponSkipLogged = false;   // a spell was skipped because the required weapon is missing/broken (logged once per fight)
     ObjectGuid Ignored;              // unreachable target given up
     uint32 IgnoredUntilMs = 0;
     uint32 Picked = 0, TargetsDead = 0, Casts = 0, CastFails = 0, Heals = 0;
@@ -371,7 +390,7 @@ void BotCombatCtx::Resolve(Player* bot)
         r.Info = si;
         r.MaxRange = si->GetMaxRange(false, bot);
         r.MinRange = si->GetMinRange(false);
-        r.MeleeRange = def.Type != Kind::SelfBuff && def.Type != Kind::Heal && r.MaxRange <= 6.0f;
+        r.MeleeRange = def.Type != Kind::SelfBuff && def.Type != Kind::Heal && def.Type != Kind::Wand && r.MaxRange <= 6.0f;
         Spells.push_back(r);
     }
 }
@@ -384,6 +403,7 @@ void BotCombatCtx::Begin(Player* bot)
         RangedBroken = false;
     InFight = true;
     StartMs = GetAI()->GetNowMs();
+    RepairIfBroken(GetAI(), bot, Seq);
     Resolve(bot);
 }
 
@@ -410,12 +430,15 @@ void BotCombatCtx::End(Player* bot)
             SpellInfo const* si = sSpellMgr->GetSpellInfo(c.Id, DIFFICULTY_NONE);
             casts += StringFormat(R"({}"{}":{})", casts.empty() ? "" : ",", Json(SpellNameOf(si)), c.N);
         }
-        ai->EmitEvent(bot, "decision", BOTLOG_INFO, "COMBAT_SUMMARY",
-            StringFormat("combat strategy: {} target(s), {} cast(s), {} failed", Picked, Casts, CastFails),
-            StringFormat(R"({{"fight_seq":{},"role":"{}","seconds":{},"targets_picked":{},"targets_dead":{},"casts":{{{}}},"cast_failed":{},"heals":{},"no_power_skips":{},"melee_fallback":{},"fled":{},"fled_gave_up":{},"ranged_broken":{},"state_now":"{}"}})",
+        std::string summaryJson = StringFormat(R"({{"fight_seq":{},"role":"{}","seconds":{},"targets_picked":{},"targets_dead":{},"casts":{{{}}},"cast_failed":{},"heals":{},"no_power_skips":{},"melee_fallback":{},"fled":{},"fled_gave_up":{},"flee_attempts":{},"flee_reason":"{}","ranged_broken":{},"state_now":"{}"}})",
                 Seq, RoleName(BotRole), (ai->GetNowMs() - StartMs) / 1000, Picked, TargetsDead, casts, CastFails, Heals, NoPowerSkips,
-                MeleeFallback ? "true" : "false", (Fleeing || FleeGaveUp) ? "true" : "false", FleeGaveUp ? "true" : "false", RangedBroken ? "true" : "false",
-                BotStateName(ai->GetState())));
+                MeleeFallback ? "true" : "false", (Fleeing || FleeGaveUp) ? "true" : "false", FleeGaveUp ? "true" : "false", FleeAttempts, FleeReason, RangedBroken ? "true" : "false",
+                BotStateName(ai->GetState()));
+        // plumber hunk: per-spell breakdown (casts, hits, damage, power) and unused spells, appended inside the details object
+        summaryJson.pop_back();
+        summaryJson += "," + ai->TakeSpellBreakdownJson(bot) + "}";
+        ai->EmitEvent(bot, "decision", BOTLOG_INFO, "COMBAT_SUMMARY",
+            StringFormat("combat strategy: {} target(s), {} cast(s), {} failed", Picked, Casts, CastFails), std::move(summaryJson));
     }
     InFight = false;
     Fleeing = false;
@@ -458,6 +481,44 @@ Threat Assess(Player* bot, Unit* mob)
 bool CanFight(Player* bot, Unit* u)
 {
     return u && u->IsInWorld() && u->IsAlive() && bot->IsValidAttackTarget(u);
+}
+
+// The equipment a spell asks for (Heroic Strike, Raptor Strike, Auto Shot, Shoot...) is equipped and not broken. Cheaper than
+// failing the cast every tick: the failures seen in the sim were all broken (durability 0) weapons.
+bool WeaponOk(Player* bot, SpellInfo const* si)
+{
+    if (si->EquippedItemClass < 0)
+        return true;
+    for (WeaponAttackType t : { BASE_ATTACK, OFF_ATTACK, RANGED_ATTACK })
+    {
+        Item* item = bot->GetWeaponForAttack(t, true);
+        if (item && item->IsFitToSpellRequirements(si))
+            return true;
+    }
+    return false;
+}
+
+// Free repair (placeholder until the economy phase): bots never visit a repairer, and a broken weapon makes every weapon
+// ability fail and the auto attack useless. Repairs everything when any equipped item is broken. Returns true when it repaired.
+bool RepairIfBroken(BotAI* ai, Player* bot, uint32 seq)
+{
+    if (!Cfg().FreeRepair)
+        return false;
+    uint32 broken = 0;
+    std::string items;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            if (item->IsBroken())
+            {
+                ++broken;
+                items += StringFormat("{}{}", items.empty() ? "" : ",", item->GetEntry());
+            }
+    if (!broken)
+        return false;
+    bot->DurabilityRepairAll(false, 0.0f, false);
+    ai->EmitEvent(bot, "decision", BOTLOG_INFO, "REPAIR_FREE", StringFormat("repairs {} broken equipped item(s) for free", broken),
+        StringFormat(R"({{"kind":"combat","fight_seq":{},"broken":{},"items":[{}]}})", seq, broken, items));
+    return true;
 }
 
 bool CastingNow(Player* bot)
@@ -513,6 +574,25 @@ public:
     {
         Player* bot = GetBot();
         return bot && GetAI()->GetState() == BotState::Combat && bot->GetHealthPct() < float(Cfg().HealBelowPct);
+    }
+};
+
+// Health below Bot.AI.Combat.Flee.LowHpPct while fighting: run (same MaxAttempts budget as the level-diff flee).
+class LowHpFleeTrigger : public Trigger
+{
+public:
+    explicit LowHpFleeTrigger(BotAI* ai) : Trigger(ai, "combat_low_hp", 0) { }
+    bool IsActive() override
+    {
+        Player* bot = GetBot();
+        if (!bot || !Cfg().FleeEnabled || !Cfg().LowHpFleePct || GetAI()->GetState() != BotState::Combat || bot->GetHealthPct() >= float(Cfg().LowHpFleePct))
+            return false;
+        BotCombatCtx* ctx = static_cast<BotCombatCtx*>(GetAI()->GetValueRaw("combat_ctx"));
+        if (!ctx || !ctx->InFight || ctx->Fleeing || ctx->FleeAttempts >= Cfg().FleeMaxAttempts || GetAI()->GetNowMs() < ctx->LowHpNextMs)
+            return false;
+        // about to win: finishing the target is safer than turning our back on it
+        Unit* victim = bot->GetVictim();
+        return !(victim && victim->GetHealthPct() < 10.0f);
     }
 };
 
@@ -576,7 +656,7 @@ public:
                 ai->Motion().ClearGoal();
             }
             LogDecision(ai, bot, ctx, reason, StringFormat("stops fleeing: {}", why),
-                StringFormat(R"("seconds":{},"hp_pct":{:.0f},"attackers":{})", (ai->GetNowMs() - ctx->FleeStartMs) / 1000, bot->GetHealthPct(), bot->getAttackers().size()), BOTLOG_WARN);
+                StringFormat(R"("seconds":{},"hp_pct":{:.0f},"attackers":{},"flee_reason":"{}","attempt":{})", (ai->GetNowMs() - ctx->FleeStartMs) / 1000, bot->GetHealthPct(), bot->getAttackers().size(), ctx->FleeReason, ctx->FleeAttempts), BOTLOG_WARN);
         };
 
         if (ai->GetNowMs() - ctx->FleeStartMs >= Cfg().FleeMaxSec * 1000)
@@ -595,6 +675,51 @@ public:
             giveUp(r == BotMotion::Result::Failed ? "FLEE_BLOCKED" : "FLEE_ENDED", r == BotMotion::Result::Failed ? "movement failed" : "reached the flee destination");
             return false;
         }
+        return true;
+    }
+};
+
+class LowHpFleeAction : public Action
+{
+public:
+    explicit LowHpFleeAction(BotAI* ai) : Action(ai, "combat_flee_low_hp", ACTION_FLAG_NONE) { }
+    bool Execute() override
+    {
+        Player* bot = GetBot();
+        BotAI* ai = GetAI();
+        BotCombatCtx* ctx = FightCtx(ai, bot);
+        uint32 const now = ai->GetNowMs();
+        ctx->LowHpNextMs = now + 4000;   // whatever happens below, do not re-evaluate every tick
+
+        Unit* from = nullptr;
+        float best = 0.0f;
+        for (Unit* u : bot->getAttackers())
+            if (u && u->IsAlive() && (!from || bot->GetDistance(u) < best))
+            {
+                from = u;
+                best = bot->GetDistance(u);
+            }
+        float fx, fy, fz, dir;
+        if (!from || !FindFleePoint(bot, from, fx, fy, fz, dir))
+        {
+            LogDecision(ai, bot, ctx, "FLEE_NOT_POSSIBLE", from ? "low health but no navmesh path to run" : "low health but no attacker to run from",
+                StringFormat(R"("flee_reason":"low_hp","hp_pct":{:.0f},"attackers":{})", bot->GetHealthPct(), bot->getAttackers().size()), BOTLOG_WARN);
+            return false;
+        }
+        StopChase(bot, ctx);
+        if (bot->GetVictim())
+            bot->AttackStop();
+        ai->Motion().SetGoal(bot->GetMapId(), fx, fy, fz, 3.0f, "flee");
+        ctx->Fleeing = true;
+        ctx->FleeStartMs = now;
+        ++ctx->FleeAttempts;
+        ctx->FleeReason = "low_hp";
+        ai->NoteFlee(ctx->FleeReason);
+        ctx->Target = ObjectGuid::Empty;
+        Threat const t = Assess(bot, from);
+        LogDecision(ai, bot, ctx, "FLEE_LEVEL_DIFF", StringFormat("flees at {:.0f}% health from {} L{} (attempt {})", bot->GetHealthPct(), from->GetName(), uint32(from->GetLevel()), ctx->FleeAttempts),
+            StringFormat(R"({},"flee_reason":"low_hp","attempt":{},"max_attempts":{},"hp_pct":{:.0f},"limit_pct":{},"attackers":{},"destination":{{"x":{:.1f},"y":{:.1f},"z":{:.1f}}})", MobJson(bot, from, t), ctx->FleeAttempts,
+                Cfg().FleeMaxAttempts, bot->GetHealthPct(), Cfg().LowHpFleePct, bot->getAttackers().size(), fx, fy, fz), BOTLOG_WARN);
         return true;
     }
 };
@@ -671,7 +796,14 @@ public:
         {
             if (Resolved const* primary = RangedPrimary(ctx))
             {
-                if (!Affordable(bot, primary->Info) && ctx->BotRole == Role::Caster)
+                Resolved const* wand = ctx->BotRole == Role::Caster ? ctx->Find(Kind::Wand) : nullptr;
+                if (!Affordable(bot, primary->Info) && wand && WeaponOk(bot, wand->Info))
+                {
+                    // out of mana with a wand: stay at range and shoot (CastAction), no melee
+                    wantRanged = true;
+                    range = std::max(8.0f, wand->MaxRange * float(Cfg().CasterRangePct) / 100.0f);
+                }
+                else if (!Affordable(bot, primary->Info) && ctx->BotRole == Role::Caster)
                 {
                     ctx->MeleeFallback = true;
                     LogDecision(ai, bot, ctx, "RANGED_TO_MELEE", "out of power, fights in melee",
@@ -761,9 +893,11 @@ private:
 
         auto nearest = [&](bool strongOk) -> Candidate*
         {
+            // nearest wins, but every level above the bot counts as 12 more yards: prefers +0/-1 mobs over a +2 one
+            auto score = [](Candidate const& c) { return c.Dist + 12.0f * float(std::max(0, c.T.Diff)); };
             Candidate* best = nullptr;
             for (Candidate& c : cands)
-                if ((strongOk || !c.T.TooStrong) && (!best || c.Dist < best->Dist))
+                if ((strongOk || !c.T.TooStrong) && (!best || score(c) < score(*best)))
                     best = &c;
             return best;
         };
@@ -781,7 +915,7 @@ private:
             char const* why = "NO_FLEE_PATH";
             if (!Cfg().FleeEnabled)
                 why = "FLEE_DISABLED";
-            else if (ctx->FleeGaveUp)
+            else if (ctx->FleeAttempts >= Cfg().FleeMaxAttempts)
                 why = "FLEE_ALREADY_TRIED";
             else
             {
@@ -794,16 +928,20 @@ private:
                     ai->Motion().SetGoal(bot->GetMapId(), fx, fy, fz, 3.0f, "flee");
                     ctx->Fleeing = true;
                     ctx->FleeStartMs = now;
+                    ++ctx->FleeAttempts;
+                    ctx->FleeReason = worst->T.Boss ? "world_boss" : worst->T.Elite ? "elite_level_diff" : "level_diff";
+                    ai->NoteFlee(ctx->FleeReason);
                     ctx->Target = ObjectGuid::Empty;
-                    LogDecision(ai, bot, ctx, "FLEE_LEVEL_DIFF", StringFormat("flees from {} L{} (eff. +{} levels, limit +{})", worst->Mob->GetName(), uint32(worst->Mob->GetLevel()), worst->T.Diff, Cfg().FleeLevelDiff),
-                        StringFormat(R"({},"limit":{},"destination":{{"x":{:.1f},"y":{:.1f},"z":{:.1f}}},"considered":[{}])", MobJson(bot, worst->Mob, worst->T), Cfg().FleeLevelDiff, fx, fy, fz, considered), BOTLOG_WARN);
+                    LogDecision(ai, bot, ctx, "FLEE_LEVEL_DIFF", StringFormat("flees from {} L{} (eff. +{} levels, limit +{}, attempt {})", worst->Mob->GetName(), uint32(worst->Mob->GetLevel()), worst->T.Diff, Cfg().FleeLevelDiff, ctx->FleeAttempts),
+                        StringFormat(R"({},"flee_reason":"{}","attempt":{},"max_attempts":{},"hp_pct":{:.0f},"limit":{},"destination":{{"x":{:.1f},"y":{:.1f},"z":{:.1f}}},"considered":[{}])", MobJson(bot, worst->Mob, worst->T), ctx->FleeReason, ctx->FleeAttempts,
+                            Cfg().FleeMaxAttempts, bot->GetHealthPct(), Cfg().FleeLevelDiff, fx, fy, fz, considered), BOTLOG_WARN);
                     return false;
                 }
             }
             // fighting back is the only option left
             pick = worst;
             LogDecision(ai, bot, ctx, "FIGHT_TOO_STRONG", StringFormat("fights {} L{} despite eff. +{} levels ({})", pick->Mob->GetName(), uint32(pick->Mob->GetLevel()), pick->T.Diff, why),
-                StringFormat(R"({},"limit":{},"why":"{}","considered":[{}])", MobJson(bot, pick->Mob, pick->T), Cfg().FleeLevelDiff, why, considered), BOTLOG_WARN);
+                StringFormat(R"({},"limit":{},"why":"{}","flee_attempts":{},"hp_pct":{:.0f},"considered":[{}])", MobJson(bot, pick->Mob, pick->T), Cfg().FleeLevelDiff, why, ctx->FleeAttempts, bot->GetHealthPct(), considered), BOTLOG_WARN);
         }
         else
         {
@@ -846,6 +984,8 @@ bool TryCast(BotAI* ai, Player* bot, BotCombatCtx* ctx, Resolved const& r, Unit*
             ctx->RangedBrokenLevel = bot->GetLevel();
             ctx->MeleeFallback = true;
         }
+        else if (r.Def->Type == Kind::Wand)
+            ctx->MeleeFallback = true;
     }
     // not-ready/range/moving results are the normal rhythm of a fight; the rest is worth a row (once per fight)
     bool const routine = res == SPELL_FAILED_NOT_READY || res == SPELL_FAILED_OUT_OF_RANGE || res == SPELL_FAILED_MOVING || res == SPELL_FAILED_SPELL_IN_PROGRESS ||
@@ -905,9 +1045,27 @@ public:
                 continue;
             if (kind == Kind::Dot && target->HasAura(r.Id, bot->GetGUID()))
                 continue;
-            if (kind == Kind::AutoShot)
+            if (kind == Kind::Wand && (!skippedForPower || ctx->MeleeFallback))
+                continue; // the wand only fills in for spells the bot cannot afford (this entry comes last in the class table)
+            if (r.Info->EquippedItemClass >= 0 && !WeaponOk(bot, r.Info) && !(RepairIfBroken(ai, bot, ctx->Seq) && WeaponOk(bot, r.Info)))
             {
-                if (ctx->RangedBroken || bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) || inMelee || dist < r.MinRange || dist > r.MaxRange - 1.0f)
+                // required weapon missing or broken: skip instead of failing the cast every tick
+                if (!ctx->WeaponSkipLogged && kind != Kind::Wand)
+                {
+                    ctx->WeaponSkipLogged = true;
+                    Item* mh = bot->GetWeaponForAttack(BASE_ATTACK, false);
+                    Item* rg = bot->GetWeaponForAttack(RANGED_ATTACK, false);
+                    LogDecision(ai, bot, ctx, "CAST_SKIPPED_WEAPON", StringFormat("{} skipped: required weapon missing or broken", SpellNameOf(r.Info)),
+                        StringFormat(R"("spell":{},"spell_name":"{}","equipped_class":{},"subclass_mask":{},"mainhand":{},"mainhand_broken":{},"ranged":{},"ranged_broken":{})", r.Id, Json(SpellNameOf(r.Info)),
+                            r.Info->EquippedItemClass, r.Info->EquippedItemSubClassMask, mh ? mh->GetEntry() : 0, mh && mh->IsBroken() ? "true" : "false", rg ? rg->GetEntry() : 0, rg && rg->IsBroken() ? "true" : "false"), BOTLOG_WARN);
+                }
+                if (kind == Kind::AutoShot || kind == Kind::Wand)
+                    ctx->MeleeFallback = true;
+                continue;
+            }
+            if (kind == Kind::AutoShot || kind == Kind::Wand)
+            {
+                if ((kind == Kind::AutoShot && ctx->RangedBroken) || bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) || (kind == Kind::AutoShot && inMelee) || dist < r.MinRange || dist > r.MaxRange - 1.0f)
                     continue;
             }
             else if (r.MeleeRange)
@@ -936,7 +1094,8 @@ public:
         if (skippedForPower)
         {
             ++ctx->NoPowerSkips;
-            if (!ctx->NoPowerLogged)
+            // rage/energy waits are the normal rhythm of a warrior/rogue: only a mana shortage is worth a row
+            if (!ctx->NoPowerLogged && bot->GetPowerType() == POWER_MANA)
             {
                 ctx->NoPowerLogged = true;
                 LogDecision(ai, bot, ctx, "CAST_NO_POWER", "not enough power for the spell rotation",
@@ -977,6 +1136,11 @@ public:
 // ---------------------------------------------------------------------------------------------------------------------
 // console aid and registration
 // ---------------------------------------------------------------------------------------------------------------------
+uint32 BotCombatPrePullManaPct()
+{
+    return Cfg().PrePullManaPct;
+}
+
 std::vector<std::string> BotCombatDescribeSpells(Player* bot)
 {
     std::vector<std::string> lines;
@@ -1027,6 +1191,8 @@ void RegisterCombatBotObjects(BotRegistry& r)
     r.AddTrigger("combat_engaged", [](BotAI* ai) -> std::unique_ptr<Trigger> { return std::make_unique<InCombatTrigger>(ai); });
     r.AddTrigger("combat_need_heal", [](BotAI* ai) -> std::unique_ptr<Trigger> { return std::make_unique<NeedHealTrigger>(ai); });
     r.AddTrigger("combat_fleeing", [](BotAI* ai) -> std::unique_ptr<Trigger> { return std::make_unique<FleeingTrigger>(ai); });
+    r.AddTrigger("combat_low_hp", [](BotAI* ai) -> std::unique_ptr<Trigger> { return std::make_unique<LowHpFleeTrigger>(ai); });
+    r.AddAction("combat_flee_low_hp", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<LowHpFleeAction>(ai); });
     r.AddAction("combat_flee", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<FleeAction>(ai); });
     r.AddAction("combat_heal", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<HealAction>(ai); });
     r.AddAction("combat_engage", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<EngageAction>(ai); });
@@ -1039,6 +1205,7 @@ void RegisterCombatBotObjects(BotRegistry& r)
         void InitTriggers(std::vector<BotTriggerNode>& t) override
         {
             t.push_back({ "combat_fleeing", { { "combat_flee", BotRelevance::Emergency } } });
+            t.push_back({ "combat_low_hp", { { "combat_flee_low_hp", BotRelevance::Emergency - 10.0f } } });
             t.push_back({ "combat_need_heal", { { "combat_heal", BotRelevance::High + 40.0f } } });
             t.push_back({ "combat_engaged", { { "combat_engage", BotRelevance::Move }, { "combat_cast", BotRelevance::Normal } } });
         }

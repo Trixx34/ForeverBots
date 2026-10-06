@@ -22,6 +22,7 @@
 //   4. Actions      quest_think: accept / travel / kill / loot / talk / turn-in
 //   5. Registration "quest" strategy for the NonCombat engine (add it to Bot.AI.Default.NonCombat or with `bot strategy`)
 
+#include "Bag.h"
 #include "BotQuest.h"
 #include "BotAI.h"
 #include "BotBehavior.h"
@@ -45,6 +46,7 @@
 #include "Player.h"
 #include "QuestDef.h"
 #include "StringFormat.h"
+#include "Trainer.h"
 #include "Util.h"
 #include "WorldSession.h"
 #include <algorithm>
@@ -52,6 +54,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -135,6 +138,26 @@ struct GrindPt
     uint32 Entry;
 };
 
+// E1/E4: NPC service points (class trainers, vendors), indexed once at startup
+struct SvcPt
+{
+    uint32 Map = 0;
+    float X = 0, Y = 0, Z = 0;
+    uint32 Entry = 0;
+    uint32 Faction = 0;
+    uint32 TrainerId = 0;     // trainer.Id for trainers, 0 for vendors
+    bool Repair = false;      // vendor can repair
+};
+
+struct BagOffer
+{
+    uint32 Item = 0;
+    uint32 VendorSlot = 0;
+    uint32 Slots = 0;
+    uint32 Price = 0;
+    int32 ReqLevel = 0;
+};
+
 constexpr float GRID_CELL = 200.0f;
 constexpr uint32 MAX_STARTER_POINTS = 8;
 
@@ -152,6 +175,11 @@ struct Index
     std::unordered_map<uint64, uint32> HubByCell;                  // (map, cell) -> index in Hubs
     std::unordered_map<uint64, std::vector<GrindPt>> GrindGrid;    // (map, cell) -> hostile normal-rank spawns (grind fallback)
     uint32 NumGrind = 0;
+    // trainers by key: class id (1..11). Profession trainers would use 0x100 | skill line (not indexed in v1).
+    std::unordered_map<uint32, std::vector<SvcPt>> Trainers;
+    std::vector<SvcPt> Vendors;
+    std::unordered_map<uint32, std::vector<BagOffer>> VendorBags;   // vendor entry -> plain bags it sells for gold
+    uint32 NumTrainers = 0, NumBagVendors = 0, MinBagPrice = 0xFFFFFFFFu;
     uint32 NumStarterQuests = 0, NumStarterPoints = 0, NumSpawnEntries = 0, NumItemSources = 0;
 } g;
 
@@ -509,15 +537,66 @@ void BuildIndex()
         ++g.NumGrind;
     }
 
+    // 9. class trainers and vendors (E1/E4)
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+    {
+        CreatureTemplate const* t = sObjectMgr->GetCreatureTemplate(data.id);
+        if (!t || !t->npcflag)
+            continue;
+        uint64 const flags = uint64(t->npcflag);
+        SvcPt pt;
+        pt.Map = data.mapId;
+        pt.X = data.spawnPoint.GetPositionX(); pt.Y = data.spawnPoint.GetPositionY(); pt.Z = data.spawnPoint.GetPositionZ();
+        pt.Entry = data.id;
+        pt.Faction = t->faction;
+        if (t->trainer_class > 0 && t->trainer_class < 32)
+        {
+            uint32 const tid = sObjectMgr->GetCreatureDefaultTrainer(data.id);
+            if (tid && sObjectMgr->GetTrainer(tid))
+            {
+                pt.TrainerId = tid;
+                g.Trainers[t->trainer_class].push_back(pt);
+                ++g.NumTrainers;
+            }
+        }
+        if (flags & uint64(UNIT_NPC_FLAG_VENDOR))
+        {
+            VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(data.id);
+            if (!items || items->Empty())
+                continue;
+            auto vb = g.VendorBags.find(data.id);
+            if (vb == g.VendorBags.end())
+            {
+                std::vector<BagOffer> offers;
+                for (uint32 i = 0; i < items->GetItemCount(); ++i)
+                {
+                    VendorItem const* vi = items->GetItem(i);
+                    if (!vi || vi->ExtendedCost || vi->maxcount || vi->PlayerConditionId)
+                        continue;
+                    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(vi->item);
+                    if (!proto || proto->GetClass() != ITEM_CLASS_CONTAINER || proto->GetSubClass() != 0 || proto->GetContainerSlots() < 6 || !proto->GetBuyPrice())
+                        continue;
+                    offers.push_back({ vi->item, i, proto->GetContainerSlots(), proto->GetBuyPrice(), proto->GetBaseRequiredLevel() });
+                    g.MinBagPrice = std::min(g.MinBagPrice, proto->GetBuyPrice());
+                }
+                vb = g.VendorBags.emplace(data.id, std::move(offers)).first;
+                if (!vb->second.empty())
+                    ++g.NumBagVendors;
+            }
+            pt.Repair = (flags & uint64(UNIT_NPC_FLAG_REPAIR)) != 0;
+            g.Vendors.push_back(pt);
+        }
+    }
+
     g.Ready.store(true, std::memory_order_release);
-    TC_LOG_INFO("server.worldserver", "Bot quest index: {} starter quests, {} starter points, {} spawn entries, {} quest items with creature sources, {} hubs, {} grind spawns, {} ms",
-        g.NumStarterQuests, g.NumStarterPoints, g.NumSpawnEntries, g.NumItemSources, uint32(g.Hubs.size()), g.NumGrind, GetMSTimeDiffToNow(startMs));
+    TC_LOG_INFO("server.worldserver", "Bot quest index: {} starter quests, {} starter points, {} spawn entries, {} quest items with creature sources, {} hubs, {} grind spawns, {} class trainer spawns, {} vendor spawns ({} bag vendor entries), {} ms",
+        g.NumStarterQuests, g.NumStarterPoints, g.NumSpawnEntries, g.NumItemSources, uint32(g.Hubs.size()), g.NumGrind, g.NumTrainers, uint32(g.Vendors.size()), g.NumBagVendors, GetMSTimeDiffToNow(startMs));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
 // 3. Per-bot context
 // ---------------------------------------------------------------------------------------------------------------------
-enum class Kind : uint8 { None, GoGiver, GoEnder, Kill, Talk, Grind };
+enum class Kind : uint8 { None, GoGiver, GoEnder, Kill, Talk, Grind, Service };
 
 char const* KindName(Kind k)
 {
@@ -528,6 +607,7 @@ char const* KindName(Kind k)
         case Kind::Kill: return "kill";
         case Kind::Talk: return "talk";
         case Kind::Grind: return "grind";
+        case Kind::Service: return "service";
         default: return "none";
     }
 }
@@ -562,12 +642,53 @@ struct Task
     uint32 Approaches = 0;
     uint32 Ignored = 0;
     uint32 HubId = 0xFFFFFFFFu;    // hub this go_giver task travels to (E3)
+    uint8 Svc = 0;                 // Service task: 1 = train, 2 = vendor visit
+    float SvcX = 0, SvcY = 0, SvcZ = 0;
+    uint32 SvcTrainerId = 0;
+    bool SvcRepair = false, SvcBags = false;
 };
 
 struct Visited
 {
     float X, Y;
 };
+
+// (b) quarantine: a quest whose drops for path/reach reasons pile up across bots is skipped by everybody for a while
+struct DeadQuest { uint32 Fails = 0; uint32 UntilMs = 0; };
+std::shared_mutex g_deadMx;
+std::unordered_map<uint32, DeadQuest> g_dead;
+constexpr uint32 DEAD_FAILS = 10;
+constexpr uint32 DEAD_MS = 3600 * 1000;
+
+bool GloballyDead(uint32 questId)
+{
+    std::shared_lock<std::shared_mutex> lk(g_deadMx);
+    auto it = g_dead.find(questId);
+    return it != g_dead.end() && it->second.UntilMs && int32(it->second.UntilMs - getMSTime()) > 0;
+}
+
+// returns true when this failure made the quest globally dead
+bool NoteQuestFail(uint32 questId)
+{
+    std::unique_lock<std::shared_mutex> lk(g_deadMx);
+    DeadQuest& d = g_dead[questId];
+    if (d.UntilMs && int32(d.UntilMs - getMSTime()) > 0)
+        return false;
+    if (++d.Fails < DEAD_FAILS)
+        return false;
+    d.Fails = 0;
+    d.UntilMs = std::max<uint32>(1, getMSTime() + DEAD_MS);
+    return true;
+}
+
+bool IsReachCode(char const* code)
+{
+    static char const* const codes[] = { "NO_PATH", "PATH_PARTIAL_FAR", "UNREACHABLE", "TARGET_UNREACHABLE", "ITEM_NOT_DROPPING", "GIVER_NOT_INTERACTABLE" };
+    for (char const* c : codes)
+        if (std::strcmp(c, code) == 0)
+            return true;
+    return false;
+}
 
 class BotQuestCtx : public UntypedValue
 {
@@ -595,6 +716,17 @@ public:
     uint8 NoLocalLevel = 0, HubNoneLevel = 0;
     bool LastWasGrind = false;
     uint32 Grinds = 0, HubTrips = 0;
+    // E1/E4 service state
+    uint32 NextSvcMs = 0;                           // next service-due evaluation
+    uint8 TrainLevel = 0;                           // level at which spells were last evaluated/trained
+    uint32 TrainWant = 0;                           // copper needed for the cheapest available but unaffordable spell (0 = none)
+    uint32 TrainRetryMs = 0;
+    uint32 TrainedTotal = 0, VendorTrips = 0;
+    uint32 NextVendorMs = 0, NextBagMs = 0;
+    bool VendorNow = false;                         // a reward could not be stored: go to a vendor now
+    std::unordered_map<uint64, uint8> Repeats;      // (quest, npc) -> reach failures (quarantine)
+    std::unordered_map<uint32, uint32> SvcBlack;    // npc entry -> AI clock until
+    uint8 NoTrainerLevel = 0, NoMoneyLevel = 0, BagNoMoneyLevel = 0, NoVendorLevel = 0;
     std::string LastNote;
 
     bool Blacklisted(uint32 quest, uint32 now) const
@@ -666,6 +798,14 @@ std::string QuestTitle(uint32 questId)
 {
     Quest const* q = sObjectMgr->GetQuestTemplate(questId);
     return q ? q->GetLogTitle() : std::string("?");
+}
+
+bool IsRewardDataGap(Quest const* q)
+{
+    for (uint32 i = 0; i < q->GetRewItemsCount(); ++i)
+        if (q->RewardItemId[i] && !sObjectMgr->GetItemTemplate(q->RewardItemId[i]))
+            return true;
+    return false;
 }
 
 Creature* FindLiveNpc(Player* bot, uint32 entry, float range)
@@ -833,7 +973,36 @@ private:
 
     void Drop(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, uint32 questId, char const* code, std::string summary, std::string details, uint32 entry, uint32 blacklistSec)
     {
+        if (c.T.K == Kind::Service)
+        {
+            // E1/E4: the failure is reported under the service code, the movement code goes into the summary
+            c.SvcBlack[c.T.NpcEntry] = now + 600 * 1000;
+            if (c.T.Svc == 1)
+                c.TrainRetryMs = now + 300 * 1000;
+            else
+                c.NextVendorMs = now + 300 * 1000;
+            summary = StringFormat("{} ({})", summary, code);
+            code = c.T.Svc == 1 ? "TRAIN_UNREACHABLE" : "VENDOR_UNREACHABLE";
+        }
         Blocked(ai, bot, c, questId, code, std::move(summary), std::move(details), entry);
+        if (questId && IsReachCode(code))
+        {
+            uint8& n = c.Repeats[(uint64(questId) << 32) | entry];
+            if (n < 250)
+                ++n;
+            if (n >= 3)
+            {
+                blacklistSec = 6 * 3600;
+                if (n == 3)
+                    Blocked(ai, bot, c, questId, "QUEST_QUARANTINED", StringFormat("quest '{}' failed {} times ({}) at npc/mob {}, skipped for 6 h", QuestTitle(questId), n, code, entry),
+                        StringFormat(R"({{"last_code":"{}","repeats":{}}})", code, n), entry);
+            }
+            else
+                blacklistSec *= n;
+            if (NoteQuestFail(questId))
+                Blocked(ai, bot, c, questId, "QUEST_QUARANTINED_GLOBAL", StringFormat("quest '{}' failed for {} drops across bots ({}), skipped by all bots for 1 h", QuestTitle(questId), DEAD_FAILS, code),
+                    StringFormat(R"({{"last_code":"{}","npc":{}}})", code, entry), entry);
+        }
         if (questId)
             c.Blacklist[questId] = now + blacklistSec * 1000;
         if (c.T.K == Kind::Grind)
@@ -976,6 +1145,9 @@ private:
     // ----- choosing -----
     bool Choose(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
     {
+        if (ServiceDue(ai, bot, c, now))
+            return true;
+
         std::vector<LogEntry> log;
         ReadLog(bot, log);
 
@@ -1101,7 +1273,7 @@ private:
             return 0.0f;
         if (bot->GetQuestStatus(ref.Quest) != QUEST_STATUS_NONE || bot->GetQuestRewardStatus(ref.Quest))
             return 0.0f;
-        if (c.Blacklisted(ref.Quest, now))
+        if (c.Blacklisted(ref.Quest, now) || GloballyDead(ref.Quest))
             return 0.0f;
         if (!c.HubBlack.empty() && dist > 100.0f)
         {
@@ -1527,12 +1699,437 @@ private:
         return false;
     }
 
+    // ----- E1/E4: trainer and vendor visits -----
+    static bool FriendlyNpc(Player* bot, uint32 faction)
+    {
+        FactionTemplateEntry const* bf = bot->GetFactionTemplateEntry();
+        FactionTemplateEntry const* nf = sFactionTemplateStore.LookupEntry(faction);
+        return !(bf && nf && nf->IsHostileTo(bf));
+    }
+
+    SvcPt const* NearestSvc(Player* bot, BotQuestCtx& c, uint32 now, std::vector<SvcPt> const& list, bool needRepair, bool needBags, float maxDist, float& dOut)
+    {
+        SvcPt const* best = nullptr;
+        float bs = 1e9f;
+        dOut = 0.0f;
+        for (SvcPt const& p : list)
+        {
+            if (p.Map != bot->GetMapId())
+                continue;
+            float const d = Dist2D(p.X, p.Y, bot->GetPositionX(), bot->GetPositionY());
+            if (d > maxDist)
+                continue;
+            auto bl = c.SvcBlack.find(p.Entry);
+            if (bl != c.SvcBlack.end() && now < bl->second)
+                continue;
+            if (needRepair && !p.Repair)
+                continue;
+            if (needBags)
+            {
+                auto vb = g.VendorBags.find(p.Entry);
+                if (vb == g.VendorBags.end() || vb->second.empty())
+                    continue;
+            }
+            if (!FriendlyNpc(bot, p.Faction))
+                continue;
+            if (d < bs)
+            {
+                bs = d;
+                best = &p;
+                dOut = d;
+            }
+        }
+        return best;
+    }
+
+    struct TrainEval { uint32 Avail = 0, Affordable = 0, Want = 0; uint64 CostAll = 0; };
+
+    static TrainEval EvalTrain(Player* bot, Trainer::Trainer const* tr)
+    {
+        TrainEval ev;
+        for (Trainer::Spell const& sp : tr->GetSpells())
+        {
+            if (tr->GetSpellState(bot, &sp) != Trainer::SpellState::Available || !tr->CanTeachSpell(bot, &sp))
+                continue;
+            ++ev.Avail;
+            ev.CostAll += sp.MoneyCost;
+            if (bot->GetMoney() >= sp.MoneyCost)
+                ++ev.Affordable;
+            else
+                ev.Want = ev.Want ? std::min<uint32>(ev.Want, sp.MoneyCost) : sp.MoneyCost;
+        }
+        return ev;
+    }
+
+    // copper the bot still wants to spend on spells at the nearest class trainer (bags come second)
+    uint64 TrainReserve(Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        auto it = g.Trainers.find(bot->GetClass());
+        if (it == g.Trainers.end())
+            return 0;
+        float d;
+        SvcPt const* tp = NearestSvc(bot, c, now, it->second, false, false, 4000.0f, d);
+        Trainer::Trainer const* tr = tp ? sObjectMgr->GetTrainer(tp->TrainerId) : nullptr;
+        return tr ? EvalTrain(bot, tr).CostAll : 0;
+    }
+
+    static uint64 RepairCost(Player* bot)
+    {
+        uint64 total = 0;
+        for (uint8 i = EQUIPMENT_SLOT_START; i < EQUIPMENT_SLOT_END; ++i)
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+                total += item->CalculateDurabilityRepairCost(1.0f, false);
+        return total;
+    }
+
+    // bag slot to fill: an empty bag slot, else the smallest empty bag worn. 0xFF when nothing can be upgraded.
+    static uint8 BagTargetSlot(Player* bot, uint32& replaceSize)
+    {
+        replaceSize = 0;
+        uint8 best = 0xFF;
+        for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
+        {
+            Item* it = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            if (!it)
+            {
+                replaceSize = 0;
+                return slot;
+            }
+            Bag* b = bot->GetBagByPos(slot);
+            if (b && b->IsEmpty() && (best == 0xFF || b->GetBagSize() < replaceSize))
+            {
+                best = slot;
+                replaceSize = b->GetBagSize();
+            }
+        }
+        return best;
+    }
+
+    // 0 = keep, 1 = grey, 2 = unusable armor/weapon
+    static int JunkClass(Player* bot, Item* item)
+    {
+        if (item->IsBag())
+            return 0;
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!proto || proto->GetClass() == ITEM_CLASS_QUEST || proto->GetStartQuest() || bot->HasQuestForItem(item->GetEntry()))
+            return 0;
+        if (!proto->GetSellPrice())
+            return 0;
+        if (proto->GetQuality() == ITEM_QUALITY_POOR)
+            return 1;
+        if ((proto->GetClass() == ITEM_CLASS_ARMOR || proto->GetClass() == ITEM_CLASS_WEAPON) && proto->GetQuality() < ITEM_QUALITY_EPIC && bot->CanUseItem(proto, true) != EQUIP_ERR_OK)
+            return 2;
+        return 0;
+    }
+
+    void StartService(Player*, BotQuestCtx& c, uint32 now, uint8 svc, SvcPt const& pt, bool repair, bool bags)
+    {
+        c.T = Task();
+        c.T.K = Kind::Service;
+        c.T.Svc = svc;
+        c.T.NpcEntry = pt.Entry;
+        c.T.SvcX = pt.X; c.T.SvcY = pt.Y; c.T.SvcZ = pt.Z;
+        c.T.SvcTrainerId = pt.TrainerId;
+        c.T.SvcRepair = repair;
+        c.T.SvcBags = bags;
+        c.T.SinceMs = c.T.ProgressMs = now;
+        c.GoalFails = 0;
+        c.LastWasGrind = false;
+    }
+
+    // Decides whether a trainer or vendor trip is due and starts it. Throttled, cheap in the common case.
+    bool ServiceDue(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        if (now < c.NextSvcMs || bot->IsInCombat())
+            return false;
+        c.NextSvcMs = now + 4000;
+        uint8 const level = bot->GetLevel();
+
+        // 1. trainer: new level, or enough money for the cheapest spell we could not afford before. Spells have money priority.
+        if (level >= 2 && now >= c.TrainRetryMs && (c.TrainLevel != level || (c.TrainWant && bot->GetMoney() >= c.TrainWant)))
+        {
+            auto tl = g.Trainers.find(bot->GetClass());
+            float d = 0.0f;
+            SvcPt const* tp = tl == g.Trainers.end() ? nullptr : NearestSvc(bot, c, now, tl->second, false, false, 4000.0f, d);
+            if (!tp)
+            {
+                c.TrainLevel = level;
+                c.TrainWant = 0;
+                if (c.NoTrainerLevel != level)
+                {
+                    c.NoTrainerLevel = level;
+                    Blocked(ai, bot, c, 0, "TRAIN_NO_TRAINER", StringFormat("no reachable class trainer on map {} within 4000 yd (class {}, level {})", bot->GetMapId(), bot->GetClass(), level),
+                        StringFormat(R"({{"map":{},"class":{},"level":{},"x":{:.0f},"y":{:.0f}}})", bot->GetMapId(), bot->GetClass(), level, bot->GetPositionX(), bot->GetPositionY()), 0, false);
+                }
+            }
+            else
+            {
+                Trainer::Trainer const* tr = sObjectMgr->GetTrainer(tp->TrainerId);
+                TrainEval ev = tr ? EvalTrain(bot, tr) : TrainEval();
+                c.TrainLevel = level;
+                c.TrainWant = ev.Want;
+                if (ev.Affordable)
+                {
+                    StartService(bot, c, now, 1, *tp, false, false);
+                    Decision(ai, bot, "TRAIN_TRIP", StringFormat("walking to class trainer {} ({:.0f} yd) for {} spells", tp->Entry, d, ev.Affordable), 0, tp->Entry,
+                        StringFormat(R"({{"trainer_id":{},"dist":{:.0f},"affordable":{},"available":{},"money":{}}})", tp->TrainerId, d, ev.Affordable, ev.Avail, bot->GetMoney()));
+                    return true;
+                }
+                if (ev.Avail && c.NoMoneyLevel != level)
+                {
+                    c.NoMoneyLevel = level;
+                    Blocked(ai, bot, c, 0, "TRAIN_NO_MONEY", StringFormat("{} spells available at level {} but the cheapest costs {} copper (bot has {})", ev.Avail, level, ev.Want, bot->GetMoney()),
+                        StringFormat(R"({{"available":{},"cheapest":{},"money":{},"level":{}}})", ev.Avail, ev.Want, bot->GetMoney(), level), tp->Entry, false);
+                }
+            }
+        }
+
+        // 2. vendor
+        uint32 const freeSlots = bot->GetFreeInventorySlotCount();
+        bool const forced = c.VendorNow;
+        bool const full = freeSlots <= 1;
+        uint64 const repairCost = RepairCost(bot);
+        bool const needRepair = repairCost >= 150 && bot->GetMoney() >= repairCost * 2;
+        uint32 replaceSize = 0;
+        bool const needBags = level >= 3 && now >= c.NextBagMs && g.MinBagPrice != 0xFFFFFFFFu && bot->GetMoney() >= g.MinBagPrice && BagTargetSlot(bot, replaceSize) != 0xFF;
+        if (!forced && !(now >= c.NextVendorMs && (full || needRepair || needBags)))
+            return false;
+
+        float d = 0.0f;
+        float const maxD = (full || forced) ? 3000.0f : 800.0f;
+        SvcPt const* vp = nullptr;
+        if (needBags && !full && !needRepair)
+            vp = NearestSvc(bot, c, now, g.Vendors, false, true, maxD, d);
+        if (!vp && needRepair)
+            vp = NearestSvc(bot, c, now, g.Vendors, true, false, maxD, d);
+        if (!vp)
+            vp = NearestSvc(bot, c, now, g.Vendors, false, false, maxD, d);
+        c.VendorNow = false;
+        if (needBags)
+            c.NextBagMs = now + 300 * 1000;
+        if (!vp)
+        {
+            c.NextVendorMs = now + 120 * 1000;
+            if (c.NoVendorLevel != level)
+            {
+                c.NoVendorLevel = level;
+                Blocked(ai, bot, c, 0, "VENDOR_NONE", StringFormat("no reachable vendor on map {} within {:.0f} yd (free slots {})", bot->GetMapId(), maxD, freeSlots),
+                    StringFormat(R"({{"map":{},"free_slots":{},"repair_cost":{},"x":{:.0f},"y":{:.0f}}})", bot->GetMapId(), freeSlots, repairCost, bot->GetPositionX(), bot->GetPositionY()), 0, false);
+            }
+            return false;
+        }
+        StartService(bot, c, now, 2, *vp, needRepair && vp->Repair, needBags);
+        ++c.VendorTrips;
+        Decision(ai, bot, "VENDOR_TRIP", StringFormat("walking to vendor {} ({:.0f} yd): free slots {}, repair {} copper, bag upgrade {}", vp->Entry, d, freeSlots, repairCost, needBags ? "yes" : "no"), 0, vp->Entry,
+            StringFormat(R"({{"dist":{:.0f},"free_slots":{},"repair_cost":{},"repair_vendor":{},"bag_upgrade":{},"forced":{},"money":{}}})", d, freeSlots, repairCost, vp->Repair, needBags, forced, bot->GetMoney()));
+        return true;
+    }
+
+    bool RunService(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        Task& t = c.T;
+        if (now - t.SinceMs > 10 * 60 * 1000)
+        {
+            Drop(ai, bot, c, now, 0, "UNREACHABLE", StringFormat("gave up walking to {} npc {} after 10 min", t.Svc == 1 ? "trainer" : "vendor", t.NpcEntry), std::string(), t.NpcEntry, 0);
+            return true;
+        }
+        Creature* npc = FindLiveNpc(bot, t.NpcEntry, 45.0f);
+        if (npc && npc->IsAlive() && bot->IsWithinDistInMap(npc, 4.5f))
+        {
+            StopMoving(ai, bot, c);
+            if (t.Svc == 1)
+                DoTrain(ai, bot, c, now, npc);
+            else
+                DoVendor(ai, bot, c, now, npc);
+            Finish(c, now);
+            return true;
+        }
+        float tx = t.SvcX, ty = t.SvcY, tz = t.SvcZ;
+        if (npc)
+        {
+            tx = npc->GetPositionX(); ty = npc->GetPositionY(); tz = npc->GetPositionZ();
+            if (Dist2D(tx, ty, bot->GetPositionX(), bot->GetPositionY()) < 10.0f && ++t.LegIssues > 40)
+            {
+                Drop(ai, bot, c, now, 0, "GIVER_NOT_INTERACTABLE", StringFormat("npc {} seen but never interactable", t.NpcEntry), std::string(), t.NpcEntry, 0);
+                return true;
+            }
+        }
+        else if (Dist2D(tx, ty, bot->GetPositionX(), bot->GetPositionY()) < 10.0f)
+        {
+            if (!t.WaitStartMs)
+                t.WaitStartMs = now;
+            else if (now - t.WaitStartMs > 25000)
+            {
+                Drop(ai, bot, c, now, 0, "GIVER_NOT_INTERACTABLE", StringFormat("npc {} is not at its spawn point", t.NpcEntry), std::string(), t.NpcEntry, 0);
+                return true;
+            }
+            return false;
+        }
+        Travel(ai, bot, c, now, tx, ty, tz, 3.0f, t.NpcEntry);
+        return false;
+    }
+
+    void DoTrain(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Creature* npc)
+    {
+        (void)now;
+        uint32 const tid = sObjectMgr->GetCreatureDefaultTrainer(npc->GetEntry());
+        Trainer::Trainer const* tr = tid ? sObjectMgr->GetTrainer(tid) : nullptr;
+        uint8 const level = bot->GetLevel();
+        c.TrainLevel = level;
+        if (!tr)
+        {
+            Blocked(ai, bot, c, 0, "TRAIN_NO_TRAINER", StringFormat("npc {} has no trainer data", npc->GetEntry()), std::string(), npc->GetEntry(), false);
+            return;
+        }
+        uint64 const moneyBefore = bot->GetMoney();
+        uint32 learned = 0, attempted = 0;
+        std::string ids;
+        for (int pass = 0; pass < 4; ++pass)
+        {
+            std::vector<Trainer::Spell const*> todo;
+            for (Trainer::Spell const& sp : tr->GetSpells())
+                if (tr->GetSpellState(bot, &sp) == Trainer::SpellState::Available && tr->CanTeachSpell(bot, &sp) && bot->GetMoney() >= sp.MoneyCost)
+                    todo.push_back(&sp);
+            if (todo.empty())
+                break;
+            std::sort(todo.begin(), todo.end(), [](Trainer::Spell const* a, Trainer::Spell const* b)
+            {
+                return a->ReqLevel != b->ReqLevel ? a->ReqLevel < b->ReqLevel : a->MoneyCost < b->MoneyCost;
+            });
+            uint32 passLearned = 0;
+            for (Trainer::Spell const* sp : todo)
+            {
+                if (bot->GetMoney() < sp->MoneyCost || tr->GetSpellState(bot, sp) != Trainer::SpellState::Available)
+                    continue;
+                ++attempted;
+                tr->TeachSpell(npc, bot, sp->SpellId);
+                if (tr->GetSpellState(bot, sp) == Trainer::SpellState::Known)
+                {
+                    ++passLearned;
+                    if (ids.size() < 200)
+                        ids += StringFormat("{}{}", ids.empty() ? "" : ",", sp->SpellId);
+                }
+            }
+            learned += passLearned;
+            if (!passLearned)
+                break;
+        }
+        TrainEval left = EvalTrain(bot, tr);
+        c.TrainWant = left.Want;
+        c.TrainedTotal += learned;
+        if (learned)
+            Decision(ai, bot, "TRAINED", StringFormat("learned {} spells from trainer {} for {} copper", learned, npc->GetEntry(), moneyBefore - bot->GetMoney()), 0, npc->GetEntry(),
+                StringFormat(R"({{"learned":{},"attempted":{},"spent":{},"money_left":{},"level":{},"unaffordable_left":{},"spells":[{}]}})", learned, attempted, moneyBefore - bot->GetMoney(), bot->GetMoney(), level, left.Avail, ids));
+        else
+            Blocked(ai, bot, c, 0, "TRAIN_NO_MONEY", StringFormat("nothing learned at trainer {}: {} available, attempted {}", npc->GetEntry(), left.Avail, attempted),
+                StringFormat(R"({{"available":{},"attempted":{},"money":{},"cheapest":{}}})", left.Avail, attempted, bot->GetMoney(), left.Want), npc->GetEntry(), false);
+    }
+
+    void DoVendor(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Creature* npc)
+    {
+        uint8 const level = bot->GetLevel();
+        uint32 const freeBefore = bot->GetFreeInventorySlotCount();
+        uint64 const money0 = bot->GetMoney();
+
+        // sell junk: greys first, then unusable armor/weapons
+        std::vector<std::pair<int, Item*>> sells;
+        bot->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
+        {
+            if (int k = JunkClass(bot, item))
+                sells.push_back({ k, item });
+            return ItemSearchCallbackResult::Continue;
+        });
+        std::stable_sort(sells.begin(), sells.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+        uint32 nGrey = 0, nUnusable = 0, nStacks = 0;
+        std::string sold;
+        for (auto const& [kind, item] : sells)
+        {
+            uint32 const cnt = item->GetCount();
+            uint32 const entry = item->GetEntry();
+            if (bot->CanSellItemToVendor(item, cnt) || bot->SellItemToVendor(item, cnt))
+                continue;   // Optional<SellResult>: a value means refused
+            (kind == 1 ? nGrey : nUnusable) += 1;
+            ++nStacks;
+            if (sold.size() < 120)
+                sold += StringFormat("{}{}", sold.empty() ? "" : ",", entry);
+        }
+        uint32 const freeAfter = bot->GetFreeInventorySlotCount();
+        if (nStacks)
+            Decision(ai, bot, "SOLD_ITEMS", StringFormat("sold {} stacks ({} grey, {} unusable) for {} copper", nStacks, nGrey, nUnusable, bot->GetMoney() - money0), 0, npc->GetEntry(),
+                StringFormat(R"({{"grey":{},"unusable":{},"copper":{},"free_before":{},"free_after":{},"items":[{}]}})", nGrey, nUnusable, bot->GetMoney() - money0, freeBefore, freeAfter, sold));
+
+        // repair
+        uint64 const repairCost = RepairCost(bot);
+        if (repairCost && (npc->GetCreatureTemplate()->npcflag & uint64(UNIT_NPC_FLAG_REPAIR)) && bot->GetMoney() >= repairCost)
+        {
+            uint64 const before = bot->GetMoney();
+            bot->DurabilityRepairAll(true, bot->GetReputationPriceDiscount(npc), false);
+            if (bot->GetMoney() < before)
+                Decision(ai, bot, "REPAIRED", StringFormat("repaired equipment for {} copper", before - bot->GetMoney()), 0, npc->GetEntry(),
+                    StringFormat(R"({{"cost":{},"money_left":{}}})", before - bot->GetMoney(), bot->GetMoney()));
+        }
+
+        // bag upgrade: training money has priority
+        uint32 replaceSize = 0;
+        uint8 const slot = BagTargetSlot(bot, replaceSize);
+        auto vb = g.VendorBags.find(npc->GetEntry());
+        if (slot != 0xFF && vb != g.VendorBags.end() && !vb->second.empty() && level >= 3)
+        {
+            uint64 const reserve = TrainReserve(bot, c, now);
+            uint64 const money = bot->GetMoney();
+            BagOffer const* pick = nullptr;
+            uint32 cheapest = 0xFFFFFFFFu;
+            for (BagOffer const& o : vb->second)
+            {
+                if (o.Slots <= replaceSize || o.ReqLevel > int32(level))
+                    continue;
+                cheapest = std::min<uint32>(cheapest, o.Price);
+                if (money < reserve + o.Price)
+                    continue;
+                if (!pick || o.Slots > pick->Slots || (o.Slots == pick->Slots && o.Price < pick->Price))
+                    pick = &o;
+            }
+            if (pick)
+            {
+                uint64 const before = bot->GetMoney();
+                bot->BuyItemFromVendorSlot(npc->GetGUID(), pick->VendorSlot, pick->Item, 1, NULL_BAG, NULL_SLOT);
+                Item* item = bot->GetMoney() < before ? bot->GetItemByEntry(pick->Item) : nullptr;
+                bool equipped = false;
+                if (item)
+                {
+                    uint16 dest = 0;
+                    if (bot->CanEquipItem(slot, dest, item, replaceSize != 0) == EQUIP_ERR_OK)
+                    {
+                        bot->SwapItem(item->GetPos(), dest);
+                        Bag* nb = bot->GetBagByPos(slot);
+                        equipped = nb && nb->GetBagSize() == pick->Slots;
+                    }
+                }
+                if (item)
+                    Decision(ai, bot, "BAG_BOUGHT", StringFormat("bought a {} slot bag (item {}) for {} copper, {}", pick->Slots, pick->Item, before - bot->GetMoney(), equipped ? "equipped" : "left in bags"), 0, npc->GetEntry(),
+                        StringFormat(R"({{"item":{},"slots":{},"price":{},"bag_slot":{},"replaced_size":{},"equipped":{},"money_left":{}}})", pick->Item, pick->Slots, before - bot->GetMoney(), slot, replaceSize, equipped, bot->GetMoney()));
+                else
+                    Blocked(ai, bot, c, 0, "BAG_BUY_FAILED", StringFormat("could not buy bag {} (no inventory space or vendor refused)", pick->Item),
+                        StringFormat(R"({{"item":{},"free_slots":{},"money":{}}})", pick->Item, bot->GetFreeInventorySlotCount(), bot->GetMoney()), npc->GetEntry(), false);
+            }
+            else if (cheapest != 0xFFFFFFFFu && c.BagNoMoneyLevel != level)
+            {
+                c.BagNoMoneyLevel = level;
+                Blocked(ai, bot, c, 0, "BAG_NO_MONEY", StringFormat("cannot afford a bag: cheapest {} copper, bot has {} (spell reserve {})", cheapest, money, reserve),
+                    StringFormat(R"({{"cheapest":{},"money":{},"reserve":{},"level":{}}})", cheapest, money, reserve, level), npc->GetEntry(), false);
+            }
+        }
+        c.NextVendorMs = now + (bot->GetFreeInventorySlotCount() <= 1 ? 600 : 120) * 1000;
+    }
+
     // ----- running the task -----
     bool RunTask(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
     {
         Task& t = c.T;
         if (t.K == Kind::Grind)
             return RunGrind(ai, bot, c, now);
+        if (t.K == Kind::Service)
+            return RunService(ai, bot, c, now);
         Quest const* q = sObjectMgr->GetQuestTemplate(t.Quest);
         if (!q)
         {
@@ -1713,6 +2310,29 @@ private:
         LootItemType type = LootItemType::Item;
         if (!bot->CanRewardQuest(q, type, reward, false))
         {
+            // a reward item that does not exist in the item data can never be stored (data gap): reward the rest of the quest anyway
+            uint32 missing = 0;
+            for (uint32 i = 0; i < q->GetRewItemsCount(); ++i)
+                if (q->RewardItemId[i] && !sObjectMgr->GetItemTemplate(q->RewardItemId[i]))
+                    missing = q->RewardItemId[i];
+            if (reward && !sObjectMgr->GetItemTemplate(reward))
+                missing = reward;
+            if (missing)
+            {
+                Blocked(ai, bot, c, questId, "REWARD_ITEM_MISSING", StringFormat("reward item {} of '{}' is not in the item data, turning in without it", missing, q->GetLogTitle()),
+                    StringFormat(R"({{"reward_item":{}}})", missing), npc->GetEntry(), true, BOTLOG_INFO);
+                reward = 0;
+                for (uint32 i = 0; i < q->GetRewChoiceItemsCount(); ++i)
+                    if (q->RewardChoiceItemId[i] && sObjectMgr->GetItemTemplate(q->RewardChoiceItemId[i]) && bot->CanRewardQuest(q, type, q->RewardChoiceItemId[i], false))
+                    {
+                        reward = q->RewardChoiceItemId[i];
+                        break;
+                    }
+            }
+        }
+        if (!bot->CanRewardQuest(q, type, reward, false) && !(reward == 0 && IsRewardDataGap(q)))
+        {
+            c.VendorNow = true;   // E4: bags are full, sell first
             Drop(ai, bot, c, now, questId, "BAG_FULL", StringFormat("no room for the reward of '{}'", q->GetLogTitle()), StringFormat(R"({{"reward_item":{}}})", reward), npc->GetEntry(), 300);
             return true;
         }

@@ -18,6 +18,7 @@
 #include "BotMgr.h"
 #include "AccountMgr.h"
 #include "BotAI.h"
+#include "BotAlts.h"
 #include "BotLogDatabase.h"
 #include "BotQuest.h"
 #include "CharacterCache.h"
@@ -41,6 +42,9 @@
 #include "Util.h"
 #include "World.h"
 #include "WorldSession.h"
+#include <boost/asio/connect.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -228,6 +232,70 @@ BotMgr* BotMgr::instance()
     return &instance;
 }
 
+namespace
+{
+// Plain TCP connect (helper thread, bounded): does the bot log database host answer at all?
+bool ProbeTcp(std::string host, std::string port)
+{
+    try
+    {
+        boost::asio::io_context io;
+        boost::system::error_code ec;
+        boost::asio::ip::tcp::resolver resolver(io);
+        auto endpoints = resolver.resolve(host, port, ec);
+        if (ec)
+            return false;
+        boost::asio::ip::tcp::socket socket(io);
+        boost::system::error_code result = boost::asio::error::would_block;
+        boost::asio::async_connect(socket, endpoints, [&result](boost::system::error_code const& e, boost::asio::ip::tcp::endpoint const&) { result = e; });
+        io.run_for(std::chrono::seconds(3));
+        return result == boost::system::error_code();
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+}
+
+// World thread. While the bot log is on, the host is probed every Bot.Log.ProbeIntervalSec; when it stops answering logging is switched off
+// (nothing is submitted, so the core DB layer never reaches its reconnect-or-ABORT path for this pool) and the same probe switches it back on.
+void BotMgr::UpdateProbe(uint32 diff)
+{
+    if (_probeHost.empty() || !_probeIntervalMs)
+        return;
+
+    if (_probeFuture.valid())
+    {
+        if (_probeFuture.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            return;
+        bool const up = _probeFuture.get();
+        if (!up && IsLogDatabaseAvailable())
+        {
+            _probeDown = true;
+            _logOffReason = Trinity::StringFormat("bot log database {}:{} unreachable, re-probing every {} s", _probeHost, _probePort, _probeIntervalMs / 1000);
+            TC_LOG_ERROR("server.worldserver", "Bot log is OFF: {}", _logOffReason);
+            _posIntervalMs.store(0, std::memory_order_relaxed);
+            _logAvailable.store(false, std::memory_order_relaxed);
+        }
+        else if (up && _probeDown)
+        {
+            _probeDown = false;
+            _logOffReason.clear();
+            _posIntervalMs.store(_posBaseMs, std::memory_order_relaxed);
+            _logAvailable.store(true, std::memory_order_relaxed);
+            TC_LOG_WARN("server.worldserver", "Bot log database {}:{} reachable again: bot logging is back ON", _probeHost, _probePort);
+        }
+        return;
+    }
+
+    if ((_probeSinceMs += diff) >= _probeIntervalMs)
+    {
+        _probeSinceMs = 0;
+        _probeFuture = std::async(std::launch::async, ProbeTcp, _probeHost, _probePort);
+    }
+}
+
 void BotMgr::Update(uint32 diff)
 {
     ++_ticks;
@@ -235,9 +303,14 @@ void BotMgr::Update(uint32 diff)
 
     ProcessLogins();
     ProcessBotTeleports();
+    UpdateProbe(diff);
 
     if (!IsLogDatabaseAvailable())
         return;
+
+    // bot_pos interval scales with the bots online (Bot.Log.PosIntervalSec up to Bot.Log.PosScaleBots bots, the slow interval above)
+    if (_posBaseMs)
+        _posIntervalMs.store((_onlineCount > _posScaleBots) ? std::max(_posBaseMs, _posSlowMs) : _posBaseMs, std::memory_order_relaxed);
 
     if ((_logSinceFlushMs += diff) >= _logFlushIntervalMs)
         FlushLog();
@@ -301,7 +374,14 @@ std::string BotMgr::GetStatus() const
     if (IsLogDatabaseAvailable())
         out << "on, " << GetBufferedLogEvents() << " events buffered";
     else
-        out << "off (BotLogDatabaseInfo not set)";
+        out << "off (" << (_logOffReason.empty() ? std::string("BotLogDatabaseInfo not set") : _logOffReason) << ")";
+    if (IsLogDatabaseAvailable())
+    {
+        std::lock_guard<std::mutex> lock(_logMutex);
+        if (_droppedEvents || _droppedPos || _droppedFailed)
+            out << ", dropped since last report: " << _droppedEvents << " events, " << _droppedPos << " positions, " << _droppedFailed << " in failed batches";
+        out << ", " << _inFlight.size() << " batches in flight";
+    }
     return out.str();
 }
 
@@ -313,15 +393,53 @@ void BotMgr::SetLogDatabaseAvailable(bool available)
         _logMinSeverity = uint8(std::clamp<int32>(minSeverity, BOTLOG_TRACE, BOTLOG_ERROR));
         _logFlushIntervalMs = uint32(std::max<int32>(100, sConfigMgr->GetIntDefault("BotLog.FlushIntervalMs", 1000)));
         _logMaxBatch = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("BotLog.MaxBatch", 500)));
+        _repeatCap = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.RepeatCap", 3), 0, 100000));
+        _logBufferMax = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.BufferMax", 200000), 1000, 50000000));
+        _posBufferMax = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.PosBufferMax", 100000), 1000, 50000000));
+        _flushRetries = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.FlushRetries", 3), 0, 20));
+        _hotSplit = sConfigMgr->GetBoolDefault("Bot.Log.HotSplit", false) && BotLogHasHotTable.load(std::memory_order_relaxed);
+        if (sConfigMgr->GetBoolDefault("Bot.Log.HotSplit", false) && !_hotSplit)
+            TC_LOG_WARN("server.worldserver", "Bot.Log.HotSplit is set but the bot_event_hot table does not exist in the bot log database (run forever-botlog-migrate-1.sql): hot rows stay in bot_event");
+        _hotTypes.clear();
+        std::string const hotTypesCfg = sConfigMgr->GetStringDefault("Bot.Log.HotTypes", "decision,state_change,trace");
+        for (std::string_view tok : Trinity::Tokenize(hotTypesCfg, ',', false))
+        {
+            std::string t(tok);
+            std::transform(t.begin(), t.end(), t.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+            if (!t.empty())
+                _hotTypes.insert(std::move(t));
+        }
         int32 const posSec = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.PosIntervalSec", 5), 0, 3600);
-        _posIntervalMs.store(uint32(posSec) * 1000, std::memory_order_relaxed);
-        TC_LOG_INFO("server.worldserver", "Bot position samples: {}", posSec ? Trinity::StringFormat("every {} s per moving bot", posSec) : std::string("off"));
-        TC_LOG_INFO("server.worldserver", "Bot log enabled (min severity {}, flush every {} ms, batches of up to {} events)",
-            _logMinSeverity, _logFlushIntervalMs, _logMaxBatch);
+        int32 const posSlowSec = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.PosIntervalSlowSec", 15), posSec, 3600);
+        _posBaseMs = uint32(posSec) * 1000;
+        _posSlowMs = uint32(posSlowSec) * 1000;
+        _posScaleBots = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.PosScaleBots", 500), 0, 100000));
+        _posIntervalMs.store(_posBaseMs, std::memory_order_relaxed);
+        _logOffReason.clear();
+        _probeDown = false;
+        _probeIntervalMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.ProbeIntervalSec", 10), 0, 3600)) * 1000;
+        _probeHost.clear();
+        _probePort.clear();
+        {
+            std::string const info = sConfigMgr->GetStringDefault("BotLogDatabaseInfo", "", true);
+            auto const tok = Trinity::Tokenize(info, ';', true);
+            if (tok.size() >= 2 && !tok[0].empty() && tok[0] != "." && !tok[1].empty() && std::all_of(tok[1].begin(), tok[1].end(), [](unsigned char c) { return std::isdigit(c) != 0; }))
+            {
+                _probeHost = std::string(tok[0]);
+                _probePort = std::string(tok[1]);
+            }
+        }
+        TC_LOG_INFO("server.worldserver", "Bot position samples: {}", posSec ? Trinity::StringFormat("every {} s per moving bot ({} s above {} bots online)", posSec, posSlowSec, _posScaleBots) : std::string("off"));
+        TC_LOG_INFO("server.worldserver", "Bot log enabled (min severity {}, flush every {} ms, batches of up to {} events, buffer cap {} events / {} positions, {} retries, hot split {})",
+            _logMinSeverity, _logFlushIntervalMs, _logMaxBatch, _logBufferMax, _posBufferMax, _flushRetries, _hotSplit ? "on" : "off");
     }
-
-    if (!available)
+    else
+    {
         _posIntervalMs.store(0, std::memory_order_relaxed);
+        _probeHost.clear(); // StopDB closes the pool: the probe must not switch logging back on
+        if (!_logOffReason.empty())
+            TC_LOG_ERROR("server.worldserver", "Bot log is OFF: {}. The server runs without bot logging.", _logOffReason);
+    }
     _logAvailable.store(available, std::memory_order_relaxed);
 }
 
@@ -336,14 +454,135 @@ void BotMgr::LogPosition(BotPosSample&& sample)
     bool flushNow;
     {
         std::lock_guard<std::mutex> lock(_logMutex);
-        if (_posBuffer.size() >= 100000) // database stalled: drop samples rather than grow without limit
+        if (_posBuffer.size() >= _posBufferMax) // database stalled: drop samples rather than grow without limit, and count them
+        {
+            if (!_droppedEvents && !_droppedPos && !_droppedFailed)
+            {
+                _dropWindowStart = sample.Timestamp;
+                TC_LOG_ERROR("server.worldserver", "Bot log: the position buffer is full ({} samples), the database is not keeping up. Dropping samples (counted, reported as log_dropped when it recovers).", _posBufferMax);
+            }
+            ++_droppedPos;
             return;
+        }
         _posBuffer.push_back(sample);
         flushNow = _posBuffer.size() >= _logMaxBatch;
     }
 
     if (flushNow)
         _logSinceFlushMs = _logFlushIntervalMs;
+}
+
+namespace
+{
+// Events that repeat while a bot is stuck in the same situation: capped per (bot, type, reason, quest, target) per login.
+bool IsRepeatCapped(BotEvent const& e)
+{
+    if (e.Type == "quest_blocked")
+        return true;
+    return e.Reason == "NO_PROGRESS" || e.Reason == "UNREACHABLE_TARGET" || e.Reason == "TEST_IDLE" || e.Reason == "TEST_IDLE_NOTE";
+}
+
+std::string JsonCode(std::string const& s)
+{
+    std::string out;
+    for (char c : s)
+    {
+        if (c == '"' || c == '\\')
+            out += '\\';
+        if (static_cast<unsigned char>(c) >= 0x20)
+            out += c;
+    }
+    return out;
+}
+}
+
+// _logMutex held. Builds the LOG_SUPPRESSED row for a bot (empty when nothing is pending) and clears the pending counters.
+static bool BuildSuppressedRow(uint64 guid, uint64 session, auto& pending, uint32 cap, double ts, BotEvent& out)
+{
+    if (pending.empty())
+        return false;
+    uint32 total = 0;
+    std::string list;
+    for (auto const& [key, p] : pending)
+    {
+        total += p.Suppressed;
+        if (!list.empty())
+            list += ',';
+        list += Trinity::StringFormat(R"({{"type":"{}","reason":"{}","quest_id":{},"target_entry":{},"count":{}}})", JsonCode(p.Type), JsonCode(p.Reason), p.QuestId, p.Entry, p.Suppressed);
+    }
+    pending.clear();
+    out = BotEvent();
+    out.BotGuid = guid;
+    out.Type = "decision";
+    out.Severity = BOTLOG_INFO;
+    out.Reason = "LOG_SUPPRESSED";
+    out.Summary = Trinity::StringFormat("{} repeated log rows suppressed (cap {} per login)", total, cap);
+    out.Details = Trinity::StringFormat(R"({{"total":{},"cap":{},"suppressed":[{}]}})", total, cap, list);
+    out.Timestamp = ts;
+    out.SessionSeq = session;
+    return true;
+}
+
+// _logMutex held. Returns true when the event is dropped (over the cap); otherwise any pending suppressed counters are
+// turned into a LOG_SUPPRESSED row in `extra` (written before the event that ended the repeat).
+bool BotMgr::ApplyRepeatCap(BotEvent const& event, std::vector<BotEvent>& extra)
+{
+    if (!_repeatCap)
+        return false;
+    BotLogState& st = _botLogState[event.BotGuid];
+    if (IsRepeatCapped(event))
+    {
+        std::string key = event.Type + '|' + event.Reason + '|' + std::to_string(event.QuestId.value_or(0)) + '|' + std::to_string(event.TargetEntry.value_or(0));
+        if (++st.Counts[key] > _repeatCap)
+        {
+            LogRepeat& p = st.Pending[key];
+            if (!p.Suppressed)
+            {
+                p.Type = event.Type;
+                p.Reason = event.Reason;
+                p.QuestId = event.QuestId.value_or(0);
+                p.Entry = event.TargetEntry.value_or(0);
+            }
+            ++p.Suppressed;
+            p.LastTs = event.Timestamp;
+            return true;
+        }
+    }
+    BotEvent row;
+    if (BuildSuppressedRow(event.BotGuid, st.Session, st.Pending, _repeatCap, event.Timestamp, row))
+    {
+        row.Level = event.Level;
+        row.MapId = event.MapId;
+        row.ZoneId = event.ZoneId;
+        extra.push_back(std::move(row));
+    }
+    return false;
+}
+
+void BotMgr::FlushSuppressed(uint64 botGuid)
+{
+    if (!IsLogDatabaseAvailable())
+        return;
+    std::lock_guard<std::mutex> lock(_logMutex);
+    auto it = _botLogState.find(botGuid);
+    if (it == _botLogState.end())
+        return;
+    BotEvent row;
+    double const now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+    if (BuildSuppressedRow(botGuid, it->second.Session, it->second.Pending, _repeatCap, now, row))
+        _logBuffer.push_back(std::move(row));
+}
+
+void BotMgr::BeginLogSession(BotInfo& bot)
+{
+    std::lock_guard<std::mutex> lock(_logMutex);
+    if (!_nextSession)
+        _nextSession = uint64(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count()) * 1000;
+    bot.SessionSeq = ++_nextSession;
+    BotLogState& st = _botLogState[bot.Guid];
+    st.Session = bot.SessionSeq;
+    st.Counts.clear();
+    st.Pending.clear();
 }
 
 void BotMgr::LogEvent(BotEvent&& event)
@@ -354,9 +593,32 @@ void BotMgr::LogEvent(BotEvent&& event)
     if (event.Timestamp == 0.0)
         event.Timestamp = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
 
+    BotAlts::TagEvent(event); // source = alt in details for alt bots (A3)
+
     bool flushNow;
     {
         std::lock_guard<std::mutex> lock(_logMutex);
+        if (!event.SessionSeq)
+        {
+            auto it = _botLogState.find(event.BotGuid);
+            if (it != _botLogState.end())
+                event.SessionSeq = it->second.Session;
+        }
+        std::vector<BotEvent> extra;
+        if (ApplyRepeatCap(event, extra))
+            return;
+        if (_logBuffer.size() + extra.size() >= _logBufferMax) // database stalled: drop and count instead of growing without limit
+        {
+            if (!_droppedEvents && !_droppedPos && !_droppedFailed)
+            {
+                _dropWindowStart = event.Timestamp;
+                TC_LOG_ERROR("server.worldserver", "Bot log: the event buffer is full ({} events), the database is not keeping up. Dropping events (counted, reported as log_dropped when it recovers).", _logBufferMax);
+            }
+            _droppedEvents += 1 + extra.size();
+            return;
+        }
+        for (BotEvent& x : extra)
+            _logBuffer.push_back(std::move(x));
         _logBuffer.push_back(std::move(event));
         flushNow = _logBuffer.size() >= _logMaxBatch;
     }
@@ -386,9 +648,180 @@ size_t BotMgr::GetBufferedLogEvents() const
     return _logBuffer.size();
 }
 
+// Hot rows (Bot.Log.HotSplit): decision/state_change/trace events go to bot_event_hot (short retention). COMBAT_SUMMARY and
+// LOG_SUPPRESSED are decision rows too but stay in the archive table (low volume, needed for the long analysis).
+bool BotMgr::IsHotEvent(BotEvent const& e) const
+{
+    if (!_hotSplit || !BotLogHasHotTable.load(std::memory_order_relaxed))
+        return false;
+    if (e.Reason == "COMBAT_SUMMARY" || e.Reason == "LOG_SUPPRESSED" || e.Reason == "LOG_DROPPED")
+        return false;
+    std::string type = e.Type;
+    std::transform(type.begin(), type.end(), type.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    return _hotTypes.count(type) != 0;
+}
+
+void BotMgr::NoteDropped(uint64 events, uint64 pos, bool failed)
+{
+    std::lock_guard<std::mutex> lock(_logMutex);
+    if (!_droppedEvents && !_droppedPos && !_droppedFailed)
+        _dropWindowStart = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+    if (failed)
+        _droppedFailed += events + pos;
+    else
+    {
+        _droppedEvents += events;
+        _droppedPos += pos;
+    }
+}
+
+namespace
+{
+void BindEvent(BotLogDatabasePreparedStatement* stmt, BotEvent const& e, bool hasSession)
+{
+    uint8 i = 0;
+    stmt->setDouble(i++, e.Timestamp);
+    stmt->setUInt64(i++, e.BotGuid);
+    stmt->setString(i++, e.Type);
+    stmt->setUInt8(i++, e.Severity);
+
+    if (e.Reason.empty()) stmt->setNull(i++); else stmt->setString(i++, e.Reason);
+    if (e.Summary.empty()) stmt->setNull(i++); else stmt->setString(i++, e.Summary);
+
+    if (e.Level) stmt->setUInt8(i++, *e.Level); else stmt->setNull(i++);
+    if (e.MapId) stmt->setUInt16(i++, *e.MapId); else stmt->setNull(i++);
+    if (e.ZoneId) stmt->setUInt16(i++, *e.ZoneId); else stmt->setNull(i++);
+    if (e.X) stmt->setFloat(i++, *e.X); else stmt->setNull(i++);
+    if (e.Y) stmt->setFloat(i++, *e.Y); else stmt->setNull(i++);
+    if (e.Z) stmt->setFloat(i++, *e.Z); else stmt->setNull(i++);
+    if (e.QuestId) stmt->setUInt32(i++, *e.QuestId); else stmt->setNull(i++);
+    if (e.TargetEntry) stmt->setUInt32(i++, *e.TargetEntry); else stmt->setNull(i++);
+
+    // details is bound three times (see BOTLOG_INS_EVENT)
+    for (int n = 0; n < 3; ++n)
+    {
+        if (e.Details.empty()) stmt->setNull(i++); else stmt->setString(i++, e.Details);
+    }
+    if (hasSession)
+    {
+        if (e.SessionSeq) stmt->setUInt64(i++, e.SessionSeq); else stmt->setNull(i++);
+    }
+}
+}
+
+// One transaction per flush (positions and events together), handed to the async pool and tracked in _inFlight.
+void BotMgr::SubmitBatch(std::vector<BotEvent>&& events, std::vector<BotPosSample>&& pos, uint32 attempts, bool /*sync*/)
+{
+    bool const hasSession = BotLogHasSessionSeq.load(std::memory_order_relaxed);
+    BotLogDatabaseTransaction trans = BotLogDatabase.BeginTransaction();
+
+    for (BotPosSample const& p : pos)
+    {
+        BotLogDatabasePreparedStatement* stmt = BotLogDatabase.GetPreparedStatement(BOTLOG_INS_POS);
+        uint8 i = 0;
+        stmt->setDouble(i++, p.Timestamp);
+        stmt->setUInt64(i++, p.BotGuid);
+        stmt->setUInt16(i++, p.MapId);
+        stmt->setUInt16(i++, p.ZoneId);
+        stmt->setFloat(i++, p.X);
+        stmt->setFloat(i++, p.Y);
+        stmt->setFloat(i++, p.Z);
+        stmt->setUInt8(i++, p.Flags);
+        trans->Append(stmt);
+    }
+
+    for (BotEvent const& e : events)
+    {
+        BotLogDatabasePreparedStatement* stmt = BotLogDatabase.GetPreparedStatement(IsHotEvent(e) ? BOTLOG_INS_EVENT_HOT : BOTLOG_INS_EVENT);
+        BindEvent(stmt, e, hasSession);
+        trans->Append(stmt);
+    }
+
+    _inFlight.emplace_back(BotLogDatabase.AsyncCommitTransaction(trans));
+    InFlight& f = _inFlight.back();
+    f.Events = std::move(events);
+    f.Pos = std::move(pos);
+    f.Attempts = attempts;
+}
+
+// Collects the results of the async batches. A failed transaction is re-submitted (Bot.Log.FlushRetries), then dropped and counted.
+// The first success after drops queues one log_dropped event with the counts.
+void BotMgr::PollInFlight()
+{
+    bool anySuccess = false;
+    for (auto it = _inFlight.begin(); it != _inFlight.end();)
+    {
+        std::future<bool>& fut = it->Callback.m_future;
+        if (!fut.valid())
+        {
+            it = _inFlight.erase(it);
+            continue;
+        }
+        if (fut.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        {
+            ++it;
+            continue;
+        }
+
+        bool ok = false;
+        try { ok = fut.get(); } catch (...) { ok = false; }
+
+        if (ok)
+        {
+            anySuccess = true;
+            it = _inFlight.erase(it);
+            continue;
+        }
+
+        InFlight failed = std::move(*it);
+        it = _inFlight.erase(it);
+        if (failed.Attempts <= _flushRetries && IsLogDatabaseAvailable())
+        {
+            TC_LOG_ERROR("server.worldserver", "Bot log: batch of {} events / {} positions failed (attempt {} of {}), retrying",
+                failed.Events.size(), failed.Pos.size(), failed.Attempts, _flushRetries + 1);
+            SubmitBatch(std::move(failed.Events), std::move(failed.Pos), failed.Attempts + 1, false);
+        }
+        else
+        {
+            TC_LOG_ERROR("server.worldserver", "Bot log: batch of {} events / {} positions failed {} times, dropped",
+                failed.Events.size(), failed.Pos.size(), failed.Attempts);
+            NoteDropped(failed.Events.size(), failed.Pos.size(), true);
+        }
+    }
+
+    if (!anySuccess)
+        return;
+
+    // The database took a batch: report what was dropped since the last report as one row (bypasses the buffer cap).
+    std::lock_guard<std::mutex> lock(_logMutex);
+    if (!_droppedEvents && !_droppedPos && !_droppedFailed)
+        return;
+    double const now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+    BotEvent row;
+    row.BotGuid = 0;
+    row.Type = "log";
+    row.Severity = BOTLOG_WARN;
+    row.Reason = "LOG_DROPPED";
+    row.Summary = Trinity::StringFormat("{} events and {} positions dropped (buffer full), {} rows lost in failed batches", _droppedEvents, _droppedPos, _droppedFailed);
+    row.Details = Trinity::StringFormat(R"({{"events_dropped":{},"pos_dropped":{},"rows_in_failed_batches":{},"window_start":{:.3f},"window_end":{:.3f},"window_s":{:.1f}}})",
+        _droppedEvents, _droppedPos, _droppedFailed, _dropWindowStart, now, now - _dropWindowStart);
+    row.Timestamp = now;
+    _logBuffer.push_back(std::move(row));
+    TC_LOG_WARN("server.worldserver", "Bot log recovered: {} events, {} positions dropped and {} rows lost in failed batches since {:.0f} s ago",
+        _droppedEvents, _droppedPos, _droppedFailed, now - _dropWindowStart);
+    _droppedEvents = _droppedPos = _droppedFailed = 0;
+    _dropWindowStart = 0.0;
+}
+
 void BotMgr::FlushLog(bool sync)
 {
     _logSinceFlushMs = 0;
+
+    PollInFlight();
+
+    // At most 16 batches in the async queue: when the database is slow the rows stay in the (capped) buffers.
+    if (!sync && _inFlight.size() >= 16)
+        return;
 
     std::vector<BotEvent> batch;
     std::vector<BotPosSample> posBatch;
@@ -398,70 +831,30 @@ void BotMgr::FlushLog(bool sync)
         posBatch.swap(_posBuffer);
     }
 
-    if (!IsLogDatabaseAvailable())
+    if (IsLogDatabaseAvailable() && (!batch.empty() || !posBatch.empty()))
+        SubmitBatch(std::move(batch), std::move(posBatch), 1, sync);
+
+    if (!sync)
         return;
 
-    if (!posBatch.empty())
+    // Shutdown: wait (bounded) for everything in flight, including retries, so that the logout events are not lost.
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (!_inFlight.empty() && !_probeDown && std::chrono::steady_clock::now() < deadline)
     {
-        BotLogDatabaseTransaction posTrans = BotLogDatabase.BeginTransaction();
-        for (BotPosSample const& p : posBatch)
+        if (_inFlight.front().Callback.m_future.valid())
+            _inFlight.front().Callback.m_future.wait_for(std::chrono::milliseconds(100));
+        PollInFlight();
+        // log_dropped may have been queued by the poll: write it too
+        std::vector<BotEvent> late;
         {
-            BotLogDatabasePreparedStatement* stmt = BotLogDatabase.GetPreparedStatement(BOTLOG_INS_POS);
-            uint8 i = 0;
-            stmt->setDouble(i++, p.Timestamp);
-            stmt->setUInt64(i++, p.BotGuid);
-            stmt->setUInt16(i++, p.MapId);
-            stmt->setUInt16(i++, p.ZoneId);
-            stmt->setFloat(i++, p.X);
-            stmt->setFloat(i++, p.Y);
-            stmt->setFloat(i++, p.Z);
-            stmt->setUInt8(i++, p.Flags);
-            posTrans->Append(stmt);
+            std::lock_guard<std::mutex> lock(_logMutex);
+            late.swap(_logBuffer);
         }
-        if (sync)
-            BotLogDatabase.DirectCommitTransaction(posTrans);
-        else
-            BotLogDatabase.CommitTransaction(posTrans);
+        if (!late.empty())
+            SubmitBatch(std::move(late), {}, 1, true);
     }
-
-    if (batch.empty())
-        return;
-
-    BotLogDatabaseTransaction trans = BotLogDatabase.BeginTransaction();
-    for (BotEvent const& e : batch)
-    {
-        BotLogDatabasePreparedStatement* stmt = BotLogDatabase.GetPreparedStatement(BOTLOG_INS_EVENT);
-        uint8 i = 0;
-        stmt->setDouble(i++, e.Timestamp);
-        stmt->setUInt64(i++, e.BotGuid);
-        stmt->setString(i++, e.Type);
-        stmt->setUInt8(i++, e.Severity);
-
-        if (e.Reason.empty()) stmt->setNull(i++); else stmt->setString(i++, e.Reason);
-        if (e.Summary.empty()) stmt->setNull(i++); else stmt->setString(i++, e.Summary);
-
-        if (e.Level) stmt->setUInt8(i++, *e.Level); else stmt->setNull(i++);
-        if (e.MapId) stmt->setUInt16(i++, *e.MapId); else stmt->setNull(i++);
-        if (e.ZoneId) stmt->setUInt16(i++, *e.ZoneId); else stmt->setNull(i++);
-        if (e.X) stmt->setFloat(i++, *e.X); else stmt->setNull(i++);
-        if (e.Y) stmt->setFloat(i++, *e.Y); else stmt->setNull(i++);
-        if (e.Z) stmt->setFloat(i++, *e.Z); else stmt->setNull(i++);
-        if (e.QuestId) stmt->setUInt32(i++, *e.QuestId); else stmt->setNull(i++);
-        if (e.TargetEntry) stmt->setUInt32(i++, *e.TargetEntry); else stmt->setNull(i++);
-
-        // details is bound three times (see BOTLOG_INS_EVENT)
-        for (int n = 0; n < 3; ++n)
-        {
-            if (e.Details.empty()) stmt->setNull(i++); else stmt->setString(i++, e.Details);
-        }
-
-        trans->Append(stmt);
-    }
-
-    if (sync)
-        BotLogDatabase.DirectCommitTransaction(trans);
-    else
-        BotLogDatabase.CommitTransaction(trans);
+    if (!_inFlight.empty())
+        TC_LOG_ERROR("server.worldserver", "Bot log: {} batches were still unwritten at shutdown (database unreachable?)", _inFlight.size());
 }
 
 // --- Bot characters and sessions ---------------------------------------------------------------------
@@ -762,7 +1155,7 @@ BotSpawnResult BotMgr::SpawnBots(uint32 count, uint8 classId, int8 faction, std:
         if (targets.size() >= count)
             break;
 
-        if (bot.State != BOT_OFFLINE || (classId && bot.Class != classId) || (faction >= 0 && bot.Horde != (faction == 1)))
+        if (bot.Alt || bot.State != BOT_OFFLINE || (classId && bot.Class != classId) || (faction >= 0 && bot.Horde != (faction == 1)))
             continue;
 
         targets.push_back(&bot);
@@ -826,7 +1219,7 @@ uint32 BotMgr::DespawnBots(std::string const& name)
     uint32 count = 0;
     for (auto& [guid, bot] : _bots)
     {
-        if (!all && !StringEqualI(name, bot.Name))
+        if ((!all && !StringEqualI(name, bot.Name)) || (all && bot.Alt)) // alts are logged out by name or by BotAlts only
             continue;
 
         switch (bot.State)
@@ -892,6 +1285,8 @@ std::vector<std::string> BotMgr::GetStats()
     std::map<uint8, uint32> classes, races;
     for (auto const& [guid, bot] : _bots)
     {
+        if (bot.Alt)
+            continue;
         ++factions[bot.Horde ? 1 : 0];
         ++classes[bot.Class];
         ++races[bot.Race];
@@ -918,7 +1313,7 @@ std::vector<std::string> BotMgr::GetStats()
     {
         uint32 alliance = 0, horde = 0;
         for (auto const& [guid, bot] : _bots)
-            if (bot.Class == classId)
+            if (bot.Class == classId && !bot.Alt)
                 ++(bot.Horde ? horde : alliance);
         lines.push_back(Trinity::StringFormat("  {}: alliance {}, horde {}", ClassName(classId), alliance, horde));
     }
@@ -957,6 +1352,8 @@ void BotMgr::StartLogin(BotInfo& bot)
 {
     BotQuest::EnsureIndex(); // world thread, once; static quest data for the quest strategy
     bot.Session = MakeBotSession(bot.AccountId, std::string(bot.AccountName));
+    if (bot.Alt)
+        bot.Session->SetAltBot();
     bot.State = BOT_LOGGING_IN;
     bot.LoginStartedMs = _uptimeMs;
     bot.Session->BeginBotLogin(ObjectGuid::Create<HighGuid::Player>(bot.Guid));
@@ -1084,10 +1481,14 @@ void BotMgr::FinishLogin(BotInfo& bot)
     bot.Y = player->GetPositionY();
     bot.Z = player->GetPositionZ();
 
+    BeginLogSession(bot);
     LogBotRegistration(bot.Guid, bot.Name, bot.Class, bot.Race, bot.Horde);
     LogLifecycle(bot, "state_change", "BOT_LOGIN", "bot logged in", BOTLOG_INFO, Trinity::StringFormat(
         R"({{"login_ms":{},"new_character":{},"account_id":{}}})", _uptimeMs - bot.LoginStartedMs, bot.JustCreated ? "true" : "false", bot.AccountId));
     bot.JustCreated = false;
+
+    if (bot.Alt && !bot.DespawnRequested)
+        BotAlts::OnAltLoggedIn(player);
 
     if (bot.DespawnRequested)
     {
@@ -1125,6 +1526,7 @@ void BotMgr::LogoutBot(BotInfo& bot, char const* reason)
         bot.Z = player->GetPositionZ();
     }
 
+    FlushSuppressed(bot.Guid);
     LogLifecycle(bot, "state_change", reason, "bot logged out", BOTLOG_INFO, Trinity::StringFormat(
         R"({{"online_ms":{}}})", _uptimeMs - bot.LoginStartedMs));
 
@@ -1144,6 +1546,81 @@ void BotMgr::LogoutBot(BotInfo& bot, char const* reason)
     bot.NotBeforeMs = _uptimeMs + BOT_RELOGIN_DELAY_MS;
 }
 
+bool BotMgr::StartAlt(uint64 guid, uint32 accountId, std::string const& accountName, std::string const& name, uint8 race, uint8 classId, uint8 gender, uint8 level, std::string& error)
+{
+    LoadRegistry();
+    auto [itr, inserted] = _bots.try_emplace(guid);
+    BotInfo& bot = itr->second;
+    if (!inserted && (!bot.Alt || bot.State != BOT_OFFLINE))
+    {
+        error = bot.Alt ? "already logged in as a bot" : "reserved bot character";
+        return false;
+    }
+
+    bot.Guid = guid;
+    bot.AccountId = accountId;
+    bot.AccountName = accountName;
+    bot.Name = name;
+    bot.Race = race;
+    bot.Class = classId;
+    bot.Gender = gender;
+    bot.Level = level;
+    bot.Horde = IsHordeRace(race);
+    bot.Alt = true;
+    bot.DespawnRequested = false;
+    bot.PendingLevel.reset();
+    bot.State = BOT_QUEUED;
+    _loginQueue.push_back(guid);
+    return true;
+}
+
+bool BotMgr::StopAlt(uint64 guid)
+{
+    auto itr = _bots.find(guid);
+    if (itr == _bots.end() || !itr->second.Alt)
+        return false;
+
+    BotInfo& bot = itr->second;
+    switch (bot.State)
+    {
+        case BOT_ONLINE:
+            LogoutBot(bot, "LOGOUT_ALT");
+            return true;
+        case BOT_LOGGING_IN:
+            bot.DespawnRequested = true;
+            return true;
+        case BOT_QUEUED:
+            bot.State = BOT_OFFLINE;
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool BotMgr::IsActiveAlt(uint64 guid) const
+{
+    auto itr = _bots.find(guid);
+    return itr != _bots.end() && itr->second.Alt && itr->second.State != BOT_OFFLINE;
+}
+
+uint32 BotMgr::CountActiveAlts(uint32 accountId) const
+{
+    uint32 n = 0;
+    for (auto const& [guid, bot] : _bots)
+        if (bot.Alt && bot.AccountId == accountId && bot.State != BOT_OFFLINE)
+            ++n;
+    return n;
+}
+
+std::vector<std::string> BotMgr::GetActiveAltNames(uint32 accountId) const
+{
+    std::vector<std::string> names;
+    for (auto const& [guid, bot] : _bots)
+        if (bot.Alt && bot.AccountId == accountId && bot.State != BOT_OFFLINE)
+            names.push_back(bot.Name);
+    return names;
+}
+
 void BotMgr::LogLifecycle(BotInfo const& bot, char const* type, char const* reason, char const* summary, uint8 severity, std::string details)
 {
     BotEvent event;
@@ -1159,5 +1636,6 @@ void BotMgr::LogLifecycle(BotInfo const& bot, char const* type, char const* reas
     event.Y = bot.Y;
     event.Z = bot.Z;
     event.Details = std::move(details);
+    event.SessionSeq = bot.SessionSeq;
     LogEvent(std::move(event));
 }

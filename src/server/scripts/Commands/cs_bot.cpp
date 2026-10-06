@@ -17,6 +17,7 @@
 
 #include "ScriptMgr.h"
 #include "BotAI.h"
+#include "BotAlts.h"
 #include "BotQuest.h"
 #include "BotChat.h"
 #include "BotCombat.h"
@@ -26,6 +27,7 @@
 #include "CellImpl.h"
 #include "Creature.h"
 #include "CreatureAI.h"
+#include "DB2Stores.h"
 #include "GridNotifiersImpl.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -97,6 +99,7 @@ public:
             { "state",   HandleBotStateCommand,   rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "path",    HandleBotPathCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "spells",  HandleBotSpellsCommand,  rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "alt",     HandleBotAltCommand,     rbac::RBAC_PERM_COMMAND_BOT_ALT, Console::Yes },
             { "ai",      botAiCommandTable },
         };
 
@@ -106,6 +109,12 @@ public:
         };
 
         return commandTable;
+    }
+
+    // bot alt add|remove|list [name] [test]: logs a character of the issuer's own account in/out as a bot (BotAlts.cpp).
+    static bool HandleBotAltCommand(ChatHandler* handler, std::string op, Optional<std::string> name, Optional<std::string> test)
+    {
+        return BotAlts::HandleCommand(handler, op, name ? *name : std::string(), test && *test == "test");
     }
 
     static bool HandleBotHelloCommand(ChatHandler* handler)
@@ -515,7 +524,7 @@ public:
                     ++count;
                 }
         handler->PSendSysMessage("%u creature(s) now attack %s.", count, player->GetName().c_str());
-        return count > 0;
+        return true;   // false would print the command usage text even though the command ran
     }
 
     // bot envdmg <name> <type 0-6> <amount>: test aid, environmental damage (0 fatigue, 1 drowning, 2 fall, 3 lava, 4 slime, 5 fire).
@@ -557,11 +566,35 @@ public:
     }
 
     // bot tele <name> <map> <x> <y> <z>: test aid, teleports a bot (the teleport handshake is completed by the BotMgr).
-    static bool HandleBotTeleCommand(ChatHandler* handler, std::string name, uint32 mapId, float x, float y, float z)
+    // A destination within 500 yd of the start point of a race of the other faction is refused (hostile guards kill the bot,
+    // see the Northshire deaths of 2026-10-06) unless the optional last argument is "force".
+    static bool HandleBotTeleCommand(ChatHandler* handler, std::string name, uint32 mapId, float x, float y, float z, Optional<std::string> force)
     {
         Player* player = FindOneBot(handler, name);
         if (!player)
             return false;
+        if (!(force && StringEqualI(*force, "force")))
+        {
+            for (ChrRacesEntry const* race : sChrRacesStore)
+            {
+                if (Player::TeamIdForRace(race->ID) == player->GetTeamId())
+                    continue;
+                PlayerInfo const* info = sObjectMgr->GetPlayerInfo(race->ID, player->GetClass());
+                if (!info || info->createPosition.Loc.GetMapId() != mapId || info->createPosition.Loc.GetExactDist2d(x, y) > 500.0f)
+                    continue;
+                BotEvent event;
+                event.BotGuid = player->GetGUID().GetCounter();
+                event.Type = "decision";
+                event.Severity = BOTLOG_WARN;
+                event.Reason = "TELE_REFUSED_FACTION";
+                event.Summary = Trinity::StringFormat("bot tele refused: destination is in the start zone of race {} (other faction)", uint32(race->ID));
+                event.MapId = uint16(mapId);
+                event.Details = Trinity::StringFormat(R"({{"source":"test_command","dest":{{"map":{},"x":{:.1f},"y":{:.1f},"z":{:.1f}}},"enemy_race":{}}})", mapId, x, y, z, uint32(race->ID));
+                sBotMgr->LogEvent(std::move(event));
+                handler->PSendSysMessage("%s: teleport refused, the destination is in the start zone of an enemy race (%u); add 'force' as the last argument to override.", player->GetName().c_str(), uint32(race->ID));
+                return false;
+            }
+        }
         bool const ok = player->TeleportTo(mapId, x, y, z, player->GetOrientation());
         handler->PSendSysMessage("%s teleport to map %u (%.1f, %.1f, %.1f): %s", player->GetName().c_str(), mapId, x, y, z, ok ? "started" : "refused");
         return ok;
