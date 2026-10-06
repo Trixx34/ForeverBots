@@ -750,12 +750,25 @@ BotPathInfo BotMotion::QueryPath(Player* bot, float x, float y, float z)
     // NOT_USING_PATH together with FARFROMPOLY means the navmesh exists but the start or destination is not on it (water, inside rock):
     // that is a path failure, not a missing navmesh
     info.OffMesh = (info.Type & PATHFIND_NOT_USING_PATH) && (info.Type & PATHFIND_FARFROMPOLY);
+    info.GoalOffMesh = (info.Type & PATHFIND_FARFROMPOLY_END) != 0;
+    if (info.Type == PATHFIND_NOPATH)
+    {
+        // no polygon at all near the start or the goal ("hole in the mesh"): a path from the bot to its own position tells which one
+        PathGenerator probe(bot);
+        probe.CalculatePath(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), false);
+        if (uint32(probe.GetPathType()) & PATHFIND_NOPATH)
+            info.StartOffMesh = true;
+        else
+            info.GoalOffMesh = true;
+    }
+    info.OffMesh = info.OffMesh || info.StartOffMesh || (info.NoPath && info.GoalOffMesh);
     info.NoPath = info.NoPath || info.OffMesh;
     info.MmapMissing = (info.Type & PATHFIND_NOT_USING_PATH) && !(info.Type & PATHFIND_FARFROMPOLY);
     info.Partial = (info.Type & PATHFIND_INCOMPLETE) != 0;
     info.Length = path.GetPathLength();
     G3D::Vector3 const end = path.GetActualEndPosition();
     info.EndGap = std::sqrt((end.x - x) * (end.x - x) + (end.y - y) * (end.y - y));
+    info.EndGap3D = std::sqrt((end.x - x) * (end.x - x) + (end.y - y) * (end.y - y) + (end.z - z) * (end.z - z));
     info.Valid = !info.NoPath && !info.MmapMissing;
     return info;
 }
@@ -831,11 +844,13 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
         BotPathInfo const pi = QueryPath(bot, _x, _y, _z);
         if (!quiet)
             ai->EmitEvent(bot, "decision", BOTLOG_INFO, "GOTO_START", StringFormat("walking to the {} goal", _tag),
-                StringFormat(R"({{"tag":"{}","goal":{},"distance":{:.0f},"path_length":{:.0f},"partial":{},"end_gap":{:.0f},"path_type":{}}})",
-                    _tag, Pos3(_x, _y, _z), dist, pi.Length, pi.Partial ? "true" : "false", pi.EndGap, pi.Type));
+                StringFormat(R"({{"tag":"{}","goal":{},"distance":{:.0f},"path_length":{:.0f},"partial":{},"end_gap":{:.0f},"end_gap_3d":{:.0f},"goal_far_from_poly":{},"path_type":{}}})",
+                    _tag, Pos3(_x, _y, _z), dist, pi.Length, pi.Partial ? "true" : "false", pi.EndGap, pi.EndGap3D, pi.GoalOffMesh ? "true" : "false", pi.Type));
         if (pi.NoPath)
-            return Fail(ai, bot, "path_fail", "NO_PATH", pi.OffMesh ? "goal is not on the navmesh (water or inside terrain)" : "no path to the goal",
-                StringFormat(R"("path_type":{},"off_navmesh":{})", pi.Type, pi.OffMesh ? "true" : "false"));
+            return Fail(ai, bot, "path_fail", "NO_PATH", pi.StartOffMesh ? "the bot stands off the navmesh (no polygon near its position)" :
+                pi.OffMesh ? "goal is not on the navmesh (water, inside terrain or under a structure)" : "no path to the goal (regions not connected)",
+                StringFormat(R"("path_type":{},"off_navmesh":{},"start_off_navmesh":{},"goal_off_navmesh":{})", pi.Type, pi.OffMesh ? "true" : "false",
+                    pi.StartOffMesh ? "true" : "false", pi.GoalOffMesh ? "true" : "false"));
         if (pi.MmapMissing)
             return Fail(ai, bot, "path_fail", "MMAP_MISSING", "no navmesh for this map or area", StringFormat(R"("path_type":{})", pi.Type));
         _issueMs = 0;

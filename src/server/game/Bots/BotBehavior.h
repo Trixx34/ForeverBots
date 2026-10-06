@@ -39,7 +39,10 @@ struct BotPathInfo
     bool OffMesh = false;      // the start or the destination is not on the navmesh (water, inside terrain)
     bool Partial = false;      // PATHFIND_INCOMPLETE
     float Length = 0.0f;       // path length in yards
-    float EndGap = 0.0f;       // distance between the path end and the requested target
+    float EndGap = 0.0f;       // distance between the path end and the requested target (2D)
+    float EndGap3D = 0.0f;     // same in 3D (a ledge above or a floor below the goal shows only here)
+    bool StartOffMesh = false; // NOPATH because the bot itself stands where there is no navmesh (no polygon within reach)
+    bool GoalOffMesh = false;  // the destination is more than 7 yards (3D) from the nearest navmesh polygon (path is partial or absent)
     uint32 Type = 0;           // raw PathType bits
 };
 
