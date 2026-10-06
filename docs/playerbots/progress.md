@@ -67,3 +67,24 @@ event; config is read once (no reload); trace rows are INFO severity by design (
   that added 0 rows. Tick cost: time inside `SamplePosition` about 0.5 us per tick while idle (7.3 ms over 14420 ticks), about 8 us per
   sample taken; at 360 ticks/s that is 0.2 ms of CPU per second (0.02 % of a core). Whole-tick average stayed about 2.1 us (it was 0.96 us
   in the Phase 2 run; the two extra clock reads and the position checks account for part of it, rest is noise between runs).
+
+## Phase 3: non-combat basics (verified on the sim 2026-10-06, not committed)
+
+- Walking with mmaps, arrival, NO_PATH, stuck (NO_PROGRESS then UNREACHABLE_TARGET), eat, drink, eat+drink together (EAT_START/DRINK_START/
+  EAT_DONE/DRINK_DONE/REST_END rows), follow, stay, bot_pos moving flag: all seen in bot_event/bot_pos.
+- Dead recovery: kill -> DIED -> RELEASE_SPIRIT (3-8 s) -> CORPSE_RUN_START -> CORPSE_RECLAIMED -> REVIVED; spirit healer fallback
+  (SPIRIT_HEALER_PLAN -> FOUND -> SPIRIT_HEALED -> REVIVED, sickness logged); unreachable/off-navmesh corpse -> healer. The 23 bots that
+  were dead before the deploy recovered. Restart while dead: two bots killed, worldserver restarted within seconds, `bot spawn 180`: both
+  logged in dead with a fresh AI and recovered (one by corpse reclaim, one by spirit healer, CORPSE_UNREACHABLE plan).
+- Tick cost, 180 bots (re-measured with a true idle window, no bot moving): idle 3.4 us avg, max 299 us (the Phase 2 / telemetry baseline
+  was about 2.1 us; the rest/goto/follow/hold triggers evaluated every tick account for the difference). Burst of 120 simultaneous gotos:
+  first 6.5 s avg 10.9 us (max 0.9 ms), over 22 s (path queries plus walking) avg 21.7 us, worst single tick 4.4 ms (a tick that
+  loaded grids and ran a path query), total 223 ms in 22 s = about 1 % of a core. Tail after the burst 4.7 us. Process CPU 34-37 % of one
+  core in all windows (dominated by the core: 180 sessions, maps, movement), the AI is not visible in it.
+- Goto burst outcome (120 bots, goal 108 yd away, random start positions): 128 GOTO_START, 56 GOTO_ARRIVED, 43 NO_PATH (path_type 8 = core
+  NOPATH, off_navmesh false), 16 UNREACHABLE_TARGET. The 16 stuck bots are all dwarf/gnome race-3 bots stacked at one spawn point
+  (-6094, 818.8, 429.7), 46 yd above the grounded goal z: `bot path` from there gives a zero-length path to its own spot and NOPATH to
+  anything 36+ yd away, so their start poly is isolated: a test artifact of the sim spawn position, not a stuck-detection defect (the
+  detector fired as designed). The NO_PATH causes (goal region unconnected vs start isolated) were not investigated further.
+- Not verified: far (cross-map) teleport handshake, instance/battleground deaths, Hardcore path, killer capture in the death event, real
+  consumables from bags (FreeFood placeholder), grid-load memory for many far goals, follow across maps, a long partial-path goto.

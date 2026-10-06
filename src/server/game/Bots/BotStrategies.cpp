@@ -178,4 +178,6 @@ void RegisterBuiltinBotObjects(BotRegistry& r)
             m.push_back("quiet_noisy");
         });
     });
+
+    RegisterPhase3BotObjects(r);
 }

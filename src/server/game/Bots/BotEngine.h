@@ -52,6 +52,7 @@ namespace BotRelevance
     constexpr float Normal    = 10.0f;
     constexpr float High      = 20.0f;
     constexpr float Move      = 30.0f;
+    constexpr float Rest      = 35.0f; // eat/drink outranks walking (the rest hold multiplier then blocks movement)
     constexpr float Interrupt = 40.0f;
     constexpr float Dispel    = 50.0f;
     constexpr float Raid      = 60.0f;
@@ -66,7 +67,8 @@ enum BotActionFlags : uint32
 {
     ACTION_FLAG_NONE  = 0,
     ACTION_FLAG_NOISY = 0x1,  // chatty/cosmetic, suppressed by quiet-style multipliers
-    ACTION_FLAG_QUIET_LOG = 0x2 // executing it is only logged when the bot trace switch is on (it reports its own transitions)
+    ACTION_FLAG_QUIET_LOG = 0x2, // executing it is only logged when the bot trace switch is on (it reports its own transitions)
+    ACTION_FLAG_MOVES = 0x4     // starts or continues walking; multipliers (stay, resting) can forbid it
 };
 
 // Base of everything a bot AI instantiates: knows its name and its BotAI.
@@ -235,6 +237,8 @@ private:
 
 // Defined in BotStrategies.cpp: registers the built-in test strategies and their parts.
 void RegisterBuiltinBotObjects(BotRegistry& registry);
+// Defined in BotBehavior.cpp (Phase 3): movement, follow/stay, rest (eat/drink) and death recovery.
+void RegisterPhase3BotObjects(BotRegistry& registry);
 
 // One engine: the active strategies of one BotState, the merged trigger/action wiring and the action queue.
 class BotEngine

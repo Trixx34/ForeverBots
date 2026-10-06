@@ -197,6 +197,7 @@ private:
     bool CreateBot(uint8 raceId, uint8 classId, BotInfo& out, std::string& error);
     void StartLogin(BotInfo& bot);
     void ProcessLogins();
+    void ProcessBotTeleports(); // completes the teleports of bots (they have no client to acknowledge them)
     void FinishCreate(uint64 guid, bool success);
     void FinishLogin(BotInfo& bot);
     void FailLogin(BotInfo& bot, char const* reason);

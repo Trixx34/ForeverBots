@@ -112,3 +112,41 @@ Use the existing `revive <name>` to revive a bot.
 ## Config (worldserver.conf.dist, PLAYER BOTS block)
 `Bot.AI.Enabled`, `Bot.AI.TickMs`, `Bot.AI.TestStrategy`, `Bot.AI.Test.IdleSec`, `Bot.AI.Test.CombatSec`. Read once at first
 use (not reloadable); `bot ai on|off` pauses ticking at runtime.
+
+## Phase 3: non-combat basics (BotBehavior.cpp/.h)
+
+Everything is a strategy/trigger/action in the Phase 2 engine and is switchable with `bot strategy <name> +/-<strategy>`.
+Defaults come from config: NonCombat `rest,goto,follow`, Combat empty, Dead `recover`.
+
+| Strategy | Engine | Trigger -> action (relevance) |
+|---|---|---|
+| goto | NonCombat | has_goal -> move_to_goal (Move) |
+| follow | NonCombat | follow_active -> follow_leader (Move); starts above 10 yd, arrives at 5 yd |
+| stay | NonCombat | hold_active -> stop_moving (High) + multiplier hold_position (blocks MOVES actions) |
+| rest | NonCombat | need_eat/need_drink -> eat/drink (Rest = 35); resting -> rest_tick (34) + multiplier resting_hold |
+| recover | Dead | recover_tick -> release_spirit 90, reclaim_corpse 89, spirit_heal 88, corpse_run 87 |
+
+- Movement: `BotMotion` (one per bot) holds a goal; `Step` issues `PathGenerator` (mmaps) paths through `MoveSplineInit::MovebyPath`,
+  arrival by distance, "moving" = spline not finalized. Stuck = no 2 yd progress for `Bot.AI.Move.StuckSec` (8 s): re-path, after
+  `StuckRepaths` (3) episodes give up (`stuck` UNREACHABLE_TARGET). `EnsureGrids` loads the grids along the line first (a destination in an
+  unloaded grid has no navmesh tile and looks like MMAP_MISSING). PathType NOPATH, or NOT_USING_PATH with FARFROMPOLY = off navmesh -> NO_PATH;
+  NOT_USING_PATH alone = MMAP_MISSING.
+- Recovery state is derived from game state every tick (ghost flag, HasCorpse, corpse location); only timers are stored (`BotRecover`).
+  release after a random `Release.MinSec..MaxSec` (3-8 s) via the real `HandleRepopRequest`; corpse on another map, no corpse, path
+  unreachable/partial, off navmesh or farther than `Recover.MaxCorpseRunYards` (1200) -> spirit healer (`HandleSpiritHealerActivate`);
+  otherwise walk to within 20 yd of the corpse, `HandleReclaimCorpse` once in 35 yd and the core reclaim delay has passed.
+  Resurrection sickness is read from the revive spell and logged in the REVIVED/SPIRIT_HEALED details. Hardcore realm: logged
+  RECOVER_REFUSED_HARDCORE once, no recovery.
+- Rest: free food/drink spells (433-435, 1127, 1129, 2639 / 430-432, 1133, 1135, 1137) by level, validated at registry build (accepted table
+  logged once). Placeholder until the economy phase. Eats below 60 % health, drinks below 40 % mana, stands at 95 %.
+- Teleports: the AI tick runs inside `Player::Update`'s `SetCanDelayTeleport(true)` region, so teleports an action requests are delayed
+  to the end of the update; `BotMgr::ProcessBotTeleports` (world thread) then plays the client side (near: synthesized MoveTeleportAck;
+  far: HandleMoveWorldportAck). Far teleports are untested.
+- Events: decision rows GOTO_START/GOTO_ARRIVED/FOLLOW_*/EAT_START/DRINK_START/EAT_DONE/DRINK_DONE/REST_END, RELEASE_SPIRIT,
+  RECLAIM_WAIT, CORPSE_RUN_START, CORPSE_RECLAIMED, SPIRIT_HEALER_PLAN/FOUND, SPIRIT_HEALED, state_change REVIVED, death DIED;
+  `stuck` (NO_PROGRESS, UNREACHABLE_TARGET, NO_SPIRIT_HEALER), `path_fail` (NO_PATH, MMAP_MISSING, WRONG_MAP). Plan reasons: NO_CORPSE,
+  CORPSE_OTHER_MAP, CORPSE_NEAR, CORPSE_TOO_FAR, CORPSE_PATH_OK, CORPSE_UNREACHABLE, CORPSE_OFF_NAVMESH, MMAP_MISSING, CORPSE_RUN_FAILED.
+- Test commands: `bot goto <name> x y z [arrive]`, `bot follow <name> <leader|off>`, `bot stay <name|all> on|off`, `bot hurt <name> hp% [mana%]`,
+  `bot root <name> on|off`, `bot level <name> lvl`, `bot tele <name> map x y z`, `bot state <name>`, `bot path <name> x y z`.
+- Config: `Bot.AI.Default.NonCombat/Combat/Dead`, `Bot.AI.Rest.EatBelowPct/DrinkBelowPct/DonePct/FreeFood`, `Bot.AI.Release.MinSec/MaxSec`,
+  `Bot.AI.Recover.MaxCorpseRunYards`, `Bot.AI.Move.StuckSec/StuckRepaths` (see worldserver.conf.dist).

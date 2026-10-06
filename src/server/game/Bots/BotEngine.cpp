@@ -40,6 +40,7 @@ char const* BotRelevance::BandName(float relevance)
     if (relevance >= Raid) return "raid";
     if (relevance >= Dispel) return "dispel";
     if (relevance >= Interrupt) return "interrupt";
+    if (relevance >= Rest) return "rest";
     if (relevance >= Move) return "move";
     if (relevance >= High) return "high";
     if (relevance >= Normal) return "normal";

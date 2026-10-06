@@ -18,6 +18,7 @@
 #ifndef TRINITY_BOT_AI_H
 #define TRINITY_BOT_AI_H
 
+#include "BotBehavior.h"
 #include "BotEngine.h"
 #include "BotMgr.h"
 #include <array>
@@ -32,6 +33,19 @@ struct BotAIConfig
     bool TestStrategy = false;    // Bot.AI.TestStrategy: new bots get the built-in test strategies
     uint32 TestIdleSec = 30;      // Bot.AI.Test.IdleSec
     uint32 TestCombatSec = 5;     // Bot.AI.Test.CombatSec
+    // Phase 3 behaviors
+    std::string DefaultNonCombat = "rest,goto,follow"; // Bot.AI.Default.NonCombat (comma separated strategy names)
+    std::string DefaultCombat;                         // Bot.AI.Default.Combat
+    std::string DefaultDead = "recover";               // Bot.AI.Default.Dead
+    uint32 EatBelowPct = 60;      // Bot.AI.Rest.EatBelowPct: start eating below this health percent (out of combat)
+    uint32 DrinkBelowPct = 40;    // Bot.AI.Rest.DrinkBelowPct: start drinking below this mana percent
+    uint32 RestDonePct = 95;      // Bot.AI.Rest.DonePct: stop resting at this percent
+    bool FreeFood = true;         // Bot.AI.Rest.FreeFood: eat/drink without carrying items (until the economy phase), see engine-design.md
+    uint32 ReleaseMinSec = 3;     // Bot.AI.Release.MinDelaySec / MaxDelaySec: delay between death and releasing the spirit
+    uint32 ReleaseMaxSec = 8;
+    uint32 MaxCorpseRunYards = 1200; // Bot.AI.Recover.MaxCorpseRunYards: farther corpses use the spirit healer
+    uint32 StuckSec = 8;          // Bot.AI.Move.StuckSec: seconds without progress before a stuck episode
+    uint32 StuckRepaths = 3;      // Bot.AI.Move.StuckRepaths: episodes (each re-issues the path) before the goal is given up
 };
 
 // Process-wide counters (written by map threads, relaxed atomics).
@@ -79,6 +93,13 @@ public:
     BotState GetState() const { return _state; }
     std::optional<BotState> GetForcedState() const { return _forced; }
     uint64 GetGuid() const { return _guid; }
+
+    // Phase 3 per-bot behavior state (map thread during ticks; the goal/follow setters from console commands on the world thread)
+    BotMotion& Motion() { return _motion; }
+    BotRest& Rest() { return _rest; }
+    BotRecover& Recover() { return _recover; }
+    // Logs an event of any type for this bot (stuck, path_fail, decision, ...), position and level filled in from the bot.
+    void EmitEvent(Player* bot, char const* type, uint8 severity, std::string reason, std::string summary, std::string detailsJson = std::string());
 
     // --- for engine objects (valid during a tick or a control call) ---
     Player* GetTickBot() const { return _tickBot; }
@@ -137,6 +158,10 @@ private:
     std::unordered_map<std::string, std::unique_ptr<Multiplier>> _multipliers;
     std::unordered_map<std::string, std::unique_ptr<UntypedValue>> _values;
     std::vector<std::string> _warned;
+
+    BotMotion _motion;
+    BotRest _rest;
+    BotRecover _recover;
 
     std::array<Decision, DECISION_RING> _ring{};
     uint32 _ringNext = 0;

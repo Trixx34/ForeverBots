@@ -65,9 +65,34 @@ uint64 NowNs()
 
 // Default strategy set per engine state (the AI factory policy). Nothing is on by default except what the test switch adds:
 // the engine itself (state tracking and its log events) is always active, behaviors come with later phases.
+std::vector<std::string> SplitNames(std::string const& list)
+{
+    std::vector<std::string> names;
+    size_t pos = 0;
+    while (pos < list.size())
+    {
+        size_t end = list.find(',', pos);
+        if (end == std::string::npos)
+            end = list.size();
+        size_t b = pos, e = end;
+        while (b < e && list[b] == ' ') ++b;
+        while (e > b && list[e - 1] == ' ') --e;
+        if (e > b)
+            names.push_back(list.substr(b, e - b));
+        pos = end + 1;
+    }
+    return names;
+}
+
 std::vector<std::string> DefaultStrategies(BotState state, Player* /*bot*/)
 {
     std::vector<std::string> names;
+    switch (state)
+    {
+        case BotState::NonCombat: names = SplitNames(BotAI::Config().DefaultNonCombat); break;
+        case BotState::Combat: names = SplitNames(BotAI::Config().DefaultCombat); break;
+        case BotState::Dead: names = SplitNames(BotAI::Config().DefaultDead); break;
+    }
     if (BotAI::Config().TestStrategy)
     {
         switch (state)
@@ -90,6 +115,18 @@ BotAIConfig const& BotAI::Config()
         _config.TestStrategy = sConfigMgr->GetBoolDefault("Bot.AI.TestStrategy", false);
         _config.TestIdleSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Test.IdleSec", 30), 1, 86400));
         _config.TestCombatSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Test.CombatSec", 5), 1, 86400));
+        _config.DefaultNonCombat = sConfigMgr->GetStringDefault("Bot.AI.Default.NonCombat", "rest,goto,follow");
+        _config.DefaultCombat = sConfigMgr->GetStringDefault("Bot.AI.Default.Combat", "");
+        _config.DefaultDead = sConfigMgr->GetStringDefault("Bot.AI.Default.Dead", "recover");
+        _config.EatBelowPct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Rest.EatBelowPct", 60), 1, 99));
+        _config.DrinkBelowPct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Rest.DrinkBelowPct", 40), 1, 99));
+        _config.RestDonePct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Rest.DonePct", 95), 50, 100));
+        _config.FreeFood = sConfigMgr->GetBoolDefault("Bot.AI.Rest.FreeFood", true);
+        _config.ReleaseMinSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Release.MinDelaySec", 3), 0, 3600));
+        _config.ReleaseMaxSec = std::max(_config.ReleaseMinSec, uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Release.MaxDelaySec", 8), 0, 3600)));
+        _config.MaxCorpseRunYards = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Recover.MaxCorpseRunYards", 1200), 50, 100000));
+        _config.StuckSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.StuckSec", 8), 2, 600));
+        _config.StuckRepaths = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.StuckRepaths", 3), 1, 20));
         _enabled.store(_config.Enabled, std::memory_order_relaxed);
         TC_LOG_INFO("server.worldserver", "Bot AI: {}, tick {} ms, test strategy {}", _config.Enabled ? "enabled" : "disabled", _config.TickMs,
             _config.TestStrategy ? "on" : "off");
@@ -111,7 +148,13 @@ std::unique_ptr<BotAI> BotAI::Create(Player* bot)
     std::unique_ptr<BotAI> ai = std::make_unique<BotAI>(bot);
     for (uint32 s = 0; s < BOT_STATE_COUNT; ++s)
         for (std::string const& name : DefaultStrategies(BotState(s), bot))
-            ai->_engines[s]->AddStrategy(name);
+        {
+            BotRegistry::StrategyEntry const* entry = BotRegistry::instance().FindStrategy(name);
+            if (entry && (entry->StateMask & BotStateBit(BotState(s))))
+                ai->_engines[s]->AddStrategy(name);
+            else
+                TC_LOG_ERROR("server.worldserver", "Bot AI: default strategy '{}' for the {} engine is unknown or does not apply to it", name, BotStateName(BotState(s)));
+        }
     return ai;
 }
 
@@ -197,6 +240,8 @@ void BotAI::Tick(Player* bot)
         ChangeState(bot, desired, (_forcedChanged && !_forced) ? "FORCED_END" : cause);
     _forcedChanged = false;
 
+    // Player::Update calls this inside its "can delay teleport" region: teleports requested by an action (release spirit, ...) are
+    // delayed to the end of the update like spell teleports and completed by BotMgr::ProcessBotTeleports (a bot has no client).
     _engines[uint32(_state)]->DoNextAction();
     uint64 const posStart = NowNs();
     SamplePosition(bot);
@@ -247,6 +292,19 @@ void BotAI::ChangeState(Player* bot, BotState to, char const* cause)
     _state = to;
     _stateSinceMs = _nowMs;
 
+    if (_rest.Resting())
+        BotEndRest(this, bot, to == BotState::Combat ? "COMBAT_START" : to == BotState::Dead ? "DIED" : "STATE_CHANGE", to != BotState::Dead);
+    if (to != BotState::NonCombat && _motion.HasGoal() && strcmp(_motion.GetTag(), "corpse_run") != 0)
+    {
+        BotMotion::Halt(bot);
+        _motion.ClearGoal();
+    }
+    if (to == BotState::Dead)
+    {
+        _recover.Reset();
+        _recover.DiedMs = _nowMs;
+        _recover.ReleaseDelayMs = urand(Config().ReleaseMinSec, Config().ReleaseMaxSec) * 1000;
+    }
     _stats.StateChanges.fetch_add(1, std::memory_order_relaxed);
 
     for (auto& e : _triggers) e.second->OnStateEnter();
@@ -267,6 +325,13 @@ void BotAI::ChangeState(Player* bot, BotState to, char const* cause)
     event.Details = details;
     Emit(std::move(event));
 
+    // the console map and the analysts look for event_type "death" (the killer is not captured yet, see progress.md)
+    if (to == BotState::Dead && from != BotState::Dead && !_forced)
+    {
+        BotEvent death = MakeEvent(bot, "death", BOTLOG_WARN, "DIED", Trinity::StringFormat("bot died at L{} (engine was {})", bot->GetLevel(), BotStateName(from)));
+        death.Details = details;
+        Emit(std::move(death));
+    }
     _stats.LogNs.fetch_add(NowNs() - logStart, std::memory_order_relaxed);
 }
 
@@ -274,6 +339,13 @@ void BotAI::Emit(BotEvent&& event)
 {
     _stats.Events.fetch_add(1, std::memory_order_relaxed);
     sBotMgr->LogEvent(std::move(event));
+}
+
+void BotAI::EmitEvent(Player* bot, char const* type, uint8 severity, std::string reason, std::string summary, std::string detailsJson)
+{
+    BotEvent event = MakeEvent(bot, type, severity, std::move(reason), std::move(summary));
+    event.Details = std::move(detailsJson);
+    Emit(std::move(event));
 }
 
 BotEvent BotAI::MakeEvent(Player* bot, char const* type, uint8 severity, std::string reason, std::string summary) const

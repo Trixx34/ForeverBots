@@ -27,6 +27,7 @@
 #include "DB2Stores.h"
 #include "Log.h"
 #include "Map.h"
+#include "MovementPackets.h"
 #include "MotionMaster.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -232,12 +233,48 @@ void BotMgr::Update(uint32 diff)
     _uptimeMs += diff;
 
     ProcessLogins();
+    ProcessBotTeleports();
 
     if (!IsLogDatabaseAvailable())
         return;
 
     if ((_logSinceFlushMs += diff) >= _logFlushIntervalMs)
         FlushLog();
+}
+
+// A teleport (graveyard after release, `bot tele`, ...) waits for the client's acknowledgement. Bots have none, so the world thread
+// (after the map updates, same rule as the console commands) plays the client: near teleports get the MSG_MOVE_TELEPORT_ACK, far ones
+// the suspend-token/world-port handshake (HandleMoveWorldportAck, the same call LogoutPlayer loops on).
+void BotMgr::ProcessBotTeleports()
+{
+    if (!_onlineCount)
+        return;
+
+    for (auto& [guid, bot] : _bots)
+    {
+        if (bot.State != BOT_ONLINE || !bot.Session)
+            continue;
+        Player* player = bot.Session->GetPlayer();
+        if (!player || !player->IsBeingTeleported())
+            continue;
+
+        switch (player->GetTeleportState())
+        {
+            case TeleportState::WaitingForTeleportAck:
+            {
+                WorldPackets::Movement::MoveTeleportAck ack{ WorldPacket(CMSG_MOVE_TELEPORT_ACK) };
+                ack.MoverGUID = player->GetGUID();
+                bot.Session->HandleMoveTeleportAck(ack);
+                break;
+            }
+            case TeleportState::WaitingForSuspendTokenResponse:
+            case TeleportState::WaitingForWorldPortAck:
+                bot.Session->HandleMoveWorldportAck();
+                break;
+            default:
+                break; // Initiated/Delayed*: Player::Update finishes these itself
+        }
+    }
 }
 
 std::vector<Player*> BotMgr::GetOnlineBotPlayers(std::string const& name)

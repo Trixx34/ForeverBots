@@ -4539,6 +4539,35 @@ Classic.GuildFinder = 0
 #        Description: Interval in seconds of the test strategy's combat trigger while the combat engine is active.
 #        Default:     5
 #
+#    Bot.AI.Default.NonCombat / Bot.AI.Default.Combat / Bot.AI.Default.Dead
+#        Description: Comma separated strategies every new bot gets per engine (Phase 3 behaviors:
+#                     goto, follow, stay, rest in the non-combat engine; recover in the dead engine).
+#                     Strategies can be changed per bot at runtime with `bot strategy`.
+#        Default:     "rest,goto,follow" / "" / "recover"
+#
+#    Bot.AI.Rest.EatBelowPct / Bot.AI.Rest.DrinkBelowPct / Bot.AI.Rest.DonePct
+#        Description: Health percent below which a bot out of combat sits and eats, mana percent below which it
+#                     drinks, and the percent at which it stands up again.
+#        Default:     60 / 40 / 95
+#
+#    Bot.AI.Rest.FreeFood
+#        Description: Bots eat and drink without carrying food items (the vanilla food/drink spell for their level
+#                     is applied). Placeholder until bots buy consumables (economy phase). 0 = bots only sit.
+#        Default:     1
+#
+#    Bot.AI.Release.MinDelaySec / Bot.AI.Release.MaxDelaySec
+#        Description: Random delay between a bot's death and releasing its spirit.
+#        Default:     3 / 8
+#
+#    Bot.AI.Recover.MaxCorpseRunYards
+#        Description: Ghosts whose corpse is farther away (or unreachable by path) use the spirit healer instead.
+#        Default:     1200
+#
+#    Bot.AI.Move.StuckSec / Bot.AI.Move.StuckRepaths
+#        Description: Seconds without getting closer to the goal before a stuck event, and how many such episodes
+#                     (each re-issues the path) pass before the goal is given up (stuck/UNREACHABLE_TARGET).
+#        Default:     8 / 3
+
 Bot.Enabled = 1
 Bot.Log.PosIntervalSec = 5
 Bot.Login.MaxPerTick = 5
@@ -4547,5 +4576,17 @@ Bot.AI.TickMs = 500
 Bot.AI.TestStrategy = 0
 Bot.AI.Test.IdleSec = 30
 Bot.AI.Test.CombatSec = 5
+Bot.AI.Default.NonCombat = "rest,goto,follow"
+Bot.AI.Default.Combat = ""
+Bot.AI.Default.Dead = "recover"
+Bot.AI.Rest.EatBelowPct = 60
+Bot.AI.Rest.DrinkBelowPct = 40
+Bot.AI.Rest.DonePct = 95
+Bot.AI.Rest.FreeFood = 1
+Bot.AI.Release.MinDelaySec = 3
+Bot.AI.Release.MaxDelaySec = 8
+Bot.AI.Recover.MaxCorpseRunYards = 1200
+Bot.AI.Move.StuckSec = 8
+Bot.AI.Move.StuckRepaths = 3
 #
 ###################################################################################################

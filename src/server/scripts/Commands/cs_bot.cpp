@@ -20,6 +20,7 @@
 #include "BotMgr.h"
 #include "BotQuestLog.h"
 #include "Chat.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "QuestDef.h"
@@ -74,6 +75,15 @@ public:
             { "nudge",   HandleBotNudgeCommand,   rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "kill",    HandleBotKillCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "quest",   HandleBotQuestCommand,   rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "goto",    HandleBotGotoCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "follow",  HandleBotFollowCommand,  rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "stay",    HandleBotStayCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "hurt",    HandleBotHurtCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "root",    HandleBotRootCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "level",   HandleBotLevelCommand,   rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "tele",    HandleBotTeleCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "state",   HandleBotStateCommand,   rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "path",    HandleBotPathCommand,    rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
             { "ai",      botAiCommandTable },
         };
 
@@ -345,6 +355,158 @@ public:
             player->UpdatePosition(x, y, z, player->GetOrientation(), true);
         }
         handler->PSendSysMessage("Moved %u bot(s) by %.1f yards.", uint32(players.size()), yards);
+        return true;
+    }
+
+    // ---- Phase 3 test aids and control (world thread) ----
+
+    // bot goto <name> <x> <y> <z> [arriveYards]: sets a walking goal on the bot's current map (adds the goto strategy if needed).
+    static bool HandleBotGotoCommand(ChatHandler* handler, std::string name, float x, float y, float z, Optional<float> arrive)
+    {
+        Player* player = FindOneBot(handler, name);
+        if (!player)
+            return false;
+        BotAI* ai = player->GetSession()->GetBotAI();
+        if (!ai)
+            return false;
+        ai->AddStrategy(player, "goto", "command");
+        BotMotion::EnsureGrids(player, x, y);
+        player->UpdateGroundPositionZ(x, y, z); // the z argument is only a hint, the goal is put on the ground
+        ai->Motion().SetGoal(player->GetMapId(), x, y, z, arrive.value_or(3.0f), "goto");
+        handler->PSendSysMessage("%s will walk to (%.1f, %.1f, %.1f) on map %u (%.1f yards away).", player->GetName().c_str(), x, y, z, player->GetMapId(),
+            player->GetExactDist2d(x, y));
+        return true;
+    }
+
+    // bot follow <name> <leaderName|off>: follows a player or bot on the same map.
+    static bool HandleBotFollowCommand(ChatHandler* handler, std::string name, std::string leaderName)
+    {
+        Player* player = FindOneBot(handler, name);
+        if (!player)
+            return false;
+        BotAI* ai = player->GetSession()->GetBotAI();
+        if (!ai)
+            return false;
+        if (StringEqualI(leaderName, "off"))
+        {
+            ai->Motion().SetFollow(ObjectGuid::Empty);
+            if (ai->Motion().HasGoal() && !strcmp(ai->Motion().GetTag(), "follow"))
+                ai->Motion().ClearGoal();
+            handler->PSendSysMessage("%s stops following.", player->GetName().c_str());
+            return true;
+        }
+        Player* leader = ObjectAccessor::FindPlayerByName(leaderName);
+        if (!leader)
+        {
+            handler->PSendSysMessage("Player '%s' is not online.", leaderName.c_str());
+            return false;
+        }
+        ai->AddStrategy(player, "follow", "command");
+        ai->Motion().SetFollow(leader->GetGUID());
+        handler->PSendSysMessage("%s follows %s.", player->GetName().c_str(), leader->GetName().c_str());
+        return true;
+    }
+
+    // bot stay <name|all> on|off: toggles the stay strategy (hold position).
+    static bool HandleBotStayCommand(ChatHandler* handler, std::string name, std::string onOff)
+    {
+        bool const on = StringEqualI(onOff, "on");
+        if (!on && !StringEqualI(onOff, "off"))
+        {
+            handler->PSendSysMessage("%s", "Use: bot stay <name|all> on|off");
+            return false;
+        }
+        uint32 count = 0;
+        for (Player* player : sBotMgr->GetOnlineBotPlayers(name))
+            if (BotAI* ai = player->GetSession()->GetBotAI())
+                if (on ? ai->AddStrategy(player, "stay", "command") : ai->RemoveStrategy(player, "stay", "command"))
+                    ++count;
+        handler->PSendSysMessage("Stay %s for %u bot(s).", on ? "on" : "off", count);
+        return true;
+    }
+
+    // bot hurt <name> <hp%> [mana%]: test aid, sets health (and mana) to a percentage.
+    static bool HandleBotHurtCommand(ChatHandler* handler, std::string name, float hpPct, Optional<float> manaPct)
+    {
+        Player* player = FindOneBot(handler, name);
+        if (!player || !player->IsAlive())
+            return false;
+        player->SetHealth(std::max<uint32>(1, uint32(player->GetMaxHealth() * std::clamp(hpPct, 0.0f, 100.0f) / 100.0f)));
+        if (manaPct && player->GetMaxPower(POWER_MANA) > 0)
+            player->SetPower(POWER_MANA, uint32(player->GetMaxPower(POWER_MANA) * std::clamp(*manaPct, 0.0f, 100.0f) / 100.0f));
+        handler->PSendSysMessage("%s: health %u/%u, mana %u/%u.", player->GetName().c_str(), uint32(player->GetHealth()), uint32(player->GetMaxHealth()),
+            player->GetPower(POWER_MANA), player->GetMaxPower(POWER_MANA));
+        return true;
+    }
+
+    // bot root <name> on|off: test aid for the stuck detection.
+    static bool HandleBotRootCommand(ChatHandler* handler, std::string name, std::string onOff)
+    {
+        Player* player = FindOneBot(handler, name);
+        if (!player)
+            return false;
+        bool const on = StringEqualI(onOff, "on");
+        player->SetControlled(on, UNIT_STATE_ROOT);
+        handler->PSendSysMessage("%s is %s.", player->GetName().c_str(), on ? "rooted" : "free to move");
+        return true;
+    }
+
+    // bot level <name> <level>: test aid (resurrection sickness starts at level 11).
+    static bool HandleBotLevelCommand(ChatHandler* handler, std::string name, uint8 level)
+    {
+        Player* player = FindOneBot(handler, name);
+        if (!player || level < 1 || level > 60)
+            return false;
+        player->GiveLevel(level);
+        player->InitTalentForLevel();
+        player->SetXP(0);
+        handler->PSendSysMessage("%s is now level %u.", player->GetName().c_str(), uint32(player->GetLevel()));
+        return true;
+    }
+
+    // bot tele <name> <map> <x> <y> <z>: test aid, teleports a bot (the teleport handshake is completed by the BotMgr).
+    static bool HandleBotTeleCommand(ChatHandler* handler, std::string name, uint32 mapId, float x, float y, float z)
+    {
+        Player* player = FindOneBot(handler, name);
+        if (!player)
+            return false;
+        bool const ok = player->TeleportTo(mapId, x, y, z, player->GetOrientation());
+        handler->PSendSysMessage("%s teleport to map %u (%.1f, %.1f, %.1f): %s", player->GetName().c_str(), mapId, x, y, z, ok ? "started" : "refused");
+        return ok;
+    }
+
+    // bot path <name> <x> <y> <z>: test aid, runs the pathfinding query a goto would run (nothing moves) and prints the classification.
+    static bool HandleBotPathCommand(ChatHandler* handler, std::string name, float x, float y, float z)
+    {
+        Player* player = FindOneBot(handler, name);
+        if (!player)
+            return false;
+        BotMotion::EnsureGrids(player, x, y);
+        player->UpdateGroundPositionZ(x, y, z);
+        BotPathInfo const pi = BotMotion::QueryPath(player, x, y, z);
+        handler->PSendSysMessage("%s -> (%.1f, %.1f, %.1f): type 0x%02X valid %d nopath %d mmap_missing %d off_navmesh %d partial %d length %.0f end_gap %.0f (straight %.0f)", player->GetName().c_str(),
+            x, y, z, pi.Type, pi.Valid ? 1 : 0, pi.NoPath ? 1 : 0, pi.MmapMissing ? 1 : 0, pi.OffMesh ? 1 : 0, pi.Partial ? 1 : 0, pi.Length, pi.EndGap, player->GetExactDist2d(x, y));
+        return true;
+    }
+
+    // bot state <name>: one line with the live state (life, ghost, corpse, goal, rest, engine).
+    static bool HandleBotStateCommand(ChatHandler* handler, std::string name)
+    {
+        Player* player = FindOneBot(handler, name);
+        if (!player)
+            return false;
+        BotAI* ai = player->GetSession()->GetBotAI();
+        std::string extra;
+        if (ai)
+        {
+            extra = Trinity::StringFormat(" engine {} goal {} rest {} plan {}({})", BotStateName(ai->GetState()), ai->Motion().HasGoal() ? ai->Motion().GetTag() : "none",
+                uint32(ai->Rest().Bits), uint32(ai->Recover().Plan), ai->Recover().PlanReason);
+        }
+        WorldLocation const& corpse = player->GetCorpseLocation();
+        handler->PSendSysMessage("%s L%u %s%s map %u (%.1f, %.1f, %.1f) hp %u/%u mana %u/%u moving %d corpse %s (map %u, %.1f, %.1f)%s", player->GetName().c_str(), uint32(player->GetLevel()),
+            player->IsAlive() ? "alive" : "dead", player->HasPlayerFlag(PLAYER_FLAGS_GHOST) ? " ghost" : "", player->GetMapId(), player->GetPositionX(), player->GetPositionY(),
+            player->GetPositionZ(), uint32(player->GetHealth()), uint32(player->GetMaxHealth()), player->GetPower(POWER_MANA), player->GetMaxPower(POWER_MANA),
+            player->isMoving() ? 1 : 0, player->HasCorpse() ? "yes" : "no", corpse.GetMapId(), corpse.GetPositionX(), corpse.GetPositionY(), extra.c_str());
         return true;
     }
 

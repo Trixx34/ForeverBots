@@ -927,10 +927,6 @@ void Player::Update(uint32 p_time)
     if (!IsInWorld())
         return;
 
-    // player bots: tick the bot AI (cheap pointer check for real players)
-    if (BotAI* botAI = GetSession()->GetBotAI())
-        botAI->Update(this, p_time);
-
     // undelivered mail
     if (m_nextMailDelivereTime && m_nextMailDelivereTime <= GameTime::GetGameTime())
     {
@@ -951,6 +947,9 @@ void Player::Update(uint32 p_time)
 
     //used to implement delayed far teleport
     SetCanDelayTeleport(true);
+    // player bots: tick the bot AI here so its teleports are delayed like spell teleports (cheap pointer check for real players)
+    if (BotAI* botAI = GetSession()->GetBotAI())
+        botAI->Update(this, p_time);
     Unit::Update(p_time);
     SetCanDelayTeleport(false);
 
