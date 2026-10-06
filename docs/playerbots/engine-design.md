@@ -130,7 +130,8 @@ Defaults come from config: NonCombat `rest,goto,follow`, Combat empty, Dead `rec
   arrival by distance, "moving" = spline not finalized. Stuck = no 2 yd progress for `Bot.AI.Move.StuckSec` (8 s): re-path, after
   `StuckRepaths` (3) episodes give up (`stuck` UNREACHABLE_TARGET). `EnsureGrids` loads the grids along the line first (a destination in an
   unloaded grid has no navmesh tile and looks like MMAP_MISSING). PathType NOPATH, or NOT_USING_PATH with FARFROMPOLY = off navmesh -> NO_PATH;
-  NOT_USING_PATH alone = MMAP_MISSING.
+  NOT_USING_PATH alone = MMAP_MISSING. A partial path whose goal is far from every poly (FARFROMPOLY_END) fails fast with `path_fail`
+  PATH_PARTIAL_FAR; a complete path replaces the goal z by the navmesh height of its end (z-aware arrival).
 - Recovery state is derived from game state every tick (ghost flag, HasCorpse, corpse location); only timers are stored (`BotRecover`).
   release after a random `Release.MinSec..MaxSec` (3-8 s) via the real `HandleRepopRequest`; corpse on another map, no corpse, path
   unreachable/partial, off navmesh or farther than `Recover.MaxCorpseRunYards` (1200) -> spirit healer (`HandleSpiritHealerActivate`);

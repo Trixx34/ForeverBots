@@ -26,6 +26,7 @@
 #include "GridNotifiersImpl.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "PathGenerator.h"
 #include "Player.h"
 #include "QuestDef.h"
 #include "WorldSession.h"
@@ -354,6 +355,7 @@ public:
             handler->PSendSysMessage("No online bot matches '%s'.", name.c_str());
             return false;
         }
+        uint32 moved = 0, skipped = 0;
         for (Player* player : players)
         {
             float const angle = degrees ? float(*degrees) * float(M_PI) / 180.0f : player->GetOrientation();
@@ -361,10 +363,20 @@ public:
             float const y = player->GetPositionY() + yards * std::sin(angle);
             float z = player->GetPositionZ();
             player->UpdateGroundPositionZ(x, y, z);
+            // a straight-line move must not leave the bot off the navmesh (every later goto would fail with NO_PATH): only move
+            // when the destination is a complete walkable path away
+            PathGenerator probe(player);
+            probe.CalculatePath(x, y, z, false);
+            if (probe.GetPathType() != PATHFIND_NORMAL)
+            {
+                ++skipped;
+                continue;
+            }
             player->UpdatePosition(x, y, z, player->GetOrientation(), true);
+            ++moved;
         }
-        handler->PSendSysMessage("Moved %u bot(s) by %.1f yards.", uint32(players.size()), yards);
-        return true;
+        handler->PSendSysMessage("Moved %u bot(s) by %.1f yards, %u skipped (destination not on the navmesh).", moved, yards, skipped);
+        return moved > 0;
     }
 
     // ---- Phase 3 test aids and control (world thread) ----

@@ -767,6 +767,7 @@ BotPathInfo BotMotion::QueryPath(Player* bot, float x, float y, float z)
     info.Partial = (info.Type & PATHFIND_INCOMPLETE) != 0;
     info.Length = path.GetPathLength();
     G3D::Vector3 const end = path.GetActualEndPosition();
+    info.End = end;
     info.EndGap = std::sqrt((end.x - x) * (end.x - x) + (end.y - y) * (end.y - y));
     info.EndGap3D = std::sqrt((end.x - x) * (end.x - x) + (end.y - y) * (end.y - y) + (end.z - z) * (end.z - z));
     info.Valid = !info.NoPath && !info.MmapMissing;
@@ -853,6 +854,16 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
                     pi.StartOffMesh ? "true" : "false", pi.GoalOffMesh ? "true" : "false"));
         if (pi.MmapMissing)
             return Fail(ai, bot, "path_fail", "MMAP_MISSING", "no navmesh for this map or area", StringFormat(R"("path_type":{})", pi.Type));
+        // a partial path whose goal is far from every walkable polygon (ledge below or above, roof, island): the bot would walk to the closest
+        // point and never arrive, so refuse it now
+        if (pi.Partial && pi.GoalOffMesh)
+            return Fail(ai, bot, "path_fail", "PATH_PARTIAL_FAR", "the goal is far from the walkable area; the path only reaches a point near it",
+                StringFormat(R"("path_type":{},"end_gap":{:.0f},"end_gap_3d":{:.0f},"path_length":{:.0f},"nav_end":{})", pi.Type, pi.EndGap, pi.EndGap3D, pi.Length,
+                    Pos3(pi.End.x, pi.End.y, pi.End.z)));
+        // the goal z comes from the terrain, which can differ from the walkable surface (bridges, ramps, interiors): arrive against the
+        // navmesh height of the goal
+        if (!pi.Partial && pi.EndGap3D < 10.0f)
+            _z = pi.End.z;
         _issueMs = 0;
     }
 

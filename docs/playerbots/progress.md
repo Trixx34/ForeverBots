@@ -85,7 +85,8 @@ event; config is read once (no reload); trace rows are INFO severity by design (
   NOPATH, off_navmesh false), 16 UNREACHABLE_TARGET. The 16 stuck bots are all dwarf/gnome race-3 bots stacked at one spawn point
   (-6094, 818.8, 429.7), 46 yd above the grounded goal z: `bot path` from there gives a zero-length path to its own spot and NOPATH to
   anything 36+ yd away, so their start poly is isolated: a test artifact of the sim spawn position, not a stuck-detection defect (the
-  detector fired as designed). The NO_PATH causes (goal region unconnected vs start isolated) were not investigated further.
+  detector fired as designed). **Superseded**: see "Goto navigation fixes" below; the causes were position drift from `bot nudge` and goals over
+  navmesh holes/ledges, not isolated spawn polys.
 - Not verified: far (cross-map) teleport handshake, instance/battleground deaths, Hardcore path, killer capture in the death event, real
   consumables from bags (FreeFood placeholder), grid-load memory for many far goals, follow across maps, a long partial-path goto.
 
@@ -97,3 +98,28 @@ event; config is read once (no reload); trace rows are INFO severity by design (
 - Tracking: per-bot ring buffers (hits 32, dealt 32, vitals 12 at 1 Hz); heavy work only at death (snapshot avg 146 us). Hooks in Unit::DealDamage / Unit::Kill, env type stashed in Player::EnvironmentalDamage; no core header changed.
 - Test aids: `bot aggro <name> [radius]`, `bot envdmg <name> <type 0-6> <amount>`.
 - Cost, 180 bots (`bot ai status`): tick steady windows 3.28 us before, 3.17-3.42 us after; hooks outside the tick avg 4.76 us/call; death row 0.8-2.1 KB.
+
+## Goto navigation fixes (verified on the sim 2026-10-06, not committed)
+
+- Root cause of the NO_PATH / stuck bursts: (1) `bot nudge` moved bots in straight lines off the navmesh and they were saved there (every later goto
+  NO_PATH, `start_off_navmesh`); (2) burst goals at a fixed offset landed on navmesh holes (gnome, Skyborne) or on ledges 46 yd above/below
+  the walkable surface (dwarf, orc: path 0x84, partial, goal far from poly), where the bot walked to the nearest poly and could never arrive
+  (arrival needs |dz| < 25). Spawn points (`playercreateinfo`) are fine.
+- Code: `PATH_PARTIAL_FAR` (path_fail) now fails fast at GOTO_START when the path is partial and the goal is > 7 yd (3D) from a walkable poly
+  (details: path_type, end_gap, end_gap_3d, path_length, nav_end). The goal z is replaced by the navmesh height of the path end when the path is
+  complete and within 10 yd, so arrival is judged against the walkable surface. NO_PATH details now carry `start_off_navmesh` /
+  `goal_off_navmesh`; GOTO_START carries `end_gap_3d`, `goal_far_from_poly`. `bot nudge` now only moves a bot when the destination is a
+  complete walkable path (otherwise skipped and reported). PATH_PARTIAL_FAR is a new reason code (plumber to register it in the schema docs).
+- Sim tooling: `C:\ForeverSim\scripts\sim-burst.py` (`--mode valid` probes 16 headings per start and needs `type 0x01 valid 1 partial 0`, matched by
+  goal coordinates; `--expect 180` refuses to run unless exactly 180 bots are online), `reset-bot-positions.py` (despawn, reset to
+  playercreateinfo, spawn 180). The sim has 360 bot characters; `bot spawn 180` must only run with 0 online (it created 180 extra characters when
+  run with 180 online). The sim worldserver is also restarted by other users of the sim (controller/console); check the uptime before a burst.
+- Results (sim, 180 bots online, one terminal outcome per bot):
+  - Fixed-offset burst, old code, same start positions: 91 arrived, 49 NO_PATH, 39 NO_PROGRESS then 39 UNREACHABLE_TARGET (stuck cycle 8 s x 3).
+  - Fixed-offset burst, new code: 90 arrived, 50 NO_PATH (gnome 20 + Skyborne 30, goals on mesh holes), 39 PATH_PARTIAL_FAR (orc 18, dwarf 21)
+    failed at GOTO_START instead of after about 24 s of walking; 0 stuck.
+  - Valid-goal burst (goal probed as a complete path), 160 bots (the gnome start has no valid goal in 16 headings): old code 14:04 had 30 orcs
+    stuck (path 0x01 but z mismatch), new code 159 GOTO_ARRIVED, 0 NO_PATH, 0 stuck; the 160th bot died on the way (spirit healer path).
+- Not verified: the gnome start (-4983, 878, 274) has no complete path in any of 16 headings at 108 yd (not investigated); why some 400-500 yd
+  paths return 0x0A; Skyborne goals at 108 yd (only holes tested).
+
