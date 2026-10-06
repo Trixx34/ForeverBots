@@ -411,6 +411,7 @@ int main(int argc, char** argv)
 
     auto sWorldSocketMgrHandle = Trinity::make_unique_ptr_with_deleter(&sWorldSocketMgr, [realmId](WorldSocketMgr* mgr)
     {
+        sBotMgr->LogoutAll();                                    // save and log out all player bots
         sWorld->KickAll();                                       // save and kick all players
         sWorld->UpdateSessions(1);                             // real players unload required UpdateSessions call
 

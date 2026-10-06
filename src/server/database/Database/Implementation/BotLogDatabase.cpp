@@ -25,7 +25,7 @@ void BotLogDatabaseConnection::DoPrepareStatements()
 
     PrepareStatement(BOTLOG_REP_BOT,
         "REPLACE INTO bot (guid, name, class_id, race_id, faction) VALUES (?, ?, ?, ?, ?)",
-        CONNECTION_ASYNC);
+        CONNECTION_BOTH);
 
     // Parameters: 1 ts (unix seconds, fractional), 2 bot_guid, 3 event_type, 4 severity, 5 reason, 6 summary,
     // 7 level, 8 map_id, 9 zone_id, 10-12 x/y/z, 13 quest_id, 14 target_entry, 15-17 details (same value 3x:
@@ -34,7 +34,7 @@ void BotLogDatabaseConnection::DoPrepareStatements()
         "INSERT INTO bot_event (ts, bot_guid, event_type, severity, reason, summary, level, map_id, zone_id, "
         "pos_x, pos_y, pos_z, quest_id, target_entry, details) "
         "VALUES (FROM_UNIXTIME(?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, IF(JSON_VALID(?), ?, JSON_QUOTE(?)))",
-        CONNECTION_ASYNC);
+        CONNECTION_BOTH);
 }
 
 BotLogDatabaseConnection::BotLogDatabaseConnection(MySQLConnectionInfo& connInfo, ConnectionFlags connectionFlags)

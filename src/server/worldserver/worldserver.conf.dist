@@ -4499,12 +4499,16 @@ Classic.GuildFinder = 0
 # PLAYER BOTS (work in progress, see docs/playerbots/)
 #
 #    Bot.Enabled
-#        Description: Master switch for the player-bot subsystem (BotMgr). Phase 0: only gates
-#                      whether BotMgr::Update is ticked from the world loop; no bot characters
-#                      exist yet.
+#        Description: Master switch for the player-bot subsystem (BotMgr). Gates whether
+#                     BotMgr::Update is ticked from the world loop; when off, `bot spawn` refuses.
 #        Default:     1 - (Enabled)
 #                     0 - (Disabled)
+#
+#    Bot.Login.MaxPerTick
+#        Description: Bot logins started per world update tick (spreads a large `bot spawn`).
+#        Default:     5
 
 Bot.Enabled = 1
+Bot.Login.MaxPerTick = 5
 #
 ###################################################################################################

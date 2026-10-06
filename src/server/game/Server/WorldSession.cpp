@@ -189,6 +189,9 @@ WorldSession::~WorldSession()
 
 bool WorldSession::PlayerDisconnected() const
 {
+    if (_isBot)
+        return false;
+
     return !(m_Socket[CONNECTION_TYPE_REALM] && m_Socket[CONNECTION_TYPE_REALM]->IsOpen() &&
              m_Socket[CONNECTION_TYPE_INSTANCE] && m_Socket[CONNECTION_TYPE_INSTANCE]->IsOpen());
 }
@@ -222,6 +225,10 @@ std::string WorldSession::GetPlayerInfo() const
 /// Send a packet to the client
 void WorldSession::SendPacket(WorldPacket const* packet, bool forced /*= false*/)
 {
+    // Player bots have no client: drop packets silently instead of logging one error per packet
+    if (_isBot)
+        return;
+
     if (!opcodeTable.IsValid(static_cast<OpcodeServer>(packet->GetOpcode())))
     {
         char const* specialName = packet->GetOpcode() == UNKNOWN_OPCODE ? "UNKNOWN_OPCODE" : "INVALID_OPCODE";
@@ -813,7 +820,8 @@ void WorldSession::ResetTimeOutTime(bool onlyActive)
 
 bool WorldSession::IsConnectionIdle() const
 {
-    return m_timeOutTime < GameTime::GetGameTime() && !m_inQueue;
+    // bots never time out (and have no socket to close)
+    return !_isBot && m_timeOutTime < GameTime::GetGameTime() && !m_inQueue;
 }
 
 void WorldSession::Handle_NULL(WorldPackets::Null& null)

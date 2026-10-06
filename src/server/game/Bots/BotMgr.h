@@ -20,10 +20,16 @@
 
 #include "Define.h"
 #include <atomic>
+#include <deque>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
+#include "DatabaseEnvFwd.h"
+#include "Transaction.h"
+
+class WorldSession;
 
 // Severity levels for BotEvent::Severity (stored as bot_event.severity).
 enum BotLogSeverity : uint8
@@ -54,8 +60,55 @@ struct BotEvent
     double Timestamp = 0.0; // unix seconds; filled in by LogEvent when 0
 };
 
-// Phase 0 scaffold for the player-bot subsystem (see docs/playerbots/implementation-plan.md),
-// plus the bot activity logger. This does not yet create or control any bot characters.
+// Lifecycle of one bot character inside BotMgr.
+enum BotRunState : uint8
+{
+    BOT_OFFLINE    = 0,
+    BOT_QUEUED     = 1, // waiting for a login slot
+    BOT_LOGGING_IN = 2, // session created, character load in flight
+    BOT_ONLINE     = 3,
+    BOT_CREATING   = 4  // character just created, its rows are being committed
+};
+
+// One bot character (a normal character on a reserved BOTnnnn game account, one account per bot).
+struct BotInfo
+{
+    uint64 Guid = 0;
+    uint32 AccountId = 0;
+    std::string AccountName;              // BOTnnnn
+    std::string Name;
+    uint8 Race = 0;
+    uint8 Class = 0;
+    uint8 Gender = 0;
+    uint8 Level = 1;
+    bool Horde = false;
+
+    BotRunState State = BOT_OFFLINE;
+    WorldSession* Session = nullptr;      // owned by BotMgr, never in World's session list
+    bool DespawnRequested = false;        // despawn arrived while creating or logging in
+    std::optional<uint8> PendingLevel;    // applied right after login
+    uint32 NotBeforeMs = 0;               // BotMgr uptime before which no login may start (previous save must land first)
+    uint32 LoginStartedMs = 0;
+    bool JustCreated = false;
+
+    // last known place (refreshed from the Player while online and when the bot logs out)
+    uint16 MapId = 0;
+    uint16 ZoneId = 0;
+    float X = 0.0f, Y = 0.0f, Z = 0.0f;
+};
+
+struct BotSpawnResult
+{
+    uint32 Reused = 0;
+    uint32 Created = 0;
+    uint32 Failed = 0;
+    std::string Error;                    // set when nothing could be done (bad arguments, no valid race...)
+    std::vector<std::string> Names;       // bots now queued or online because of this call
+};
+
+// The player-bot subsystem (see docs/playerbots/implementation-plan.md): bot characters on reserved game accounts,
+// socket-less sessions owned here, trimmed login/logout, plus the buffered bot activity logger.
+// All bot state is touched from the world thread only (console/GM commands, Update); only LogEvent is thread-safe.
 class TC_GAME_API BotMgr
 {
 public:
@@ -69,10 +122,31 @@ public:
     // Called once per world update tick (see World::Update). Counts ticks and flushes the log buffer.
     void Update(uint32 diff);
 
-    // Phase 0 smoke test: returns a status line proving the manager is alive and ticking.
+    // Status line: ticks, bots known/online, log state.
     std::string GetStatus() const;
 
-    uint32 GetBotCount() const { return 0; } // Phase 1 will back this with real bot sessions.
+    // Bots currently online (in world).
+    uint32 GetBotCount() const { return _onlineCount; }
+
+    // --- Bot characters and sessions (world thread only) ----------------------------------------------
+    // Brings up to `count` bots online: reuses existing offline bot characters matching the filters first, creates
+    // new ones (account BOTnnnn + character) for the rest. classId 0 = any class, faction -1 = any, 0 = alliance,
+    // 1 = horde. Logins are spread over several ticks (Bot.Login.MaxPerTick).
+    BotSpawnResult SpawnBots(uint32 count, uint8 classId, int8 faction, std::optional<uint8> level);
+
+    // Logs bots out and saves them. name empty = all. Returns how many were (or will be) logged out.
+    uint32 DespawnBots(std::string const& name);
+
+    // Immediately saves and logs out every bot (worldserver shutdown).
+    void LogoutAll(char const* reason = "LOGOUT_SHUTDOWN");
+
+    // Snapshot for `.bot list` (positions of online bots are read from the Player).
+    std::vector<BotInfo> ListBots();
+
+    static uint8 ParseClass(std::string const& text);          // 0 when unknown
+    static int8 ParseFaction(std::string const& text);         // -1 any/unknown, 0 alliance, 1 horde
+    static char const* ClassName(uint8 classId);
+    static char const* StateName(BotRunState state);
 
     // --- Bot activity log -------------------------------------------------------------------------
     // Called by worldserver after the optional BotLog database was opened (BotLogDatabaseInfo set).
@@ -95,8 +169,30 @@ public:
 private:
     BotMgr() = default;
 
+    void LoadRegistry();
+    bool CreateBot(uint8 raceId, uint8 classId, BotInfo& out, std::string& error);
+    void StartLogin(BotInfo& bot);
+    void ProcessLogins();
+    void FinishCreate(uint64 guid, bool success);
+    void FinishLogin(BotInfo& bot);
+    void FailLogin(BotInfo& bot, char const* reason);
+    void LogoutBot(BotInfo& bot, char const* reason);
+    void LogLifecycle(BotInfo const& bot, char const* type, char const* reason, char const* summary, uint8 severity, std::string details);
+    static bool IsValidCombo(uint8 raceId, uint8 classId);
+    static uint8 PickRace(uint8 classId, int8 faction);
+
     uint32 _ticks = 0;
     uint32 _uptimeMs = 0;
+
+    bool _registryLoaded = false;
+    uint32 _nextAccountNumber = 1;
+    uint32 _onlineCount = 0;
+    uint32 _loginMaxPerTick = 5;
+    std::map<uint64, BotInfo> _bots;      // by guid; node addresses stay valid
+    std::vector<std::pair<uint32, std::string>> _freeAccounts; // BOTnnnn accounts without a character (left over from a failed creation)
+    std::vector<std::pair<uint64, TransactionCallback>> _creating;
+    std::deque<uint64> _loginQueue;
+    std::vector<uint64> _loggingIn;
 
     std::atomic<bool> _logAvailable{false};
     uint8 _logMinSeverity = BOTLOG_INFO;

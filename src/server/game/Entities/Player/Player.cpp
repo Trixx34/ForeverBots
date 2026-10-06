@@ -21280,9 +21280,13 @@ void Player::SaveToDB(LoginDatabaseTransaction loginTransaction, CharacterDataba
         _SaveStats(trans);
 
     // TODO: Move this out
-    GetSession()->GetCollectionMgr()->SaveToDB(loginTransaction);
-    GetSession()->GetBattlePetMgr()->SaveToDB(loginTransaction);
-    GetSession()->SavePlayerDataAccount(loginTransaction);
+    // (bots have no battle.net account: their account-wide data would violate the foreign keys, so it is not saved)
+    if (!GetSession()->IsBot())
+    {
+        GetSession()->GetCollectionMgr()->SaveToDB(loginTransaction);
+        GetSession()->GetBattlePetMgr()->SaveToDB(loginTransaction);
+        GetSession()->SavePlayerDataAccount(loginTransaction);
+    }
 
     Battlenet::RealmHandle currentRealmId = sRealmList->GetCurrentRealmId();
 
