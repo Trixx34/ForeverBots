@@ -22,6 +22,7 @@
 #include "MySQLConnection.h"
 #include "PreparedStatement.h"
 #include "Transaction.h"
+#include <atomic>
 
 // Optional fifth database holding the bot activity log (schema: forever-botlog-setup.sql).
 // It is deliberately NOT part of DatabaseEnv.h so that adding it does not recompile the whole core,
@@ -30,6 +31,7 @@ enum BotLogDatabaseStatements : uint32
 {
     BOTLOG_REP_BOT,
     BOTLOG_INS_EVENT,
+    BOTLOG_INS_EVENT_HOT,   // same columns as BOTLOG_INS_EVENT, table bot_event_hot (only used when BotLogHasHotTable)
     BOTLOG_INS_POS,
 
     MAX_BOTLOGDATABASE_STATEMENTS
@@ -49,6 +51,13 @@ public:
 
 using BotLogDatabasePreparedStatement = PreparedStatement<BotLogDatabaseConnection>;
 using BotLogDatabaseTransaction = SQLTransaction<BotLogDatabaseConnection>;
+
+/// True when bot_event has the session_seq column (probed when the statements are prepared); BOTLOG_INS_EVENT then takes it as the 18th parameter.
+TC_DATABASE_API extern std::atomic<bool> BotLogHasSessionSeq;
+
+/// True when the bot_event_hot table exists (probed when the statements are prepared): BOTLOG_INS_EVENT_HOT writes to it. Otherwise that
+/// statement is prepared against bot_event and the writer never routes to it.
+TC_DATABASE_API extern std::atomic<bool> BotLogHasHotTable;
 
 /// Accessor to the bot log database (only opened when BotLogDatabaseInfo is set in worldserver.conf)
 TC_DATABASE_API extern DatabaseWorkerPool<BotLogDatabaseConnection> BotLogDatabase;

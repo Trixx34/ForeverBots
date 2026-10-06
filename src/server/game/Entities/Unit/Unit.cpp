@@ -1087,7 +1087,7 @@ bool Unit::HasBreakableByDamageCrowdControlAura(Unit const* excludeCasterChannel
         if (attacker && attacker != victim)
             if (Player* botAttacker = attacker->ToPlayer())
                 if (BotAI* botAI = botAttacker->GetSession()->GetBotAI())
-                    botAI->OnDamageDealt(botAttacker, victim, damageTaken);
+                    botAI->OnDamageDealt(botAttacker, victim, damageTaken, spellProto);
     }
 
     if (killed)

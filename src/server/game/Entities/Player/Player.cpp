@@ -2218,6 +2218,9 @@ void Player::GiveXP(uint32 xp, Unit* victim, float group_rate)
     }
 
     SetXP(newXP);
+
+    if (BotAI* botAI = GetSession()->GetBotAI())
+        botAI->OnXpGain(this, xp, bonus_xp, victim);
 }
 
 // Update player to next level
@@ -2322,6 +2325,9 @@ void Player::GiveLevel(uint8 level)
     UpdateClassicLegacyUnlock();
 
     sScriptMgr->OnPlayerLevelChanged(this, oldLevel);
+
+    if (BotAI* botAI = GetSession()->GetBotAI())
+        botAI->OnLevelUp(this, oldLevel, level);
 }
 
 // Classic 1.60 (WoW Forever): the first character bank tab is free (BankTab.db2: BankType 0, OrderIndex 0, Cost 0) and every character
@@ -6559,6 +6565,8 @@ void Player::CheckAreaExplore()
 
                 XP += XP * GetTotalAuraMultiplier(SPELL_AURA_MOD_EXPLORATION_EXPERIENCE);
 
+                if (BotAI* botAI = GetSession()->GetBotAI())
+                    botAI->NoteXpSource("explore");
                 GiveXP(XP, nullptr);
                 SendExplorationExperience(areaId, XP);
             }
@@ -15707,7 +15715,11 @@ void Player::RewardQuest(Quest const* quest, LootItemType rewardType, uint32 rew
 
     int32 moneyRew = 0;
     if (!IsMaxLevel())
+    {
+        if (BotAI* botAI = GetSession()->GetBotAI())
+            botAI->NoteXpSource("quest", quest->GetQuestId());
         GiveXP(XP, nullptr);
+    }
     else
         moneyRew = int32(quest->GetRewMoneyMaxLevel() * sWorld->getRate(RATE_DROP_MONEY));
 

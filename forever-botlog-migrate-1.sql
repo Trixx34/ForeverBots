@@ -1,76 +1,54 @@
--- Bot logging database for the Forever bots.
--- NOT yet run anywhere. Run as root on the NAS (after confirming):
---   docker exec -i MySQL mysql -uroot -p < forever-botlog-setup.sql
--- Replace CHANGE_ME first. Host 192.168.34.32 = the Forever VM.
-
-CREATE DATABASE IF NOT EXISTS forever_botlog DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-
-CREATE USER IF NOT EXISTS 'foreverbot'@'192.168.34.32' IDENTIFIED BY 'CHANGE_ME';
-GRANT ALL PRIVILEGES ON forever_botlog.* TO 'foreverbot'@'192.168.34.32';
-FLUSH PRIVILEGES;
+-- Upgrade of an EXISTING forever_botlog (created from the older forever-botlog-setup.sql) to the current schema. Idempotent: safe to
+-- run twice. NOT run by the plumber: the NAS is read-only unless the owner confirms. Run as a user with ALTER/CREATE/DROP on forever_botlog
+-- (foreverbot has ALL PRIVILEGES on it), e.g.:
+--   mysql -h192.168.34.30 -uforeverbot -p < forever-botlog-migrate-1.sql
+-- Stop the worldserver (or accept brief metadata locks) first: every ALTER below rebuilds the partitioned bot_event table.
+-- Takes a few seconds per 100k rows. The worldserver detects the new columns/tables when it opens the pool (restart it afterwards).
+--
+-- What it adds: bot_event.session_seq, STORED generated columns killer_entry/killer_level/xp_amount/spell_id and VIRTUAL outcome/lvl_diff,
+-- indexes idx_type_sev_ts/idx_session/idx_killer/idx_spell/idx_xp (idx_reason and idx_quest are KEPT: the console filters by reason and
+-- the analysts group by reason/quest_id), bot_event_hot + view bot_event_all, the summary tables, and the new roll procedures/event.
+-- Tested on the local sim database (forever_sim_log) with the USE line replaced.
 
 USE forever_botlog;
 
--- One row per bot, so events only carry the guid.
-CREATE TABLE IF NOT EXISTS bot (
-  guid        BIGINT UNSIGNED NOT NULL,
-  name        VARCHAR(24)  NOT NULL,
-  class_id    TINYINT UNSIGNED NOT NULL,
-  race_id     TINYINT UNSIGNED NOT NULL,
-  faction     ENUM('alliance','horde') NOT NULL,
-  first_seen  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  PRIMARY KEY (guid),
-  KEY idx_class_faction (class_id, faction)
-) ENGINE=InnoDB;
+DROP PROCEDURE IF EXISTS botlog_mig_col;
+DROP PROCEDURE IF EXISTS botlog_mig_idx;
+DELIMITER //
+CREATE PROCEDURE botlog_mig_col(IN p_table VARCHAR(64), IN p_col VARCHAR(64), IN p_def TEXT)
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = p_table AND COLUMN_NAME = p_col) THEN
+    SET @sql = CONCAT('ALTER TABLE ', p_table, ' ADD COLUMN ', p_col, ' ', p_def);
+    PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+  END IF;
+END//
+CREATE PROCEDURE botlog_mig_idx(IN p_table VARCHAR(64), IN p_idx VARCHAR(64), IN p_cols VARCHAR(255))
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = p_table AND INDEX_NAME = p_idx) THEN
+    SET @sql = CONCAT('ALTER TABLE ', p_table, ' ADD INDEX ', p_idx, ' (', p_cols, ')');
+    PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+  END IF;
+END//
+DELIMITER ;
 
--- Everything a bot does or fails to do. Fixed columns for filtering, JSON for the rest.
---   event_type examples: decision, state_change, death, quest_blocked, quest_done, stuck, path_fail, combat, error
---   reason:  short machine-readable code (e.g. NO_PATH, QUEST_PREREQ, TARGET_ELITE) so it can be grouped
---   Full reason-code registry (quest_blocked, decision, path_fail, stuck): docs/playerbots/quest-design.md section 6.2 / 6.2.1 (implemented) and 6.2.2 (reserved)
---   and docs/playerbots/engine-design.md. path_fail also has PATH_PARTIAL_FAR (partial path, goal far from a walkable poly).
---   details: free-form JSON (alternatives considered, killer, damage log, quest step, ...)
--- Partitioned by day so old data is dropped instantly (see botlog_roll_partitions2 below).
--- Final bot_event definition (fresh installs). session_seq: one id per bot login (BOT_LOGIN), unique per (bot_guid, session_seq).
--- The STORED generated columns pull hot JSON fields out of details so they can be indexed (killer, xp, spell); outcome and lvl_diff are VIRTUAL.
-CREATE TABLE IF NOT EXISTS bot_event (
-  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  ts          DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  bot_guid    BIGINT UNSIGNED NOT NULL,
-  event_type  VARCHAR(32)  NOT NULL,
-  severity    TINYINT UNSIGNED NOT NULL DEFAULT 1 COMMENT '0 trace, 1 info, 2 warn, 3 error',
-  reason      VARCHAR(64)  NULL,
-  summary     VARCHAR(255) NULL,
-  level       TINYINT UNSIGNED NULL,
-  map_id      SMALLINT UNSIGNED NULL,
-  zone_id     SMALLINT UNSIGNED NULL,
-  pos_x       FLOAT NULL,
-  pos_y       FLOAT NULL,
-  pos_z       FLOAT NULL,
-  quest_id    INT UNSIGNED NULL,
-  target_entry INT UNSIGNED NULL,
-  details     JSON NULL,
-  session_seq BIGINT UNSIGNED NULL COMMENT 'login session of the bot, set at BOT_LOGIN',
-  killer_entry BIGINT UNSIGNED GENERATED ALWAYS AS (JSON_VALUE(details, '$.killer.entry' RETURNING UNSIGNED)) STORED,
-  killer_level BIGINT UNSIGNED GENERATED ALWAYS AS (JSON_VALUE(details, '$.killer.level' RETURNING UNSIGNED)) STORED,
-  xp_amount    BIGINT UNSIGNED GENERATED ALWAYS AS (IF(event_type = 'xp', JSON_VALUE(details, '$.amount' RETURNING UNSIGNED), NULL)) STORED,
-  spell_id     BIGINT UNSIGNED GENERATED ALWAYS AS (COALESCE(JSON_VALUE(details, '$.killer.spell' RETURNING UNSIGNED), JSON_VALUE(details, '$.spell_id' RETURNING UNSIGNED))) STORED,
-  outcome      VARCHAR(24) GENERATED ALWAYS AS (JSON_VALUE(details, '$.outcome')) VIRTUAL,
-  lvl_diff     BIGINT GENERATED ALWAYS AS (COALESCE(JSON_VALUE(details, '$.killer.lvl_diff' RETURNING SIGNED), JSON_VALUE(details, '$.target.lvl_diff' RETURNING SIGNED))) VIRTUAL,
-  PRIMARY KEY (id, ts),
-  KEY idx_bot_ts   (bot_guid, ts),
-  KEY idx_type_ts  (event_type, ts),
-  KEY idx_type_sev_ts (event_type, severity, ts),
-  KEY idx_reason   (reason, ts),
-  KEY idx_quest    (quest_id, ts),
-  KEY idx_session  (bot_guid, session_seq),
-  KEY idx_killer   (killer_entry, killer_level),
-  KEY idx_spell    (spell_id),
-  KEY idx_xp       (xp_amount)
-) ENGINE=InnoDB
-PARTITION BY RANGE (TO_DAYS(ts)) (
-  PARTITION pmax VALUES LESS THAN MAXVALUE
-);
+CALL botlog_mig_col('bot_event', 'session_seq', 'BIGINT UNSIGNED NULL COMMENT ''login session of the bot, set at BOT_LOGIN''');
+CALL botlog_mig_col('bot_event', 'killer_entry', 'BIGINT UNSIGNED GENERATED ALWAYS AS (JSON_VALUE(details, ''$.killer.entry'' RETURNING UNSIGNED)) STORED');
+CALL botlog_mig_col('bot_event', 'killer_level', 'BIGINT UNSIGNED GENERATED ALWAYS AS (JSON_VALUE(details, ''$.killer.level'' RETURNING UNSIGNED)) STORED');
+CALL botlog_mig_col('bot_event', 'xp_amount', 'BIGINT UNSIGNED GENERATED ALWAYS AS (IF(event_type = ''xp'', JSON_VALUE(details, ''$.amount'' RETURNING UNSIGNED), NULL)) STORED');
+CALL botlog_mig_col('bot_event', 'spell_id', 'BIGINT UNSIGNED GENERATED ALWAYS AS (COALESCE(JSON_VALUE(details, ''$.killer.spell'' RETURNING UNSIGNED), JSON_VALUE(details, ''$.spell_id'' RETURNING UNSIGNED))) STORED');
+CALL botlog_mig_col('bot_event', 'outcome', 'VARCHAR(24) GENERATED ALWAYS AS (JSON_VALUE(details, ''$.outcome'')) VIRTUAL');
+CALL botlog_mig_col('bot_event', 'lvl_diff', 'BIGINT GENERATED ALWAYS AS (COALESCE(JSON_VALUE(details, ''$.killer.lvl_diff'' RETURNING SIGNED), JSON_VALUE(details, ''$.target.lvl_diff'' RETURNING SIGNED))) VIRTUAL');
 
+CALL botlog_mig_idx('bot_event', 'idx_type_sev_ts', 'event_type, severity, ts');
+CALL botlog_mig_idx('bot_event', 'idx_session', 'bot_guid, session_seq');
+CALL botlog_mig_idx('bot_event', 'idx_killer', 'killer_entry, killer_level');
+CALL botlog_mig_idx('bot_event', 'idx_spell', 'spell_id');
+CALL botlog_mig_idx('bot_event', 'idx_xp', 'xp_amount');
+
+DROP PROCEDURE botlog_mig_col;
+DROP PROCEDURE botlog_mig_idx;
+
+-- Hot table, view and summary tables.
 -- Hot rows: decision, state_change and trace events (Bot.Log.HotTypes), written here instead of bot_event when Bot.Log.HotSplit=1.
 -- Short retention (botlog_roll_partitions2 p_hot_days, 3-7 days, default 5). Same columns as bot_event; ids start at 10^12 so that
 -- bot_event_all has unique ids. COMBAT_SUMMARY and LOG_SUPPRESSED stay in bot_event (low volume, needed for the 14-day analysis).
@@ -106,25 +84,6 @@ CREATE TABLE IF NOT EXISTS bot_death_daily (
   n            INT UNSIGNED NOT NULL,
   PRIMARY KEY (day, class_id, level, zone_id, killer_entry)
 ) ENGINE=InnoDB;
-
--- Bot position samples for the sim web console map (movement trails). One row per bot every Bot.Log.PosIntervalSec seconds
--- while it moves, plus one on login and on map/zone change. Short retention (2 days), partitioned by day like bot_event.
---   flags bit 0 = moving, bit 1 = in combat, bit 2 = dead
-CREATE TABLE IF NOT EXISTS bot_pos (
-  ts        DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  bot_guid  BIGINT UNSIGNED NOT NULL,
-  map_id    SMALLINT UNSIGNED NOT NULL,
-  zone_id   SMALLINT UNSIGNED NOT NULL,
-  x         FLOAT NOT NULL,
-  y         FLOAT NOT NULL,
-  z         FLOAT NOT NULL,
-  flags     TINYINT UNSIGNED NOT NULL DEFAULT 0,
-  KEY idx_map_ts (map_id, ts),
-  KEY idx_bot_ts (bot_guid, ts)
-) ENGINE=InnoDB
-PARTITION BY RANGE (TO_DAYS(ts)) (
-  PARTITION pmax VALUES LESS THAN MAXVALUE
-);
 
 -- ---------------------------------------------------------------------------------------------------------------------------
 -- Daily summaries and partition rolling
@@ -224,11 +183,10 @@ BEGIN
 END//
 DELIMITER ;
 
-CALL botlog_roll_partitions2(14, 5);
-
--- Daily rollover. Requires event_scheduler=ON on the server (default ON in MySQL 8).
--- If it is OFF, run "CALL botlog_roll_partitions2(14, 5);" yourself daily, or enable it.
--- Retention: bot_event 14 days (archive), bot_event_hot 5 days (3-7), bot_pos 2 days; the summaries (bot_event_hourly, bot_death_daily) are kept.
+-- Switch the daily event to the two-argument procedure (archive 14 days, hot 5 days).
 CREATE EVENT IF NOT EXISTS botlog_daily_roll
   ON SCHEDULE EVERY 1 DAY STARTS (CURRENT_DATE + INTERVAL 1 DAY + INTERVAL 5 MINUTE)
   DO CALL botlog_roll_partitions2(14, 5);
+ALTER EVENT botlog_daily_roll DO CALL botlog_roll_partitions2(14, 5);
+
+CALL botlog_roll_partitions2(14, 5);

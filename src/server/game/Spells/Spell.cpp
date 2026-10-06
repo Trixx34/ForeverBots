@@ -19,6 +19,7 @@
 #include "DeathRecap.h"
 #include "AzeriteEmpoweredItem.h"
 #include "Battlefield.h"
+#include "BotAI.h"
 #include "BattlefieldMgr.h"
 #include "Battleground.h"
 #include "BattlePetMgr.h"
@@ -3874,6 +3875,17 @@ void Spell::_cast(bool skipCheck)
     // Powers have to be taken before SendSpellGo
     if (!(_triggeredCastFlags & TRIGGERED_IGNORE_POWER_COST))
         TakePower();
+
+    // bot telemetry: per-spell casts and power spent (COMBAT_SUMMARY breakdown)
+    if (Player* botCaster = m_caster->ToPlayer())
+        if (BotAI* botAI = botCaster->GetSession()->GetBotAI())
+        {
+            uint32 spent = 0;
+            for (SpellPowerCost const& cost : m_powerCost)
+                if (cost.Amount > 0 && cost.Power != POWER_RUNES && cost.Power != POWER_HEALTH)
+                    spent += uint32(cost.Amount);
+            botAI->OnSpellCast(botCaster, m_spellInfo, spent);
+        }
 
     // Classic 1.60: every shot of a bow, gun or crossbow uses one arrow or bullet
     if (Player* player = m_caster->ToPlayer())
