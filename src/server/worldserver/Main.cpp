@@ -26,6 +26,8 @@
 #include "BigNumber.h"
 #include "CliRunnable.h"
 #include "Configuration/Config.h"
+#include "BotLogDatabase.h"
+#include "BotMgr.h"
 #include "DatabaseEnv.h"
 #include "DatabaseLoader.h"
 #include "DeadlineTimer.h"
@@ -669,8 +671,16 @@ bool StartDB()
         .AddDatabase(WorldDatabase, "World")
         .AddDatabase(HotfixDatabase, "Hotfix");
 
+    // The bot log database is optional: only opened when BotLogDatabaseInfo is set, never auto-created/updated.
+    bool const botLogConfigured = !sConfigMgr->GetStringDefault("BotLogDatabaseInfo", "", true).empty();
+    if (botLogConfigured)
+        loader.AddDatabase(BotLogDatabase, "BotLog");
+
     if (!loader.Load())
         return false;
+
+    if (botLogConfigured)
+        sBotMgr->SetLogDatabaseAvailable(true);
 
     ///- Insert version info into DB
     WorldDatabase.PExecute("UPDATE version SET core_version = '{}', core_revision = '{}'", GitRevision::GetFullVersion(), GitRevision::GetHash());        // One-time query
@@ -683,6 +693,13 @@ bool StartDB()
 
 void StopDB()
 {
+    if (sBotMgr->IsLogDatabaseAvailable())
+    {
+        sBotMgr->FlushLog(true);
+        sBotMgr->SetLogDatabaseAvailable(false);
+        BotLogDatabase.Close();
+    }
+
     HotfixDatabase.Close();
     WorldDatabase.Close();
     CharacterDatabase.Close();

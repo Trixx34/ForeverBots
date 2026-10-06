@@ -35,7 +35,8 @@ public:
     {
         static ChatCommandTable botCommandTable =
         {
-            { "hello", HandleBotHelloCommand, rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "hello",   HandleBotHelloCommand,   rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
+            { "logtest", HandleBotLogTestCommand, rbac::RBAC_PERM_COMMAND_BOT, Console::Yes },
         };
 
         static ChatCommandTable commandTable =
@@ -49,6 +50,28 @@ public:
     static bool HandleBotHelloCommand(ChatHandler* handler)
     {
         handler->PSendSysMessage("%s", sBotMgr->GetStatus().c_str());
+        return true;
+    }
+
+    // Writes one test row (bot_guid 0, event_type 'test') to the bot log and flushes, to verify the pipeline end to end.
+    static bool HandleBotLogTestCommand(ChatHandler* handler)
+    {
+        if (!sBotMgr->IsLogDatabaseAvailable())
+        {
+            handler->PSendSysMessage("%s", "Bot log is off: set BotLogDatabaseInfo in worldserver.conf and restart.");
+            return true;
+        }
+
+        BotEvent event;
+        event.Type = "test";
+        event.Severity = BOTLOG_INFO;
+        event.Reason = "LOGTEST";
+        event.Summary = "bot log test row from .bot logtest";
+        event.Details = R"({"source":"cs_bot","note":"safe to delete"})";
+        sBotMgr->LogEvent(std::move(event));
+        sBotMgr->FlushLog();
+
+        handler->PSendSysMessage("%s", "Bot log test event queued and flushed (check bot_event where event_type = 'test').");
         return true;
     }
 };

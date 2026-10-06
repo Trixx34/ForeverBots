@@ -152,6 +152,34 @@ CharacterDatabase.SynchThreads = 2
 HotfixDatabase.SynchThreads    = 1
 
 #
+#    BotLogDatabaseInfo
+#        Description: Optional fifth database for the bot activity log (decisions, deaths, blocked
+#                     quests...). Same format as the other *DatabaseInfo entries. Leave it commented
+#                     out to disable bot logging. The schema is NOT created automatically: apply
+#                     forever-botlog-setup.sql once. Never put the real password in a tracked file.
+#        Example:     "192.168.34.30;3306;foreverbot;<password>;forever_botlog"
+#
+#    BotLog.MinSeverity
+#        Description: Lowest severity written to the log: 0 trace, 1 info, 2 warn, 3 error.
+#        Default:     1
+#
+#    BotLog.FlushIntervalMs
+#        Description: Buffered events are written to the database in one batch this often (min 100).
+#        Default:     1000
+#
+#    BotLog.MaxBatch
+#        Description: Events buffered before an early flush is requested.
+#        Default:     500
+#
+
+# BotLogDatabaseInfo = "127.0.0.1;3306;foreverbot;foreverbot;forever_botlog"
+# BotLogDatabase.WorkerThreads = 1
+# BotLogDatabase.SynchThreads  = 1
+BotLog.MinSeverity     = 1
+BotLog.FlushIntervalMs = 1000
+BotLog.MaxBatch        = 500
+
+#
 #    MaxPingTime
 #        Description: Time (in minutes) between database pings.
 #        Default:     30

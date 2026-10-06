@@ -20,6 +20,7 @@
 #include "Config.h"
 #include "DatabaseEnv.h"
 #include "DatabaseLoader.h"
+#include "Implementation/BotLogDatabase.h"
 #include "GitRevision.h"
 #include "Log.h"
 #include "QueryResult.h"
@@ -185,6 +186,37 @@ template<>
 BaseLocation DBUpdater<HotfixDatabaseConnection>::GetBaseLocationType()
 {
     return LOCATION_DOWNLOAD;
+}
+
+// Bot log database: schema is managed by forever-botlog-setup.sql, never auto-created or auto-updated
+template<>
+std::string DBUpdater<BotLogDatabaseConnection>::GetConfigEntry()
+{
+    return "Updates.BotLog";
+}
+
+template<>
+std::string DBUpdater<BotLogDatabaseConnection>::GetTableName()
+{
+    return "BotLog";
+}
+
+template<>
+std::string DBUpdater<BotLogDatabaseConnection>::GetBaseFile()
+{
+    return {};
+}
+
+template<>
+bool DBUpdater<BotLogDatabaseConnection>::IsEnabled(uint32 const /*updateMask*/)
+{
+    return false;
+}
+
+template<>
+BaseLocation DBUpdater<BotLogDatabaseConnection>::GetBaseLocationType()
+{
+    return LOCATION_REPOSITORY;
 }
 
 // All
@@ -596,3 +628,4 @@ template class TC_DATABASE_API DBUpdater<LoginDatabaseConnection>;
 template class TC_DATABASE_API DBUpdater<WorldDatabaseConnection>;
 template class TC_DATABASE_API DBUpdater<CharacterDatabaseConnection>;
 template class TC_DATABASE_API DBUpdater<HotfixDatabaseConnection>;
+template class TC_DATABASE_API DBUpdater<BotLogDatabaseConnection>;
