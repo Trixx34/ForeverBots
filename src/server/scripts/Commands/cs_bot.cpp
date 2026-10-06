@@ -167,6 +167,8 @@ public:
     // bot despawn [all|<name>]: saves and logs the bot(s) out.
     static bool HandleBotDespawnCommand(ChatHandler* handler, Optional<std::string> name)
     {
+        if (name && BotAlts::DespawnAlt(handler, *name)) // an alt bot: owner only
+            return true;
         uint32 count = sBotMgr->DespawnBots(name ? *name : std::string());
         handler->PSendSysMessage("Bot despawn: %u bots logged out or queued for logout.", count);
         return count > 0 || !name || StringEqualI(*name, "all");

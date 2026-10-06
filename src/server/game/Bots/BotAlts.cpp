@@ -20,6 +20,7 @@
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "Config.h"
+#include "DatabaseEnv.h"
 #include "Group.h"
 #include "GroupMgr.h"
 #include "Log.h"
@@ -77,6 +78,48 @@ uint32 MaxPerAccount()
 {
     return uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Alt.MaxPerAccount", 4)));
 }
+
+void RegisterAlt(uint64 guid)
+{
+    {
+        std::lock_guard<std::mutex> lock(AltSetMutex);
+        AltGuids.insert(guid);
+    }
+    AnyAlt.store(true, std::memory_order_relaxed);
+}
+
+// --- persistence (characters DB, table bot_alt, see forever-characters-bot-alt.sql) ---
+// The core DB layer aborts the process on a query to a missing table, so the table is probed once (SHOW TABLES) before any use and
+// persistence switches itself off with one log line when it is absent. Statements are integer-only. World thread only.
+enum class Store { Unknown, On, Off };
+Store StoreState = Store::Unknown;
+
+bool StoreOn()
+{
+    if (StoreState == Store::Unknown)
+    {
+        StoreState = Store::Off;
+        if (!sConfigMgr->GetBoolDefault("Bot.Alt.Persist", true))
+            TC_LOG_INFO("server.worldserver", "BotAlts: persistence disabled (Bot.Alt.Persist = 0)");
+        else if (QueryResult r = CharacterDatabase.Query("SHOW TABLES LIKE 'bot_alt'"))
+            StoreState = Store::On;
+        else
+            TC_LOG_WARN("server.worldserver", "BotAlts: table bot_alt not found in the characters database, alts are not remembered across restarts (apply forever-characters-bot-alt.sql)");
+    }
+    return StoreState == Store::On;
+}
+
+void Remember(uint64 guid, uint32 accountId)
+{
+    if (StoreOn())
+        CharacterDatabase.PExecute("REPLACE INTO bot_alt (guid, account_id) VALUES ({}, {})", guid, accountId);
+}
+
+void Forget(uint64 guid)
+{
+    if (StoreOn())
+        CharacterDatabase.PExecute("DELETE FROM bot_alt WHERE guid = {}", guid);
+}
 }
 
 bool IsLoggedInAsBot(uint64 lowGuid)
@@ -131,6 +174,94 @@ void OnAltLoggedIn(Player* alt)
     }
 
     group->AddMember(alt);
+}
+
+void RestoreOnce()
+{
+    static bool done = false;
+    if (done)
+        return;
+    done = true;
+    if (!sWorld->getBoolConfig(CONFIG_BOT_ENABLED) || !sConfigMgr->GetBoolDefault("Bot.Alt.Enabled", true) || !StoreOn())
+        return;
+
+    QueryResult result = CharacterDatabase.Query("SELECT guid, account_id FROM bot_alt ORDER BY added_at, guid");
+    if (!result)
+        return;
+
+    uint32 restored = 0, dropped = 0, skipped = 0;
+    do
+    {
+        Field* f = result->Fetch();
+        uint64 const guid = f[0].GetUInt64();
+        uint32 const accountId = f[1].GetUInt32();
+        CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(ObjectGuid::Create<HighGuid::Player>(guid));
+        // same rules as .bot alt add: the character must still exist and still belong to the remembered account
+        if (!entry || entry->IsDeleted || entry->AccountId != accountId)
+        {
+            Forget(guid);
+            ++dropped;
+            continue;
+        }
+        if (sBotMgr->CountActiveAlts(accountId) >= MaxPerAccount() || sBotMgr->IsActiveAlt(guid))
+        {
+            ++skipped; // row kept: a later restart with a higher cap restores it
+            continue;
+        }
+        // same guards as .bot alt add: never while the character is online as a player or its account is mid-login (save-path data loss)
+        bool busy = false;
+        Player* online = ObjectAccessor::FindConnectedPlayer(entry->Guid);
+        if (online && !(online->GetSession() && online->GetSession()->IsBot()))
+            busy = true;
+        for (auto const& [id, s] : sWorld->GetAllSessions())
+            if (s && s->GetAccountId() == accountId && !s->IsBot() && s->PlayerLoading())
+                busy = true;
+        if (busy)
+        {
+            ++skipped; // row kept
+            TC_LOG_INFO("server.worldserver", "BotAlts: alt {} not restored now (online as a player or its account is logging in), row kept", entry->Name);
+            continue;
+        }
+        std::string error;
+        if (!sBotMgr->StartAlt(guid, accountId, "alt", entry->Name, entry->Race, entry->Class, entry->Sex, entry->Level, error))
+        {
+            Forget(guid); // became a reserved bot character
+            ++dropped;
+            continue;
+        }
+        RegisterAlt(guid);
+        LogAlt(guid, "ALT_RESTORED", true, "startup", accountId, entry->Name);
+        ++restored;
+    } while (result->NextRow());
+
+    TC_LOG_INFO("server.worldserver", "BotAlts: restored {} alt bot(s), dropped {} stale row(s), skipped {} (cap)", restored, dropped, skipped);
+}
+
+bool DespawnAlt(ChatHandler* handler, std::string const& rawName)
+{
+    std::string name = rawName;
+    if (name.empty() || !normalizePlayerName(name))
+        return false;
+    CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByName(name);
+    if (!entry || !sBotMgr->IsActiveAlt(entry->Guid.GetCounter()))
+        return false;
+
+    WorldSession* session = handler->GetSession();
+    std::string const issuer = session && session->GetPlayer() ? session->GetPlayer()->GetName() : std::string("console");
+    uint64 const guid = entry->Guid.GetCounter();
+    // only the owner logs an alt out (the console is allowed for cleanup); a GM of another account is refused
+    if (session && session->GetAccountId() != entry->AccountId)
+    {
+        LogAlt(guid, "ALT_REFUSED_NOT_OWNER_DESPAWN", false, issuer, session->GetAccountId(), entry->Name);
+        handler->PSendSysMessage("%s is an alt bot of another account: only its owner can log it out.", entry->Name.c_str());
+        return true;
+    }
+
+    sBotMgr->StopAlt(guid);
+    Forget(guid);
+    LogAlt(guid, "ALT_REMOVED", true, issuer, entry->AccountId, entry->Name);
+    handler->PSendSysMessage("%s is being logged out and saved.", entry->Name.c_str());
+    return true;
 }
 
 bool HandleCommand(ChatHandler* handler, std::string const& op, std::string const& rawName, bool gmTest)
@@ -202,6 +333,7 @@ bool HandleCommand(ChatHandler* handler, std::string const& op, std::string cons
             handler->PSendSysMessage("%s is not logged in as a bot.", entry->Name.c_str());
             return false;
         }
+        Forget(guid);
         LogAlt(guid, "ALT_REMOVED", true, issuer, accountId, entry->Name);
         handler->PSendSysMessage("%s is being logged out and saved.", entry->Name.c_str());
         return true;
@@ -252,11 +384,8 @@ bool HandleCommand(ChatHandler* handler, std::string const& op, std::string cons
         return false;
     }
 
-    {
-        std::lock_guard<std::mutex> lock(AltSetMutex);
-        AltGuids.insert(guid);
-    }
-    AnyAlt.store(true, std::memory_order_relaxed);
+    RegisterAlt(guid);
+    Remember(guid, accountId);
     LogAlt(guid, "ALT_ADDED", true, issuer, accountId, entry->Name);
     handler->PSendSysMessage("%s is logging in as a bot (it joins your group when you lead it or are alone).", entry->Name.c_str());
     return true;

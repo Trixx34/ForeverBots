@@ -20,6 +20,7 @@
 #include "BotBehavior.h"
 #include "BotEngine.h"
 #include "BotMgr.h"
+#include "BotSocial.h"
 #include "Chat.h"
 #include "Config.h"
 #include "GameTime.h"
@@ -43,7 +44,7 @@ namespace BotChat
 {
 namespace
 {
-enum class Verb : uint8 { None, Follow, Stay, Goto, Rest, Release, Status, Strategy, Verbose };
+enum class Verb : uint8 { None, Follow, Stay, Goto, Rest, Release, Status, Strategy, Verbose, Share };
 
 char const* VerbName(Verb v)
 {
@@ -57,6 +58,7 @@ char const* VerbName(Verb v)
         case Verb::Status: return "status";
         case Verb::Strategy: return "strategy";
         case Verb::Verbose: return "verbose";
+        case Verb::Share: return "share";
         default: return "?";
     }
 }
@@ -146,7 +148,7 @@ Verb ParseVerb(std::string_view t)
     if (t.empty() || t.size() > 8)
         return Verb::None;
     static constexpr std::pair<char const*, Verb> verbs[] = { { "follow", Verb::Follow }, { "stay", Verb::Stay }, { "goto", Verb::Goto },
-        { "rest", Verb::Rest }, { "release", Verb::Release }, { "status", Verb::Status }, { "strategy", Verb::Strategy }, { "verbose", Verb::Verbose } };
+        { "rest", Verb::Rest }, { "release", Verb::Release }, { "status", Verb::Status }, { "strategy", Verb::Strategy }, { "verbose", Verb::Verbose }, { "share", Verb::Share } };
     for (auto const& [name, v] : verbs)
         if (EqI(t, name))
             return v;
@@ -339,6 +341,7 @@ struct Ctx
     float Gx = 0, Gy = 0, Gz = 0;
     bool HasZ = false;
     std::vector<std::pair<bool, std::string>> Strat;  // add?, name
+    uint32 QuestId = 0;                               // share
 };
 
 void Preflight(Ctx& c)
@@ -413,6 +416,16 @@ void Preflight(Ctx& c)
                 }
                 c.Strat.emplace_back(add, std::move(name));
             }
+            break;
+        }
+        case Verb::Share:
+        {
+            // share <questId>: the bot pushes that quest of its log to the group (the core handler validates each receiver)
+            Optional<uint32> q = Trinity::StringTo<uint32>(NextToken(a));
+            if (!q || !*q || !NextToken(a).empty())
+                c.PreflightError = "BAD_ARGS";
+            else
+                c.QuestId = *q;
             break;
         }
         case Verb::Release:
@@ -504,6 +517,10 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
                 return "IN_COMBAT";
             ai->AddStrategy(bot, "rest", "chat");
             return "OK";
+        case Verb::Share:
+            if (!alive)
+                return "DEAD";
+            return BotSocial::ShareQuest(bot, c.QuestId);
         case Verb::Release:
             if (alive)
                 return "NOT_DEAD";

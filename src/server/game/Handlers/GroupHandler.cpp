@@ -29,6 +29,7 @@
 #include "Player.h"
 #include "SocialMgr.h"
 #include "World.h"
+#include "BotSocial.h"
 
 class Aura;
 
@@ -121,6 +122,7 @@ void WorldSession::HandlePartyInviteOpcode(WorldPackets::Party::PartyInviteClien
     if (group2 || invitedPlayer->GetGroupInvite())
     {
         SendPartyResult(PARTY_OP_INVITE, invitedPlayer->GetName(), ERR_ALREADY_IN_GROUP_S);
+        BotSocial::OnPartyInviteAlreadyGrouped(invitingPlayer, invitedPlayer);
 
         if (group2)
         {
@@ -183,6 +185,8 @@ void WorldSession::HandlePartyInviteOpcode(WorldPackets::Party::PartyInviteClien
     invitedPlayer->SendDirectMessage(partyInvite.Write());
 
     SendPartyResult(PARTY_OP_INVITE, invitedPlayer->GetName(), ERR_PARTY_RESULT_OK);
+
+    BotSocial::OnPartyInvite(invitingPlayer, invitedPlayer);
 }
 
 void WorldSession::HandlePartyInviteResponseOpcode(WorldPackets::Party::PartyInviteResponse& packet)

@@ -100,12 +100,18 @@ std::vector<std::string> SplitNames(std::string const& list)
     return names;
 }
 
-std::vector<std::string> DefaultStrategies(BotState state, Player* /*bot*/)
+std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
 {
     std::vector<std::string> names;
     switch (state)
     {
-        case BotState::NonCombat: names = SplitNames(BotAI::Config().DefaultNonCombat); break;
+        case BotState::NonCombat:
+            // alt bots idle (no quest/grind AI) until their group leader commands them
+            if (bot && bot->GetSession() && bot->GetSession()->IsAltBot())
+                names = SplitNames(sConfigMgr->GetStringDefault("Bot.Alt.Default.NonCombat", "rest,follow,goto"));
+            else
+                names = SplitNames(BotAI::Config().DefaultNonCombat);
+            break;
         case BotState::Combat: names = SplitNames(BotAI::Config().DefaultCombat); break;
         case BotState::Dead: names = SplitNames(BotAI::Config().DefaultDead); break;
     }

@@ -31,6 +31,7 @@
 #include "TradeData.h"
 #include "TradePackets.h"
 #include "World.h"
+#include "BotSocial.h"
 
 void WorldSession::SendTradeStatus(WorldPackets::Trade::TradeStatus& info)
 {
@@ -482,6 +483,8 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPackets::Trade::AcceptTrade& acc
             return;
         }
 
+        BotSocial::OnTradeExecuting(_player, trader);
+
         // execute trade: 1. remove
         for (uint8 i = 0; i < TRADE_SLOT_TRADED_COUNT; ++i)
         {
@@ -553,6 +556,10 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPackets::Trade::AcceptTrade& acc
     {
         info.Status = TRADE_STATUS_ACCEPTED;
         trader->GetSession()->SendTradeStatus(info);
+
+        // bot trader: it accepts too (must stay the last statement, a completed trade frees both TradeData)
+        if (trader->GetSession()->IsBot())
+            BotSocial::OnTradePlayerAccepted(_player, trader);
     }
 }
 
@@ -712,6 +719,9 @@ void WorldSession::HandleInitiateTradeOpcode(WorldPackets::Trade::InitiateTrade&
     info.Status = TRADE_STATUS_PROPOSED;
     info.Partner = _player->GetGUID();
     pOther->GetSession()->SendTradeStatus(info);
+
+    if (pOther->GetSession()->IsBot())
+        BotSocial::OnTradeInitiated(_player, pOther);
 }
 
 void WorldSession::HandleSetTradeGoldOpcode(WorldPackets::Trade::SetTradeGold& setTradeGold)

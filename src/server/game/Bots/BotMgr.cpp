@@ -16,6 +16,7 @@
  */
 
 #include "BotMgr.h"
+#include "BotSocial.h"
 #include "AccountMgr.h"
 #include "BotAI.h"
 #include "BotAlts.h"
@@ -304,6 +305,8 @@ void BotMgr::Update(uint32 diff)
     ProcessLogins();
     ProcessBotTeleports();
     UpdateProbe(diff);
+    BotSocial::Update(diff);
+    BotAlts::RestoreOnce();
 
     if (!IsLogDatabaseAvailable())
         return;

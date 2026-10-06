@@ -41,6 +41,7 @@
 #include "ReputationMgr.h"
 #include "ScriptMgr.h"
 #include "World.h"
+#include "BotSocial.h"
 
 void WorldSession::HandleQuestgiverStatusQueryOpcode(WorldPackets::Quest::QuestGiverStatusQuery& packet)
 {
@@ -605,6 +606,12 @@ void WorldSession::HandlePushQuestToParty(WorldPackets::Quest::PushQuestToParty&
 
         if (receiver == sender)
             continue;
+
+        if (receiver->GetSession()->IsBot())
+        {
+            BotSocial::OnQuestPushed(sender, receiver, packet.QuestID);
+            continue;
+        }
 
         if (!receiver->GetPlayerSharingQuest().IsEmpty())
         {

@@ -22,7 +22,8 @@
 // issuer's own account in as a bot through the normal bot login path (BotMgr::StartAlt). Rules: own account only, never while the
 // character is online as a player, a bot character cannot log in as a player (CharacterHandler hook), at most Bot.Alt.MaxPerAccount
 // active alts per account, events carry "source":"alt". The group leader controls them through BotChat like any other bot.
-// Alts are not remembered across a restart (nothing is persisted): they are saved and logged out at shutdown.
+// Alts are remembered across a restart (table bot_alt in the characters DB, Bot.Alt.Persist, restored once at startup; a missing
+// table disables persistence with one log line). Only .bot alt remove / owner despawn forget an alt, never a shutdown.
 
 #include "Define.h"
 #include <string>
@@ -41,6 +42,13 @@ TC_GAME_API void TagEvent(BotEvent& event);
 
 // World thread, called by BotMgr::FinishLogin: puts the alt into its owner's group when the owner leads it (or is alone).
 TC_GAME_API void OnAltLoggedIn(Player* alt);
+
+// World thread, called every BotMgr::Update: restores the remembered alts on the first call after startup.
+TC_GAME_API void RestoreOnce();
+
+// `.bot despawn <name>` for an alt bot: only the owner's own account may log an alt out (the console may, for cleanup). Returns true
+// when `name` is an alt bot (the reply was sent, the caller must not despawn anything else), false for any other name.
+TC_GAME_API bool DespawnAlt(ChatHandler* handler, std::string const& name);
 
 // `bot alt add|remove|list [name] [test]`. `test` (needs the bot permission) uses the character's own account as the issuer, for
 // console tests without a client. Replies go to the handler.
