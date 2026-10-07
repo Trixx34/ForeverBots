@@ -908,6 +908,9 @@ void BotMotion::SetGoal(uint32 mapId, float x, float y, float z, float arriveDis
     _fresh = true;
     _detour = false;
     _aggro.SinceMs = 0;
+    // a new kind of goal drops the quest context of the previous one (the entry stays: aggro avoidance reads it)
+    _questId = 0;
+    _task = nullptr;
 }
 
 void BotMotion::Halt(Player* bot)
@@ -1019,6 +1022,8 @@ void BotMotion::EmitMotion(BotAI* ai, Player* bot, char const* type, uint8 sever
     if (_questEntry)
         ev.TargetEntry = _questEntry;
     ev.Details = details;
+    if (_task && ev.Details.size() > 1 && ev.Details.front() == '{' && ev.Details.back() == '}' && ev.Details.find("\"task\":") == std::string::npos)
+        ev.Details.insert(ev.Details.size() - 1, StringFormat(R"(,"task":"{}")", _task));
     sBotMgr->LogEvent(std::move(ev));
 }
 

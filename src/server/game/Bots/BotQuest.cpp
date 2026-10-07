@@ -861,7 +861,9 @@ bool IsMeleeClass(Player const* bot)
 
 float PullRange(Player const* bot) { return IsMeleeClass(bot) ? Cfg().PullMelee : Cfg().PullRanged; }
 
-// quest_blocked event, once per (quest, code) per bot unless `once` is false
+std::string QuestTitle(uint32 questId);
+
+// quest_blocked event, once per (quest, code) per bot unless `once` is false; the quest title is added to the details
 void Blocked(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 questId, char const* code, std::string summary, std::string details = std::string(), uint32 entry = 0, bool once = true, uint8 severity = BOTLOG_WARN)
 {
     if (once && !c.Logged.insert(LogKey(questId, code)).second)
@@ -871,6 +873,14 @@ void Blocked(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 questId, char const*
         ev.QuestId = questId;
     if (entry)
         ev.TargetEntry = entry;
+    if (questId && details.find("\"quest_title\"") == std::string::npos)
+    {
+        std::string const title = StringFormat(R"("quest_title":"{}")", Esc(QuestTitle(questId)));
+        if (details.size() > 1 && details.front() == '{' && details.back() == '}')
+            details.insert(details.size() - 1, "," + title);
+        else if (details.empty())
+            details = "{" + title + "}";
+    }
     ev.Details = std::move(details);
     sBotMgr->LogEvent(std::move(ev));
 }
@@ -1170,7 +1180,7 @@ private:
                 if (!(motion.HasGoal() && std::strcmp(motion.GetTag(), "quest") == 0))
                 {
                     motion.SetGoal(bot->GetMapId(), t.WpX, t.WpY, t.WpZ, 8.0f, "quest");
-                    motion.SetQuestCtx(t.Quest, entry);
+                    motion.SetQuestCtx(t.Quest, entry, KindName(t.K));
                     c.ExpectGoal = true;
                     c.ExpectX = t.WpX; c.ExpectY = t.WpY;
                 }
@@ -1198,7 +1208,7 @@ private:
                 t.FinalX = x; t.FinalY = y;
                 t.GoalX = x; t.GoalY = y; t.GoalZ = z;
                 motion.SetGoal(bot->GetMapId(), hx, hy, hz, 8.0f, "quest");
-                motion.SetQuestCtx(t.Quest, entry);
+                motion.SetQuestCtx(t.Quest, entry, KindName(t.K));
                 c.ExpectGoal = true;
                 c.ExpectX = hx; c.ExpectY = hy;
                 return true;
@@ -1215,7 +1225,7 @@ private:
         t.FinalX = x; t.FinalY = y;
         t.HasWp = false;
         motion.SetGoal(bot->GetMapId(), x, y, z, arrive, "quest");
-        motion.SetQuestCtx(t.Quest, entry);
+        motion.SetQuestCtx(t.Quest, entry, KindName(t.K));
         c.ExpectGoal = true;
         c.ExpectX = x; c.ExpectY = y;
         return true;

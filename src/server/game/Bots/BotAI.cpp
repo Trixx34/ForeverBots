@@ -406,6 +406,27 @@ void BotAI::ChangeState(Player* bot, BotState to, char const* cause)
             if (_deathKillerEntry)
                 death.TargetEntry = _deathKillerEntry;
             std::string d = std::move(details);
+            {
+                // death loop: consecutive deaths of this login within 5 min and 150 yd of the previous one (same map)
+                float const px = bot->GetPositionX(), py = bot->GetPositionY();
+                uint32 sinceS = 0;
+                float distYd = 0.0f;
+                if (_deathSeen && bot->GetMapId() == _lastDeathMap && _nowMs - _lastDeathMs <= 300000
+                    && (distYd = std::sqrt((px - _lastDeathX) * (px - _lastDeathX) + (py - _lastDeathY) * (py - _lastDeathY))) <= 150.0f)
+                    ++_deathChain;
+                else
+                    _deathChain = 1;
+                if (_deathSeen)
+                    sinceS = (_nowMs - _lastDeathMs) / 1000;
+                else
+                    distYd = 0.0f;
+                _deathSeen = true;
+                _lastDeathMs = _nowMs;
+                _lastDeathMap = bot->GetMapId();
+                _lastDeathX = px;
+                _lastDeathY = py;
+                d += Trinity::StringFormat(R"(,"death_loop":{{"chain":{},"since_prev_s":{},"dist_prev_yd":{:.0f}}})", _deathChain, sinceS, distYd);
+            }
             if (!fightId.empty())
                 d += Trinity::StringFormat(R"(,"fight_id":"{}")", fightId);
             d += _deathJson;
@@ -1027,6 +1048,32 @@ void BotAI::EmitFightStart(Player* bot)
         d += Trinity::StringFormat(R"(,"nearby_bots":{},"nearby_bots_yd":40,"claimed_by_other_bot":{})", nearBots, claimed ? "true" : "false");
         if (claimed)
             d += Trinity::StringFormat(R"(,"claimed_by":"{}")", claimer.ToString());
+
+        // Pull context: where the mob stands and the pack around it (other hostile creatures within 20 yd of the target).
+        if (target)
+        {
+            d += Trinity::StringFormat(R"(,"mob_pos":{{"x":{:.1f},"y":{:.1f},"z":{:.1f}}})", target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+            std::list<Unit*> around;
+            Trinity::AnyUnfriendlyUnitInObjectRangeCheck check(target, bot, 20.0f);
+            Trinity::UnitListSearcher<Trinity::AnyUnfriendlyUnitInObjectRangeCheck> searcher(target, around, check);
+            Cell::VisitAllObjects(target, searcher, 20.0f);
+            uint32 packSize = 0, listed = 0;
+            std::string pack;
+            for (Unit* u : around)
+            {
+                if (u == target || !u->IsCreature())
+                    continue;
+                ++packSize;
+                if (listed >= 8)
+                    continue;
+                if (listed++)
+                    pack += ',';
+                pack += Trinity::StringFormat(R"({{"entry":{},"level":{},"dist":{:.0f}}})", u->GetEntry(), uint32(u->GetLevel()), target->GetDistance(u));
+            }
+            d += Trinity::StringFormat(R"(,"pack_20yd":{})", packSize);
+            if (listed)
+                d += ",\"pack\":[" + pack + "]";
+        }
         d += '}';
     }
 
@@ -1173,6 +1220,21 @@ void BotAI::SnapshotDeath(Player* bot, Unit* attacker)
     }
     kj += '}';
     j += ",\"killer\":" + kj;
+    {
+        // the mob the bot was fighting (fight target, else its victim), so killer and target sit on one row
+        ObjectGuid tguid = _fight.Target;
+        Unit* tu = tguid.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*bot, tguid);
+        if (!tu)
+            tu = bot->GetVictim();
+        uint32 const tentry = tu ? tu->GetEntry() : _fight.TargetEntry;
+        uint32 const tlevel = tu ? tu->GetLevel() : _fight.TargetLevel;
+        if (tentry)
+        {
+            std::string const tname = tu ? JsonEscape(tu->GetName()) : CreatureNameOf(tentry);
+            j += Trinity::StringFormat(R"(,"target":{{"guid":"{}","entry":{},"name":"{}","level":{},"lvl_diff":{},"is_killer":{}}})",
+                (tu ? tu->GetGUID() : tguid).ToString(), tentry, tname, tlevel, int32(tlevel) - int32(bot->GetLevel()), (!ksrc.IsEmpty() && ksrc == (tu ? tu->GetGUID() : tguid)) ? "true" : "false");
+        }
+    }
     _deathKillerEntry = ksrc.IsEmpty() || ksrc.IsPlayer() ? 0 : kentry;
 
     // --- damage taken in the last 10 s ---
@@ -1413,13 +1475,97 @@ BotAI::SpellStat& BotAI::StatFor(uint32 id)
     return _spellStats.back();
 }
 
-void BotAI::OnSpellCast(Player* /*bot*/, SpellInfo const* spell, uint32 power)
+void BotAI::OnSpellCast(Player* bot, SpellInfo const* spell, uint32 power, Unit* target, bool triggered)
 {
     if (!spell)
         return;
     SpellStat& st = StatFor(spell->Id);
     ++st.Casts;
     st.Power += power;
+
+    // CAST_OK row: once per spell per fight, out of a fight once per spell per 10 s; passive spells never
+    if (spell->IsPassive())
+        return;
+    if (_fight.Active && _fight.Id != _castFightId)
+    {
+        _castFightId = _fight.Id;
+        _castSeen.fill({ 0, 0 });
+    }
+    CastSeen* slot = nullptr;
+    for (CastSeen& c : _castSeen)
+        if (c.Id == spell->Id)
+            slot = &c;
+    if (slot && (_fight.Active || _nowMs - slot->Ms < 10000))
+        return;
+    if (!slot)
+        slot = &_castSeen[_castSeenNext++ % _castSeen.size()];
+    *slot = { spell->Id, _nowMs };
+
+    std::string d = Trinity::StringFormat(R"({{"spell_id":{},"spell_name":"{}","power":{},"triggered":{},"hp_pct":{:.0f})",
+        spell->Id, SpellNameOf(spell->Id), power, triggered ? "true" : "false", bot->GetHealthPct());
+    uint32 tentry = 0;
+    if (target)
+    {
+        tentry = target->GetEntry();
+        d += Trinity::StringFormat(R"(,"target":{{"kind":"{}","entry":{},"level":{},"dist":{:.1f}}})", target == bot ? "self" : target->IsPlayer() ? "player" : "creature",
+            tentry, uint32(target->GetLevel()), bot->GetDistance(target));
+    }
+    if (_fight.Active)
+        d += Trinity::StringFormat(R"(,"fight_id":"{}")", _fight.Id);
+    d += '}';
+    BotEvent event = MakeEvent(bot, "cast", BOTLOG_INFO, "CAST_OK", Trinity::StringFormat("cast {}", SpellNameOf(spell->Id)));
+    if (tentry && target != bot)
+        event.TargetEntry = tentry;
+    event.Details = std::move(d);
+    Emit(std::move(event));
+}
+
+void BotAI::OnAuraChange(Player* bot, AuraApplication const* app, bool applied)
+{
+    Aura const* aura = app->GetBase();
+    SpellInfo const* si = aura->GetSpellInfo();
+    if (si->IsPassive() || !bot->IsInWorld())
+        return;
+    uint32 const mode = app->GetRemoveMode();
+    if (!applied && mode == AURA_REMOVE_BY_DEATH)
+        return;
+
+    // at most 12 aura rows per bot per 10 s; the overflow is counted and reported on the next row
+    if (_nowMs - _auraWinMs >= 10000)
+    {
+        _auraWinMs = _nowMs;
+        _auraWinCount = 0;
+    }
+    if (_auraWinCount >= 12)
+    {
+        ++_auraSuppressed;
+        return;
+    }
+    ++_auraWinCount;
+
+    static char const* const modes[] = { "none", "default", "interrupt", "cancel", "enemy_spell", "expire", "death" };
+    ObjectGuid const caster = aura->GetCasterGUID();
+    std::string d = Trinity::StringFormat(R"({{"spell_id":{},"spell_name":"{}","applied":{},"positive":{},"stacks":{})", si->Id, SpellNameOf(si->Id), applied ? "true" : "false",
+        app->IsPositive() ? "true" : "false", uint32(aura->GetStackAmount()));
+    if (aura->GetDuration() >= 0)
+        d += Trinity::StringFormat(R"(,"duration_ms":{})", aura->GetDuration());
+    if (!caster.IsEmpty())
+        d += Trinity::StringFormat(R"(,"caster":{{"kind":"{}","entry":{}}})", caster == bot->GetGUID() ? "self" : caster.IsPlayer() ? "player" : "creature", caster.IsPlayer() ? 0u : caster.GetEntry());
+    if (!applied)
+        d += Trinity::StringFormat(R"(,"remove_mode":"{}")", mode < std::size(modes) ? modes[mode] : "other");
+    if (_fight.Active)
+        d += Trinity::StringFormat(R"(,"fight_id":"{}")", _fight.Id);
+    if (_auraSuppressed)
+    {
+        d += Trinity::StringFormat(R"(,"suppressed_before":{})", _auraSuppressed);
+        _auraSuppressed = 0;
+    }
+    d += '}';
+    BotEvent event = MakeEvent(bot, "aura", BOTLOG_INFO, applied ? "AURA_APPLIED" : "AURA_REMOVED", Trinity::StringFormat("{} {}", applied ? "gained" : "lost", SpellNameOf(si->Id)));
+    if (!caster.IsEmpty() && !caster.IsPlayer())
+        event.TargetEntry = caster.GetEntry();
+    event.Details = std::move(d);
+    Emit(std::move(event));
 }
 
 void BotAI::OnXpGain(Player* bot, uint32 amount, uint32 bonus, Unit* victim)

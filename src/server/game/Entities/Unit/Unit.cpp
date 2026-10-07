@@ -3691,6 +3691,11 @@ void Unit::_ApplyAura(AuraApplication* aurApp, uint32 effMask)
         player->FailCriteria(CriteriaFailEvent::GainAura, aura->GetId());
         player->StartCriteria(CriteriaStartEvent::GainAura, aura->GetId());
         player->UpdateCriteria(CriteriaType::GainAura, aura->GetId(), 0, 0, caster);
+
+        // bot telemetry: aura applied
+        if (player->GetSession() && !aurApp->GetRemoveMode())
+            if (BotAI* botAI = player->GetSession()->GetBotAI())
+                botAI->OnAuraChange(player, aurApp, true);
     }
 }
 
@@ -3782,6 +3787,11 @@ void Unit::_UnapplyAura(AuraApplicationMap::iterator& i, AuraRemoveMode removeMo
             player->UpdateVisibleObjectInteractions(false, true, false, false);
 
         player->FailCriteria(CriteriaFailEvent::LoseAura, aurApp->GetBase()->GetId());
+
+        // bot telemetry: aura removed
+        if (player->GetSession())
+            if (BotAI* botAI = player->GetSession()->GetBotAI())
+                botAI->OnAuraChange(player, aurApp, false);
     }
 
     i = m_appliedAuras.begin();

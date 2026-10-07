@@ -79,6 +79,7 @@ struct BotAIStats
 // One per bot, owned by the bot's WorldSession (so it dies with the session), ticked from Player::Update on the map thread.
 class Unit;
 class SpellInfo;
+class AuraApplication;
 
 class TC_GAME_API BotAI
 {
@@ -152,7 +153,9 @@ public:
     void OnLogout(Player* bot, char const* reason);           // BotMgr::LogoutBot: closes an open fight row
     // --- progression / spell telemetry hooks (map thread of the bot) ---
     // Spell::_cast: a non-triggered cast by this bot; power = cost of the bot's own power type actually due.
-    void OnSpellCast(Player* bot, SpellInfo const* spell, uint32 power);
+    void OnSpellCast(Player* bot, SpellInfo const* spell, uint32 power, Unit* target = nullptr, bool triggered = false);
+    // Unit::_ApplyAura / Unit::_UnapplyAura on this bot -> aura row (non-passive auras only, rate capped).
+    void OnAuraChange(Player* bot, AuraApplication const* app, bool applied);
     // Player::GiveXP (after the xp was added) -> XP_GAIN row. The source is "kill" with a victim, else the hint set by NoteXpSource, else "other".
     void NoteXpSource(char const* source, uint32 questId = 0) { _xpSource = source; _xpQuest = questId; }
     void OnXpGain(Player* bot, uint32 amount, uint32 bonus, Unit* victim);
@@ -229,6 +232,20 @@ private:
     uint32 _deathKillerEntry = 0;
     std::string _deathJson;
     std::string _deathFightId;
+    // death-loop counter (per login): previous death time, map and position
+    bool _deathSeen = false;
+    uint32 _lastDeathMs = 0;
+    uint32 _lastDeathMap = 0;
+    float _lastDeathX = 0.0f, _lastDeathY = 0.0f;
+    uint32 _deathChain = 0;
+    // cast / aura row throttles
+    struct CastSeen { uint32 Id; uint32 Ms; };
+    std::array<CastSeen, 24> _castSeen{};
+    uint32 _castSeenNext = 0;
+    std::string _castFightId;
+    uint32 _auraWinMs = 0;
+    uint32 _auraWinCount = 0;
+    uint32 _auraSuppressed = 0;
 
     uint64 _guid;
     Player* _tickBot = nullptr;

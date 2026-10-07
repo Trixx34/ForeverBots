@@ -4545,7 +4545,7 @@ Classic.GuildFinder = 0
 #        Description: 1 = event types in HotTypes (except COMBAT_SUMMARY/LOG_SUPPRESSED rows) are written to bot_event_hot (5 days
 #                     retention) instead of bot_event (14 days). Needs the bot_event_hot table (forever-botlog-migrate-1.sql);
 #                     query bot_event_all to see both. Ignored with a warning when the table does not exist.
-#        Default:     0 / decision,state_change,trace
+#        Default:     0 / decision,state_change,trace,cast,aura
 #
 #
 #    Bot.Login.MaxPerTick
@@ -4707,7 +4707,7 @@ Bot.Log.PosBufferMax = 100000
 Bot.Log.FlushRetries = 3
 Bot.Log.ProbeIntervalSec = 10
 Bot.Log.HotSplit = 0
-Bot.Log.HotTypes = "decision,state_change,trace"
+Bot.Log.HotTypes = "decision,state_change,trace,cast,aura"
 Bot.Login.MaxPerTick = 5
 Bot.AI.Enabled = 1
 Bot.AI.TickMs = 500

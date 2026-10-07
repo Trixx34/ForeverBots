@@ -3884,7 +3884,7 @@ void Spell::_cast(bool skipCheck)
             for (SpellPowerCost const& cost : m_powerCost)
                 if (cost.Amount > 0 && cost.Power != POWER_RUNES && cost.Power != POWER_HEALTH)
                     spent += uint32(cost.Amount);
-            botAI->OnSpellCast(botCaster, m_spellInfo, spent);
+            botAI->OnSpellCast(botCaster, m_spellInfo, spent, m_targets.GetUnitTarget(), IsTriggered());
         }
 
     // Classic 1.60: every shot of a bow, gun or crossbow uses one arrow or bullet

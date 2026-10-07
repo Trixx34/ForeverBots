@@ -404,7 +404,7 @@ void BotMgr::SetLogDatabaseAvailable(bool available)
         if (sConfigMgr->GetBoolDefault("Bot.Log.HotSplit", false) && !_hotSplit)
             TC_LOG_WARN("server.worldserver", "Bot.Log.HotSplit is set but the bot_event_hot table does not exist in the bot log database (run forever-botlog-migrate-1.sql): hot rows stay in bot_event");
         _hotTypes.clear();
-        std::string const hotTypesCfg = sConfigMgr->GetStringDefault("Bot.Log.HotTypes", "decision,state_change,trace");
+        std::string const hotTypesCfg = sConfigMgr->GetStringDefault("Bot.Log.HotTypes", "decision,state_change,trace,cast,aura");
         for (std::string_view tok : Trinity::Tokenize(hotTypesCfg, ',', false))
         {
             std::string t(tok);
