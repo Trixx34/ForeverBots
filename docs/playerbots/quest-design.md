@@ -806,7 +806,7 @@ Everything logs on state change, not per tick; the per-bot trace switch adds `TR
 
 ### 6.4 Console
 
-The why-stuck panel (`api_stuck` in `C:\ForeverSim\console\app.py`) counts `event_type IN ('stuck','path_fail','quest_blocked')` in a time
+The why-stuck panel (`api_stuck` in the sim console app) counts `event_type IN ('stuck','path_fail','quest_blocked')` in a time
 window and groups by `reason`, `zone_id` and `quest_id`, with distinct bot counts. It does not read `details`. Therefore: (1) each code
 above is one `reason` value, so the by-reason table is the first answer; (2) `zone_id` must be set on every row (the engine fills
 `GetZoneId()`), (3) `quest_id` must be set (the by-quest table shows the most-blocked quests), and (4) the detail JSON is for the live
@@ -955,7 +955,7 @@ Dungeon quests (`QuestInfoID` 81) come with Phase 11 and need party/instance log
 
 ## Appendix A. Queries (re-runnable, SELECT only)
 
-Run with `C:\ForeverSim\mysql\bin\mysql.exe --defaults-file=C:\ForeverSim\scripts\client.cnf forever_sim_world < file.sql` (the client reads
+Run with `mysql --defaults-file=<client.cnf> forever_sim_world < file.sql` (the client reads
 the credentials from the file; they are not reproduced here). Appending a query to the pool CTE `pool` (A1) makes it a runnable file.
 Expected results are the numbers quoted in this document (frozen copy of 2026-10-06).
 
