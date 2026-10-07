@@ -67,6 +67,7 @@ struct CombatConfig
     uint32 PrePullManaPct = 40;    // Bot.AI.Combat.PrePullManaPct: mana users drink out of combat below this mana percent (before pulling)
     bool FreeRepair = true;        // Bot.AI.Combat.FreeRepair: broken equipment is repaired for free (placeholder until the economy phase)
     uint32 LowHpFleePct = 15;      // Bot.AI.Combat.Flee.LowHpPct: flee (flee_reason low_hp) below this health percent, 0 = off
+    int32 FleeMode = 0;            // Bot.AI.Flee.Mode: 0 current, 1 aggro avoidance + fight to the end, 2 flee toward nearest friendly guard
 };
 
 CombatConfig const& Cfg()
@@ -87,6 +88,7 @@ CombatConfig const& Cfg()
         cfg.PrePullManaPct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.PrePullManaPct", 40), 0, 95));
         cfg.FreeRepair = sConfigMgr->GetBoolDefault("Bot.AI.Combat.FreeRepair", true);
         cfg.LowHpFleePct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.LowHpPct", 15), 0, 60));
+        cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
     });
     return cfg;
 }
@@ -430,8 +432,8 @@ void BotCombatCtx::End(Player* bot)
             SpellInfo const* si = sSpellMgr->GetSpellInfo(c.Id, DIFFICULTY_NONE);
             casts += StringFormat(R"({}"{}":{})", casts.empty() ? "" : ",", Json(SpellNameOf(si)), c.N);
         }
-        std::string summaryJson = StringFormat(R"({{"fight_seq":{},"role":"{}","seconds":{},"targets_picked":{},"targets_dead":{},"casts":{{{}}},"cast_failed":{},"heals":{},"no_power_skips":{},"melee_fallback":{},"fled":{},"fled_gave_up":{},"flee_attempts":{},"flee_reason":"{}","ranged_broken":{},"state_now":"{}"}})",
-                Seq, RoleName(BotRole), (ai->GetNowMs() - StartMs) / 1000, Picked, TargetsDead, casts, CastFails, Heals, NoPowerSkips,
+        std::string summaryJson = StringFormat(R"({{"fight_seq":{},"role":"{}","flee_mode":{},"seconds":{},"targets_picked":{},"targets_dead":{},"casts":{{{}}},"cast_failed":{},"heals":{},"no_power_skips":{},"melee_fallback":{},"fled":{},"fled_gave_up":{},"flee_attempts":{},"flee_reason":"{}","ranged_broken":{},"state_now":"{}"}})",
+                Seq, RoleName(BotRole), Cfg().FleeMode, (ai->GetNowMs() - StartMs) / 1000, Picked, TargetsDead, casts, CastFails, Heals, NoPowerSkips,
                 MeleeFallback ? "true" : "false", (Fleeing || FleeGaveUp) ? "true" : "false", FleeGaveUp ? "true" : "false", FleeAttempts, FleeReason, RangedBroken ? "true" : "false",
                 BotStateName(ai->GetState()));
         // plumber hunk: per-spell breakdown (casts, hits, damage, power) and unused spells, appended inside the details object
@@ -545,7 +547,7 @@ bool Affordable(Player* bot, SpellInfo const* si)
 void LogDecision(BotAI* ai, Player* bot, BotCombatCtx* ctx, char const* reason, std::string summary, std::string extra, uint8 sev = BOTLOG_INFO)
 {
     ai->EmitEvent(bot, "decision", sev, reason, std::move(summary),
-        StringFormat(R"({{"kind":"combat","fight_seq":{}{}{}}})", ctx->Seq, extra.empty() ? "" : ",", extra));
+        StringFormat(R"({{"kind":"combat","fight_seq":{},"flee_mode":{}{}{}}})", ctx->Seq, Cfg().FleeMode, extra.empty() ? "" : ",", extra));
 }
 
 std::string MobJson(Player* bot, Unit* mob, Threat const& t)
@@ -585,7 +587,7 @@ public:
     bool IsActive() override
     {
         Player* bot = GetBot();
-        if (!bot || !Cfg().FleeEnabled || !Cfg().LowHpFleePct || GetAI()->GetState() != BotState::Combat || bot->GetHealthPct() >= float(Cfg().LowHpFleePct))
+        if (!bot || !Cfg().FleeEnabled || Cfg().FleeMode == 1 || !Cfg().LowHpFleePct || GetAI()->GetState() != BotState::Combat || bot->GetHealthPct() >= float(Cfg().LowHpFleePct))
             return false;
         BotCombatCtx* ctx = static_cast<BotCombatCtx*>(GetAI()->GetValueRaw("combat_ctx"));
         if (!ctx || !ctx->InFight || ctx->Fleeing || ctx->FleeAttempts >= Cfg().FleeMaxAttempts || GetAI()->GetNowMs() < ctx->LowHpNextMs)
@@ -613,6 +615,27 @@ public:
 // Picks a destination away from `from` that has a complete navmesh path. Returns false when every direction is blocked.
 bool FindFleePoint(Player* bot, Unit* from, float& ox, float& oy, float& oz, float& dirOut)
 {
+    if (Cfg().FleeMode == 2)
+    {
+        // mode 2: run to the nearest friendly guard (mob that chases us meets the guard); falls through to the open-field flee when none is in reach
+        std::list<Creature*> guards;
+        bot->GetCreatureListWithEntryInGrid(guards, 0, 120.0f);
+        Creature* bestGuard = nullptr;
+        for (Creature* g : guards)
+            if (g->IsAlive() && g->IsGuard() && g->IsFriendlyTo(bot) && (!bestGuard || bot->GetDistance(g) < bot->GetDistance(bestGuard)))
+                bestGuard = g;
+        if (bestGuard)
+        {
+            float x = bestGuard->GetPositionX(), y = bestGuard->GetPositionY(), z = bestGuard->GetPositionZ();
+            BotMotion::EnsureGrids(bot, x, y);
+            BotPathInfo const pi = BotMotion::QueryPath(bot, x, y, z);
+            if (pi.Valid && !pi.NoPath && !pi.Partial && !pi.GoalOffMesh && !pi.OffMesh)
+            {
+                ox = x; oy = y; oz = z; dirOut = from->GetAbsoluteAngle(bot);
+                return true;
+            }
+        }
+    }
     float const away = from->GetAbsoluteAngle(bot);
     static constexpr float offsets[] = { 0.0f, 0.7854f, -0.7854f, 1.5708f, -1.5708f, 2.356f, -2.356f };
     float const yards = float(Cfg().FleeYards);
@@ -913,7 +936,9 @@ private:
             // everything on us is too strong
             Candidate* worst = nearest(true);
             char const* why = "NO_FLEE_PATH";
-            if (!Cfg().FleeEnabled)
+            if (Cfg().FleeMode == 1)
+                why = "FLEE_MODE_FIGHT_TO_END";
+            else if (!Cfg().FleeEnabled)
                 why = "FLEE_DISABLED";
             else if (ctx->FleeAttempts >= Cfg().FleeMaxAttempts)
                 why = "FLEE_ALREADY_TRIED";

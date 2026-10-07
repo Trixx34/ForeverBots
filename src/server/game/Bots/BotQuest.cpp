@@ -51,6 +51,7 @@
 #include "WorldSession.h"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -83,6 +84,9 @@ struct QuestCfg
     uint32 GrindSec = 90;          // one grind stint before the bot re-checks for quests
     uint32 HubBlackSec = 600;      // an unreachable hub is skipped for this long
     uint32 HubScanSec = 20;        // minimum time between hub scans of one bot
+    int32 GrindMaxGap = 1;         // Bot.AI.Grind.MaxLevelGap: grind targets at most this many (effective) levels above the bot
+    float GrindMaxRadius = 150.0f; // Bot.AI.Grind.MaxRadius: grind targets stay this close to the grind anchor, 0 = off
+    int32 FleeMode = 0;            // Bot.AI.Flee.Mode (0 current, 1 aggro avoidance, 2 flee to guard); here: mode >= 1 avoids gap >= 2 mobs
 };
 
 QuestCfg const& Cfg()
@@ -101,6 +105,9 @@ QuestCfg const& Cfg()
         cfg.HubBlackSec = uint32(std::max<int32>(30, sConfigMgr->GetIntDefault("Bot.Quest.HubBlacklistSec", 600)));
         cfg.HubScanSec = uint32(std::max<int32>(5, sConfigMgr->GetIntDefault("Bot.Quest.HubScanSec", 20)));
         cfg.SelBlockCap = uint32(std::max<int32>(0, sConfigMgr->GetIntDefault("Bot.Quest.SelectionBlockLogCap", 40)));
+        cfg.GrindMaxGap = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Grind.MaxLevelGap", 1), -5, 10);
+        cfg.GrindMaxRadius = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Grind.MaxRadius", 150), 0, 2000));
+        cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
     });
     return cfg;
 }
@@ -681,6 +688,76 @@ bool NoteQuestFail(uint32 questId)
     return true;
 }
 
+// (c) quest hub cache (R1): a hub that a bot could not reach is skipped by every bot for HubFailGlobalSec; a hub a bot
+// reached once is "verified" and exempt from the distance cap. The zone faction mask is cached per hub.
+struct HubState { uint32 FailUntilMs = 0; uint32 Fails = 0; bool Verified = false; int32 Mask = -1; };
+std::shared_mutex g_hubMx;
+std::unordered_map<uint32, HubState> g_hubState;
+
+bool HubGloballyFailed(uint32 idx)
+{
+    std::shared_lock<std::shared_mutex> lk(g_hubMx);
+    auto it = g_hubState.find(idx);
+    return it != g_hubState.end() && it->second.FailUntilMs && int32(it->second.FailUntilMs - getMSTime()) > 0;
+}
+
+void NoteHubFail(uint32 idx)
+{
+    std::unique_lock<std::shared_mutex> lk(g_hubMx);
+    HubState& h = g_hubState[idx];
+    ++h.Fails;
+    h.FailUntilMs = std::max<uint32>(1, getMSTime() + uint32(std::max<int32>(60, sConfigMgr->GetIntDefault("Bot.Quest.HubFailGlobalSec", 1800))) * 1000);
+}
+
+void NoteHubVerified(uint32 idx)
+{
+    {
+        std::shared_lock<std::shared_mutex> lk(g_hubMx);
+        auto it = g_hubState.find(idx);
+        if (it != g_hubState.end() && it->second.Verified)
+            return;
+    }
+    std::unique_lock<std::shared_mutex> lk(g_hubMx);
+    g_hubState[idx].Verified = true;
+}
+
+// Returns a skip reason ("global_fail", "faction", "far") or nullptr when the hub may be tried. Per-bot blacklist is checked by the caller.
+char const* HubSkipReason(Player* bot, uint32 idx, Hub const& h, float dist)
+{
+    int32 mask = -1;
+    bool verified = false;
+    {
+        std::shared_lock<std::shared_mutex> lk(g_hubMx);
+        auto it = g_hubState.find(idx);
+        if (it != g_hubState.end())
+        {
+            if (it->second.FailUntilMs && int32(it->second.FailUntilMs - getMSTime()) > 0)
+                return "global_fail";
+            mask = it->second.Mask;
+            verified = it->second.Verified;
+        }
+    }
+    if (mask < 0)
+    {
+        mask = 0;
+        if (Map* map = bot->GetMap())
+        {
+            uint32 zone = map->GetZoneId(bot->GetPhaseShift(), h.X, h.Y, h.Z);
+            if (AreaTableEntry const* a = sAreaTableStore.LookupEntry(zone))
+                mask = int32(a->FactionGroupMask);
+        }
+        std::unique_lock<std::shared_mutex> lk(g_hubMx);
+        g_hubState[idx].Mask = mask;
+    }
+    uint32 const own = bot->GetTeamId() == TEAM_ALLIANCE ? 2u : 4u;
+    if (mask && !(uint32(mask) & own))
+        return "faction";
+    static uint32 const maxDist = uint32(std::max<int32>(100, sConfigMgr->GetIntDefault("Bot.Quest.HubMaxDist", 2500)));
+    if (!verified && dist > float(maxDist))
+        return "far";
+    return nullptr;
+}
+
 bool IsReachCode(char const* code)
 {
     static char const* const codes[] = { "NO_PATH", "PATH_PARTIAL_FAR", "UNREACHABLE", "TARGET_UNREACHABLE", "ITEM_NOT_DROPPING", "GIVER_NOT_INTERACTABLE" };
@@ -709,13 +786,17 @@ public:
     std::vector<Visited> Seen;                      // recently searched spawn points
     uint32 SelBlocks = 0;
     uint8 IdleLoggedLevel = 0;
+    uint32 IdleLogMs = 0;          // R5: IDLE_WAIT_SPAWN rows at most one per 60 s
     uint32 Completed = 0, Accepted = 0, Rewarded = 0;
     uint32 LastPickMs = 0;
     std::unordered_map<uint32, uint32> HubBlack;    // hub index -> AI clock until
     uint32 NextHubMs = 0;
     uint8 NoLocalLevel = 0, HubNoneLevel = 0;
     bool LastWasGrind = false;
+    uint32 GrindAnchorMap = 0xFFFFFFFFu;            // R2: where the current grind run started (last quest area)
+    float GrindAnchorX = 0, GrindAnchorY = 0;
     uint32 Grinds = 0, HubTrips = 0;
+    uint32 HubSkip[3] = { 0, 0, 0 };                // last hub scan: skipped by global failure cache / opposite faction / too far
     // E1/E4 service state
     uint32 NextSvcMs = 0;                           // next service-due evaluation
     uint8 TrainLevel = 0;                           // level at which spells were last evaluated/trained
@@ -1008,7 +1089,10 @@ private:
         if (c.T.K == Kind::Grind)
             c.Seen.push_back({ c.T.GoalX, c.T.GoalY });   // do not pick the same unreachable grind spot again
         if (c.T.HubId != 0xFFFFFFFFu && c.T.K == Kind::GoGiver)
+        {
             c.HubBlack[c.T.HubId] = now + Cfg().HubBlackSec * 1000;   // the whole hub is out of reach for a while
+            NoteHubFail(c.T.HubId);                                   // ... for every bot
+        }
         BotMotion::Halt(bot);
         ai->Motion().ClearGoal();
         Finish(c, now);
@@ -1086,6 +1170,7 @@ private:
                 if (!(motion.HasGoal() && std::strcmp(motion.GetTag(), "quest") == 0))
                 {
                     motion.SetGoal(bot->GetMapId(), t.WpX, t.WpY, t.WpZ, 8.0f, "quest");
+                    motion.SetQuestCtx(t.Quest, entry);
                     c.ExpectGoal = true;
                     c.ExpectX = t.WpX; c.ExpectY = t.WpY;
                 }
@@ -1095,12 +1180,17 @@ private:
         if (motion.HasGoal() && std::strcmp(motion.GetTag(), "quest") == 0 &&
             Dist2D(motion.GoalX(), motion.GoalY(), x, y) < 4.0f)
             return true; // already walking there
+        auto const pathT0 = std::chrono::steady_clock::now();
         BotPathInfo info = BotMotion::QueryPath(bot, x, y, z);
+        uint32 const pathUs = uint32(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - pathT0).count());
         bool const bad = info.NoPath || (info.Partial && info.EndGap3D > 25.0f) || (info.Valid && info.GoalOffMesh && info.EndGap3D > 25.0f);
         if (bad)
         {
             float hx = 0, hy = 0, hz = 0;
-            if (t.Hops < 40 && FindHop(bot, x, y, hx, hy, hz))
+            auto const hopT0 = std::chrono::steady_clock::now();
+            bool const hopFound = t.Hops < 40 && FindHop(bot, x, y, hx, hy, hz);
+            uint32 const hopUs = uint32(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - hopT0).count());
+            if (hopFound)
             {
                 ++t.Hops;
                 t.HasWp = true;
@@ -1108,12 +1198,13 @@ private:
                 t.FinalX = x; t.FinalY = y;
                 t.GoalX = x; t.GoalY = y; t.GoalZ = z;
                 motion.SetGoal(bot->GetMapId(), hx, hy, hz, 8.0f, "quest");
+                motion.SetQuestCtx(t.Quest, entry);
                 c.ExpectGoal = true;
                 c.ExpectX = hx; c.ExpectY = hy;
                 return true;
             }
-            std::string det = StringFormat(R"({{"task":"{}","dest":[{:.0f},{:.0f},{:.0f}],"no_path":{},"partial":{},"gap3d":{:.0f},"goal_off_mesh":{},"length":{:.0f},"hops":{}}})",
-                KindName(t.K), x, y, z, info.NoPath, info.Partial, info.EndGap3D, info.GoalOffMesh, info.Length, t.Hops);
+            std::string det = StringFormat(R"({{"task":"{}","dest":[{:.0f},{:.0f},{:.0f}],"no_path":{},"partial":{},"gap3d":{:.0f},"goal_off_mesh":{},"length":{:.0f},"hops":{},"path_us":{},"hop_us":{}}})",
+                KindName(t.K), x, y, z, info.NoPath, info.Partial, info.EndGap3D, info.GoalOffMesh, info.Length, t.Hops, pathUs, hopUs);
             Drop(ai, bot, c, now, t.Quest, info.NoPath ? "NO_PATH" : "PATH_PARTIAL_FAR",
                 StringFormat("no usable path to the {} target (npc/mob {})", KindName(t.K), entry), std::move(det), entry, 1800);
             return false;
@@ -1124,6 +1215,7 @@ private:
         t.FinalX = x; t.FinalY = y;
         t.HasWp = false;
         motion.SetGoal(bot->GetMapId(), x, y, z, arrive, "quest");
+        motion.SetQuestCtx(t.Quest, entry);
         c.ExpectGoal = true;
         c.ExpectX = x; c.ExpectY = y;
         return true;
@@ -1285,6 +1377,12 @@ private:
                     return 0.0f;
             }
         }
+        if (dist > 100.0f)
+        {
+            auto hb = g.HubByCell.find(CellKey(ref.P.Map, ref.P.X, ref.P.Y));
+            if (hb != g.HubByCell.end() && HubGloballyFailed(hb->second))
+                return 0.0f;
+        }
         // not for this race/class: silent (the quest exists, just not for this bot)
         if (!bot->SatisfyQuestRace(q, false) || !bot->SatisfyQuestClass(q, false))
             return 0.0f;
@@ -1397,7 +1495,7 @@ private:
             {
                 c.HubNoneLevel = bot->GetLevel();
                 Blocked(ai, bot, c, 0, "QUEST_HUB_NONE", StringFormat("no quest hub on map {} fits level {}, grinding", bot->GetMapId(), bot->GetLevel()),
-                    StringFormat(R"({{"map":{},"x":{:.0f},"y":{:.0f},"level":{},"hubs":{}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetLevel(), uint32(g.Hubs.size())), 0, false, BOTLOG_WARN);
+                    StringFormat(R"({{"map":{},"x":{:.0f},"y":{:.0f},"level":{},"hubs":{},"skipped_failed":{},"skipped_faction":{},"skipped_far":{}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetLevel(), uint32(g.Hubs.size()), c.HubSkip[0], c.HubSkip[1], c.HubSkip[2]), 0, false, BOTLOG_WARN);
             }
         }
         return StartGrind(ai, bot, c, now);
@@ -1406,11 +1504,13 @@ private:
     // E3: the best quest hub on this map for the bot (sum of the takeable quest scores, distance discounted), then a go_giver task into it.
     bool PickHub(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
     {
+        auto const pickT0 = std::chrono::steady_clock::now();
         int32 const lvl = int32(bot->GetLevel());
         float const bx = bot->GetPositionX(), by = bot->GetPositionY();
         struct HubScore { uint32 Idx; float Score; uint32 N; float Dist; StarterRef const* Best; float BestScore; };
         std::vector<HubScore> top;
         uint32 scanned = 0;
+        uint32 skipped[3] = { 0, 0, 0 };   // global_fail, faction, far
         for (uint32 idx = 0; idx < g.Hubs.size(); ++idx)
         {
             Hub const& h = g.Hubs[idx];
@@ -1424,6 +1524,11 @@ private:
             if (bl != c.HubBlack.end() && now < bl->second)
                 continue;
             float const dist = Dist2D(h.X, h.Y, bx, by);
+            if (char const* why = HubSkipReason(bot, idx, h, dist))
+            {
+                ++skipped[why[0] == 'g' ? 0 : why[0] == 'f' && why[1] == 'a' ? 1 : 2];
+                continue;
+            }
             ++scanned;
             HubScore hs{ idx, 0.0f, 0, dist, nullptr, 0.0f };
             std::vector<uint32> seenQ;
@@ -1449,6 +1554,7 @@ private:
                 continue;
             top.push_back(hs);
         }
+        std::copy(skipped, skipped + 3, c.HubSkip);
         if (top.empty())
             return false;
         std::sort(top.begin(), top.end(), [](HubScore const& a, HubScore const& b) { return a.Score > b.Score; });
@@ -1468,8 +1574,9 @@ private:
             alt += StringFormat(R"({}{{"hub":{},"score":{:.3f},"quests":{},"dist":{:.0f}}})", alt.empty() ? "" : ",", top[i].Idx, top[i].Score, top[i].N, top[i].Dist);
         uint32 zone = bot->GetMap()->GetZoneId(bot->GetPhaseShift(), h.X, h.Y, h.Z);
         Decision(ai, bot, "QUEST_HUB_TRAVEL", StringFormat("travelling to quest hub {} ({} takeable quests, {:.0f} yd, zone {})", w.Idx, w.N, w.Dist, zone), w.Best->Quest, w.Best->Entry,
-            StringFormat(R"({{"hub":{},"x":{:.0f},"y":{:.0f},"z":{:.0f},"zone":{},"dist":{:.0f},"takeable":{},"givers":{},"min_q":{},"max_q":{},"hubs_scanned":{},"alternatives":[{}]}})",
-                w.Idx, h.X, h.Y, h.Z, zone, w.Dist, w.N, h.Givers, h.MinQ, h.MaxQ, scanned, alt));
+            StringFormat(R"({{"hub":{},"x":{:.0f},"y":{:.0f},"z":{:.0f},"zone":{},"dist":{:.0f},"takeable":{},"givers":{},"min_q":{},"max_q":{},"hubs_scanned":{},"select_us":{},"alternatives":[{}]}})",
+                w.Idx, h.X, h.Y, h.Z, zone, w.Dist, w.N, h.Givers, h.MinQ, h.MaxQ, scanned,
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - pickT0).count(), alt));
         c.LastWasGrind = false;
         return true;
     }
@@ -1486,6 +1593,9 @@ private:
         if (!c.LastWasGrind)
         {
             c.LastWasGrind = true;
+            c.GrindAnchorMap = bot->GetMapId();
+            c.GrindAnchorX = bot->GetPositionX();
+            c.GrindAnchorY = bot->GetPositionY();
             Decision(ai, bot, "QUEST_GRIND", StringFormat("no quest to do, grinding mobs of level {}", bot->GetLevel()), 0, 0,
                 StringFormat(R"({{"map":{},"x":{:.0f},"y":{:.0f},"level":{}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetLevel()));
         }
@@ -1498,7 +1608,20 @@ private:
             return false;
         if (!CandidateMob(bot, c, t, m, now))
             return false;
-        return EffectiveDiff(bot, m) <= 1;
+        if (EffectiveDiff(bot, m) > Cfg().GrindMaxGap)
+            return false;
+        if (Cfg().GrindMaxRadius > 0.0f && c.GrindAnchorMap == m->GetMapId() && Dist2D(c.GrindAnchorX, c.GrindAnchorY, m->GetPositionX(), m->GetPositionY()) > Cfg().GrindMaxRadius)
+            return false;
+        return true;
+    }
+
+    // R2: a live hostile mob with effective gap >= 2 close to `m` would aggro when the bot walks up to it.
+    bool HighGapMobNear(Player* bot, std::vector<Creature*> const& list, Creature* m)
+    {
+        for (Creature* o : list)
+            if (o != m && o->IsAlive() && EffectiveDiff(bot, o) >= 2 && m->GetExactDist2d(o) < 22.0f && bot->IsValidAttackTarget(o))
+                return true;
+        return false;
     }
 
     bool RunGrind(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
@@ -1560,7 +1683,7 @@ private:
                     continue;
                 ++t.ScanOk;
                 float d = bot->GetExactDist2d(m);
-                if (d < bd)
+                if (d < bd && !HighGapMobNear(bot, list, m))
                 {
                     bd = d;
                     best = m;
@@ -1617,6 +1740,8 @@ private:
                         recent = recent || Dist2D(v.X, v.Y, p.X, p.Y) < 40.0f;
                     if (recent)
                         continue;
+                    if (Cfg().GrindMaxRadius > 0.0f && c.GrindAnchorMap == bot->GetMapId() && Dist2D(c.GrindAnchorX, c.GrindAnchorY, p.X, p.Y) > Cfg().GrindMaxRadius)
+                        continue;
                     float d = Dist2D(p.X, p.Y, bot->GetPositionX(), bot->GetPositionY());
                     if (d < bd)
                     {
@@ -1627,19 +1752,33 @@ private:
             }
         if (!best)
         {
+            if (Cfg().GrindMaxRadius > 0.0f && c.GrindAnchorMap == bot->GetMapId() && Dist2D(c.GrindAnchorX, c.GrindAnchorY, bot->GetPositionX(), bot->GetPositionY()) > 20.0f)
+            {
+                // nothing left inside the radius: the area is grazed out, move the anchor here instead of idling
+                c.GrindAnchorX = bot->GetPositionX();
+                c.GrindAnchorY = bot->GetPositionY();
+                c.Seen.clear();
+                return false;
+            }
             if (!c.Seen.empty())
                 c.Seen.clear();
             else if (c.IdleLoggedLevel != bot->GetLevel())
             {
                 c.IdleLoggedLevel = bot->GetLevel();
                 Blocked(ai, bot, c, 0, "NO_GRIND_TARGET", StringFormat("no hostile spawn within 500 yd to grind at level {}", bot->GetLevel()),
-                    StringFormat(R"({{"map":{},"x":{:.0f},"y":{:.0f}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY()), 0, false, BOTLOG_WARN);
+                    StringFormat(R"({{"idle_reason":"NO_GRIND_TARGET","map":{},"x":{:.0f},"y":{:.0f}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY()), 0, false, BOTLOG_WARN);
             }
             return false;
         }
         if (bd < 15.0f)
         {
             t.WaitStartMs = now;
+            if (!c.IdleLogMs || now - c.IdleLogMs >= 60000)
+            {
+                c.IdleLogMs = now ? now : 1;
+                Decision(ai, bot, "IDLE_WAIT_SPAWN", "idle: waiting at an empty grind spawn point", 0, 0,
+                    StringFormat(R"({{"idle_reason":"WAIT_SPAWN","wait_ms":5000,"seen":{}}})", c.Seen.size()));
+            }
             StopMoving(ai, bot, c);
             return false;
         }
@@ -2195,6 +2334,8 @@ private:
 
         Creature* npc = FindLiveNpc(bot, t.NpcEntry, 45.0f);
         float const arrive = 3.0f;
+        if (npc && giver && t.HubId != 0xFFFFFFFFu)
+            NoteHubVerified(t.HubId);   // a bot got here: the hub is reachable
         if (npc && bot->CanInteractWithQuestGiver(npc))
         {
             StopMoving(ai, bot, c);
@@ -2419,7 +2560,7 @@ private:
         if (!bot->IsValidAttackTarget(m))
             return false;
         ++t.SeenLive;
-        if (m->isWorldBoss() || EffectiveDiff(bot, m) > Cfg().MaxMobLevelDiff)
+        if (m->isWorldBoss() || EffectiveDiff(bot, m) > (Cfg().FleeMode >= 1 ? std::min<int32>(Cfg().MaxMobLevelDiff, 1) : Cfg().MaxMobLevelDiff))
         {
             if (m->IsElite() || m->isWorldBoss())
                 ++t.EliteSeen;

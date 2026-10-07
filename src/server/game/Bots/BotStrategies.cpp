@@ -68,7 +68,7 @@ public:
     bool IsUseful() override { return (GetAI()->GetNowMs() / 1000) % 2 == 0; }
     bool Execute() override
     {
-        SetResult("TEST_IDLE_NOTE", "idle note (preferred action)", Trinity::StringFormat(R"({{"idle_sec":{}}})", GetAI()->GetIdleMs() / 1000));
+        SetResult("TEST_IDLE_NOTE", "idle note (preferred action)", Trinity::StringFormat(R"({{"idle_reason":"TEST_STRATEGY","idle_sec":{}}})", GetAI()->GetIdleMs() / 1000));
         return true;
     }
 };
@@ -79,7 +79,7 @@ public:
     explicit IdleLogAction(BotAI* ai) : Action(ai, "test_idle_log", ACTION_FLAG_NOISY) { }
     bool Execute() override
     {
-        SetResult("TEST_IDLE", "idle log (fallback action)", Trinity::StringFormat(R"({{"idle_sec":{}}})", GetAI()->GetIdleMs() / 1000));
+        SetResult("TEST_IDLE", "idle log (fallback action)", Trinity::StringFormat(R"({{"idle_reason":"TEST_STRATEGY","idle_sec":{}}})", GetAI()->GetIdleMs() / 1000));
         return true;
     }
 };

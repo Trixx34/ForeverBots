@@ -4599,6 +4599,24 @@ Classic.GuildFinder = 0
 #                     against Flee.MaxAttempts; not when its target is nearly dead). 0 = off.
 #        Default:     15
 #
+#    Bot.AI.Flee.Mode
+#        Description: A/B switch for fleeing. 0 = current behaviour (flee from too-strong mobs and at low health).
+#                     1 = aggro avoidance: quest and grind targets are capped at gap +1, no flee loop; once engaged the
+#                     bot fights to the end (FIGHT_TOO_STRONG with why FLEE_MODE_FIGHT_TO_END). 2 = flee toward the
+#                     nearest friendly guard within 120 yd (open-field flee when none). The active mode is logged as
+#                     flee_mode in every combat decision row and in COMBAT_SUMMARY.
+#        Default:     0
+#
+#    Bot.AI.Grind.MaxLevelGap
+#        Description: Grind targets may be at most this many effective levels above the bot (elites count
+#                     +EliteLevelBonus). Grind targets also skip mobs with a gap >= 2 mob within 22 yd.
+#        Default:     1
+#
+#    Bot.AI.Grind.MaxRadius
+#        Description: Grind targets stay within this many yards of where the grind run began (the last quest area).
+#                     When nothing is left inside, the anchor moves to the bot position. 0 = off.
+#        Default:     150
+#
 #    Bot.AI.Combat.PrePullManaPct
 #        Description: A mana user drinks before pulling when its mana is below this percent (the higher of this and
 #                     Bot.AI.Rest.DrinkBelowPct applies).
@@ -4692,9 +4710,25 @@ Bot.AI.Default.NonCombat = "rest,goto,follow"
 #        Description: Maximum quest_blocked rows per bot written while choosing quests (nearby givers only).
 #        Default:     40
 #
+#    Bot.Quest.HubBlacklistSec / Bot.Quest.HubScanSec
+#        Description: Seconds one bot skips a hub it failed to reach (min 30) / minimum seconds between hub scans of one bot (min 5).
+#        Default:     600 / 20
+#
+#    Bot.Quest.HubFailGlobalSec
+#        Description: Seconds a hub that any bot failed to reach is skipped by ALL bots (min 60). When no hub fits the bot grinds (QUEST_HUB_NONE, QUEST_GRIND).
+#        Default:     1800
+#
+#    Bot.Quest.HubMaxDist
+#        Description: Hubs farther than this many yards are skipped unless a bot already reached them. Hubs in zones of the other faction are always skipped.
+#        Default:     2500
+#
 #    Enable the quest behavior by adding "quest" to Bot.AI.Default.NonCombat (e.g. "rest,goto,follow,quest").
 #
 
+Bot.Quest.HubBlacklistSec = 600
+Bot.Quest.HubScanSec = 20
+Bot.Quest.HubFailGlobalSec = 1800
+Bot.Quest.HubMaxDist = 2500
 Bot.Quest.MaxActive = 12
 Bot.Quest.StallSec = 240
 Bot.Quest.MaxMobLevelDiff = 2

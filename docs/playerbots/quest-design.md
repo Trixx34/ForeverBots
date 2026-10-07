@@ -771,6 +771,13 @@ Formerly reserved; all now emitted. `blk` = `quest_blocked` row (WARN unless not
 | `QUEST_QUARANTINED_GLOBAL` | blk | quest failed across bots (DEAD_FAILS drops), skipped by all bots 1 h |
 | `CORPSE_RUN_GAVE_UP` | dec WARN | corpse run failed repeatedly, falls back to the spirit healer |
 | `SPIRIT_HEAL_GAVE_UP` | dec WARN | no reachable spirit healer, resurrects in place |
+| `QUEST_WALK_START` | dec | quest travel leg started (quest_id, goal, path_length, path_us); at most one per bot per 10 s |
+| `QUEST_WALK_ARRIVE` | dec | quest travel leg arrived (only after a logged start) |
+| `QUEST_WALK_ABORT` | dec | quest travel leg failed in BotMotion (`abort_reason` = the path_fail/stuck code, quest_id); a stop requested by BotQuest is not logged |
+| `IDLE_WAIT_SPAWN` | dec | idle at an empty grind spawn point; details `idle_reason` WAIT_SPAWN; at most one per bot per 60 s |
+| `LOG_SUPPRESSED` | dec | counter row (total, per type/reason/quest/target counts) written when the per-login repeat cap dropped rows, at the next different row and at logout |
+
+R5 fields (2026-10-07): `quest_id` column and `target_entry` are set on quest-travel NO_PROGRESS, UNREACHABLE_TARGET, path_fail and stuck rows (also `quest_id` in details). `details.path_us` (microseconds of the path query, steady_clock) is on GOTO_START, motion path_fail/stuck rows, QUEST_WALK_START and BotQuest NO_PATH/PATH_PARTIAL_FAR drops (plus `hop_us` for FindHop); `details.select_us` on QUEST_HUB_TRAVEL (hub selection time; the hub path query itself is logged on the following walk rows). `details.idle_reason` on idle rows: TEST_STRATEGY (TEST_IDLE*), NO_GRIND_TARGET, WAIT_SPAWN.
 
 #### 6.2.3 Social event types (BotSocial.cpp, BotAlts.cpp)
 

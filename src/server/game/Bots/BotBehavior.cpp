@@ -45,6 +45,7 @@
 #include "StringFormat.h"
 #include "WorldSession.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 
@@ -832,14 +833,32 @@ bool BotMotion::RepeatFail(char const* reason, uint32 now)
     return false;
 }
 
+void BotMotion::EmitMotion(BotAI* ai, Player* bot, char const* type, uint8 severity, char const* reason, std::string const& summary, std::string const& details)
+{
+    BotEvent ev = ai->MakeEvent(bot, type, severity, reason, summary);
+    if (_questId)
+        ev.QuestId = _questId;
+    if (_questEntry)
+        ev.TargetEntry = _questEntry;
+    ev.Details = details;
+    sBotMgr->LogEvent(std::move(ev));
+}
+
 BotMotion::Result BotMotion::Fail(BotAI* ai, Player* bot, char const* type, char const* reason, std::string const& summary, std::string const& extra)
 {
     Halt(bot);
     _active = false;
     if (RepeatFail(reason, ai->GetNowMs()))
         return Result::Failed;
-    ai->EmitEvent(bot, type, BOTLOG_WARN, reason, summary, StringFormat(R"({{"tag":"{}","goal":{},"goal_map":{},"distance":{:.0f},"seconds":{},"issues":{}{}}})",
-        _tag, Pos3(_x, _y, _z), _mapId, bot->GetExactDist2d(_x, _y), (ai->GetNowMs() - _startMs) / 1000, _issues, extra.empty() ? std::string() : "," + extra));
+    std::string const details = StringFormat(R"({{"tag":"{}","quest_id":{},"goal":{},"goal_map":{},"distance":{:.0f},"seconds":{},"issues":{},"path_us":{}{}}})",
+        _tag, _questId, Pos3(_x, _y, _z), _mapId, bot->GetExactDist2d(_x, _y), (ai->GetNowMs() - _startMs) / 1000, _issues, _pathUs, extra.empty() ? std::string() : "," + extra);
+    EmitMotion(ai, bot, type, BOTLOG_WARN, reason, summary, details);
+    if (_questId && !std::strcmp(_tag, "quest"))
+    {
+        EmitMotion(ai, bot, "decision", BOTLOG_INFO, "QUEST_WALK_ABORT", StringFormat("quest walk aborted: {}", reason),
+            StringFormat(R"({{"quest_id":{},"abort_reason":"{}","distance":{:.0f},"seconds":{},"issues":{}}})", _questId, reason, bot->GetExactDist2d(_x, _y), (ai->GetNowMs() - _startMs) / 1000, _issues));
+    }
+    _walkLogged = false;
     return Result::Failed;
 }
 
@@ -860,6 +879,10 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
         if (!quiet)
             ai->EmitEvent(bot, "decision", BOTLOG_INFO, "GOTO_ARRIVED", StringFormat("arrived at the {} goal", _tag),
                 StringFormat(R"({{"tag":"{}","goal":{},"seconds":{},"issues":{},"distance":{:.1f}}})", _tag, Pos3(_x, _y, _z), (now - _startMs) / 1000, _issues, dist));
+        if (quiet && _walkLogged && _questId)
+            EmitMotion(ai, bot, "decision", BOTLOG_INFO, "QUEST_WALK_ARRIVE", "arrived at the quest walk goal",
+                StringFormat(R"({{"quest_id":{},"seconds":{},"issues":{},"distance":{:.1f}}})", _questId, (now - _startMs) / 1000, _issues, dist));
+        _walkLogged = false;
         Halt(bot);
         _active = false;
         return Result::Arrived;
@@ -875,11 +898,21 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
         _episodes = 0;
         _everMoved = false;
 
+        auto const pathT0 = std::chrono::steady_clock::now();
         BotPathInfo const pi = QueryPath(bot, _x, _y, _z);
+        _pathUs = uint32(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - pathT0).count());
+        if (quiet && _questId && !std::strcmp(_tag, "quest") && (!_lastWalkLogMs || now - _lastWalkLogMs >= 10000))
+        {
+            _lastWalkLogMs = now ? now : 1;
+            _walkLogged = true;
+            EmitMotion(ai, bot, "decision", BOTLOG_INFO, "QUEST_WALK_START", "quest walk started",
+                StringFormat(R"({{"quest_id":{},"goal":{},"distance":{:.0f},"path_length":{:.0f},"partial":{},"path_type":{},"path_us":{}}})",
+                    _questId, Pos3(_x, _y, _z), dist, pi.Length, pi.Partial ? "true" : "false", pi.Type, _pathUs));
+        }
         if (!quiet)
             ai->EmitEvent(bot, "decision", BOTLOG_INFO, "GOTO_START", StringFormat("walking to the {} goal", _tag),
-                StringFormat(R"({{"tag":"{}","goal":{},"distance":{:.0f},"path_length":{:.0f},"partial":{},"end_gap":{:.0f},"end_gap_3d":{:.0f},"goal_far_from_poly":{},"path_type":{}}})",
-                    _tag, Pos3(_x, _y, _z), dist, pi.Length, pi.Partial ? "true" : "false", pi.EndGap, pi.EndGap3D, pi.GoalOffMesh ? "true" : "false", pi.Type));
+                StringFormat(R"({{"tag":"{}","goal":{},"distance":{:.0f},"path_length":{:.0f},"partial":{},"end_gap":{:.0f},"end_gap_3d":{:.0f},"goal_far_from_poly":{},"path_type":{},"path_us":{}}})",
+                    _tag, Pos3(_x, _y, _z), dist, pi.Length, pi.Partial ? "true" : "false", pi.EndGap, pi.EndGap3D, pi.GoalOffMesh ? "true" : "false", pi.Type, _pathUs));
         if (pi.NoPath)
             return Fail(ai, bot, "path_fail", "NO_PATH", pi.StartOffMesh ? "the bot stands off the navmesh (no polygon near its position)" :
                 pi.OffMesh ? "goal is not on the navmesh (water, inside terrain or under a structure)" : "no path to the goal (regions not connected)",
@@ -930,8 +963,8 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
             return Fail(ai, bot, "stuck", "UNREACHABLE_TARGET", StringFormat("no progress to the {} goal after {} attempts", _tag, _episodes), info);
 
         if (_episodes == 1 && !RepeatFail("NO_PROGRESS", now))
-            ai->EmitEvent(bot, "stuck", BOTLOG_WARN, "NO_PROGRESS", StringFormat("no progress to the {} goal for {} s", _tag, cfg.StuckSec),
-                StringFormat(R"({{"tag":"{}","goal":{},"distance":{:.0f},{}}})", _tag, Pos3(_x, _y, _z), dist, info));
+            EmitMotion(ai, bot, "stuck", BOTLOG_WARN, "NO_PROGRESS", StringFormat("no progress to the {} goal for {} s", _tag, cfg.StuckSec),
+                StringFormat(R"({{"tag":"{}","quest_id":{},"goal":{},"distance":{:.0f},"path_us":{},{}}})", _tag, _questId, Pos3(_x, _y, _z), dist, _pathUs, info));
         _bestMs = now;
         Halt(bot);
         Issue(bot, now);

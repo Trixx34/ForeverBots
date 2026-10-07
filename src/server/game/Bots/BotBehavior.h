@@ -61,6 +61,8 @@ public:
     float GoalX() const { return _x; }
     float GoalY() const { return _y; }
     float GoalZ() const { return _z; }
+    // R5: quest travel context for the log rows of this goal (BotQuest calls it after SetGoal with the "quest" tag).
+    void SetQuestCtx(uint32 questId, uint32 entry) { _questId = questId; _questEntry = entry; }
 
     // Follow target (a player or bot on the same map). Guid empty = none.
     void SetFollow(ObjectGuid guid) { _follow = guid; }
@@ -94,6 +96,11 @@ private:
     uint32 _lastFailMs = 0;     // identical failure rows (same tag and reason) are written once per minute
     uint32 _lastFailKey = 0;
     bool RepeatFail(char const* reason, uint32 now);
+    void EmitMotion(BotAI* ai, Player* bot, char const* type, uint8 severity, char const* reason, std::string const& summary, std::string const& details);
+    uint32 _questId = 0, _questEntry = 0;
+    uint32 _lastWalkLogMs = 0;  // quest walk start rows: at most one per 10 s
+    bool _walkLogged = false;   // a QUEST_WALK_START row was written for this goal (arrival is logged only then)
+    uint32 _pathUs = 0;         // microseconds of the last path query of this goal
     ObjectGuid _follow;
 };
 
