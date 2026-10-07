@@ -1683,7 +1683,7 @@ private:
                     continue;
                 ++t.ScanOk;
                 float d = bot->GetExactDist2d(m);
-                if (d < bd && !HighGapMobNear(bot, list, m))
+                if (d < bd && !HighGapMobNear(bot, list, m) && !BotAggroGuarded(ai, bot, m))
                 {
                     bd = d;
                     best = m;
@@ -2676,7 +2676,7 @@ private:
                         continue;
                     ++t.ScanOk;
                     float d = bot->GetExactDist2d(m);
-                    if (d < bd)
+                    if (d < bd && !BotAggroGuarded(ai, bot, m))
                     {
                         bd = d;
                         best = m;

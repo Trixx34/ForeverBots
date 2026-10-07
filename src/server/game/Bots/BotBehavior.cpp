@@ -226,6 +226,107 @@ public:
 };
 
 // ---------------------------------------------------------------------------------------------------------------------
+// aggro awareness (Bot.AI.AggroAvoid.*): helpers, the public entry points are defined after this namespace
+// ---------------------------------------------------------------------------------------------------------------------
+bool IsAggroThreat(Player* bot, Creature* c, BotAIConfig const& cfg)
+{
+    if (!c->IsAlive() || c->IsPet() || c->IsTotem() || c->IsCritter() || c->IsCivilian() || c->IsTrigger())
+        return false;
+    if (!bot->IsHostileTo(c) || !bot->IsValidAttackTarget(c))
+        return false;
+    bool const elite = c->IsElite() || c->isWorldBoss();
+    return (cfg.AggroElites && elite) || int32(c->GetLevel()) - int32(bot->GetLevel()) >= cfg.AggroLevelDiff;
+}
+
+// Refreshes the bot's threat cache (one grid scan per second at most, one per bot).
+void RefreshThreats(BotAI* ai, Player* bot)
+{
+    BotAggro& a = ai->Motion().Aggro();
+    uint32 const now = ai->GetNowMs();
+    if (a.Scanned && now - a.ScanMs < 1000)
+        return;
+    a.Scanned = true;
+    a.ScanMs = now;
+    a.List.clear();
+    BotAIConfig const& cfg = BotAI::Config();
+    FindCreatureOptions options;
+    options.IsAlive = FindCreatureAliveState::Alive;
+    std::vector<Creature*> list;
+    bot->GetCreatureListWithOptionsInGrid(list, 40.0f + float(cfg.AggroMarginYd), options);
+    for (Creature* c : list)
+    {
+        if (a.List.size() >= 12 || !IsAggroThreat(bot, c, cfg))
+            continue;
+        float const aggro = c->GetAttackDistance(bot);
+        if (aggro > 0.0f)
+            a.List.push_back({ c->GetGUID(), c->GetEntry(), uint8(c->GetLevel()), c->IsElite() || c->isWorldBoss(), aggro });
+    }
+}
+
+// A walkable point `radius` yards from (mx,my) in direction `angle`, false when there is no usable navmesh path to it.
+bool AggroWaypoint(Player* bot, float mx, float my, float angle, float radius, float& x, float& y, float& z)
+{
+    x = mx + std::cos(angle) * radius;
+    y = my + std::sin(angle) * radius;
+    z = bot->GetPositionZ();
+    bot->UpdateGroundPositionZ(x, y, z);
+    BotPathInfo const pi = BotMotion::QueryPath(bot, x, y, z);
+    if (!pi.Valid || pi.GoalOffMesh || (pi.Partial && pi.EndGap > 4.0f))
+        return false;
+    return pi.Length <= 2.5f * bot->GetExactDist2d(x, y) + 10.0f; // a long winding route leads through the danger
+}
+
+// A point away from the mob outside its aggro radius plus margin.
+bool AggroRetreatPoint(Player* bot, BotAggroHit const& hit, float& x, float& y, float& z)
+{
+    float const mx = hit.Mob->GetPositionX(), my = hit.Mob->GetPositionY();
+    float const base = std::atan2(bot->GetPositionY() - my, bot->GetPositionX() - mx);
+    for (float off : { 0.0f, 0.6f, -0.6f, 1.2f, -1.2f })
+        if (AggroWaypoint(bot, mx, my, base + off, hit.Radius + 4.0f, x, y, z))
+            return true;
+    return false;
+}
+
+// Rest is refused (and an eat/drink session ended) while such a mob has the bot inside its aggro radius plus margin.
+bool AggroBlocksRest(BotAI* ai, Player* bot, char const* action)
+{
+    BotAggroHit hit;
+    if (!BotAggroNear(ai, bot, 0, hit))
+        return false;
+    BotAggroLog(ai, bot, action, hit, "rest");
+    return true;
+}
+
+class AggroRetreatAction : public Action
+{
+public:
+    explicit AggroRetreatAction(BotAI* ai) : Action(ai, "aggro_retreat", ACTION_FLAG_QUIET_LOG) { }
+    bool Execute() override
+    {
+        BotAI* ai = GetAI();
+        Player* bot = GetBot();
+        BotAggroHit hit;
+        if (!BotAggroNear(ai, bot, ai->Motion().QuestEntry(), hit))
+            return false;
+        SetResult("AGGRO_RETREAT");
+        float x, y, z;
+        if (!AggroRetreatPoint(bot, hit, x, y, z))
+        {
+            BotAggroLog(ai, bot, "no_retreat_route", hit, "idle");
+            return false;
+        }
+        bool const wasResting = ai->Rest().Resting();
+        if (wasResting)
+            BotEndRest(ai, bot, "AGGRO_AVOID");
+        else if (bot->GetStandState() == UNIT_STAND_STATE_SIT)
+            bot->SetStandState(UNIT_STAND_STATE_STAND);
+        ai->Motion().SetGoal(bot->GetMapId(), x, y, z, 3.0f, "aggro_retreat");
+        BotAggroLog(ai, bot, wasResting ? "retreat_from_rest" : "retreat_idle", hit, "idle");
+        return true;
+    }
+};
+
+// ---------------------------------------------------------------------------------------------------------------------
 // rest (eat / drink)
 // ---------------------------------------------------------------------------------------------------------------------
 float PowerPct(Player* bot)
@@ -238,13 +339,14 @@ bool UsesMana(Player* bot) { return bot->GetPowerType() == POWER_MANA && bot->Ge
 
 bool NeedEat(BotAI* ai, Player* bot)
 {
-    return !(ai->Rest().Bits & BotRest::EAT) && bot->IsAlive() && !bot->IsInCombat() && bot->GetHealthPct() < float(BotAI::Config().EatBelowPct);
+    return !(ai->Rest().Bits & BotRest::EAT) && bot->IsAlive() && !bot->IsInCombat() && bot->GetHealthPct() < float(BotAI::Config().EatBelowPct) &&
+        !AggroBlocksRest(ai, bot, "rest_refused");
 }
 
 bool NeedDrink(BotAI* ai, Player* bot)
 {
     return !(ai->Rest().Bits & BotRest::DRINK) && bot->IsAlive() && !bot->IsInCombat() && UsesMana(bot) &&
-        PowerPct(bot) < float(std::max(BotAI::Config().DrinkBelowPct, BotCombatPrePullManaPct()));
+        PowerPct(bot) < float(std::max(BotAI::Config().DrinkBelowPct, BotCombatPrePullManaPct())) && !AggroBlocksRest(ai, bot, "rest_refused");
 }
 
 bool RestingNow(BotAI* ai, Player*) { return ai->Rest().Resting(); }
@@ -324,6 +426,11 @@ public:
         if (bot->GetStandState() != UNIT_STAND_STATE_SIT)
         {
             BotEndRest(ai, bot, "INTERRUPTED", false);
+            return true;
+        }
+        if (AggroBlocksRest(ai, bot, "rest_interrupted"))
+        {
+            BotEndRest(ai, bot, "AGGRO_AVOID", true);
             return true;
         }
 
@@ -710,6 +817,74 @@ public:
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// aggro awareness, public entry points
+// ---------------------------------------------------------------------------------------------------------------------
+bool BotAggroNear(BotAI* ai, Player* bot, uint32 ignoreEntry, BotAggroHit& out)
+{
+    BotAIConfig const& cfg = BotAI::Config();
+    if (!cfg.AggroAvoid || !bot->IsAlive() || bot->HasPlayerFlag(PLAYER_FLAGS_GHOST))
+        return false;
+    RefreshThreats(ai, bot);
+    float deepest = 0.0f;
+    bool found = false;
+    for (BotAggro::Threat const& t : ai->Motion().Aggro().List)
+    {
+        if (ignoreEntry && t.Entry == ignoreEntry)
+            continue;
+        Creature* c = ObjectAccessor::GetCreature(*bot, t.Guid);
+        if (!c || !c->IsAlive())
+            continue;
+        float const radius = t.Aggro + float(cfg.AggroMarginYd);
+        float const d = bot->GetExactDist(c);
+        if (d >= radius || (found && d - radius >= deepest))
+            continue;
+        deepest = d - radius;
+        found = true;
+        out = { c, t.Entry, t.Level, t.Elite, d, t.Aggro, radius };
+    }
+    return found;
+}
+
+bool BotAggroGuarded(BotAI* ai, Player* bot, Creature const* target)
+{
+    BotAIConfig const& cfg = BotAI::Config();
+    if (!cfg.AggroAvoid)
+        return false;
+    RefreshThreats(ai, bot);
+    bool const targetElite = target->IsElite() || target->isWorldBoss();
+    for (BotAggro::Threat const& t : ai->Motion().Aggro().List)
+    {
+        // only mobs more dangerous than the target itself count, so a pack of equals does not block its own kills
+        if (t.Guid == target->GetGUID() || !((t.Elite && !targetElite) || int32(t.Level) >= int32(target->GetLevel()) + 2))
+            continue;
+        Creature* c = ObjectAccessor::GetCreature(*bot, t.Guid);
+        if (!c || !c->IsAlive())
+            continue;
+        float const d = target->GetExactDist2d(c);
+        if (d < t.Aggro + float(cfg.AggroMarginYd) * 0.5f)
+        {
+            BotAggroLog(ai, bot, "target_skipped", { c, t.Entry, t.Level, t.Elite, bot->GetExactDist(c), t.Aggro, t.Aggro + float(cfg.AggroMarginYd) }, "target");
+            return true;
+        }
+    }
+    return false;
+}
+
+void BotAggroLog(BotAI* ai, Player* bot, char const* action, BotAggroHit const& hit, char const* tag)
+{
+    BotAggro& a = ai->Motion().Aggro();
+    uint32 const now = ai->GetNowMs();
+    if (a.LogMs && now - a.LogMs < BotAI::Config().AggroLogSec * 1000)
+        return;
+    a.LogMs = now ? now : 1;
+    BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "AGGRO_AVOID", StringFormat("avoiding {} (level {}{}): {}", hit.Mob->GetName(), hit.Level, hit.Elite ? ", elite" : "", action));
+    ev.TargetEntry = hit.Entry;
+    ev.Details = StringFormat(R"({{"action":"{}","entry":{},"mob_level":{},"bot_level":{},"elite":{},"distance":{:.1f},"aggro_radius":{:.1f},"margin":{},"tag":"{}","has_goal":{}}})",
+        action, hit.Entry, hit.Level, bot->GetLevel(), hit.Elite ? "true" : "false", hit.Dist, hit.Aggro, BotAI::Config().AggroMarginYd, tag, ai->Motion().HasGoal() ? "true" : "false");
+    sBotMgr->LogEvent(std::move(ev));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // BotMotion
 // ---------------------------------------------------------------------------------------------------------------------
 void BotMotion::SetGoal(uint32 mapId, float x, float y, float z, float arriveDist, char const* tag)
@@ -731,6 +906,8 @@ void BotMotion::SetGoal(uint32 mapId, float x, float y, float z, float arriveDis
     _tag[sizeof(_tag) - 1] = '\0';
     _active = true;
     _fresh = true;
+    _detour = false;
+    _aggro.SinceMs = 0;
 }
 
 void BotMotion::Halt(Player* bot)
@@ -804,12 +981,13 @@ void BotMotion::Issue(Player* bot, uint32 now)
     if (bot->GetStandState() != UNIT_STAND_STATE_STAND && !bot->IsInCombat())
         bot->SetStandState(UNIT_STAND_STATE_STAND);
 
-    if (bot->GetExactDist(_x, _y, _z) < 1.0f)
+    float const tx = _detour ? _dx : _x, ty = _detour ? _dy : _y, tz = _detour ? _dz : _z;
+    if (bot->GetExactDist(tx, ty, tz) < 1.0f)
         return;
 
-    EnsureGrids(bot, _x, _y);
+    EnsureGrids(bot, tx, ty);
     PathGenerator path(bot);
-    path.CalculatePath(_x, _y, _z, false);
+    path.CalculatePath(tx, ty, tz, false);
     uint32 const type = uint32(path.GetPathType());
     if ((type & (PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH)) || path.GetPath().size() < 2)
         return;
@@ -862,13 +1040,114 @@ BotMotion::Result BotMotion::Fail(BotAI* ai, Player* bot, char const* type, char
     return Result::Failed;
 }
 
+// Aggro steering of a goto/quest goal around hostile elites and higher-level mobs (see BotAggroNear): inside a mob's aggro radius the
+// bot backs off, in the margin zone it detours around the mob when its heading closes in, and when no detour exists it waits outside
+// the radius. A goal held back longer than Bot.AI.AggroAvoid.MaxSec fails with AGGRO_BLOCKED so the quest layer picks another goal.
+std::optional<BotMotion::Result> BotMotion::Steer(BotAI* ai, Player* bot, uint32 now)
+{
+    BotAIConfig const& cfg = BotAI::Config();
+    if (_detour)
+    {
+        if (bot->GetExactDist2d(_dx, _dy) < 4.0f || now - _detourMs > 10000)
+        {
+            _detour = false;
+            _issueMs = 0;
+        }
+        else
+        {
+            _bestMs = now; // the detour counts as progress
+            return std::nullopt;
+        }
+    }
+
+    bool const isQuest = !std::strcmp(_tag, "quest");
+    BotAggroHit hit;
+    if (!cfg.AggroAvoid || (!isQuest && std::strcmp(_tag, "goto")) || bot->IsInCombat() || !BotAggroNear(ai, bot, isQuest ? _questEntry : 0, hit))
+    {
+        if (!_aggro.ClearMs)
+            _aggro.ClearMs = now ? now : 1;
+        else if (_aggro.SinceMs && now - _aggro.ClearMs > 6000)
+            _aggro.SinceMs = 0;
+        return std::nullopt;
+    }
+    _aggro.ClearMs = 0;
+    if (!_aggro.SinceMs)
+        _aggro.SinceMs = now ? now : 1;
+    if (now - _aggro.SinceMs > cfg.AggroMaxSec * 1000)
+    {
+        _aggro.SinceMs = 0;
+        return Fail(ai, bot, "path_fail", "AGGRO_BLOCKED", StringFormat("goal held back by {} (level {}) for {} s", hit.Mob->GetName(), hit.Level, cfg.AggroMaxSec),
+            StringFormat(R"("mob_entry":{},"mob_level":{},"elite":{},"mob_distance":{:.0f},"aggro_radius":{:.0f})", hit.Entry, hit.Level, hit.Elite ? "true" : "false", hit.Dist, hit.Aggro));
+    }
+
+    float const mx = hit.Mob->GetPositionX(), my = hit.Mob->GetPositionY();
+    float const bx = bot->GetPositionX(), by = bot->GetPositionY();
+    float const d2 = std::max(0.1f, bot->GetExactDist2d(mx, my));
+    float const base = std::atan2(by - my, bx - mx);
+    float x, y, z;
+    auto startDetour = [&](char const* action)
+    {
+        _detour = true;
+        _dx = x;
+        _dy = y;
+        _dz = z;
+        _detourMs = now;
+        _bestMs = now;
+        Halt(bot);
+        BotAggroLog(ai, bot, action, hit, _tag);
+        Issue(bot, now ? now : 1);
+        return std::optional<Result>(Result::Moving);
+    };
+
+    if (hit.Dist < hit.Aggro)
+    {
+        // already inside the aggro radius: back off first
+        if (AggroRetreatPoint(bot, hit, x, y, z))
+            return startDetour("retreat");
+        BotAggroLog(ai, bot, "no_retreat_route", hit, _tag);
+        return std::nullopt;
+    }
+
+    // margin zone: only a heading that closes in on the mob is a problem (the next path node, else the goal; at least 25 and at most 40 yards ahead)
+    float hx = _x, hy = _y;
+    bool const moving = !bot->movespline->Finalized();
+    if (moving)
+    {
+        G3D::Vector3 const& next = bot->movespline->CurrentDestination();
+        hx = next.x;
+        hy = next.y;
+    }
+    float const len = std::sqrt((hx - bx) * (hx - bx) + (hy - by) * (hy - by));
+    if (len < 0.5f)
+        return std::nullopt;
+    float const dirx = (hx - bx) / len, diry = (hy - by) / len;
+    float const reach = std::clamp(len, moving ? 25.0f : 0.0f, 40.0f);
+    float const along = std::clamp((mx - bx) * dirx + (my - by) * diry, 0.0f, reach);
+    float const closest = std::sqrt((bx + dirx * along - mx) * (bx + dirx * along - mx) + (by + diry * along - my) * (by + diry * along - my));
+    if (closest >= d2 - 0.5f)
+        return std::nullopt;
+
+    // closing in: detour on the side the heading already leans to, unless the goal itself lies inside the aggro radius
+    if (std::hypot(_x - mx, _y - my) >= hit.Aggro + 2.0f)
+    {
+        float const side = ((bx - mx) * diry - (by - my) * dirx) >= 0.0f ? 1.0f : -1.0f;
+        for (float off : { 0.6f * side, 1.0f * side, -0.6f * side })
+            if (AggroWaypoint(bot, mx, my, base + off, hit.Radius + 3.0f, x, y, z))
+                return startDetour("detour");
+    }
+    Halt(bot);
+    _bestMs = now;
+    BotAggroLog(ai, bot, "wait", hit, _tag);
+    return Result::Moving;
+}
+
 BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
 {
     if (!_active)
         return Result::Idle;
 
     uint32 const now = ai->GetNowMs();
-    bool const quiet = !std::strcmp(_tag, "follow") || !std::strcmp(_tag, "quest"); // quest legs are re-issued constantly (BotQuest logs its own decisions) // follow goals retarget constantly: only failures are logged
+    bool const quiet = !std::strcmp(_tag, "follow") || !std::strcmp(_tag, "quest") || !std::strcmp(_tag, "aggro_retreat"); // quest legs are re-issued constantly (BotQuest logs its own decisions) // follow goals retarget constantly: only failures are logged
 
     if (bot->GetMapId() != _mapId)
         return Fail(ai, bot, "path_fail", "WRONG_MAP", "goal is on another map", StringFormat(R"("bot_map":{})", bot->GetMapId()));
@@ -941,6 +1220,9 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
     }
     _lastStepMs = now;
 
+    if (std::optional<Result> steered = Steer(ai, bot, now))
+        return *steered;
+
     bool const moving = !bot->movespline->Finalized();
     if (moving)
         _everMoved = true;
@@ -1006,6 +1288,14 @@ void RegisterPhase3BotObjects(BotRegistry& r)
     AddFnTrigger(r, "need_drink", 1000, NeedDrink);
     AddFnTrigger(r, "resting", 1000, RestingNow);
     AddFnTrigger(r, "recover_tick", 0, [](BotAI* ai, Player*) { return ai->GetState() == BotState::Dead; });
+    // idle or resting inside the aggro range of a hostile elite / higher-level mob (walking goals are steered by BotMotion::Steer)
+    AddFnTrigger(r, "aggro_near", 1000, [](BotAI* ai, Player* bot)
+    {
+        if (!BotAI::Config().AggroAvoid || !bot->IsAlive() || bot->IsInCombat() || (ai->Motion().HasGoal() && !ai->Rest().Resting()))
+            return false;
+        BotAggroHit hit;
+        return BotAggroNear(ai, bot, ai->Motion().QuestEntry(), hit) && hit.Dist < hit.Aggro;
+    });
 
     // actions
     r.AddAction("move_to_goal", MakeAct<MoveToGoalAction>());
@@ -1014,6 +1304,7 @@ void RegisterPhase3BotObjects(BotRegistry& r)
     r.AddAction("eat", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<EatAction>(ai, "eat", true); });
     r.AddAction("drink", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<EatAction>(ai, "drink", false); });
     r.AddAction("rest_tick", MakeAct<RestTickAction>());
+    r.AddAction("aggro_retreat", MakeAct<AggroRetreatAction>());
     r.AddAction("release_spirit", MakeAct<ReleaseSpiritAction>());
     r.AddAction("corpse_run", MakeAct<CorpseRunAction>());
     r.AddAction("reclaim_corpse", MakeAct<ReclaimCorpseAction>());
@@ -1064,6 +1355,7 @@ void RegisterPhase3BotObjects(BotRegistry& r)
             t.push_back({ "need_eat", { { "eat", BotRelevance::Rest } } });
             t.push_back({ "need_drink", { { "drink", BotRelevance::Rest } } });
             t.push_back({ "resting", { { "rest_tick", BotRelevance::Rest - 1.0f } } });
+            t.push_back({ "aggro_near", { { "aggro_retreat", BotRelevance::Rest + 1.0f } } });
             m.push_back("resting_hold");
         });
     });

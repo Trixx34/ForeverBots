@@ -48,6 +48,13 @@ struct BotAIConfig
     uint32 TickStatsSec = 60;     // Bot.Log.AiTickStatsSec: AI_TICK_STATS row per bot every N s (0 = off)
     uint32 CorpseRunMaxFails = 3; // Bot.AI.Death.CorpseRunMaxFails: failed corpse runs (and spirit healer walks) before the bot gives up
     uint32 StuckRepaths = 3;      // Bot.AI.Move.StuckRepaths: episodes (each re-issues the path) before the goal is given up
+    // aggro awareness while walking, idle or resting (BotBehavior.cpp)
+    bool AggroAvoid = true;       // Bot.AI.AggroAvoid.Enabled
+    uint32 AggroMarginYd = 10;    // Bot.AI.AggroAvoid.MarginYards: kept clear on top of the mob's aggro radius
+    int32 AggroLevelDiff = 1;     // Bot.AI.AggroAvoid.MinLevelDiff: mob level minus bot level at or above this is avoided
+    bool AggroElites = true;      // Bot.AI.AggroAvoid.Elites: elites are avoided whatever their level
+    uint32 AggroLogSec = 15;      // Bot.AI.AggroAvoid.LogIntervalSec: at most one AGGRO_AVOID row per bot per this many seconds
+    uint32 AggroMaxSec = 45;      // Bot.AI.AggroAvoid.MaxSec: seconds a goal may be held back before it fails with AGGRO_BLOCKED
 };
 
 // Process-wide counters (written by map threads, relaxed atomics).

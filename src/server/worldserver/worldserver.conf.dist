@@ -4607,6 +4607,33 @@ Classic.GuildFinder = 0
 #                     flee_mode in every combat decision row and in COMBAT_SUMMARY.
 #        Default:     0
 #
+#    Bot.AI.AggroAvoid.Enabled
+#        Description: Aggro awareness while a bot walks (goto/quest goals), stands idle or wants to eat/drink. Hostile
+#                     elites and mobs above the bot's level are kept clear of: the bot detours around them, waits
+#                     outside their aggro radius, or backs off when inside it, and never sits down to eat or drink
+#                     inside their aggro range. Quest/grind targets next to such a mob are skipped. Each avoidance is
+#                     logged as an AGGRO_AVOID decision (details: action, mob entry, level, elite, distance, aggro
+#                     radius). 0 = off.
+#        Default:     1
+#
+#    Bot.AI.AggroAvoid.MarginYards
+#        Description: Yards kept clear on top of the mob's own aggro radius (which already scales with the level gap).
+#        Default:     10
+#
+#    Bot.AI.AggroAvoid.MinLevelDiff / Bot.AI.AggroAvoid.Elites
+#        Description: A mob is avoided when its level minus the bot level is at least MinLevelDiff (1 = any mob
+#                     above the bot), and, with Elites on, whatever its level when it is an elite.
+#        Default:     1 / 1
+#
+#    Bot.AI.AggroAvoid.LogIntervalSec
+#        Description: At most one AGGRO_AVOID row per bot per this many seconds (the avoidance itself is not limited).
+#        Default:     15
+#
+#    Bot.AI.AggroAvoid.MaxSec
+#        Description: Seconds a goal may be held back by avoidance before it fails (path_fail AGGRO_BLOCKED), so the
+#                     quest layer picks another goal.
+#        Default:     45
+#
 #    Bot.AI.Grind.MaxLevelGap
 #        Description: Grind targets may be at most this many effective levels above the bot (elites count
 #                     +EliteLevelBonus). Grind targets also skip mobs with a gap >= 2 mob within 22 yd.

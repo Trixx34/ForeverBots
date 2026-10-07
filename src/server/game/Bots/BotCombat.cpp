@@ -149,10 +149,11 @@ constexpr SpellDef SPELLS[] =
     { CLASS_PALADIN, 20271, "Judgement",            Kind::Direct, 20154 },
     { CLASS_PALADIN, 635,   "Holy Light",           Kind::Heal },
     // Hunter
+    // Auto Shot first: it is only (re)started when not running, so it never waits behind the shots below
+    { CLASS_HUNTER,  75,    "Auto Shot",            Kind::AutoShot },
     { CLASS_HUNTER,  1978,  "Serpent Sting",        Kind::Dot },
     { CLASS_HUNTER,  3044,  "Arcane Shot",          Kind::Direct },
-    { CLASS_HUNTER,  2973,  "Raptor Strike",        Kind::Direct },
-    { CLASS_HUNTER,  75,    "Auto Shot",            Kind::AutoShot },
+    { CLASS_HUNTER,  2973,  "Raptor Strike",        Kind::Direct },   // melee, so only used once a mob is on top of the hunter
     // Mage
     { CLASS_MAGE,    2136,  "Fire Blast",           Kind::Direct },
     { CLASS_MAGE,    116,   "Frostbolt",            Kind::Direct },
@@ -226,6 +227,8 @@ char const* CastResultName(uint32 r)
         case SPELL_FAILED_AFFECTING_COMBAT: return "AFFECTING_COMBAT";
         case SPELL_FAILED_BAD_TARGETS: return "BAD_TARGETS";
         case SPELL_FAILED_CASTER_AURASTATE: return "CASTER_AURASTATE";
+        case SPELL_FAILED_DONT_REPORT: return "DONT_REPORT";   // 32: auto-repeat spell (Shoot) while the ranged swing timer is not ready
+        case SPELL_FAILED_PREVENTED_BY_MECHANIC: return "PREVENTED_BY_MECHANIC";   // 172
         case SPELL_FAILED_EQUIPPED_ITEM: return "EQUIPPED_ITEM";
         case SPELL_FAILED_EQUIPPED_ITEM_CLASS: return "EQUIPPED_ITEM_CLASS";
         case SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND: return "EQUIPPED_ITEM_CLASS_MAINHAND";
@@ -282,6 +285,9 @@ struct FightData
     bool ChaseRanged = false;
     float ChaseRange = 0.0f;
     bool MeleeFallback = false;      // a caster/hunter that cannot cast any more fights in melee
+    bool FallbackClearable = false;  // the fallback came from mana or wand failures: cleared when the mana is back
+    uint32 WandFails = 0;            // consecutive wand failures (at least 1 s apart, timing results excluded)
+    uint32 WandFailMs = 0;
     bool Fleeing = false;
     bool FleeGaveUp = false;
     bool FleeNoPath = false;
@@ -316,6 +322,9 @@ public:
     Role BotRole = Role::Melee;
     bool RangedBroken = false;       // no ammo / no ranged weapon: never worth chasing at range
     uint32 RangedBrokenLevel = 0;
+    uint32 BlockSpell = 0;           // spell that failed with an aura state / power result: not tried again until BlockUntilMs (kept across fights)
+    uint32 BlockUntilMs = 0;
+    bool BlockPower = false;         // the block is a power shortage (counts as "could not afford" so the wand fills in)
 
     void OnStateEnter() override;
     void Begin(Player* bot);
@@ -392,7 +401,10 @@ void BotCombatCtx::Resolve(Player* bot)
         r.Info = si;
         r.MaxRange = si->GetMaxRange(false, bot);
         r.MinRange = si->GetMinRange(false);
-        r.MeleeRange = def.Type != Kind::SelfBuff && def.Type != Kind::Heal && def.Type != Kind::Wand && r.MaxRange <= 6.0f;
+        // a ranged weapon attack never has a melee range, even when its DBC range entry resolves short
+        if ((def.Type == Kind::AutoShot || def.Type == Kind::Wand) && r.MaxRange < 8.0f)
+            r.MaxRange = def.Type == Kind::AutoShot ? 35.0f : 30.0f;
+        r.MeleeRange = def.Type != Kind::SelfBuff && def.Type != Kind::Heal && def.Type != Kind::Wand && def.Type != Kind::AutoShot && r.MaxRange <= 6.0f;
         Spells.push_back(r);
     }
 }
@@ -815,6 +827,19 @@ public:
         // approach: melee, or spell range for casters/hunters while they can still cast
         bool wantRanged = false;
         float range = 0.0f;
+        if (ctx->MeleeFallback && ctx->FallbackClearable)
+        {
+            // the mana is back (twice the cost, so the fallback does not flap): cast and shoot again
+            Resolved const* primary = RangedPrimary(ctx);
+            if (primary && bot->GetPower(bot->GetPowerType()) >= 2 * CostOf(bot, primary->Info))
+            {
+                ctx->MeleeFallback = false;
+                ctx->FallbackClearable = false;
+                ctx->WandFails = 0;
+                LogDecision(ai, bot, ctx, "MELEE_TO_RANGED", "mana is back, returns to range",
+                    StringFormat(R"("power":{},"cost":{},"spell":"{}")", bot->GetPower(bot->GetPowerType()), CostOf(bot, primary->Info), Json(SpellNameOf(primary->Info))));
+            }
+        }
         if (ctx->BotRole != Role::Melee && !ctx->MeleeFallback && !ctx->RangedBroken)
         {
             if (Resolved const* primary = RangedPrimary(ctx))
@@ -829,6 +854,7 @@ public:
                 else if (!Affordable(bot, primary->Info) && ctx->BotRole == Role::Caster)
                 {
                     ctx->MeleeFallback = true;
+                    ctx->FallbackClearable = true;
                     LogDecision(ai, bot, ctx, "RANGED_TO_MELEE", "out of power, fights in melee",
                         StringFormat(R"("power":{},"cost":{},"spell":"{}")", bot->GetPower(bot->GetPowerType()), CostOf(bot, primary->Info), Json(SpellNameOf(primary->Info))));
                 }
@@ -996,10 +1022,38 @@ bool TryCast(BotAI* ai, Player* bot, BotCombatCtx* ctx, Resolved const& r, Unit*
     {
         ++ctx->Casts;
         ctx->CountCast(r.Id);
+        if (r.Def->Type == Kind::Wand)
+            ctx->WandFails = 0;
         return true;
     }
 
     ++ctx->CastFails;
+    uint32 const nowMs = ai->GetNowMs();
+    // aura state (Judgement without the seal state) and power results repeat every tick: back off for a while
+    if (res == SPELL_FAILED_CASTER_AURASTATE || res == SPELL_FAILED_TARGET_AURASTATE || res == SPELL_FAILED_NO_POWER)
+    {
+        ctx->BlockSpell = r.Id;
+        ctx->BlockPower = res == SPELL_FAILED_NO_POWER;
+        ctx->BlockUntilMs = nowMs + (ctx->BlockPower ? 3000 : 60000);
+    }
+    // Shoot: two failures (not a swing timer, range or equipment result) and the caster fights in melee until its mana is back
+    if (r.Def->Type == Kind::Wand && !ctx->MeleeFallback && res != SPELL_FAILED_NOT_READY && res != SPELL_FAILED_OUT_OF_RANGE &&
+        res != SPELL_FAILED_MOVING && res != SPELL_FAILED_SPELL_IN_PROGRESS && res != SPELL_FAILED_NO_AMMO && res != SPELL_FAILED_NEED_AMMO &&
+        res != SPELL_FAILED_EQUIPPED_ITEM && res != SPELL_FAILED_EQUIPPED_ITEM_CLASS && res != SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND)
+    {
+        if (!ctx->WandFails || nowMs - ctx->WandFailMs >= 1000)
+        {
+            ++ctx->WandFails;
+            ctx->WandFailMs = nowMs;
+        }
+        if (ctx->WandFails >= 2)
+        {
+            ctx->MeleeFallback = true;
+            ctx->FallbackClearable = true;
+            LogDecision(ai, bot, ctx, "RANGED_TO_MELEE", "wand keeps failing, fights in melee",
+                StringFormat(R"("spell":"{}","result":{},"result_name":"{}","power":{})", Json(SpellNameOf(r.Info)), uint32(res), CastResultName(uint32(res)), bot->GetPower(bot->GetPowerType())), BOTLOG_WARN);
+        }
+    }
     if (res == SPELL_FAILED_NO_AMMO || res == SPELL_FAILED_NEED_AMMO || res == SPELL_FAILED_EQUIPPED_ITEM || res == SPELL_FAILED_EQUIPPED_ITEM_CLASS ||
         res == SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND)
     {
@@ -1028,6 +1082,17 @@ bool Ready(Player* bot, Resolved const& r)
     return !bot->GetSpellHistory()->HasCooldown(r.Info) && !bot->GetSpellHistory()->HasGlobalCooldown(r.Info);
 }
 
+// The aura a spell needs (the seal for Judgement): the cast seal is the highest known rank, so test that id as well as the root.
+bool HasRequiredAura(Player* bot, BotCombatCtx* ctx, uint32 root)
+{
+    if (bot->HasAura(root))
+        return true;
+    for (Resolved const& s : ctx->Spells)
+        if (s.Def->Root == root)
+            return bot->HasAura(s.Id);
+    return false;
+}
+
 class CastAction : public Action
 {
 public:
@@ -1053,6 +1118,11 @@ public:
             Kind const kind = r.Def->Type;
             if (kind == Kind::Heal)
                 continue;
+            if (r.Id == ctx->BlockSpell && ai->GetNowMs() < ctx->BlockUntilMs)
+            {
+                skippedForPower = skippedForPower || ctx->BlockPower;
+                continue;
+            }
             if (kind == Kind::SelfBuff)
             {
                 if (bot->HasAura(r.Id) || !Ready(bot, r) || !Affordable(bot, r.Info) || (ctx->LastBuffMs && ai->GetNowMs() - ctx->LastBuffMs < 25000))
@@ -1064,7 +1134,7 @@ public:
                 }
                 continue;
             }
-            if (r.Def->ReqAura && !bot->HasAura(r.Def->ReqAura))
+            if (r.Def->ReqAura && !HasRequiredAura(bot, ctx, r.Def->ReqAura))
                 continue;
             if (kind == Kind::Finisher && bot->GetPower(POWER_COMBO_POINTS) < r.Def->MinCombo)
                 continue;
