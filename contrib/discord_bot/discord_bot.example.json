@@ -1,0 +1,92 @@
+{
+  "server_name": "Forever",
+  "token": "PUT-YOUR-BOT-TOKEN-HERE",
+  "guild_id": 0,
+  "control_port": 8190,
+
+  "status": {
+    "channel_id": 0,
+    "board": true,
+    "board_channel_id": 0,
+    "interval_seconds": 10,
+    "fails_before_down": 2,
+    "players_interval_seconds": 60,
+    "mention_role_id": 0,
+    "announce_on_start": false,
+    "up_text": "🟢 **{name}** is up",
+    "down_text": "🔴 **{name}** is down"
+  },
+
+  "realms": [
+    {
+      "name": "Normal realm",
+      "host": "127.0.0.1",
+      "port": 8085,
+      "ra_port": 3443,
+      "chat_log": "../../build/bin/RelWithDebInfo/Chat.log",
+      "chat_channel_id": 0
+    },
+    {
+      "name": "PvP realm",
+      "host": "127.0.0.1",
+      "port": 8095,
+      "ra_port": 3444,
+      "chat_log": "../../build/bin/RelWithDebInfo/logs_pvp/Chat.log",
+      "chat_channel_id": 0
+    },
+    {
+      "name": "Roleplay realm",
+      "host": "127.0.0.1",
+      "port": 8105,
+      "ra_port": 3445,
+      "chat_log": "../../build/bin/RelWithDebInfo/logs_rp/Chat.log",
+      "chat_channel_id": 0
+    },
+    {
+      "name": "Hardcore realm",
+      "host": "127.0.0.1",
+      "port": 8115,
+      "ra_port": 3446,
+      "chat_log": "../../build/bin/RelWithDebInfo/logs_hc/Chat.log",
+      "chat_channel_id": 0
+    }
+  ],
+
+  "services": [
+    { "name": "Battle.net login", "host": "127.0.0.1", "port": 1119 },
+    { "name": "Support website", "host": "127.0.0.1", "port": 443 },
+    { "name": "Database", "host": "127.0.0.1", "port": 3307 }
+  ],
+
+  "chat": {
+    "channels": {
+      "General": "General",
+      "Trade": "Trade",
+      "LookingForGroup": "LookingForGroup",
+      "LocalDefense": "LocalDefense"
+    },
+    "format": "[{channel}] <{player}> {message}",
+    "poll_seconds": 1,
+    "flush_seconds": 2
+  },
+
+  "ra": {
+    "host": "127.0.0.1",
+    "user": "",
+    "password": "",
+    "localservers": "%APPDATA%/ForeverLauncher/localservers.json"
+  },
+
+  "accounts": {
+    "enabled": true,
+    "channel_id": 0,
+    "required_role_id": 0,
+    "log_channel_id": 0,
+    "max_per_user": 1,
+    "min_discord_account_age_days": 7,
+    "cooldown_seconds": 300,
+    "password_min_length": 8,
+    "password_max_length": 16,
+    "success_text": "Log in to the launcher with **{email}** and the password you chose."
+  }
+}

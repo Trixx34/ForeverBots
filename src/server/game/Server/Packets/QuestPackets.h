@@ -146,6 +146,7 @@ namespace WorldPackets
             int32 QuestType                 = 0; // Accepted values: 0, 1 or 2. 0 == IsAutoComplete() (skip objectives/details)
             int32 ClassicLevelType          = 2; // Classic 1.60
             int32 ClassicQuestLevel         = 0; // Classic 1.60: level shown in the quest log
+            int32 ClassicMinLevel           = 0; // Classic 1.60: level from which the quest is offered
             int32 ContentTuningID           = 0;
             int32 QuestPackageID            = 0;
             int32 QuestSortID               = 0; // zone or sort to display in quest log

@@ -86,13 +86,14 @@ WorldPacket const* QueryQuestInfoResponse::Write()
 
     if (Allow)
     {
-        // Classic 1.60: two more int32 after QuestID (client QuestInfo reader rva 0x961170 reads 11 int32 before RewardXPMultiplier,
-        // retail 9): a level type (2 for nearly all quests) and the quest level shown in the log (sniffs of the official beta)
+        // Classic 1.60: two more int32 (client QuestInfo reader rva 0x961170 reads 11 int32 before RewardXPMultiplier, retail 9):
+        // the quest level shown in the log after the quest type, and the minimum level after QuestPackageID (sniffs of the official
+        // beta: type 2, level, package, min level). The type slot carries the sniffed value (2 for nearly all quests).
         _worldPacket << int32(Info.QuestID);
         _worldPacket << int32(Info.ClassicLevelType);
         _worldPacket << int32(Info.ClassicQuestLevel);
-        _worldPacket << int32(Info.QuestType);
         _worldPacket << int32(Info.QuestPackageID);
+        _worldPacket << int32(Info.ClassicMinLevel);
         _worldPacket << int32(Info.ContentTuningID);
         _worldPacket << int32(Info.QuestSortID);
         _worldPacket << int32(Info.QuestInfoID);

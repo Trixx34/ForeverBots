@@ -48,6 +48,14 @@ void WorldSession::HandleIgnoreTradeOpcode(WorldPackets::Trade::IgnoreTrade& /*i
 
 void WorldSession::HandleBusyTradeOpcode(WorldPackets::Trade::BusyTrade& /*busyTrade*/)
 {
+    // Classic 1.60: the proposer's client answers its own TRADE_STATUS_PROPOSED with this (sniff of the official beta: initiate,
+    // proposed, busy, initiated); the official server ignores it
+    if (TradeData* myTrade = _player->GetTradeData(); myTrade && myTrade->IsAwaitingProposerBusy())
+    {
+        myTrade->SetAwaitingProposerBusy(false);
+        return;
+    }
+
     _player->TradeCancel(true, TRADE_STATUS_PLAYER_IGNORED);
 }
 
@@ -718,7 +726,14 @@ void WorldSession::HandleInitiateTradeOpcode(WorldPackets::Trade::InitiateTrade&
 
     info.Status = TRADE_STATUS_PROPOSED;
     info.Partner = _player->GetGUID();
+    info.PartnerAccount = GetBattlenetAccountGUID();
     pOther->GetSession()->SendTradeStatus(info);
+
+    // Classic 1.60: the proposer gets it too, naming the other player (sniff of the official beta)
+    _player->m_trade->SetAwaitingProposerBusy(true);
+    info.Partner = pOther->GetGUID();
+    info.PartnerAccount = pOther->GetSession()->GetBattlenetAccountGUID();
+    SendTradeStatus(info);
 
     if (pOther->GetSession()->IsBot())
         BotSocial::OnTradeInitiated(_player, pOther);

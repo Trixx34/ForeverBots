@@ -604,6 +604,7 @@ constexpr DB2FileInfo DBFilesClientList[] =
     { .FileDataId = 1339818, .Name = "LfgDungeonsGroupingMap.db2" },
     { .FileDataId = 1375579, .Name = "Light.db2" },
     { .FileDataId = 1375580, .Name = "LightData.db2" },
+    { .FileDataId = 7492879, .Name = "LightDataGlobalVolumeFog.db2" },  // Classic 1.60 (WowB 70205 DB2 metadata)
     { .FileDataId = 1334669, .Name = "LightParams.db2" },
     { .FileDataId = 5350588, .Name = "LightParamsLightShaft.db2" },
     { .FileDataId = 5350589, .Name = "LightShaft.db2" },
