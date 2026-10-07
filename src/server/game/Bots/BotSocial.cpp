@@ -33,6 +33,8 @@
 #include "TradePackets.h"
 #include "StringFormat.h"
 #include "World.h"
+#include <algorithm>
+#include <map>
 #include <optional>
 #include <vector>
 #include "WorldSession.h"
@@ -79,7 +81,11 @@ std::string Who(Player* inviter)
 }
 
 // Trades opened towards a bot that wait for the player: cancelled after TradeTimeoutMs (world thread only).
-constexpr uint32 TradeTimeoutMs = 90 * 1000;
+uint32 TradeTimeoutMs()
+{
+    int32 const sec = sConfigMgr->GetIntDefault("Bot.Trade.TimeoutSeconds", 90);
+    return uint32(std::clamp<int32>(sec, 10, 600)) * 1000;
+}
 struct OpenTrade
 {
     ObjectGuid Bot;
@@ -168,7 +174,7 @@ void OnTradeInitiated(Player* initiator, Player* bot)
     // the bot "presses" begin trade: the window opens on the player's client
     WorldPackets::Trade::BeginTrade begin{WorldPacket(CMSG_BEGIN_TRADE)};
     bot->GetSession()->HandleBeginTradeOpcode(begin);
-    OpenTrades.push_back({ bot->GetGUID(), TradeTimeoutMs });
+    OpenTrades.push_back({ bot->GetGUID(), TradeTimeoutMs() });
 }
 
 void OnTradePlayerAccepted(Player* player, Player* bot)
@@ -249,6 +255,19 @@ void Update(uint32 diff)
 
 // --- quest sharing ---
 
+namespace
+{
+// Active while a bot pushes its quest (ShareQuest, world thread): receivers are counted instead of logged one by one.
+struct ShareAgg
+{
+    bool Active = false;
+    bool LogEach = false;
+    uint32 Accepted = 0;
+    std::map<std::string, uint32> Refused;
+};
+ShareAgg s_share;
+}
+
 void OnQuestPushed(Player* sender, Player* receiver, uint32 questId)
 {
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
@@ -299,7 +318,10 @@ void OnQuestPushed(Player* sender, Player* receiver, uint32 questId)
     if (refusal)
     {
         sender->SendPushToPartyResponse(receiver, refusal->Reason);
-        Log(receiver, "quest_share", false, refusal->Code, Trinity::StringFormat("declined shared quest '{}' from {}", title, sender->GetName()), extra, questId);
+        if (s_share.Active)
+            ++s_share.Refused[refusal->Code];
+        if (!s_share.Active || s_share.LogEach)
+            Log(receiver, "quest_share", false, refusal->Code, Trinity::StringFormat("declined shared quest '{}' from {}", title, sender->GetName()), extra, questId);
         return;
     }
 
@@ -308,10 +330,13 @@ void OnQuestPushed(Player* sender, Player* receiver, uint32 questId)
     if (quest->GetSrcSpell() > 0)
         receiver->CastSpell(receiver, quest->GetSrcSpell(), true);
     sender->SendPushToPartyResponse(receiver, QuestPushReason::Accepted);
-    Log(receiver, "quest_share", true, "QUEST_SHARE_ACCEPTED", Trinity::StringFormat("accepted shared quest '{}' from {}", title, sender->GetName()), extra, questId);
+    if (s_share.Active)
+        ++s_share.Accepted;
+    if (!s_share.Active || s_share.LogEach)
+        Log(receiver, "quest_share", true, "QUEST_SHARE_ACCEPTED", Trinity::StringFormat("accepted shared quest '{}' from {}", title, sender->GetName()), extra, questId);
 }
 
-char const* ShareQuest(Player* bot, uint32 questId)
+char const* ShareQuest(Player* bot, uint32 questId, bool verbose)
 {
     if (!bot->GetGroup())
         return "NOT_GROUPED";
@@ -322,8 +347,23 @@ char const* ShareQuest(Player* bot, uint32 questId)
 
     WorldPackets::Quest::PushQuestToParty push{WorldPacket(CMSG_PUSH_QUEST_TO_PARTY)};
     push.QuestID = questId;
+    s_share = ShareAgg();
+    s_share.Active = true;
+    s_share.LogEach = verbose || sConfigMgr->GetBoolDefault("Bot.Social.QuestShare.LogEach", false);
     bot->GetSession()->HandlePushQuestToParty(push);
-    Log(bot, "quest_share", true, "QUEST_SHARE_SENT", Trinity::StringFormat("shared quest {} with the group", questId), Trinity::StringFormat("\"quest\":{}", questId), questId);
+    ShareAgg const agg = std::move(s_share);
+    s_share = ShareAgg();
+
+    uint32 refusedTotal = 0;
+    std::string byReason;
+    for (auto const& [code, n] : agg.Refused)
+    {
+        refusedTotal += n;
+        byReason += Trinity::StringFormat("{}\"{}\":{}", byReason.empty() ? "" : ",", code, n);
+    }
+    Log(bot, "quest_share", true, "QUEST_SHARE_SENT",
+        Trinity::StringFormat("shared quest {} with the group: {} accepted, {} refused", questId, agg.Accepted, refusedTotal),
+        Trinity::StringFormat("\"quest\":{},\"issuer\":\"{}\",\"accepted\":{},\"refused\":{},\"refused_by_reason\":{{{}}}", questId, JsonEscape(bot->GetName()), agg.Accepted, refusedTotal, byReason), questId);
     return "OK";
 }
 }

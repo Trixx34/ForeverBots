@@ -4788,11 +4788,22 @@ Bot.Chat.Role.Dps = "rogue,mage,warlock,hunter"
 #                     non-empty offer and gives nothing); world bots refuse every trade. Trades left open time out.
 #        Default:     1 - Enabled
 #
+#    Bot.Trade.TimeoutSeconds
+#        Description: Seconds a trade opened towards an alt bot may stay open before the bot cancels it (10-600).
+#        Default:     90
+#
+#    Bot.Social.QuestShare.LogEach
+#        Description: Log one quest_share bot_event per receiver of a bot's quest share. Off: one summary row per share
+#                     command (accepted count, refused count per reason); "verbose on" of the issuer also logs each receiver.
+#        Default:     0 - Disabled
+#
 Bot.Alt.Enabled = 1
 Bot.Alt.MaxPerAccount = 4
 Bot.Alt.Persist = 1
 Bot.Alt.Default.NonCombat = "rest,follow,goto"
 Bot.Invite.Enabled = 1
 Bot.Trade.Enabled = 1
+Bot.Trade.TimeoutSeconds = 90
+Bot.Social.QuestShare.LogEach = 0
 #
 ###################################################################################################

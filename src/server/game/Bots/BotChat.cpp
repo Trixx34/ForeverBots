@@ -520,7 +520,7 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
         case Verb::Share:
             if (!alive)
                 return "DEAD";
-            return BotSocial::ShareQuest(bot, c.QuestId);
+            return BotSocial::ShareQuest(bot, c.QuestId, IsVerbose(issuer));
         case Verb::Release:
             if (alive)
                 return "NOT_DEAD";

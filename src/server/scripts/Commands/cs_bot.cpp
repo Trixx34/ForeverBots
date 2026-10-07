@@ -134,7 +134,7 @@ public:
             if (!classId)
             {
                 handler->PSendSysMessage("Unknown class '%s' (warrior, paladin, hunter, rogue, priest, shaman, mage, warlock, druid or any).", classArg->c_str());
-                return false;
+                { handler->SetSentErrorMessage(true); return false; }
             }
         }
 
@@ -145,14 +145,14 @@ public:
             if (faction < 0)
             {
                 handler->PSendSysMessage("Unknown faction '%s' (alliance, horde or any).", factionArg->c_str());
-                return false;
+                { handler->SetSentErrorMessage(true); return false; }
             }
         }
 
         if (count < 1 || count > 1000)
         {
             handler->PSendSysMessage("%s", "Count must be between 1 and 1000.");
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         }
 
         BotSpawnResult result = sBotMgr->SpawnBots(count, classId, faction, level);
@@ -219,7 +219,7 @@ public:
     {
         Player* bot = FindOneBot(handler, name);
         if (!bot)
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         for (std::string const& line : BotCombatDescribeSpells(bot))
             handler->PSendSysMessage("%s", line.c_str());
         return true;
@@ -232,7 +232,7 @@ public:
         if (players.empty())
         {
             handler->PSendSysMessage("No online bot matches '%s'.", name.c_str());
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         }
 
         if (!change)
@@ -263,14 +263,14 @@ public:
             if (token.size() < 2 || (token[0] != '+' && token[0] != '-'))
             {
                 handler->PSendSysMessage("Bad change '%s' (use +name or -name).", token.c_str());
-                return false;
+                { handler->SetSentErrorMessage(true); return false; }
             }
 
             std::string strategy = token.substr(1);
             if (!BotRegistry::instance().FindStrategy(strategy))
             {
                 handler->PSendSysMessage("Unknown strategy '%s'.", strategy.c_str());
-                return false;
+                { handler->SetSentErrorMessage(true); return false; }
             }
 
             for (Player* player : players)
@@ -291,7 +291,7 @@ public:
         if (!on && !StringEqualI(onOff, "off"))
         {
             handler->PSendSysMessage("%s", "Use: bot trace <name|all> on|off");
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         }
 
         bool const all = StringEqualI(name, "all");
@@ -315,7 +315,7 @@ public:
     {
         Player* player = FindOneBot(handler, name);
         if (!player)
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
 
         if (BotAI* ai = player->GetSession()->GetBotAI())
             ai->NoteTestCommand("bot kill");
@@ -359,7 +359,7 @@ public:
         else if (!StringEqualI(state, "auto"))
         {
             handler->PSendSysMessage("%s", "Use: bot ai force <name|all> noncombat|combat|dead|auto");
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         }
 
         uint32 count = 0;
@@ -381,7 +381,7 @@ public:
         if (players.empty())
         {
             handler->PSendSysMessage("No online bot matches '%s'.", name.c_str());
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         }
         uint32 moved = 0, skipped = 0;
         for (Player* player : players)
@@ -414,10 +414,10 @@ public:
     {
         Player* player = FindOneBot(handler, name);
         if (!player)
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         BotAI* ai = player->GetSession()->GetBotAI();
         if (!ai)
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         ai->AddStrategy(player, "goto", "command");
         BotMotion::EnsureGrids(player, x, y);
         player->UpdateGroundPositionZ(x, y, z); // the z argument is only a hint, the goal is put on the ground
@@ -432,10 +432,10 @@ public:
     {
         Player* player = FindOneBot(handler, name);
         if (!player)
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         BotAI* ai = player->GetSession()->GetBotAI();
         if (!ai)
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         if (StringEqualI(leaderName, "off"))
         {
             ai->Motion().SetFollow(ObjectGuid::Empty);
@@ -448,7 +448,7 @@ public:
         if (!leader)
         {
             handler->PSendSysMessage("Player '%s' is not online.", leaderName.c_str());
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         }
         ai->AddStrategy(player, "follow", "command");
         ai->Motion().SetFollow(leader->GetGUID());
@@ -476,7 +476,7 @@ public:
         if (!on && !StringEqualI(onOff, "off"))
         {
             handler->PSendSysMessage("%s", "Use: bot stay <name|all> on|off");
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         }
         uint32 count = 0;
         for (Player* player : sBotMgr->GetOnlineBotPlayers(name))
@@ -492,7 +492,7 @@ public:
     {
         Player* player = FindOneBot(handler, name);
         if (!player || !player->IsAlive())
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         if (BotAI* ai = player->GetSession()->GetBotAI())
             ai->NoteTestCommand("bot hurt");
         player->SetHealth(std::max<uint32>(1, uint32(player->GetMaxHealth() * std::clamp(hpPct, 0.0f, 100.0f) / 100.0f)));
@@ -508,7 +508,7 @@ public:
     {
         Player* player = FindOneBot(handler, name);
         if (!player || !player->IsAlive())
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         if (BotAI* ai = player->GetSession()->GetBotAI())
             ai->NoteTestCommand("bot aggro");
         std::list<Creature*> creatures;
@@ -534,7 +534,7 @@ public:
     {
         Player* player = FindOneBot(handler, name);
         if (!player || !player->IsAlive() || type > DAMAGE_FALL_TO_VOID)
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         if (BotAI* ai = player->GetSession()->GetBotAI())
             ai->NoteTestCommand("bot envdmg");
         player->EnvironmentalDamage(EnviromentalDamage(type), amount);
@@ -547,7 +547,7 @@ public:
     {
         Player* player = FindOneBot(handler, name);
         if (!player)
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         bool const on = StringEqualI(onOff, "on");
         player->SetControlled(on, UNIT_STATE_ROOT);
         handler->PSendSysMessage("%s is %s.", player->GetName().c_str(), on ? "rooted" : "free to move");
@@ -559,7 +559,7 @@ public:
     {
         Player* player = FindOneBot(handler, name);
         if (!player || level < 1 || level > 60)
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         player->GiveLevel(level);
         player->InitTalentForLevel();
         player->SetXP(0);
@@ -574,7 +574,7 @@ public:
     {
         Player* player = FindOneBot(handler, name);
         if (!player)
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         if (!(force && StringEqualI(*force, "force")))
         {
             for (ChrRacesEntry const* race : sChrRacesStore)
@@ -594,7 +594,7 @@ public:
                 event.Details = Trinity::StringFormat(R"({{"source":"test_command","dest":{{"map":{},"x":{:.1f},"y":{:.1f},"z":{:.1f}}},"enemy_race":{}}})", mapId, x, y, z, uint32(race->ID));
                 sBotMgr->LogEvent(std::move(event));
                 handler->PSendSysMessage("%s: teleport refused, the destination is in the start zone of an enemy race (%u); add 'force' as the last argument to override.", player->GetName().c_str(), uint32(race->ID));
-                return false;
+                { handler->SetSentErrorMessage(true); return false; }
             }
         }
         bool const ok = player->TeleportTo(mapId, x, y, z, player->GetOrientation());
@@ -607,7 +607,7 @@ public:
     {
         Player* player = FindOneBot(handler, name);
         if (!player)
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         BotMotion::EnsureGrids(player, x, y);
         player->UpdateGroundPositionZ(x, y, z);
         BotPathInfo const pi = BotMotion::QueryPath(player, x, y, z);
@@ -621,7 +621,7 @@ public:
     {
         Player* player = FindOneBot(handler, name);
         if (!player)
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         BotAI* ai = player->GetSession()->GetBotAI();
         std::string extra;
         if (ai)
@@ -690,14 +690,14 @@ public:
     {
         Player* player = FindOneBot(handler, name);
         if (!player)
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
 
         BotQuestLog::Scope testScope("test_command", true); // every quest event below is tagged source=test_command
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
         if (!quest)
         {
             handler->PSendSysMessage("Quest %u does not exist.", questId);
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         }
 
         if (StringEqualI(action, "add"))
@@ -719,12 +719,12 @@ public:
                 check(player->SatisfyQuestConditions(quest, false), "conditions");
                 handler->PSendSysMessage("%s cannot take quest %u, failed checks:%s (unlisted: disabled, day/week/month/seasonal, expansion)", player->GetName().c_str(), questId,
                     failed.empty() ? " none of the listed" : failed.c_str());
-                return false;
+                { handler->SetSentErrorMessage(true); return false; }
             }
             if (!player->CanAddQuest(quest, false))
             {
                 handler->PSendSysMessage("%s cannot add quest %u (log full or no room for the source item).", player->GetName().c_str(), questId);
-                return false;
+                { handler->SetSentErrorMessage(true); return false; }
             }
             player->AddQuestAndCheckCompletion(quest, nullptr);
         }
@@ -733,7 +733,7 @@ public:
             if (player->GetQuestStatus(questId) != QUEST_STATUS_INCOMPLETE)
             {
                 handler->PSendSysMessage("Quest %u is not in progress for %s.", questId, player->GetName().c_str());
-                return false;
+                { handler->SetSentErrorMessage(true); return false; }
             }
             for (QuestObjective const& obj : quest->GetObjectives())
             {
@@ -752,7 +752,7 @@ public:
             if (player->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE || !player->CanRewardQuest(quest, false) || !player->CanRewardQuest(quest, LootItemType::Item, rewardId, false))
             {
                 handler->PSendSysMessage("Quest %u cannot be rewarded to %s now (not complete, reward choice missing, or no bag room).", questId, player->GetName().c_str());
-                return false;
+                { handler->SetSentErrorMessage(true); return false; }
             }
             player->RewardQuest(quest, LootItemType::Item, rewardId, nullptr, true);
         }
@@ -761,7 +761,7 @@ public:
             if (player->GetQuestStatus(questId) == QUEST_STATUS_NONE || player->GetQuestStatus(questId) == QUEST_STATUS_REWARDED)
             {
                 handler->PSendSysMessage("Quest %u is not in the log of %s.", questId, player->GetName().c_str());
-                return false;
+                { handler->SetSentErrorMessage(true); return false; }
             }
             player->TakeQuestSourceItem(questId, true);
             player->RemoveActiveQuest(questId);
@@ -772,7 +772,7 @@ public:
         else
         {
             handler->PSendSysMessage("%s", "Use: bot quest add|complete|reward|abandon|fail <bot> <questId> [choiceItemId]");
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         }
 
         handler->PSendSysMessage("Quest %u %s: status is now %u for %s.", questId, action.c_str(), uint32(player->GetQuestStatus(questId)), player->GetName().c_str());

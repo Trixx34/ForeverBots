@@ -61,7 +61,8 @@ TC_GAME_API void Update(uint32 diff);
 TC_GAME_API void OnQuestPushed(Player* sender, Player* receiver, uint32 questId);
 
 // Makes `bot` push its own quest to its group through the normal handler. Returns a reason code ("OK" or why not).
-TC_GAME_API char const* ShareQuest(Player* bot, uint32 questId);
+TC_GAME_API char const* ShareQuest(Player* bot, uint32 questId, bool verbose = false);
+// One summary bot_event (counts per reason) instead of one row per receiver, unless `verbose` or Bot.Social.QuestShare.LogEach=1.
 }
 
 #endif

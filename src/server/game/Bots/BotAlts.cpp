@@ -272,7 +272,7 @@ bool HandleCommand(ChatHandler* handler, std::string const& op, std::string cons
     if (!sWorld->getBoolConfig(CONFIG_BOT_ENABLED) || !sConfigMgr->GetBoolDefault("Bot.Alt.Enabled", true))
     {
         handler->PSendSysMessage("%s", "Alt bots are disabled.");
-        return false;
+        { handler->SetSentErrorMessage(true); return false; }
     }
 
     if (op == "list")
@@ -280,7 +280,7 @@ bool HandleCommand(ChatHandler* handler, std::string const& op, std::string cons
         if (!session)
         {
             handler->PSendSysMessage("%s", "Use this from a game client (the list is per account).");
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         }
         std::vector<std::string> names = sBotMgr->GetActiveAltNames(session->GetAccountId());
         std::string text;
@@ -294,7 +294,7 @@ bool HandleCommand(ChatHandler* handler, std::string const& op, std::string cons
     if (!add && op != "remove")
     {
         handler->PSendSysMessage("%s", "Use: .bot alt add|remove|list <character name>");
-        return false;
+        { handler->SetSentErrorMessage(true); return false; }
     }
 
     if (gmTest && !handler->HasPermission(rbac::RBAC_PERM_COMMAND_BOT))
@@ -302,14 +302,14 @@ bool HandleCommand(ChatHandler* handler, std::string const& op, std::string cons
     if (!session && !gmTest)
     {
         handler->PSendSysMessage("%s", "From the console add the word test after the name (the character's own account is used).");
-        return false;
+        { handler->SetSentErrorMessage(true); return false; }
     }
 
     std::string name = rawName;
     if (name.empty() || !normalizePlayerName(name))
     {
         handler->PSendSysMessage("%s", "Give the exact character name.");
-        return false;
+        { handler->SetSentErrorMessage(true); return false; }
     }
 
     CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByName(name);
@@ -321,7 +321,7 @@ bool HandleCommand(ChatHandler* handler, std::string const& op, std::string cons
             LogAlt(entry->Guid.GetCounter(), "ALT_REFUSED_NOT_OWNER", false, issuer, accountId, entry->Name);
         TC_LOG_INFO("server.worldserver", "BotAlts: {} refused for '{}' by {} (not a character of the account)", op, name, issuer);
         handler->PSendSysMessage("%s", "That is not one of your characters.");
-        return false;
+        { handler->SetSentErrorMessage(true); return false; }
     }
 
     uint64 const guid = entry->Guid.GetCounter();
@@ -331,7 +331,7 @@ bool HandleCommand(ChatHandler* handler, std::string const& op, std::string cons
         if (!sBotMgr->StopAlt(guid))
         {
             handler->PSendSysMessage("%s is not logged in as a bot.", entry->Name.c_str());
-            return false;
+            { handler->SetSentErrorMessage(true); return false; }
         }
         Forget(guid);
         LogAlt(guid, "ALT_REMOVED", true, issuer, accountId, entry->Name);
@@ -381,7 +381,7 @@ bool HandleCommand(ChatHandler* handler, std::string const& op, std::string cons
     {
         LogAlt(guid, refuse, false, issuer, accountId, entry->Name);
         handler->PSendSysMessage("%s %s", entry->Name.c_str(), text);
-        return false;
+        { handler->SetSentErrorMessage(true); return false; }
     }
 
     RegisterAlt(guid);
