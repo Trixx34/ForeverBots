@@ -26,10 +26,38 @@
 #include "Define.h"
 #include <G3D/Vector3.h>
 #include "ObjectGuid.h"
+#include <optional>
 #include <string>
+#include <vector>
 
 class BotAI;
+class Creature;
 class Player;
+
+// Aggro awareness (Bot.AI.AggroAvoid.*): per-bot cache of the nearby hostile elites and higher-level mobs, refreshed at most once per
+// second and shared by walking, resting and the target chooser.
+struct BotAggro
+{
+    struct Threat { ObjectGuid Guid; uint32 Entry = 0; uint8 Level = 0; bool Elite = false; float Aggro = 0.0f; };
+    std::vector<Threat> List;
+    uint32 ScanMs = 0;
+    bool Scanned = false;
+    uint32 LogMs = 0;     // last AGGRO_AVOID row (per-bot rate cap)
+    uint32 SinceMs = 0;   // the current goal has been held back since (0 = not held back)
+    uint32 ClearMs = 0;   // since when no threat is near (resets SinceMs after a few seconds)
+};
+
+// The threat that is deepest inside its aggro radius plus margin.
+struct BotAggroHit
+{
+    Creature* Mob = nullptr;
+    uint32 Entry = 0;
+    uint8 Level = 0;
+    bool Elite = false;
+    float Dist = 0.0f;    // 3D distance bot to mob
+    float Aggro = 0.0f;   // the mob's aggro radius for this bot
+    float Radius = 0.0f;  // Aggro + margin
+};
 
 // Result of a one-off pathfinding query (used to classify goals and corpse runs before moving).
 struct BotPathInfo
@@ -78,7 +106,12 @@ public:
     static BotPathInfo QueryPath(Player* bot, float x, float y, float z);
     static void EnsureGrids(Player* bot, float x, float y);
 
+    BotAggro& Aggro() { return _aggro; }
+    uint32 QuestEntry() const { return _questEntry; } // entry of the last quest/grind travel target (not a threat to avoid)
+
 private:
+    // Aggro steering of goto/quest goals (detour, back off, wait outside the aggro radius); nullopt = walk on normally.
+    std::optional<Result> Steer(BotAI* ai, Player* bot, uint32 now);
     Result Fail(BotAI* ai, Player* bot, char const* type, char const* reason, std::string const& summary, std::string const& extra);
     void Issue(Player* bot, uint32 now);
 
@@ -102,6 +135,10 @@ private:
     bool _walkLogged = false;   // a QUEST_WALK_START row was written for this goal (arrival is logged only then)
     uint32 _pathUs = 0;         // microseconds of the last path query of this goal
     ObjectGuid _follow;
+    BotAggro _aggro;
+    bool _detour = false;       // walking to a detour point instead of the goal
+    float _dx = 0.0f, _dy = 0.0f, _dz = 0.0f;
+    uint32 _detourMs = 0;
 };
 
 // Eat/drink session of a bot (rest strategy).
@@ -135,6 +172,14 @@ struct BotRecover
     float HealerX = 0.0f, HealerY = 0.0f, HealerZ = 0.0f;
     void Reset() { *this = BotRecover(); }
 };
+
+// Hostile elite or higher-level mob deepest inside its aggro radius plus margin around the bot (false when avoidance is off or none
+// is near). A mob of `ignoreEntry` (the current kill target) does not count.
+bool BotAggroNear(BotAI* ai, Player* bot, uint32 ignoreEntry, BotAggroHit& out);
+// True when a mob more dangerous than `target` stands close to it (the target chooser skips such targets, logged as AGGRO_AVOID).
+bool BotAggroGuarded(BotAI* ai, Player* bot, Creature const* target);
+// One AGGRO_AVOID decision row, at most one per bot per Bot.AI.AggroAvoid.LogIntervalSec.
+void BotAggroLog(BotAI* ai, Player* bot, char const* action, BotAggroHit const& hit, char const* tag);
 
 // Ends the eat/drink session (stand up when `standUp`, removes the food aura). Defined in BotBehavior.cpp.
 void BotEndRest(BotAI* ai, Player* bot, char const* reason, bool standUp = true);

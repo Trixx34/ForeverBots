@@ -150,6 +150,12 @@ BotAIConfig const& BotAI::Config()
         _config.StuckSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.StuckSec", 8), 2, 600));
         _config.StuckRepaths = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.StuckRepaths", 3), 1, 20));
         _config.CorpseRunMaxFails = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Death.CorpseRunMaxFails", 3), 1, 20));
+        _config.AggroAvoid = sConfigMgr->GetBoolDefault("Bot.AI.AggroAvoid.Enabled", true);
+        _config.AggroMarginYd = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.AggroAvoid.MarginYards", 10), 0, 40));
+        _config.AggroLevelDiff = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.AggroAvoid.MinLevelDiff", 1), -10, 20);
+        _config.AggroElites = sConfigMgr->GetBoolDefault("Bot.AI.AggroAvoid.Elites", true);
+        _config.AggroLogSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.AggroAvoid.LogIntervalSec", 15), 1, 3600));
+        _config.AggroMaxSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.AggroAvoid.MaxSec", 45), 5, 600));
         _config.TickStatsSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.AiTickStatsSec", 60), 0, 3600));
         _enabled.store(_config.Enabled, std::memory_order_relaxed);
         TC_LOG_INFO("server.worldserver", "Bot AI: {}, tick {} ms, test strategy {}", _config.Enabled ? "enabled" : "disabled", _config.TickMs,
