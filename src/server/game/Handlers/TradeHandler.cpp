@@ -26,6 +26,7 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "SocialMgr.h"
+#include "RecentAllies.h"
 #include "Spell.h"
 #include "SpellMgr.h"
 #include "TradeData.h"
@@ -559,6 +560,8 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPackets::Trade::AcceptTrade& acc
         info.Status = TRADE_STATUS_COMPLETE;
         trader->GetSession()->SendTradeStatus(info);
         SendTradeStatus(info);
+
+        RecentAllies::OnTrade(_player, trader);
     }
     else
     {

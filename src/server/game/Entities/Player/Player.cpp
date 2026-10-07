@@ -61,6 +61,7 @@
 #include "DuelPackets.h"
 #include "EquipmentSetPackets.h"
 #include "Formulas.h"
+#include "FriendsService.h"
 #include "GameEventMgr.h"
 #include "GameEventSender.h"
 #include "GameObjectAI.h"
@@ -117,6 +118,7 @@
 #include "QuestObjectiveCriteriaMgr.h"
 #include "QuestPackets.h"
 #include "RealmList.h"
+#include "RecentAllies.h"
 #include "ReputationMgr.h"
 #include "RestMgr.h"
 #include "Scenario.h"
@@ -2328,6 +2330,7 @@ void Player::GiveLevel(uint8 level)
 
     if (BotAI* botAI = GetSession()->GetBotAI())
         botAI->OnLevelUp(this, oldLevel, level);
+    BattlenetPresence::OnCharacterChanged(this);
 }
 
 // Classic 1.60 (WoW Forever): the first character bank tab is free (BankTab.db2: BankType 0, OrderIndex 0, Cost 0) and every character
@@ -3644,7 +3647,9 @@ void Player::BuildCreateUpdateBlockForPlayer(UpdateData* data, Player* target) c
 UF::UpdateFieldFlag Player::GetUpdateFieldFlagsFor(Player const* target) const
 {
     UF::UpdateFieldFlag flags = Unit::GetUpdateFieldFlagsFor(target);
-    if (IsInSameRaidWith(target))
+    // Classic 1.60: the party member fields (quest log, quest session, quest id map) only for the player himself for now - sent to
+    // other group members they crashed both clients on joining a group (client JamVectorDeltaType assert, size 0x17FFFFFF)
+    if (target == this)
         flags |= UF::UpdateFieldFlag::PartyMember;
 
     return flags;
@@ -6529,15 +6534,18 @@ void Player::CheckAreaExplore()
 
         UpdateCriteria(CriteriaType::RevealWorldMapOverlay, GetAreaId());
 
-        if (Optional<ContentTuningLevels> areaLevels = sDB2Manager.GetContentTuningData(areaEntry->ContentTuningID, m_playerData->CtrOptions->ConditionalFlags))
+        // Classic 1.60: AreaTable has no ContentTuningID, the area level is ExplorationLevel; every new area is announced ("Discovered",
+        // sound), with 0 experience at max level or in areas without a level (sniffs of the official beta: level 6 area 55 XP, level 0 area 0)
+        Optional<ContentTuningLevels> areaLevels = sDB2Manager.GetContentTuningData(areaEntry->ContentTuningID, m_playerData->CtrOptions->ConditionalFlags);
+        int16 explorationLevel = areaLevels ? std::min(std::max(int16(GetLevel()), areaLevels->MinLevel), areaLevels->MaxLevel) : int16(areaEntry->ExplorationLevel);
         {
-            if (IsMaxLevel())
+            if (IsMaxLevel() || explorationLevel <= 0)
             {
                 SendExplorationExperience(areaId, 0);
             }
             else
             {
-                int16 areaLevel = std::min(std::max(int16(GetLevel()), areaLevels->MinLevel), areaLevels->MaxLevel);
+                int16 areaLevel = explorationLevel;
                 int32 diff = int32(GetLevel()) - areaLevel;
                 uint32 XP;
                 if (diff < -5)
@@ -7798,6 +7806,7 @@ void Player::UpdateZone(uint32 newZone, uint32 newArea)
     {
         sOutdoorPvPMgr->HandlePlayerLeaveZone(this, oldZone);
         sBattlefieldMgr->HandlePlayerLeaveZone(this, oldZone);
+        BattlenetPresence::OnCharacterChanged(this);    // Battle.net friends see the new zone
     }
 
     // group update
@@ -22915,6 +22924,8 @@ void Player::Whisper(std::string_view text, Language language, Player* target, b
 
     packet.Initialize(CHAT_MSG_WHISPER_INFORM, language, target, target, _text);
     SendDirectMessage(packet.Write());
+
+    RecentAllies::OnWhisper(this, target);
 
     if (!isAcceptWhispers() && !IsGameMaster() && !target->IsGameMaster())
     {

@@ -155,7 +155,21 @@ void WorldSession::SendFeatureSystemStatusGlueScreen()
         { "shop2HostUrlAuth"sv, "https://trinity.actual.battle.net:8443"sv },
         { "shop2UseConnectedRealmGameServiceRegionId"sv, "0"sv },   // realm region is the fake 70 of the Classic super realm; use the account region (1)
         { "bpayStoreEnable"sv, "1"sv },
-        { "recentAlliesEnabledClient"sv, "0"sv },
+        // Classic 1.60: the Social window (O) layout, as the official server sends it (mirror vars of the 70124 sniff): side tabs with
+        // Recent Allies and the raid list; without these the client shows the old window with Raid as a bottom tab.
+        // socialUIEnabledClient was 0 in 70124 and is 1 from the 70235 sniff on.
+        { "recentAlliesEnabledClient"sv, "1"sv },
+        { "recentAlliesRequestDataThrottle"sv, "180"sv },
+        { "socialUIEnabledClient"sv, "1"sv },
+        { "battleNetTitleFriendsEnabledClient"sv, "1"sv },
+        { "battleNetTitleFriendTagsEnabledClient"sv, "1"sv },
+        { "battleNetTitleFriendCustomNamesEnabledClient"sv, "1"sv },
+        { "socialUIFriendsListEnabledClient"sv, "1"sv },
+        { "socialUIRaidListEnabledClient"sv, "1"sv },
+        { "socialUISocialQueueEnabledClient"sv, "1"sv },
+        // official sends 0 (its players have Battle.net friends); with 0 the Add Friend button only offers BattleTag friends, which need the
+        // Battle.net friends service bnetserver does not have ("Battle.net services are not available"). 1 = add characters by name.
+        { "legacyFriendSystemEnabledClient"sv, "1"sv },
         { "browserEnabled"sv, "1"sv },         // Classic 1.60: support and shop windows use the in-game browser
         { "housingEnableCreateGuildNeighborhood"sv, "0"sv },
         { "housingEnableDeleteHouse"sv, "0"sv },

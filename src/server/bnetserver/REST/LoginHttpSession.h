@@ -28,6 +28,12 @@ namespace Battlenet
 struct LoginSessionState : public Trinity::Net::Http::SessionState
 {
     std::unique_ptr<Trinity::Crypto::SRP::BnetSRP6Base> Srp;
+
+    // password accepted, waiting for the authenticator code (client AUTHENTICATOR login state)
+    uint32 AuthenticatorAccountId = 0;
+    std::string AuthenticatorSecret;
+    std::string AuthenticatorServerM2;
+    uint32 AuthenticatorTries = 0;
 };
 
 class LoginHttpSession final : public Trinity::Net::Http::AbstractSocket, public std::enable_shared_from_this<LoginHttpSession>

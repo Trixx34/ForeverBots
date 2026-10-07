@@ -13,6 +13,7 @@ One bot for the whole server:
 Setup and every config key: README.md next to this file. Usage: python forever_bot.py [discord_bot.json]
 """
 import asyncio
+import datetime
 import json
 import logging
 import os
@@ -126,12 +127,16 @@ class Target:
         self.cfg = cfg
         self.realm = realm
         self.name = cfg.get('name') or ('%s:%s' % (cfg.get('host'), cfg.get('port')))
+        self.show = cfg.get('show', True)           # on the status board and /status
+        self.announce = cfg.get('announce', True)   # "... is up / is down" messages
         self.host = cfg.get('host', '127.0.0.1')
         self.port = int(cfg['port'])
         self.up = None              # None = not checked yet
         self.fails = 0
-        self.since = time.time()
+        self.since = None           # when the bot saw it go up or down (None: already so when the bot started)
         self.players = None         # realms: "Connected players" from RA "server info"
+        self.uptime = None          # realms: "Server uptime" from RA "server info", e.g. "3 Hour(s) 12 Minute(s)"
+        self.factions = None        # realms: (alliance, horde) online characters from the characters database
 
 
 async def probe(host, port, timeout):
@@ -148,11 +153,44 @@ async def probe(host, port, timeout):
 
 
 PLAYERS_RE = re.compile(r'Connected players:\s*(\d+)', re.IGNORECASE)
+UPTIME_RE = re.compile(r'Server uptime:\s*([^\r\n]+)', re.IGNORECASE)
+UPTIME_PART_RE = re.compile(r'(\d+)\s*(Day|Hour|Minute|Second)', re.IGNORECASE)
+
+
+def short_uptime(text):
+    """'2 Day(s) 3 Hour(s) 12 Minute(s) 5 Second(s)' -> '2d 3h 12m' (seconds only while under a minute)."""
+    parts = [(int(n), unit[0].lower()) for n, unit in UPTIME_PART_RE.findall(text)]
+    shown = [f'{n}{u}' for n, u in parts if u != 's' and n] or [f'{n}{u}' for n, u in parts if u == 's']
+    return ' '.join(shown) or text
+
+# Faction of each playable race (server RaceMask.h RACEMASK_ALLIANCE: Skyborne 95 = High Order / Alliance, 96 = Windshaper /
+# Horde); 24 = Pandaren before choosing a faction; every other playable race is Horde
+ALLIANCE_RACES = {1, 3, 4, 7, 11, 22, 25, 29, 30, 32, 34, 37, 52, 85, 86, 95}
+NEUTRAL_RACES = {24}
+
+
+def faction_counts(characters_db):
+    """(alliance, horde) characters online on one realm, from its characters database (config "db")."""
+    import pymysql          # only needed for faction counts; the repack's Python ships it
+    db = CFG['db']
+    conn = pymysql.connect(host=db.get('host', '127.0.0.1'), port=int(db.get('port', 3306)), user=db['user'],
+                           password=db.get('password', ''), database=characters_db, connect_timeout=5)
+    try:
+        with conn.cursor() as cur:
+            cur.execute('SELECT race, COUNT(*) FROM characters WHERE online = 1 GROUP BY race')
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    alliance = sum(n for race, n in rows if race in ALLIANCE_RACES)
+    horde = sum(n for race, n in rows if race not in ALLIANCE_RACES and race not in NEUTRAL_RACES)
+    return alliance, horde
 
 
 # ---------------------------------------------------------------- chat relay
 
-CHAT_RE = re.compile(r'Player (\S+) tells channel (.+?): (.*)$')
+# "Player Thrall (H) tells channel General - Durotar: hi" (the faction is written by servers since 2026-10-06, older ones leave it out)
+CHAT_RE = re.compile(r'Player (\S+)(?: \(([AH])\))? tells channel (.+?): (.*)$')
+DEFAULT_CHAT_FORMAT = '{faction}[{channel}] <{player}> {message}'
 # WoW text escapes: colours (|cffRRGGBB, |cnIQ4:), hyperlinks (|Hitem:...|h[Name]|h -> [Name]), textures, line breaks
 WOW_ESCAPES = re.compile(r'\|c[0-9a-fA-F]{8}|\|cn[^:|]*:|\|H[^|]*\|h|\|h|\|r|\|T[^|]*\|t|\|A[^|]*\|a|\|n')
 
@@ -197,11 +235,11 @@ def discord_safe(text):
 
 
 def format_chat_line(line, realm):
-    """'Player Foo tells channel General - Elwynn Forest: hi' -> '[General] <Foo> hi', or None if not relayed."""
+    """'Player Foo (A) tells channel General - Elwynn Forest: hi' -> '[A] [General] <Foo> hi', or None if not relayed."""
     m = CHAT_RE.search(line)
     if not m:
         return None
-    player, channel, message = m.groups()
+    player, faction, channel, message = m.groups()
     base, _, zone = channel.partition(' - ')
     chat = CFG.get('chat', {})
     names = {k.lower(): v for k, v in (chat.get('channels') or {}).items()}
@@ -210,9 +248,116 @@ def format_chat_line(line, realm):
     message = clean_wow_text(message)
     if not message:
         return None
-    return chat.get('format', '[{channel}] <{player}> {message}').format(
+    return chat.get('format', DEFAULT_CHAT_FORMAT).format(
         channel=names.get(base.lower(), base), zone=discord_safe(zone), player=discord_safe(player),
-        message=discord_safe(message), realm=realm.get('name', ''))
+        message=discord_safe(message), realm=realm.get('name', ''), faction='[%s] ' % faction if faction else '')
+
+
+# ---------------------------------------------------------------- Discord -> game (the in-game Discord channel)
+
+CUSTOM_EMOJI_RE = re.compile(r'<a?(:\w+:)\d+>')         # <:pepe:1234> -> :pepe:
+NAME_KEEP_RE = re.compile(r'[^\w\-]', re.UNICODE)
+
+
+def discord_to_game(message):
+    """(sender, text) of a Discord message for the game, plain text only, or None when nothing is left to send.
+    Attachments, embeds, stickers and reactions are dropped; mentions become plain names (clean_content); no '|' (WoW escapes),
+    no line breaks; the server cuts the text to 255 characters."""
+    text = CUSTOM_EMOJI_RE.sub(r'\1', message.clean_content)
+    text = ' '.join(text.replace('|', '/').split())
+    if not text:
+        return None                 # only an image, a sticker...
+    name = NAME_KEEP_RE.sub('', message.author.display_name.replace(' ', '_'))[:24] or 'Discord'
+    return name, text
+
+
+# ---------------------------------------------------------------- Group Finder listings -> LFG channels
+
+CLASS_NAMES = {1: 'Warrior', 2: 'Paladin', 3: 'Hunter', 4: 'Rogue', 5: 'Priest', 6: 'Death Knight', 7: 'Shaman', 8: 'Mage',
+               9: 'Warlock', 10: 'Monk', 11: 'Druid', 12: 'Demon Hunter', 13: 'Evoker'}
+_activity_names = None
+
+
+def activity_name(activity_id):
+    """GroupFinderActivity names from the client data (group_finder_activities.json next to this file)."""
+    global _activity_names
+    if _activity_names is None:
+        try:
+            with open(os.path.join(HERE, 'group_finder_activities.json'), encoding='utf-8') as f:
+                _activity_names = {int(k): v for k, v in json.load(f).items()}
+        except (OSError, ValueError):
+            _activity_names = {}
+    return _activity_names.get(activity_id, 'Activity %d' % activity_id)
+
+
+class LfgLog:
+    """The current listings of one realm, from its GroupFinder.log (one JSON line per change, written anew at server start)."""
+
+    def __init__(self, path):
+        self.path = path
+        self.offset = 0
+        self.listings = {}          # listing id -> last listed/updated event
+        self.restarted = False      # the server started a new log: every post of this realm is stale
+
+    def read(self):
+        """Applies the new lines; returns True if anything changed."""
+        try:
+            size = os.path.getsize(self.path)
+        except OSError:
+            return False
+        changed = False
+        if size < self.offset:
+            self.offset, self.listings, self.restarted, changed = 0, {}, True, True
+        if size == self.offset:
+            return changed
+        with open(self.path, 'rb') as f:
+            f.seek(self.offset)
+            data = f.read(size - self.offset)
+        cut = data.rfind(b'\n')
+        if cut < 0:
+            return changed
+        self.offset += cut + 1
+        for line in data[:cut].decode('utf-8', 'replace').splitlines():
+            start = line.find('{')
+            if start < 0:
+                continue
+            try:
+                ev = json.loads(line[start:])
+            except ValueError:
+                continue
+            if ev.get('event') == 'delisted':
+                self.listings.pop(ev.get('id'), None)
+            elif ev.get('event') in ('listed', 'updated'):
+                self.listings[ev.get('id')] = ev
+            changed = True
+        return changed
+
+
+PLAY_STYLES = {1: 'Learning', 2: 'Relaxed', 3: 'Competitive', 4: 'Carry Offered'}     # the listing's play style dropdown
+
+
+def lfg_embed(ev, realm_name):
+    names = [activity_name(a) for a in ev.get('activities', [])]
+    title = ', '.join(names[:3]) + (' +%d' % (len(names) - 3) if len(names) > 3 else '') or 'Group'
+    alliance = ev.get('faction') == 'A'
+    text = '\n'.join(discord_safe(t) for t in (ev.get('title'), ev.get('comment')) if t)[:900]
+    style = ev.get('playstyle') or 0
+    if style:
+        # green: Discord colours "+" lines of a diff code block (desktop and mobile)
+        text += ('\n' if text else '') + '```diff\n+ %s\n```' % PLAY_STYLES.get(style, 'Play style %d' % style)
+    embed = discord.Embed(title=title[:250], colour=discord.Colour.blue() if alliance else discord.Colour.red(),
+                          description=text or None)
+    lines = []
+    for m in ev.get('members', []):
+        roles = (' 🛡️' if m.get('tank') else '') + (' ➕' if m.get('healer') else '') + (' 🗡️' if m.get('damage') else '')
+        lines.append('%s**%s** %d %s%s' % ('👑 ' if m.get('leader') else '', discord_safe(m.get('name', '?')), m.get('level', 0),
+                                           CLASS_NAMES.get(m.get('class'), ''), roles))
+    embed.add_field(name='%s · %d member%s' % ('Alliance' if alliance else 'Horde', len(lines), '' if len(lines) == 1 else 's'),
+                    value='\n'.join(lines)[:1000] or '-', inline=False)
+    embed.set_footer(text='%s · listed' % realm_name)
+    if ev.get('time'):
+        embed.timestamp = datetime.datetime.fromtimestamp(ev['time'], datetime.timezone.utc)
+    return embed
 
 
 # ---------------------------------------------------------------- accounts
@@ -241,9 +386,23 @@ def account_settings():
 
 class ForeverBot(discord.Client):
     def __init__(self):
-        super().__init__(intents=discord.Intents.default(), allowed_mentions=discord.AllowedMentions.none())
+        intents = discord.Intents.default()
+        # Discord -> game needs to read message text: the privileged Message Content intent (switched on in the Developer Portal)
+        self.from_discord = bool(CFG.get('chat', {}).get('from_discord', False))
+        intents.message_content = self.from_discord
+        super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
         self.tree = app_commands.CommandTree(self)
         self.realms = CFG.get('realms', [])
+        # Discord channel id -> the realms whose in-game Discord channel gets its messages
+        self.game_feeds = {}
+        for r in self.realms:
+            cid = channel_id(r.get('chat_channel_id'))
+            if self.from_discord and cid and r.get('ra_port'):
+                self.game_feeds.setdefault(cid, []).append(r)
+        self.feed_locks = {}            # ra port -> lock: one console command at a time per realm, in order
+        # Group Finder: realm -> its log; no LFG channel set = nothing posted for that realm
+        self.lfg = [(r, LfgLog(config_path(r['lfg_log']))) for r in self.realms
+                    if r.get('lfg_log') and channel_id(r.get('lfg_channel_id'))]
         self.targets = [Target(r, r) for r in self.realms] + [Target(s, None) for s in CFG.get('services', [])]
         self.tails = [(r, ChatTail(config_path(r['chat_log']))) for r in self.realms
                       if r.get('chat_log') and channel_id(r.get('chat_channel_id'))]
@@ -252,6 +411,7 @@ class ForeverBot(discord.Client):
         self.last_register = {}         # discord user id -> time of the last /register try
         self.register_lock = asyncio.Lock()
         self.ra_error = None
+        self.db_error = None
         self.add_commands()
 
     # ------------------------------------------------ startup / shutdown
@@ -275,7 +435,32 @@ class ForeverBot(discord.Client):
         self.loop.create_task(self.guard(self.status_loop))
         if self.tails:
             self.loop.create_task(self.guard(self.chat_loop))
+        if self.lfg:
+            self.loop.create_task(self.guard(self.lfg_loop))
+            log.info('LFG posts: %s', ', '.join('%s -> #%s' % (r['name'], r['lfg_channel_id']) for r, _ in self.lfg))
             log.info('chat relay: %s', ', '.join('%s -> #%s' % (r['name'], r['chat_channel_id']) for r, _ in self.tails))
+        if self.game_feeds:
+            log.info('Discord -> game: %s', ', '.join('#%s -> %s' % (cid, ', '.join(r['name'] for r in rs)) for cid, rs in self.game_feeds.items()))
+
+    async def on_message(self, message):
+        """A message in a realm's Discord chat channel goes to that realm's in-game Discord channel (".discord say")."""
+        realms = self.game_feeds.get(message.channel.id)
+        if not realms or message.author.bot or message.webhook_id or message.type not in (discord.MessageType.default, discord.MessageType.reply):
+            return                      # bots include this one: what it posts from the game never goes back in
+        out = discord_to_game(message)
+        if not out or not CFG['ra'].get('user'):
+            return
+        sender, text = out
+        for realm in realms:
+            port = realm['ra_port']
+            lock = self.feed_locks.setdefault(port, asyncio.Lock())
+            async with lock:
+                try:
+                    reply = await ra_command(port, 'discord say %s %s' % (sender, text))
+                    if 'sent to' not in reply:
+                        log.warning('Discord -> %s: %s', realm['name'], reply.strip()[:200])
+                except Exception as e:
+                    log.warning('Discord -> %s (RA port %s): %s', realm['name'], port, e)
 
     async def guard(self, loop_fn):
         """Keeps a background loop alive through unexpected errors (Discord hiccups, a log file in use...)."""
@@ -335,11 +520,15 @@ class ForeverBot(discord.Client):
             'up_text': s.get('up_text', '🟢 **{name}** is up'),
             'down_text': s.get('down_text', '🔴 **{name}** is down'),
             'title': s.get('title', CFG.get('server_name', 'Forever') + ' server status'),
+            'tidy': s.get('tidy', True),                        # delete older up/down messages, keep the board
+            'keep': max(0, int(s.get('keep_messages', 1))),     # how many of the newest up/down messages stay
         }
 
     async def status_loop(self):
         sc = self.status_cfg()
         last_players = 0.0
+        if sc['tidy']:
+            await self.sweep_status_channel()
         await self.check_targets(first=True)
         while True:
             if sc['players_interval'] > 0 and time.time() - last_players >= sc['players_interval']:
@@ -358,39 +547,99 @@ class ForeverBot(discord.Client):
                 t.fails = 0
                 if t.up is not True:
                     changed.append((t, t.up))
-                    t.up, t.since = True, time.time()
+                    # found up when the bot started: since when is unknown (realms still show their own uptime)
+                    t.up, t.since = True, (time.time() if t.up is False else None)
             else:
                 t.fails += 1
                 # a single missed connect (busy server, restart in progress) is not "down" yet; on the final sweep it is
                 if t.up is not False and (t.up is None or final or t.fails >= sc['fails_before_down']):
                     changed.append((t, t.up))
                     # found down when the bot started: since when is unknown
-                    t.up, t.since, t.players = False, (time.time() if t.up else None), None
+                    t.up, t.since, t.players, t.uptime, t.factions = False, (time.time() if t.up else None), None, None, None
         if not changed:
             return
         for t, before in changed:
             log.info('%s: %s', t.name, 'up' if t.up else 'down')
-        if sc['announce'] and (not first or sc['announce_on_start']):
+        announced = [(t, before) for t, before in changed if t.announce]
+        if sc['announce'] and announced and (not first or sc['announce_on_start']):
             ch = await self.channel(sc['channel_id'])
             if ch:
-                lines = [(sc['up_text'] if t.up else sc['down_text']).format(name=t.name) for t, _ in changed]
+                lines = [(sc['up_text'] if t.up else sc['down_text']).format(name=t.name) for t, _ in announced]
                 mention = ''
-                if sc['mention_role_id'] and any(not t.up for t, _ in changed):
+                if sc['mention_role_id'] and any(not t.up for t, _ in announced):
                     mention = '<@&%d> ' % sc['mention_role_id']
-                await self.send(ch, mention + '\n'.join(lines),
-                              allowed_mentions=discord.AllowedMentions(roles=bool(mention)))
+                msg = await self.send(ch, mention + '\n'.join(lines),
+                                      allowed_mentions=discord.AllowedMentions(roles=bool(mention)))
+                if msg and sc['tidy']:
+                    await self.tidy_announcements(ch, msg.id)
         if any(t.realm and t.up for t, _ in changed):
             await self.read_player_counts()
         await self.update_board()
 
+    async def tidy_announcements(self, ch, new_id):
+        """Keeps only the newest 'keep_messages' up/down messages of the bot; the status board is never touched."""
+        keep = self.status_cfg()['keep']
+        posted = STATE.setdefault('status_messages', [])
+        posted.append(new_id)
+        old, STATE['status_messages'] = posted[:-keep] if keep else posted, posted[-keep:] if keep else []
+        save_state()
+        for mid in old:
+            if mid != STATE.get('board_message_id'):
+                await self.delete_message(ch.id, mid)
+
+    async def sweep_status_channel(self):
+        """At start: the bot's own older messages in the status channel (from before tidying, or a crash) go, except the board
+        and the newest up/down messages. Messages of people are never touched. Needs Read Message History in that channel."""
+        sc = self.status_cfg()
+        ch = await self.channel(sc['channel_id'])
+        if not ch:
+            return
+        mine = []
+        try:
+            async for m in ch.history(limit=500):
+                if m.author.id == self.user.id and m.id != STATE.get('board_message_id'):
+                    mine.append(m)                              # newest first
+        except discord.Forbidden:
+            log.warning('status channel: cannot read its history to clean up old messages; give the bot "Read Message History" '
+                        'in #%s (new messages are tidied anyway)', getattr(ch, 'name', ch.id))
+            return
+        except discord.HTTPException as e:
+            log.warning('status channel history: %s', e)
+            return
+        keep = sc['keep']
+        STATE['status_messages'] = [m.id for m in reversed(mine[:keep])]
+        save_state()
+        removed = 0
+        for m in mine[keep:]:
+            try:
+                await m.delete()
+                removed += 1
+            except discord.HTTPException:
+                pass
+        if removed:
+            log.info('status channel: removed %d old messages', removed)
+
     async def read_player_counts(self):
+        for t in self.targets:
+            if t.realm and t.up and t.realm.get('characters_db') and CFG.get('db'):
+                try:
+                    t.factions = await asyncio.to_thread(faction_counts, t.realm['characters_db'])
+                    self.db_error = None
+                except Exception as e:
+                    t.factions = None
+                    if str(e) != self.db_error:
+                        self.db_error = str(e)
+                        log.warning('faction counts from %s (database %s): %s', t.name, t.realm['characters_db'], e)
         if not CFG['ra'].get('user'):
             return
         for t in self.targets:
             if t.realm and t.up and t.realm.get('ra_port'):
                 try:
-                    m = PLAYERS_RE.search(await ra_command(t.realm['ra_port'], 'server info'))
+                    info = await ra_command(t.realm['ra_port'], 'server info')
+                    m = PLAYERS_RE.search(info)
                     t.players = int(m.group(1)) if m else None
+                    m = UPTIME_RE.search(info)
+                    t.uptime = short_uptime(m.group(1).strip()) if m else None
                     self.ra_error = None
                 except Exception as e:
                     t.players = None
@@ -400,19 +649,26 @@ class ForeverBot(discord.Client):
 
     def board_embed(self, offline=False):
         sc = self.status_cfg()
-        all_up = all(t.up for t in self.targets)
+        shown = [t for t in self.targets if t.show]
+        all_up = all(t.up for t in shown)
         embed = discord.Embed(title=sc['title'], timestamp=discord.utils.utcnow(),
                               colour=discord.Colour.dark_grey() if offline else
                               discord.Colour.green() if all_up else discord.Colour.red())
-        for t in self.targets:
+        for t in shown:
             if t.up is None:
                 value = '⚪ Unknown'
             elif t.up:
                 value = '🟢 Online'
                 if t.players is not None:
                     value += ' · %d player%s' % (t.players, '' if t.players == 1 else 's')
+                if t.factions:
+                    value += '\nAlliance %d · Horde %d' % t.factions
+                if t.uptime:
+                    value += '\nUp %s' % t.uptime
+                elif t.since:
+                    value += '\nUp since <t:%d:R>' % t.since
             else:
-                value = '🔴 Offline' + (' since <t:%d:R>' % t.since if t.since else '')
+                value = '🔴 Offline' + ('\nDown since <t:%d:R>' % t.since if t.since else '')
             embed.add_field(name=t.name, value=value, inline=True)
         embed.set_footer(text='Status bot offline - last known state' if offline else 'Last checked')
         return embed
@@ -442,6 +698,61 @@ class ForeverBot(discord.Client):
         save_state()
 
     # ------------------------------------------------ chat relay
+
+    async def lfg_loop(self):
+        """Keeps one message per Group Finder listing in each realm's LFG channel: posted, edited as it changes, deleted."""
+        posts = STATE.setdefault('lfg_posts', {})       # realm name -> {listing id: [channel id, message id]}
+        # posts of an earlier run are not tied to this run's listings: remove them, the log rebuilds the current ones
+        for realm, _ in self.lfg:
+            for post in list(posts.get(realm['name'], {}).values()):
+                await self.delete_message(post[0], post[1])
+            posts[realm['name']] = {}
+        save_state()
+        while True:
+            for realm, feed in self.lfg:
+                if not feed.read():
+                    continue
+                mine = posts.setdefault(realm['name'], {})
+                if feed.restarted:                          # the realm restarted: no listing survives
+                    feed.restarted = False
+                    for post in list(mine.values()):
+                        await self.delete_message(post[0], post[1])
+                    mine.clear()
+                ch = await self.channel(channel_id(realm['lfg_channel_id']))
+                if not ch:
+                    continue
+                for lid in [k for k in mine if int(k) not in feed.listings]:
+                    post = mine.pop(lid)
+                    await self.delete_message(post[0], post[1])
+                for lid, ev in feed.listings.items():
+                    key = str(lid)
+                    sig = json.dumps(ev, sort_keys=True)            # only listings that really changed are edited
+                    if key in mine and mine[key][2:] == [sig]:
+                        continue
+                    embed = lfg_embed(ev, realm['name'])
+                    if key in mine:
+                        try:
+                            await ch.get_partial_message(mine[key][1]).edit(embed=embed)
+                            mine[key] = mine[key][:2] + [sig]
+                            continue
+                        except discord.NotFound:
+                            del mine[key]                           # deleted by someone: post it again
+                        except discord.HTTPException as e:
+                            log.warning('LFG post: %s', e)
+                            continue
+                    msg = await self.send(ch, embed=embed)
+                    if msg:
+                        mine[key] = [ch.id, msg.id, sig]
+                save_state()
+            await asyncio.sleep(float(CFG.get('lfg', {}).get('poll_seconds', 2)))
+
+    async def delete_message(self, cid, mid):
+        try:
+            ch = await self.channel(cid)
+            if ch:
+                await ch.get_partial_message(mid).delete()
+        except discord.HTTPException:
+            pass                        # already gone
 
     async def chat_loop(self):
         poll = float(CFG.get('chat', {}).get('poll_seconds', 1))
@@ -619,7 +930,8 @@ async def main():
                 log.error('Discord rejected the bot token: copy it again from the Developer Portal (README.md)')
                 return 1
             except discord.PrivilegedIntentsRequired:
-                log.error('Discord refused the gateway intents (README.md, "Create the Discord bot")')
+                log.error('Discord refused the Message Content intent that "from_discord" needs: Developer Portal -> your bot -> Bot -> '
+                          'Privileged Gateway Intents -> turn on MESSAGE CONTENT INTENT (or set chat.from_discord to false)')
                 return 1
             finally:
                 if bot.started:

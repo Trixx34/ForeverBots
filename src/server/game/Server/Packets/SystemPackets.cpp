@@ -143,8 +143,10 @@ WorldPacket const* FeatureSystemStatus::Write()
 
     _worldPacket << Squelch;
 
+    // Classic 1.60: the social restriction comes first, then the content set (every official sniff, 70170-70235: 0, then 137 / 136).
+    // In the other order the client 70235 took the content set for a restriction: "Verify your age" and no whispers or chat.
+    _worldPacket << int32(SocialRestriction);   // 2 = age verification popup
     _worldPacket << int32(ContentSetID);
-    _worldPacket << int32(SocialRestriction);   // Classic 1.60.1.70009: int32 after ContentSetID, not the ruleset (2 = age verification popup)
     _worldPacket << Size<uint32>(DisabledGameModes);
     _worldPacket << Size<uint32>(GameRules);
     _worldPacket << int32(ActiveTimerunningSeasonID);
@@ -220,7 +222,7 @@ WorldPacket const* FeatureSystemStatus::Write()
     _worldPacket << Bits<1>(GuildEventsEditsEnabled);
 
     _worldPacket << Bits<1>(GuildTradeSkillsEnabled);
-    _worldPacket << SizedString::BitsSize<10>(Unknown1027);
+    _worldPacket << Bits<10>(ClassicFlagBits10);
     _worldPacket << Bits<1>(IsAccountCurrencyTransferEnabled);
     _worldPacket << Bits<1>(NetEaseChatTelemetryEnabled);
     _worldPacket << Bits<1>(LobbyMatchmakerQueueFromMainlineEnabled);
@@ -238,8 +240,6 @@ WorldPacket const* FeatureSystemStatus::Write()
 
     if (SessionAlert)
         _worldPacket << *SessionAlert;
-
-    _worldPacket << SizedString::Data(Unknown1027);
 
     return &_worldPacket;
 }

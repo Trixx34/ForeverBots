@@ -23,6 +23,7 @@
 #include "Log.h"
 #include "ObjectMgr.h"                                      // for normalizePlayerName
 #include "Player.h"
+#include "DiscordChannel.h"
 #include <cctype>
 
 static size_t const MAX_CHANNEL_NAME_STR = 31;
@@ -83,6 +84,15 @@ void WorldSession::HandleJoinChannel(WorldPackets::Channel::JoinChannel& packet)
         if (!DisallowHyperlinksAndMaybeKick(packet.ChannelName))
             return;
 
+        // the Discord channel: /join switches the auto-join at login back on; the client rejoining it by itself is not an error
+        if (DiscordChannel::IsDiscordChannel(packet.ChannelName))
+        {
+            DiscordChannel::OnJoined(GetPlayer());
+            if (Channel* channel = cMgr->GetCustomChannel(packet.ChannelName))
+                if (channel->HasMember(GetPlayer()->GetGUID()))
+                    return;
+        }
+
         if (Channel* channel = cMgr->GetCustomChannel(packet.ChannelName))
             channel->JoinChannel(GetPlayer(), packet.Password);
         else if (Channel* channel = cMgr->CreateCustomChannel(packet.ChannelName))
@@ -115,7 +125,11 @@ void WorldSession::HandleLeaveChannel(WorldPackets::Channel::LeaveChannel& packe
     if (ChannelMgr* cMgr = ChannelMgr::ForTeam(GetPlayer()->GetTeam()))
     {
         if (Channel* channel = cMgr->GetChannel(packet.ZoneChannelID, packet.ChannelName, GetPlayer(), true, zone))
+        {
             channel->LeaveChannel(GetPlayer(), true);
+            if (!packet.ZoneChannelID && DiscordChannel::IsDiscordChannel(packet.ChannelName))
+                DiscordChannel::OnLeft(GetPlayer());       // no auto-join at login until the player /joins it again
+        }
 
         if (packet.ZoneChannelID)
             cMgr->LeftChannel(packet.ZoneChannelID, zone);

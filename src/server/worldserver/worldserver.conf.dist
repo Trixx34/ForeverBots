@@ -4841,3 +4841,27 @@ Bot.Trade.TimeoutSeconds = 90
 Bot.Social.QuestShare.LogEach = 0
 #
 ###################################################################################################
+#    Classic.OfficialFeatureFlags
+#        Description: Send the client feature flags exactly as the official server does (sniffs 70205/70235).
+#                     0 goes back to the older hand-picked flags.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+Classic.OfficialFeatureFlags = 1
+
+#
+#    Discord.Channel.Enable
+#        Description: In-game chat channel of the Discord bot (contrib/discord_bot): players join it at login (unless they left
+#                     it with /leave) and see the messages of the realm's Discord chat channel there. What they type in it
+#                     goes to Discord. Needs Logger.chat.log.channel.<Discord.Channel.Name> for the bot (see its README).
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+
+Discord.Channel.Enable = 0
+
+#
+#    Discord.Channel.Name
+#        Description: Name of that channel (/join <name>, /leave <name>).
+#        Default:     "Discord"
+
+Discord.Channel.Name = "Discord"

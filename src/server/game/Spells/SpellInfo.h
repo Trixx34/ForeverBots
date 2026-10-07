@@ -321,6 +321,10 @@ struct SpellPowerCost
     int32 Amount;
 };
 
+// Classic 1.60: paladin seals (vanilla family flags differ from retail) and the judgement each one unleashes (seal effect 2 points)
+TC_GAME_API bool IsClassicPaladinSeal(uint32 spellId);
+TC_GAME_API uint32 GetClassicSealJudgement(uint32 sealSpellId);
+
 class TC_GAME_API SpellInfo
 {
     friend class SpellMgr;

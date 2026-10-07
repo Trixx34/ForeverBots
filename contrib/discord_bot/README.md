@@ -4,8 +4,10 @@ One bot for the whole server. It does three things:
 
 | Feature | What players see |
 |---|---|
-| **Server status** | A message whenever something goes up or down (`🟢 Roleplay realm is up`, `🔴 Battle.net login is down`), plus one status board message that is kept up to date: every realm with its player count, the login server, the website and the database. |
-| **Realm chat** | Each realm's General, Trade, LookingForGroup and LocalDefense chat in that realm's own Discord channel: `[General] <Thrall> hi guys`. |
+| **Server status** | A message whenever something goes up or down (`🟢 Roleplay realm is up`, `🔴 Auth server is down`), plus one status board message that is kept up to date: every realm with its player count, Alliance and Horde online, and how long it has been up (or since when it is down), plus the login server, the website and the database. `/status` shows the same board to whoever asks. |
+| **Realm chat** | Each realm's General, Trade, LookingForGroup and LocalDefense chat in that realm's own Discord channel, with the faction: `[H] [General] <Thrall> hi guys`. |
+| **Discord ↔ game** | Players are in an in-game **Discord** channel (`/leave Discord` to opt out, `/join Discord` to come back). Messages written in the realm's Discord chat channel appear there as `[Discord] [Name]: text` (plain text only: no images, embeds or reactions); what players type in it appears in Discord. |
+| **LFG posts** | Every Group Finder listing becomes one post in the realm's LFG channel (e.g. `#lfg-normal`): the dungeon, the title and comment, and the members with level, class and roles (🛡️ tank, ➕ healer, 🗡️ damage). It is updated as people join or leave and removed when the group delists. |
 | **`/register`** | A form for an e-mail and password. The bot creates the game account, which works on every realm. |
 
 Also available: `/status`, which shows the status board to whoever asks (only they see it).
@@ -43,7 +45,8 @@ It runs on the same PC as the servers. You can start and stop it by hand or from
 ```
 
 - **Status:** every 10 seconds the bot tries to open a TCP connection to each port. A worldserver opens its port only once it has finished loading, so "up" means players can log in. "Down" is reported after 2 missed checks in a row, so a busy moment does not set it off.
-- **Player counts** come from the console command `server info`, which the bot runs on each realm through Remote Access (RA) once a minute.
+- **Player counts and uptime** come from the console command `server info`, which the bot runs on each realm through Remote Access (RA) once a minute.
+- **Alliance / Horde** counts come from each realm's characters database (online characters by race; Skyborne 95 is Alliance, 96 Horde), read at the same time. "Down since" is the time the bot saw the realm or service go down.
 - **Chat:** TrinityCore's `chat_log` script writes every message in a system channel (General, Trade, LookingForGroup, LocalDefense, city channels) to the log. One logger line in `worldserver.conf` sends those lines to `Chat.log`. The bot reads new lines every second and posts them every 2 seconds, several lines per Discord message. Item links become `[Linen Cloth]`. `@everyone` and role pings typed in game are neutralised. Whispers, party, guild, say and player-made channels are **never** relayed.
 - **`/register`** runs `bnetaccount create <email> <password>` through RA on the first realm that is up. Accounts live in the shared `auth` database, so the account works on every realm. The bot remembers which Discord user made which account (in `discord_bot_state.json`) and allows one account per Discord user by default.
 
@@ -55,14 +58,14 @@ It runs on the same PC as the servers. You can start and stop it by hand or from
 2. On the **Bot** page:
    - Click **Reset Token**, then **Copy**. This is the bot's password. It goes into `discord_bot.json` as `"token"`. Never post it anywhere. If it leaks, reset it here.
    - Turn **Public Bot** off, so only you can add it to servers.
-   - The bot needs **no** privileged gateway intents. Leave Presence, Server Members and Message Content off.
+   - Privileged gateway intents: leave Presence and Server Members off. Turn **Message Content** **on** only if you want Discord messages to reach the game (`chat.from_discord`); Discord hides message text from bots without it, and the bot then refuses to start with `from_discord` on and says so.
 3. On the **OAuth2** page, copy the **Client ID**, then open this link with your client ID filled in:
 
    ```
-   https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&scope=bot+applications.commands&permissions=19456
+   https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&scope=bot+applications.commands&permissions=84992
    ```
 
-   Choose your Discord server and click **Authorize**. `19456` = View Channels + Send Messages + Embed Links, which is all the bot needs.
+   Choose your Discord server and click **Authorize**. `84992` = View Channels + Send Messages + Embed Links + Read Message History, which is all the bot needs (the history lets it clean up its own old messages in the status channel). Already invited with the old link? Give its role **Read Message History** in the status channel instead of inviting again.
 4. Make sure the bot's role can see and write in the channels you give it. This matters for private channels, such as a staff log channel.
 
 Suggested Discord channels:
@@ -109,26 +112,38 @@ Check that it worked: `python -c "import discord; print(discord.__version__)"` p
 
 ---
 
-## 5. Turn on the chat log in each worldserver
+## 5. Turn on the worldserver side
 
-Skip this if you don't want the chat relay.
-
-In **every** worldserver config (`worldserver.conf`, `worldserver_pvp.conf`, `worldserver_rp.conf`, `worldserver_hc.conf`) add one appender and one logger:
+Skip the parts you don't want. In **every** worldserver config (`worldserver.conf`, `worldserver_pvp.conf`, `worldserver_rp.conf`, `worldserver_hc.conf`):
 
 ```
 # next to the other Appender.* lines
 Appender.Chat=2,2,0,Chat.log,w
+Appender.GroupFinder=2,3,0,GroupFinder.log,w
 
 # next to the other Logger.* lines
 Logger.chat.log.system=2,Chat
+Logger.chat.log.channel.Discord=2,Chat
+Logger.groupfinder=3,GroupFinder
+
+# anywhere (the in-game Discord channel)
+Discord.Channel.Enable = 1
+Discord.Channel.Name = "Discord"
 ```
 
-- `Appender.Chat=2,2,0,Chat.log,w` = a file (2), debug level (2), no prefix (0), `Chat.log`, recreated at each start (`w`). The file goes into that realm's `LogsDir`. In the development setup that is `Chat.log` for Normal and `logs_pvp\`, `logs_rp\`, `logs_hc\` for the others. In the repack it is `server\logs\`, `server\logs_pvp\`, and so on.
-- `Logger.chat.log.system=2,Chat` = only the system channels. Addon messages use another logger name and are not written.
+| Lines | For |
+|---|---|
+| `Appender.Chat` + `Logger.chat.log.system` | **Realm chat** to Discord: General, Trade, LookingForGroup, LocalDefense and city channels go to `Chat.log`. |
+| `Logger.chat.log.channel.Discord` | What players type in the **in-game Discord channel** also goes to `Chat.log` (and from there to Discord). The last word is the channel name. |
+| `Discord.Channel.Enable` / `Name` | The **in-game Discord channel**: every player joins it at login. `/leave Discord` turns that off for the character (remembered), `/join Discord` turns it on again. Discord messages appear in it as `[Discord] [Name]: text`. |
+| `Appender.GroupFinder` + `Logger.groupfinder` | **Group Finder listings** to the LFG channels: every listing change goes to `GroupFinder.log`. |
 
-Restart the worldservers. Then say something in General in game. A line like `Player Thrall tells channel General - Durotar: hi` should appear in that realm's `Chat.log`.
+- `Appender.X=2,2,0,X.log,w` = a file (2), log level, no prefix (0), recreated at each start (`w`). The files go into that realm's `LogsDir`: `Chat.log` / `GroupFinder.log` for Normal and `logs_pvp\`, `logs_rp\`, `logs_hc\` for the others in the development setup; `server\logs\`, `server\logs_pvp\`... in the repack.
+- The Discord channel needs the worldserver from 2026-10-06 or newer (the `.discord say` command and the `character_discord_optout` table in each characters database: `sql/custom/characters/2026_10_06_00_characters_discord_optout.sql`).
 
-> The development configs in `build\bin\RelWithDebInfo\` already have these two lines (added 2026-10-06). The repack's configs do not yet.
+Restart the worldservers. Then say something in General in game. A line like `Player Thrall (H) tells channel General - Durotar: hi` should appear in that realm's `Chat.log`.
+
+> The development configs in `build\bin\RelWithDebInfo\` already have all of these lines (2026-10-06).
 
 ---
 
@@ -142,7 +157,7 @@ Restart the worldservers. Then say something in General in game. A line like `Pl
    - Each realm's `chat_channel_id`: that realm's chat channel.
    - Each realm's `chat_log`: path to that realm's `Chat.log`. A relative path starts from the folder of `discord_bot.json`.
    - Optional: `accounts.channel_id`, `accounts.log_channel_id`.
-3. Check the realm and service names. They are exactly what Discord shows: `Normal realm`, `Roleplay realm`, `Battle.net login`...
+3. Check the realm and service names. They are exactly what Discord shows: `Normal realm`, `Roleplay realm`, `Auth server`...
 
 The example file already has the right ports for this server (worlds 8085/8095/8105/8115, RA 3443–3446, bnet 1119, website 443, MySQL 3307). For the repack, set MySQL to **3317**, use `"chat_log": "../server/logs/Chat.log"` and so on, and set `"localservers": "../localservers.json"`.
 
@@ -237,12 +252,14 @@ Restart the launcher. The **Local server** tab then shows a **Discord bot** row 
 | `interval_seconds` | `10` | Time between checks (minimum 5). |
 | `timeout_seconds` | `3` | How long a check waits for a connection. |
 | `fails_before_down` | `2` | Missed checks in a row before something counts as down. Coming up is reported at once. |
-| `players_interval_seconds` | `60` | How often player counts are read over RA. `0` = never. |
+| `players_interval_seconds` | `60` | How often player counts, uptime (over RA) and Alliance / Horde counts (database) are read. `0` = never. |
 | `mention_role_id` | `0` | A role pinged when something goes **down** (e.g. `@Staff`). The role must be "mentionable", or the bot needs the Mention @everyone permission. |
 | `announce` | `true` | Post up/down messages at all. With `false`, only the board changes. |
 | `announce_on_start` | `false` | Also post the state found when the bot starts. Normally the bot starts before the servers, so it reports them coming up anyway. |
 | `up_text` / `down_text` | `🟢 **{name}** is up` / `🔴 **{name}** is down` | Message text. `{name}` = the realm or service name. |
 | `title` | `<server_name> server status` | Board title. |
+| `tidy` | `true` | Keep the status channel clean: when a new up/down message is posted, the older ones are deleted. At start the bot also removes its own old messages there (needs **Read Message History** in that channel). The status board and messages of people are never deleted. |
+| `keep_messages` | `1` | How many of the newest up/down messages stay. `0` = none (only the board). |
 
 ### `realms` (one entry per worldserver)
 
@@ -250,22 +267,37 @@ Restart the launcher. The **Local server** tab then shows a **Discord bot** row 
 |---|---|
 | `name` | Shown in Discord: `Normal realm`, `PvP realm`, `Roleplay realm`, `Hardcore realm`. |
 | `host`, `port` | The worldserver's `WorldServerPort` (8085, 8095, 8105, 8115). |
-| `ra_port` | The worldserver's `Ra.Port` (3443–3446). Used for player counts and `/register`. |
+| `ra_port` | The worldserver's `Ra.Port` (3443–3446). Used for player counts, uptime and `/register`. |
+| `characters_db` | The realm's characters database (`characters`, `characters_pvp`, `characters_rp`, `characters_hc`). Used for the Alliance / Horde counts, with the login from `db`. Leave it out for no faction counts. |
 | `chat_log` | Path to that realm's `Chat.log` (step 5). Leave it out for no chat relay. |
-| `chat_channel_id` | Discord channel for that realm's chat. `0` = no chat relay. Several realms may share a channel; then add `{realm}` to `chat.format`. |
+| `chat_channel_id` | Discord channel for that realm's chat. `0` = no chat relay. Several realms may share a channel; then add `{realm}` to `chat.format`. With `chat.from_discord` on, messages written in this channel go to the realm's in-game Discord channel. |
+| `lfg_log` | Path to that realm's `GroupFinder.log` (step 5). |
+| `lfg_channel_id` | Discord channel for that realm's Group Finder listings (e.g. `#lfg-normal`). `0` = no LFG posts for this realm. Best read-only for players: the bot keeps it tidy itself. |
 
 ### `services` (anything else to watch)
 
-A list of `{ "name": "...", "host": "...", "port": N }`. The example has Battle.net login (1119), Support website (443) and Database (3307). Remove the ones you don't want, or add more, e.g. the bnet REST login `8081`.
+A list of `{ "name": "...", "host": "...", "port": N }`. The example has Auth server (1119), Support website (443) and Database (3307). Remove the ones you don't want, or add more, e.g. the bnet REST login `8081`.
+
+**Show or hide** (realms and services alike): add `"show": false` to leave an entry off the status board and `/status`, and `"announce": false` to post no up/down messages for it. Both default to `true`. Example: `{ "name": "Database", "host": "127.0.0.1", "port": 3307, "show": false }` keeps the database off the public board but still posts when it goes down.
 
 ### `chat`
 
 | Key | Default | Meaning |
 |---|---|---|
 | `channels` | General, Trade, LookingForGroup, LocalDefense | Which in-game channels to relay, and the label each gets in Discord: `{"General": "General", "LookingForGroup": "LFG"}` shows `[LFG]`. An empty `{}` relays every system channel. |
-| `format` | `[{channel}] <{player}> {message}` | Line format. Placeholders: `{channel}`, `{player}`, `{message}`, `{zone}` (e.g. Durotar for General; empty for LFG), `{realm}`. Example: `**[{channel}]** <{player}> {message}`. |
+| `format` | `{faction}[{channel}] <{player}> {message}` | Line format. Placeholders: `{faction}` (`[A] ` or `[H] `), `{channel}`, `{player}`, `{message}`, `{zone}` (e.g. Durotar for General; empty for LFG), `{realm}`. Example: `**[{channel}]** <{player}> {message}`. |
+| `from_discord` | `false` | Discord to game: messages in a realm's `chat_channel_id` go to its in-game Discord channel (`.discord say` over RA). Needs the Message Content intent (step 2) and `Discord.Channel.Enable = 1` (step 5). Text only: attachments, embeds, stickers and reactions are dropped, mentions become names, line breaks become spaces, `|` becomes `/`, the server cuts it to 255 characters. Messages of bots (this one included) are ignored, so nothing echoes. |
 | `poll_seconds` | `1` | How often the logs are read. |
 | `flush_seconds` | `2` | How often waiting lines are posted. Lines are grouped, which keeps Discord's rate limits happy in a busy Trade chat. |
+
+### `db` (optional: Alliance / Horde counts)
+
+| Key | Default | Meaning |
+|---|---|---|
+| `host`, `port` | `127.0.0.1`, `3306` | The MySQL server with the characters databases: 3307 in the development setup, 3317 in the repack. |
+| `user`, `password` | – | A MySQL login that can read the characters databases: the same one the worldservers use (`CharacterDatabaseInfo` in `worldserver.conf`, `trinity` / `trinity` by default). |
+
+Without a `db` section the board leaves the faction line out. Needs the `pymysql` package (in `requirements.txt`; the repack's Python already has it).
 
 ### `ra`
 

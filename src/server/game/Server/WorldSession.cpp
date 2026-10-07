@@ -30,6 +30,7 @@
 #include "ClientConfigPackets.h"
 #include "Containers.h"
 #include "DatabaseEnv.h"
+#include "FriendsService.h"
 #include "DB2Stores.h"
 #include "GameTime.h"
 #include "Group.h"
@@ -700,6 +701,9 @@ void WorldSession::LogoutPlayer(bool save)
 
         //! Call script hook before deletion
         sScriptMgr->OnPlayerLogout(_player);
+
+        // Battle.net friends see us go offline
+        BattlenetPresence::OnLogout(this);
 
         TC_METRIC_EVENT("player_events", "Logout", _player->GetName());
 
@@ -1511,7 +1515,27 @@ void WorldSession::InitializeSessionCallback(LoginDatabaseQueryHolder const& hol
 
     WorldPackets::Battlenet::ConnectionStatus bnetConnected;
     bnetConnected.State = 1;
+    bnetConnected.SuppressNotification = false;     // Classic 1.60: as the official server (0x40), the client then uses its Battle.net friends
     SendPacket(bnetConnected.Write());
+
+    // Classic 1.60: the official server then sends, unasked (token 0, object 0), the friends v2 and block list Subscribe results; only
+    // after these does the client ask for its friends and invitations (sniff 70235: method 0x40000001, block list data 0A 00 = empty list)
+    {
+        WorldPackets::Battlenet::Response friendsSubscribed;
+        friendsSubscribed.BnetStatus = ERROR_OK;
+        friendsSubscribed.Method.Type = MAKE_PAIR64(0x40000001, 0x5869BE8C);     // friends.v2.client.FriendsService.Subscribe
+        friendsSubscribed.Method.ObjectId = 0;
+        friendsSubscribed.Method.Token = 0;
+        SendPacket(friendsSubscribed.Write());
+
+        WorldPackets::Battlenet::Response blockListSubscribed;
+        blockListSubscribed.BnetStatus = ERROR_OK;
+        blockListSubscribed.Method.Type = MAKE_PAIR64(0x40000001, 0x8E8F5FB0);   // block_list.v1.client.BlockListService.Subscribe
+        blockListSubscribed.Method.ObjectId = 0;
+        blockListSubscribed.Method.Token = 0;
+        blockListSubscribed.Data << uint8(0x0A) << uint8(0x00);
+        SendPacket(blockListSubscribed.Write());
+    }
 
     _battlePetMgr->LoadFromDB(holder.GetPreparedResult(AccountInfoQueryHolder::BATTLE_PETS),
                               holder.GetPreparedResult(AccountInfoQueryHolder::BATTLE_PET_SLOTS));

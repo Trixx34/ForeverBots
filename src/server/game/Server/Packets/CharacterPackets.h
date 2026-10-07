@@ -224,6 +224,7 @@ namespace WorldPackets
             struct RegionwideCharacterListEntry
             {
                 RegionwideCharacterListEntry(Field const* fields);
+                explicit RegionwideCharacterListEntry(CharacterInfoBasic const& basic) : Basic(basic) { }
 
                 CharacterInfoBasic Basic;
                 uint64 Money = 0;

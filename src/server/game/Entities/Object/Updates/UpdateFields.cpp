@@ -1213,11 +1213,20 @@ void UnitData::WriteCreate(EnumFlag<UpdateFieldFlag> fieldVisibilityFlags, ByteB
     data << int32(MaxHealthModifierFlatNeg);
     data << int32(MaxHealthModifierFlatPos);
     data << uint32(SilencedSchoolMask);
-    data << float(0.0f);                        // Classic 1.60.1.70009: unknown float (client UnitData +0x350)
+    // Classic 1.60.1.70009: four unknown fields around CurrentAreaID, owner only (sniff of the official beta: other players' creates
+    // have CurrentAreaID right after SilencedSchoolMask and NameplateDistanceMod right after it; sending them shifted the rest of
+    // UnitData and PlayerData, so other players showed as "Unknown" and naked)
+    if (fieldVisibilityFlags.HasFlag(UpdateFieldFlag::Owner))
+    {
+        data << float(0.0f);                    // client UnitData +0x350
+    }
     data << uint32(CurrentAreaID);
-    data << ObjectGuid::Empty;                  // Classic 1.60.1.70009: unknown guid (+0x360)
-    data << int32(0);                           // Classic 1.60.1.70009: unknown int32 (+0x370)
-    data << float(0.0f);                        // Classic 1.60.1.70009: unknown float (+0x374)
+    if (fieldVisibilityFlags.HasFlag(UpdateFieldFlag::Owner))
+    {
+        data << ObjectGuid::Empty;              // +0x360
+        data << int32(0);                       // +0x370
+        data << float(0.0f);                    // +0x374
+    }
     data << float(NameplateDistanceMod);
     data << float(AutoAttackRangeMod);
     data << *NameplateAttachToGUID;

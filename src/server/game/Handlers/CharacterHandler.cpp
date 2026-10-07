@@ -34,6 +34,8 @@
 #include "Config.h"
 #include "DB2Stores.h"
 #include "DatabaseEnv.h"
+#include "DiscordChannel.h"
+#include "FriendsService.h"
 #include "EquipmentSetPackets.h"
 #include "GameObject.h"
 #include "GameTime.h"
@@ -506,7 +508,57 @@ void WorldSession::HandleCharEnum(CharacterDatabaseQueryHolder const& holder)
         });
     }
 
+    // Classic 1.60: the official server sends every character as a regionwide entry (Realmless set, no realm entries; sniff 70235,
+    // 2026-10-06). Only that entry has money; the character select tooltip shows it with the two primary professions.
+    std::vector<WorldPackets::Character::EnumCharactersResult::CharacterInfo> realmCharacters;
+    if (!charEnum.IsDeletedCharacters && !charEnum.Characters.empty())
+    {
+        std::string guids;
+        for (WorldPackets::Character::EnumCharactersResult::CharacterInfo const& character : charEnum.Characters)
+            guids += (guids.empty() ? "" : ",") + std::to_string(character.Basic.Guid.GetCounter());
+
+        std::unordered_map<ObjectGuid::LowType, uint64> money;
+        if (QueryResult result = CharacterDatabase.PQuery("SELECT guid, money FROM characters WHERE guid IN ({})", guids))
+        {
+            do
+                money[(*result)[0].GetUInt64()] = (*result)[1].GetUInt64();
+            while (result->NextRow());
+        }
+
+        std::unordered_map<ObjectGuid::LowType, std::vector<uint32>> professions;
+        if (QueryResult result = CharacterDatabase.PQuery("SELECT guid, skill FROM character_skills WHERE guid IN ({})", guids))
+        {
+            do
+            {
+                uint32 const skill = (*result)[1].GetUInt16();
+                SkillLineEntry const* skillLine = sSkillLineStore.LookupEntry(skill);
+                if (skillLine && skillLine->CategoryID == SKILL_CATEGORY_PROFESSION && !skillLine->ParentSkillLineID)
+                    professions[(*result)[0].GetUInt64()].push_back(skill);
+            } while (result->NextRow());
+        }
+
+        for (WorldPackets::Character::EnumCharactersResult::CharacterInfo const& character : charEnum.Characters)
+        {
+            WorldPackets::Character::EnumCharactersResult::RegionwideCharacterListEntry& entry = charEnum.RegionwideCharacters.emplace_back(character.Basic);
+            ObjectGuid::LowType const guid = character.Basic.Guid.GetCounter();
+            entry.Basic.RealmInfoFound = true;
+            if (std::vector<uint32> const* list = Trinity::Containers::MapGetValuePtr(professions, guid))
+                for (std::size_t i = 0; i < list->size() && i < 2; ++i)
+                    entry.Basic.ProfessionIds[i] = (*list)[i];
+            if (uint64 const* gold = Trinity::Containers::MapGetValuePtr(money, guid))
+                entry.Money = *gold;
+            entry.PvpRatingBracket = -1;
+        }
+
+        charEnum.Realmless = true;
+        realmCharacters = std::move(charEnum.Characters);
+        charEnum.Characters.clear();
+    }
+
     SendPacket(charEnum.Write());
+
+    if (!realmCharacters.empty())
+        charEnum.Characters = std::move(realmCharacters);
 
     // Classic 1.60: per character restrictions, right after the enum result as on the official server (sniff 70205: Classic
     // opcode 0x460019; per character: 2 bits (own byte), packed guid, uint32 0, uint32 10).
@@ -529,10 +581,11 @@ void WorldSession::HandleCharEnum(CharacterDatabaseQueryHolder const& holder)
     // Classic 1.60.1.70009: character select keeps the enum result pending (never shows the characters) until it receives
     // Classic opcode 0x460362 (retail numbering: SMSG_RECENT_ALLY_DATA_RESPONSE), whose handler (rva 0x24F1E50) releases it.
     // Layout: uint32, uint8 (handler only uses the list when this is 7), uint32 count, entries - send it empty.
+    // Official sniffs (70235, 2026-10-06) send 0x08ECBD10, 7, 0; with 0, 0, 0 the Social window kept its old layout (no Allies tabs).
     {
         WorldPacket release(SMSG_RECENT_ALLY_DATA_RESPONSE, 9);
-        release << uint32(0);
-        release << uint8(0);
+        release << uint32(0x08ECBD10);
+        release << uint8(7);
         release << uint32(0);
         SendPacket(&release, true);
     }
@@ -1664,6 +1717,26 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
 
     sScriptMgr->OnPlayerLogin(pCurrChar, firstLogin);
 
+    // the Discord bot's chat channel (DiscordChannel.h): joined unless the player left it
+    DiscordChannel::OnLogin(pCurrChar);
+
+    // Battle.net presence: the client takes the account's BattleTag from it (Social window, Battle.net friends); online friends are told
+    BattlenetPresence::OnLogin(this);
+
+    // Battle.net account with an authenticator (support site account page): "account secured", +4 backpack slots and no
+    // "attach an Authenticator" prompts. Removing it takes the slots away again (items in them are mailed).
+    {
+        bool secured = false;
+        if (QueryResult result = LoginDatabase.PQuery("SELECT COUNT(*) FROM battlenet_accounts WHERE id = {} AND authenticator_secret IS NOT NULL "
+            "AND authenticator_secret <> ''", GetBattlenetAccountId()))
+            secured = (*result)[0].GetUInt64() != 0;
+
+        if (secured)
+            pCurrChar->SetAccountSecured(true);
+        else if (pCurrChar->GetInventorySlotCount() == INVENTORY_DEFAULT_SIZE + INVENTORY_ACCOUNT_SECURED_BONUS_SIZE)
+            pCurrChar->SetAccountSecured(false);
+    }
+
     TC_METRIC_EVENT("player_events", "Login", pCurrChar->GetName());
 }
 
@@ -1918,6 +1991,76 @@ void WorldSession::SendFeatureSystemStatus()
     features.GuildChatThrottle.TriesRestoredPerSecond = 20;
     features.GroupChatThrottle.UsedTriesPerMessage = 1;
     features.GroupChatThrottle.TriesRestoredPerSecond = 20;
+
+    // Classic 1.60: every flag as the official server sends it (sniffs 70205 and 70235 are identical). Field names follow the
+    // retail order, which is not the Classic meaning of each bit. Classic.OfficialFeatureFlags = 0 goes back to the values above.
+    if (sConfigMgr->GetBoolDefault("Classic.OfficialFeatureFlags", true))
+    {
+        features.VoiceEnabled = true;
+        features.BpayStoreAvailable = true;
+        features.ItemRestorationButtonEnabled = false;
+        features.SessionAlert.reset();
+        features.RAFSystem.Enabled = false;
+        features.RAFSystem.RecruitingEnabled = false;
+        features.CharUndeleteEnabled = true;
+        features.RestrictedAccount = false;
+        features.CommerceServerEnabled = false;
+        features.TutorialEnabled = true;
+        features.VeteranTokenRedeemWillKick = true;
+        features.WorldTokenRedeemWillKick = false;
+        features.KioskModeEnabled = false;
+        features.CompetitiveModeEnabled = true;
+        features.RedeemForBalanceAvailable = true;
+        features.WarModeEnabled = true;
+        features.CommunitiesEnabled = true;
+        features.BnetGroupsEnabled = true;
+        features.CharacterCommunitiesEnabled = false;
+        features.ClubPresenceAllowSubscribeAll = false;
+        features.VoiceChatParentalDisabled = true;
+        features.VoiceChatParentalMuted = false;
+        features.QuestSessionEnabled = false;
+        features.ClubFinderEnabled = true;
+        features.CommunityFinderEnabled = true;
+        features.BrowserCrashReporterEnabled = false;
+        features.SpeakForMeAllowed = false;
+        // official sends this bit on; in Classic it is the group finder "attach an Authenticator and SMS Protect" requirement
+        // (official accounts there were secured). Off until accounts can have an authenticator here.
+        features.DoesAccountNeedAADCPrompt = false;
+        features.IsAccountOptedInToAADC = false;
+        features.LfgRequireAuthenticatorEnabled = false;
+        features.ScriptsDisallowedForBeta = false;
+        features.TimerunningEnabled = true;
+        features.PlayerIdentityOptionsEnabled = false;
+        features.IsPlayerContentTrackingEnabled = false;
+        features.LfdEnabled = true;
+        features.LfrEnabled = false;
+        features.PetHappinessEnabled = false;
+        features.GuildEventsEditsEnabled = false;
+        features.GuildTradeSkillsEnabled = false;
+        features.ClassicFlagBits10 = 2;
+        features.IsAccountCurrencyTransferEnabled = false;
+        features.NetEaseChatTelemetryEnabled = false;
+        features.LobbyMatchmakerQueueFromMainlineEnabled = true;
+        features.CanSendLobbyMatchmakerPartyCustomizations = false;
+        features.AddonProfilingEnabled = false;
+        features.GlobalUserGeneratedContentMuteEnabled = false;
+        features.AccountUserGeneratedContentIsRisky = false;
+        features.FriendsDisabled = false;
+
+        features.EuropaTicketSystemStatus->TicketsEnabled = false;
+        features.EuropaTicketSystemStatus->BugsEnabled = true;
+        features.EuropaTicketSystemStatus->ComplaintsEnabled = true;
+        features.EuropaTicketSystemStatus->SuggestionsEnabled = true;
+        features.EuropaTicketSystemStatus->ThrottleState = { .MaxTries = 10, .PerMilliseconds = 60000, .TryCount = 0, .LastResetTimeBeforeNow = 130929 };
+        features.EuropaTicketSystemStatus->ExpensiveThrottleState = { .MaxTries = 1, .PerMilliseconds = 60000, .TryCount = 0, .LastResetTimeBeforeNow = 130929 };
+
+        features.QuickJoinConfig = { false, 7.0f, 10.0f, 1.0f, 1.0f, 5.0f, 1.0f, 0.0f, 60.0f, 20.0f, 0.0f, 50.0f, 1.0f, 10.0f, 50.0f, 100.0f,
+            50.0f, 1.0f, 1.0f, 100.0f, 1.0f, 850.0f, 80.0f };
+        features.RemainingTimerunningSeasonSeconds = 32767;
+        features.MaxPlayerGuidLookupsPerRequest = 32;
+        features.NameLookupTelemetryInterval = 32;
+        features.DisabledGameModes = { { .GameMode = 3, .ContentSetID = 13, .GameModeRecordID = 0 }, { .GameMode = 2, .ContentSetID = 5, .GameModeRecordID = 0 } };
+    }
 
     SendPacket(features.Write());
 }

@@ -1265,6 +1265,37 @@ void DB2Manager::IndexLoadedStores()
         }
     }
 
+    // Classic 1.60: the druid form appearances are options of their own form models (ChrModel 189 bear, 190 cat, 191 aquatic,
+    // 192 travel, 194 moonkin), not of the race models; the race comes from each choice's requirement (Skyborne druids: req 4906)
+    for (std::pair<uint32 const, std::pair<uint32, uint8>> const& shapeshiftOption : shapeshiftFormByModel)
+    {
+        std::vector<ChrCustomizationChoiceEntry const*> const* choices = Trinity::Containers::MapGetValuePtr(_chrCustomizationChoicesByOption, shapeshiftOption.second.first);
+        if (!choices)
+            continue;
+
+        for (std::pair<std::pair<uint8, uint8> const, ChrModelEntry const*> const& raceModel : _chrModelsByRaceAndGender)
+        {
+            std::tuple<uint8, uint8, uint8> key{ raceModel.first.first, raceModel.first.second, shapeshiftOption.second.second };
+            if (_chrCustomizationChoicesForShapeshifts.contains(key))
+                continue;
+
+            bool forRace = std::ranges::any_of(*choices, [race = raceModel.first.first](ChrCustomizationChoiceEntry const* choice)
+            {
+                ChrCustomizationReqEntry const* req = sChrCustomizationReqStore.LookupEntry(choice->ChrCustomizationReqID);
+                return req && !req->RaceMask.IsEmpty() && req->RaceMask != RACEMASK_ALL_v<int32, 2> && req->RaceMask.HasRace(race);
+            });
+            if (!forRace)
+                continue;
+
+            ShapeshiftFormModelData& data = _chrCustomizationChoicesForShapeshifts[key];
+            data.OptionID = shapeshiftOption.second.first;
+            data.Choices = choices;
+            data.Displays.resize(choices->size());
+            for (std::size_t i = 0; i < choices->size(); ++i)
+                data.Displays[i] = Trinity::Containers::MapGetValuePtr(displayInfoByCustomizationChoice, (*choices)[i]->ID);
+        }
+    }
+
     memset(_chrSpecializationsByIndex, 0, sizeof(_chrSpecializationsByIndex));
     for (ChrSpecializationEntry const* chrSpec : sChrSpecializationStore)
     {

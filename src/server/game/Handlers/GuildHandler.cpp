@@ -24,6 +24,8 @@
 #include "Config.h"
 #include "GameTime.h"
 #include "GossipDef.h"
+#include "Group.h"
+#include "GroupFinderListings.h"
 #include "Guild.h"
 #include "GuildMgr.h"
 #include "GuildPackets.h"
@@ -1000,6 +1002,8 @@ namespace
         std::vector<uint32> Activities;
         std::vector<uint8> Request;
         time_t Created = 0;
+        std::string Name, Comment;                  // as the leader typed them (for the Discord bot's LFG channel)
+        uint8 PlayStyle = 0;                        // the play style dropdown: 1 Learning, 2 Relaxed, 3 Competitive, 4 Carry Offered
     };
 
     std::unordered_map<ObjectGuid, LfgListing> LfgListings;
@@ -1031,12 +1035,14 @@ namespace
         listing.Activities.clear();
         for (uint32 i = 0; i < activityCount; ++i)
             listing.Activities.push_back(data.read<uint32>());
-        data.read_skip(nameLength + commentLength + voiceChatLength);
+        listing.Name = data.ReadString(nameLength, false);
+        listing.Comment = data.ReadString(commentLength, false);
+        data.read_skip(voiceChatLength);
         for (uint8 i = 4; i < 7; ++i)
             if (bits[i])
                 data.read_skip<int32>();
         if (bits[7])
-            data.read_skip<uint8>();
+            listing.PlayStyle = data.read<uint8>();     // play style (retail LFGEntryGeneralPlaystyle)
 
         listing.Request.assign(data.data() + start, data.data() + data.rpos());
         return data.rpos() == data.size();
@@ -1086,7 +1092,15 @@ namespace
         data << uint32(0);                          // battle.net friends
         data << uint32(0);                          // character friends
         data << uint32(0);                          // guild mates
-        data << uint32(1);                          // members: the leader
+        // the leader's group as it is now (only the leader when not in a group)
+        std::vector<ObjectGuid> members;
+        Player const* leaderPlayer = ObjectAccessor::FindConnectedPlayer(leader);
+        if (Group const* group = leaderPlayer ? leaderPlayer->GetGroup() : nullptr)
+            for (Group::MemberSlot const& slot : group->GetMemberSlots())
+                members.push_back(slot.guid);
+        else
+            members.push_back(leader);
+        data << uint32(members.size());
         data << uint32(0);                          // completed encounters
         data << uint64(listing.Created);
         data << uint8(0);                           // application status
@@ -1102,33 +1116,139 @@ namespace
         data << uint8(0);
         data << uint8(0);
 
-        // member (Classic reader rva 0xA4EA40): guid, int8 x3 (healer, damage, tank - tested in game), int32 area, uint8 level,
-        // {guid, float, uint32 x3, int32, uint64 x2, int32, uint8}, bit leader
-        Player const* player = ObjectAccessor::FindConnectedPlayer(leader);
-        auto roles = LfgListRoles.find(leader);
-        uint8 const roleMask = roles != LfgListRoles.end() ? roles->second : 0;
-        data << leader;
-        data << int8((roleMask & lfg::PLAYER_ROLE_HEALER) != 0);
-        data << int8((roleMask & lfg::PLAYER_ROLE_DAMAGE) != 0);
-        data << int8((roleMask & lfg::PLAYER_ROLE_TANK) != 0);
-        data << int32(player ? player->GetZoneId() : 0);
-        data << uint8(player ? player->GetLevel() : 0);
-        data << ObjectGuid::Empty;
-        data << float(0.0f);
-        data << uint32(0);
-        data << uint32(0);
-        data << uint32(0);
-        data << int32(0);
-        data << uint64(0);
-        data << uint64(0);
-        data << int32(0);
-        data << uint8(0);
-        data.WriteBit(true);                        // leader
-        data.FlushBits();
+        // members (Classic reader rva 0xA4EA40): guid, int8 level, int8 class, int8 role, int32 area, uint8, {guid, float, uint32 x3,
+        // int32, uint64 x2, int32, uint8}, bit leader. The role is the one of the character's talent specialization (0 tank,
+        // 1 healer, 2 damage), not the roles ticked in the window: official search results of 2026-10-06 (70235) show the same
+        // role for a member whatever they ticked, and tank/healer only for classes and specs that can do it.
+        for (ObjectGuid const& guid : members)
+        {
+            Player const* member = ObjectAccessor::FindConnectedPlayer(guid);
+            CharacterCacheEntry const* info = sCharacterCache->GetCharacterCacheByGuid(guid);
+            ChrSpecializationEntry const* spec = member ? member->GetPrimarySpecializationEntry() : nullptr;
+            data << guid;
+            data << int8(member ? member->GetLevel() : info ? info->Level : 0);
+            data << int8(member ? member->GetClass() : info ? info->Class : 0);
+            data << int8(spec ? spec->Role : 2);
+            data << int32(member ? member->GetZoneId() : 0);
+            data << uint8(member ? member->GetLevel() : 0);
+            data << ObjectGuid::Empty;
+            data << float(0.0f);
+            data << uint32(0);
+            data << uint32(0);
+            data << uint32(0);
+            data << int32(0);
+            data << uint64(0);
+            data << uint64(0);
+            data << int32(0);
+            data << uint8(0);
+            data.WriteBit(guid == leader);
+            data.FlushBits();
+        }
 
         data.WriteBit(false);                       // (entry reader ends with one bit)
         data.FlushBits();
     }
+
+    std::string JsonString(std::string_view text)
+    {
+        std::string out = "\"";
+        for (char c : text)
+        {
+            switch (c)
+            {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': case '\t': out += ' '; break;
+                default:
+                    if (uint8(c) < 0x20)
+                        out += ' ';
+                    else
+                        out += c;
+            }
+        }
+        return out + "\"";
+    }
+
+    // One line of the "groupfinder" log per change of a listing, read by the Discord bot (contrib/discord_bot, its LFG channel):
+    // {"event": "listed" | "updated" | "delisted", "id", "faction", "activities", "title", "comment", "members": [...]}
+    void LogLfgListing(char const* event, ObjectGuid const& leader, LfgListing const& listing)
+    {
+        if (!sLog->ShouldLog("groupfinder", LOG_LEVEL_INFO))
+            return;
+
+        std::string json = Trinity::StringFormat(R"({{"event":"{}","id":{},"time":{})", event, listing.Id, uint64(listing.Created));
+        if (strcmp(event, "delisted") != 0)
+        {
+            Player const* leaderPlayer = ObjectAccessor::FindConnectedPlayer(leader);
+            json += Trinity::StringFormat(R"(,"faction":"{}","activities":[)", leaderPlayer && leaderPlayer->GetTeam() == ALLIANCE ? "A" : "H");
+            for (size_t i = 0; i < listing.Activities.size(); ++i)
+                json += (i ? "," : "") + std::to_string(listing.Activities[i]);
+            json += "],\"title\":" + JsonString(listing.Name) + ",\"comment\":" + JsonString(listing.Comment)
+                + ",\"playstyle\":" + std::to_string(listing.PlayStyle) + ",\"members\":[";
+
+            // the leader's group as it is now (only the leader when not in a group)
+            std::vector<ObjectGuid> members;
+            Group const* group = leaderPlayer ? leaderPlayer->GetGroup() : nullptr;
+            if (group)
+                for (Group::MemberSlot const& slot : group->GetMemberSlots())
+                    members.push_back(slot.guid);
+            else
+                members.push_back(leader);
+            bool first = true;
+            for (ObjectGuid const& guid : members)
+            {
+                CharacterCacheEntry const* info = sCharacterCache->GetCharacterCacheByGuid(guid);
+                if (!info)
+                    continue;
+                // the party role (set in the group, CMSG_SET_ROLE) wins over the role ticked in the Group Finder window
+                auto roles = LfgListRoles.find(guid);
+                uint8 const partyRole = group ? group->GetLfgRoles(guid) : 0;
+                uint8 const mask = (partyRole & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE))
+                    ? partyRole : (roles != LfgListRoles.end() ? roles->second : 0);
+                json += Trinity::StringFormat(R"({}{{"name":{},"class":{},"level":{},"leader":{},"tank":{},"healer":{},"damage":{}}})",
+                    first ? "" : ",", JsonString(info->Name), info->Class, info->Level, guid == leader ? "true" : "false",
+                    (mask & lfg::PLAYER_ROLE_TANK) ? "true" : "false", (mask & lfg::PLAYER_ROLE_HEALER) ? "true" : "false",
+                    (mask & lfg::PLAYER_ROLE_DAMAGE) ? "true" : "false");
+                first = false;
+            }
+            json += "]";
+        }
+        json += "}";
+        TC_LOG_INFO("groupfinder", "{}", json);
+    }
+
+    // the listing a player belongs to: their own, or their group leader's
+    std::pair<ObjectGuid, LfgListing const*> LfgListingOf(Player const* player)
+    {
+        ObjectGuid leader = player->GetGroup() ? player->GetGroup()->GetLeaderGUID() : player->GetGUID();
+        auto itr = LfgListings.find(leader);
+        if (itr == LfgListings.end())
+        {
+            leader = player->GetGUID();
+            itr = LfgListings.find(leader);
+        }
+        return { leader, itr != LfgListings.end() ? &itr->second : nullptr };
+    }
+}
+
+// Discord bot LFG channel (GroupFinderListings.h): keep the posted group up to date when its members change
+void GroupFinderListings::OnGroupChanged(Group const* group)
+{
+    if (!group)
+        return;
+    auto itr = LfgListings.find(group->GetLeaderGUID());
+    if (itr != LfgListings.end())
+        LogLfgListing("updated", itr->first, itr->second);
+}
+
+void GroupFinderListings::OnLogout(Player const* player)
+{
+    auto itr = LfgListings.find(player->GetGUID());
+    if (itr == LfgListings.end())
+        return;
+    LogLfgListing("delisted", itr->first, itr->second);
+    LfgListings.erase(itr);
 }
 
 void WorldSession::HandleLfgListProbe(WorldPackets::Null& packet)
@@ -1162,6 +1282,7 @@ void WorldSession::HandleLfgListProbe(WorldPackets::Null& packet)
                 result << uint8(0);
                 SendPacket(&result);
                 SendLfgListStatus(this, stored, true);
+                LogLfgListing("listed", _player->GetGUID(), stored);
                 break;
             }
             case CMSG_LFG_LIST_UPDATE_REQUEST:  // edit (serializer rva 0x944C00): ticket, request
@@ -1178,6 +1299,7 @@ void WorldSession::HandleLfgListProbe(WorldPackets::Null& packet)
                 listing.Created = itr->second.Created;
                 itr->second = std::move(listing);
                 SendLfgListStatus(this, itr->second, true);
+                LogLfgListing("updated", itr->first, itr->second);
                 break;
             }
             case CMSG_LFG_LIST_LEAVE:           // delist (Classic 0x440038): ticket
@@ -1188,11 +1310,17 @@ void WorldSession::HandleLfgListProbe(WorldPackets::Null& packet)
                 LfgListing const listing = std::move(itr->second);
                 LfgListings.erase(itr);
                 SendLfgListStatus(this, listing, false);
+                LogLfgListing("delisted", _player->GetGUID(), listing);
                 break;
             }
             case CMSG_PERKS_PROGRAM_REQUEST_REFUND: // Classic 0x3E02B3: the roles ticked in the Group Finder (uint8 mask)
+            {
                 LfgListRoles[_player->GetGUID()] = data.read<uint8>();
+                auto [leader, listing] = LfgListingOf(_player);
+                if (listing)
+                    LogLfgListing("updated", leader, *listing);
                 break;
+            }
             case CMSG_LFG_LIST_GET_STATUS:      // login
             {
                 auto itr = LfgListings.find(_player->GetGUID());
@@ -1224,11 +1352,20 @@ void WorldSession::HandleLfgListProbe(WorldPackets::Null& packet)
 
                 WorldPacket results(SMSG_LFG_LIST_SEARCH_RESULTS, 256);
                 std::vector<std::pair<ObjectGuid, LfgListing const*>> found;
+                bool const crossFaction = sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_GROUP);
                 for (auto itr = LfgListings.begin(); itr != LfgListings.end();)
                 {
-                    if (!ObjectAccessor::FindConnectedPlayer(itr->first))
+                    Player* leaderPlayer = ObjectAccessor::FindConnectedPlayer(itr->first);
+                    if (!leaderPlayer)
                     {
+                        LogLfgListing("delisted", itr->first, itr->second);
                         itr = LfgListings.erase(itr);   // leader logged out
+                        continue;
+                    }
+                    // only groups of the searcher's own faction, like groups themselves (AllowTwoSide.Interaction.Group)
+                    if (!crossFaction && leaderPlayer->GetTeam() != GetPlayer()->GetTeam())
+                    {
+                        ++itr;
                         continue;
                     }
                     if (itr->second.CategoryId == categoryId && (activities.empty() || std::ranges::any_of(itr->second.Activities,

@@ -344,3 +344,11 @@ details.faq .a { padding: 0 16px 14px; color: var(--muted); }
 .slot.empty { padding: 0; }
 .fac-img { width: 20px; height: 20px; vertical-align: middle; border-radius: 4px; }
 .char-head .fac-img { width: 30px; height: 30px; margin-left: 4px; }
+
+/* ---------- account page ---------- */
+.qr { display: inline-block; padding: 8px; margin: 4px 0 14px; background: #fff; border-radius: var(--radius); line-height: 0; }
+.qr svg { display: block; max-width: 100%; height: auto; }
+.totp-key { font-size: 1.05rem; letter-spacing: .06em; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; overflow-wrap: anywhere; }
+.steps, .perks { margin: 0 0 14px; padding-left: 20px; }
+.steps li, .perks li { margin: 4px 0; }
+.perks li::marker { color: var(--gold); }

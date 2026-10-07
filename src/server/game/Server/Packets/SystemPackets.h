@@ -139,7 +139,7 @@ namespace WorldPackets
             uint32 ClubPresenceUnsubscribeDelay          = 0; ///< Timer for updating club presence when communities ui frame is hidden
             uint32 KioskSessionDurationMinutes           = 0;
             int32 ContentSetID                           = 0; ///< Currently active Classic season
-            int32 SocialRestriction                      = 0; ///< Classic 1.60: int32 after ContentSetID; 2 shows "Age Verification Required" and blocks chat
+            int32 SocialRestriction                      = 0; ///< Classic 1.60: int32 before ContentSetID; 2 shows "Age Verification Required" and blocks chat
             int16 MaxPlayerGuidLookupsPerRequest         = 50;
             int16 NameLookupTelemetryInterval            = 600;
             Duration<Seconds, uint32> NotFoundCacheTimeSeconds = 10s;
@@ -195,7 +195,7 @@ namespace WorldPackets
             std::vector<GameRuleValuePair> GameRules;
             int32 ActiveTimerunningSeasonID          = 0;
             int32 RemainingTimerunningSeasonSeconds  = 0;
-            std::string Unknown1027;                          // related to movement lua functions used by keybinds
+            uint16 ClassicFlagBits10                 = 0;       ///< Classic 1.60: 10 bits where retail has the Unknown1027 string length; no string follows (official: 2)
             ChatThrottleParams AddonChatThrottle;
             ChatThrottleParams GuildChatThrottle;
             ChatThrottleParams GroupChatThrottle;

@@ -33,6 +33,7 @@
 #include "MiscPackets.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "RecentAllies.h"
 #include "PartyPackets.h"
 #include "Pet.h"
 #include "Player.h"
@@ -493,6 +494,7 @@ bool Group::AddMember(Player* player)
 
     SendUpdate();
     sScriptMgr->OnGroupAddMember(this, player->GetGUID());
+    RecentAllies::OnGroupJoin(this, player);         // Classic Social window, Allies tab
 
     player->SetGroupUpdateFlag(GROUP_UPDATE_FULL);
     if (Pet* pet = player->GetPet())
@@ -506,6 +508,8 @@ bool Group::AddMember(Player* player)
 
     player->FailCriteria(CriteriaFailEvent::ModifyPartyStatus, 0);
 
+    // Classic 1.60: group members do not get each other's party member fields (see Player::GetUpdateFieldFlagsFor)
+    if (false)
     {
         // Broadcast new player group member fields to rest of the group
         UpdateData groupData(player->GetMapId());

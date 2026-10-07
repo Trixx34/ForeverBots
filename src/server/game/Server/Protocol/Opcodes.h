@@ -832,6 +832,7 @@ enum OpcodeClient : uint32
     CMSG_READ_ITEM                                                  = 0x3D0212,
     CMSG_RECENT_ALLY_REQUEST_DATA                                   = 0x430198,
     CMSG_RECENT_ALLY_SET_NOTE                                       = 0x430199,
+    CMSG_CLASSIC_SOCIAL_WINDOW_OPEN                                 = 0x43017C, // Classic 0x44017C: sent with the Recent Allies request when the Social window opens
     CMSG_RECLAIM_CORPSE                                             = 0x3E0076,
     CMSG_REFRESH_BLEEP_TOKENS                                       = 0x4301A2,
     CMSG_REFRESH_ENTITLEMENTS_ON_ORDER_COMPLETE                     = 0x43019C,
@@ -2237,6 +2238,8 @@ enum OpcodeServer : uint32
     SMSG_RECEIVE_PING_WORLD_POINT                                   = 0x45003A,
     SMSG_RECENT_ALLY_DATA_RESPONSE                                  = 0x450362,
     SMSG_RECENT_ALLY_NOTE_UPDATED                                   = 0x450363,
+    SMSG_RECENT_ALLY_LIST                                           = 0x450364, // Classic 0x460364: the Allies tab (sniff 2026-10-06)
+    SMSG_CLASSIC_SOCIAL_WINDOW_OPEN_RESPONSE                        = 0x450359, // Classic 0x460359: answer to CMSG_CLASSIC_SOCIAL_WINDOW_OPEN (uint32 0)
     SMSG_RECRAFT_ITEM_RESULT                                        = 0x45033B,
     SMSG_RECRUIT_A_FRIEND_FAILURE                                   = 0x45016C,
     SMSG_REFETCH_TACT_KEYS                                          = 0x450376,

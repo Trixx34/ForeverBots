@@ -73,6 +73,7 @@
 #include "Player.h"
 #include "PlayerAI.h"
 #include "QuestDef.h"
+#include "RecentAllies.h"
 #include "Spell.h"
 #include "ScheduledChangeAI.h"
 #include "SpellAuraEffects.h"
@@ -11469,6 +11470,10 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
             isRewardAllowed = false;
     }
 
+    // Classic 1.60 Social window, Allies tab: players who fought this creature together
+    if (creature)
+        RecentAllies::OnCreatureKill(creature);
+
     // Exploit fix
     if (creature && creature->IsPet() && creature->GetOwnerGUID().IsPlayer())
         isRewardAllowed = false;
@@ -12802,7 +12807,10 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form, uint32 spellId) const
                     if (ShapeshiftForm(artifactAppearance->OverrideShapeshiftFormID) == form)
                         return artifactAppearance->OverrideShapeshiftDisplayID;
 
-        if (ShapeshiftFormModelData const* formModelData = sDB2Manager.GetShapeshiftFormModelData(GetRace(), player->GetNativeGender(), form))
+        ShapeshiftFormModelData const* formModelData = sDB2Manager.GetShapeshiftFormModelData(GetRace(), player->GetNativeGender(), form);
+        if (!formModelData && form == FORM_DIRE_BEAR_FORM)  // Classic 1.60: Dire Bear Form has no appearance options of its own, it looks like Bear Form
+            formModelData = sDB2Manager.GetShapeshiftFormModelData(GetRace(), player->GetNativeGender(), FORM_BEAR_FORM);
+        if (formModelData)
         {
             bool useRandom = false;
             switch (form)
@@ -12849,6 +12857,17 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form, uint32 spellId) const
                     if (choiceItr != formModelData->Choices->end())
                         if (ChrCustomizationDisplayInfoEntry const* displayInfo = formModelData->Displays[std::distance(formModelData->Choices->begin(), choiceItr)])
                             return displayInfo->DisplayID;
+                }
+
+                // Classic 1.60: no form appearance chosen - the first one made for this race and class (sniffs of the official beta:
+                // Skyborne druids without a choice are bear 144331, cat 144330, travel form 145284)
+                for (std::size_t i = 0; i < formModelData->Choices->size(); ++i)
+                {
+                    ChrCustomizationReqEntry const* req = sChrCustomizationReqStore.LookupEntry((*formModelData->Choices)[i]->ChrCustomizationReqID);
+                    if (!formModelData->Displays[i] || !req || req->RaceMask.IsEmpty() || req->RaceMask == RACEMASK_ALL_v<int32, 2>)
+                        continue;
+                    if (req->RaceMask.HasRace(GetRace()) && (!req->ClassMask || req->ClassMask & (1 << (GetClass() - 1))))
+                        return formModelData->Displays[i]->DisplayID;
                 }
             }
         }

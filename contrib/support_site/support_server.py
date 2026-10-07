@@ -9,8 +9,13 @@ Usage:
   py -3 support_server.py [config.json]                      run the site (default config: support_site.json next to this file)
   py -3 support_server.py --make-token <bnetAccountId> <realmId> [config.json]
                                                               issue a 1 hour test token and print the URL (desktop browser test)
-Needs: pip install pymysql
+Account page (/account): Battle.net account, game accounts, characters on every realm, and the authenticator (TOTP, any
+authenticator app). bnetserver asks for its code at login; secured accounts get the +4 backpack slots in game.
+
+Needs: pip install pymysql segno
 """
+import base64
+import hashlib
 import hmac
 import html
 import json
@@ -27,6 +32,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pymysql
+
+try:
+    import segno                # QR code of the authenticator key (pip install segno); without it only the key is shown
+except ImportError:
+    segno = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, 'static')
@@ -68,7 +78,42 @@ ICONS = {
     'x': '<path d="M18 6 6 18M6 6l12 12"/>',
     'undo': '<path d="M3 7v6h6"/><path d="M3.5 13A9 9 0 1 0 6 6.3L3 9"/>',
     'search': '<circle cx="11" cy="11" r="7"/><path d="m20.5 20.5-4.5-4.5"/>',
+    'lock': '<rect x="4.5" y="10.5" width="15" height="10.5" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>',
 }
+
+# ---------------------------------------------------------------- authenticator (TOTP, RFC 6238: 6 digits, 30 s, SHA-1, like the
+# Battle.net and Google authenticator apps); bnetserver checks the same secret with Trinity::Crypto::TOTP
+
+TOTP_STEP = 30
+
+
+def totp_new_secret():
+    return base64.b32encode(secrets.token_bytes(20)).decode('ascii').rstrip('=')
+
+
+def totp_code(secret, timestamp):
+    key = base64.b32decode(secret + '=' * (-len(secret) % 8))
+    digest = hmac.new(key, int(timestamp // TOTP_STEP).to_bytes(8, 'big'), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    return '%06d' % ((int.from_bytes(digest[offset:offset + 4], 'big') & 0x7FFFFFFF) % 1000000)
+
+
+def totp_check(secret, code):
+    code = ''.join(ch for ch in code if ch.isdigit())
+    now = time.time()
+    return len(code) == 6 and any(hmac.compare_digest(totp_code(secret, now + d * TOTP_STEP), code) for d in (-1, 0, 1))
+
+
+def totp_uri(secret, email):
+    issuer = CFG.get('server_name', 'Forever')
+    return 'otpauth://totp/%s:%s?%s' % (issuer.replace(':', ''), email.replace(':', ''),
+                                        urlencode({'secret': secret, 'issuer': issuer, 'algorithm': 'SHA1', 'digits': 6, 'period': TOTP_STEP}))
+
+
+def qr_svg(text):
+    if not segno:
+        return ''
+    return segno.make(text, error='m', micro=False).svg_inline(scale=5, border=3, dark='#000000', light='#ffffff')
 
 # ---------------------------------------------------------------- armory data
 
@@ -494,7 +539,7 @@ class Handler(BaseHTTPRequestHandler):
         if s:
             answered = query_one(auth_db(), "SELECT COUNT(*) AS n FROM support_tickets WHERE battlenetAccountId = %s AND status = 'answered'",
                                  (s['bnet'],))['n']
-            items = [('/', 'home', 'Home', 0), ('/unstuck', 'pin', 'Unstuck', 0), ('/ticket/new?category=bug', 'bug', 'Report a bug', 0),
+            items = [('/', 'home', 'Home', 0), ('/account', 'user', 'Account', 0), ('/unstuck', 'pin', 'Unstuck', 0), ('/ticket/new?category=bug', 'bug', 'Report a bug', 0),
                      ('/ticket/new', 'help', 'Get help', 0), ('/tickets', 'tickets', 'My tickets', answered), ('/faq', 'book', 'FAQ', 0)]
             if s['staff']:
                 waiting = query_one(auth_db(), "SELECT COUNT(*) AS n FROM support_tickets WHERE status = 'open'")['n']
@@ -675,6 +720,140 @@ class Handler(BaseHTTPRequestHandler):
                         for q, a in entries)
         self.page('Frequently asked questions', panel('', items or '<div class="empty">Nothing here yet.</div>', flush=True),
                   'Can\'t find your answer? <a href="/ticket/new">Ask us</a>.')
+
+    # account
+
+    def bnet_account(self):
+        return query_one(auth_db(), 'SELECT id, email, joindate, last_login, online, locked, authenticator_secret FROM battlenet_accounts WHERE id = %s',
+                         (self.session['bnet'],))
+
+    def account_page(self, note=''):
+        s = self.session
+        bnet = self.bnet_account()
+        if not bnet:
+            return self.page('Account', alert('bad', 'Your Battle.net account was not found.'), status=404)
+        secured = bool(bnet['authenticator_secret'])
+
+        def kv(rows):
+            return ''.join('<div class="kv"><span class="muted">%s</span><span>%s</span></div>' % (k, v) for k, v in rows)
+
+        info = kv([
+            ('E-mail', esc(bnet['email'])),
+            ('Account number', '#%d' % bnet['id']),
+            ('BattleTag', '<span class="muted">Not available on this server yet</span>'),
+            ('Member since', esc(str(bnet['joindate'])[:10])),
+            ('Last login', esc(str(bnet['last_login'])[:16]) if bnet['last_login'] else '<span class="muted">Never</span>'),
+            ('Status', '<span class="tag green">Online</span>' if bnet['online'] else '<span class="tag">Offline</span>'),
+            ('Authenticator', '<span class="tag green">On</span>' if secured else '<span class="tag amber">Off</span>'),
+        ])
+
+        # security
+        pending = s.get('totp_pending')
+        if secured:
+            security = ('<p>Your account is protected by an authenticator. The game asks for its code each time you log in.</p>'
+                        '<p class="muted">Lost your phone or reset the app? <a href="/ticket/new?category=account">Ask a game master</a> to remove it.</p>'
+                        '<form method="post" action="/account/authenticator/remove">%s<div class="field"><span>To remove it, enter a current code</span>'
+                        '<input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required></div>'
+                        '<div class="actions"><button class="btn danger" type="submit">Remove authenticator</button></div></form>') % self.csrf_field()
+        elif pending:
+            qr = qr_svg(totp_uri(pending, bnet['email']))
+            grouped = ' '.join(pending[i:i + 4] for i in range(0, len(pending), 4))
+            security = (
+                '<ol class="steps"><li>Install an authenticator app on your phone: the <b>Battle.net</b> app, Google Authenticator, '
+                'Microsoft Authenticator or Authy.</li><li>In the app, add an account and scan this code%s.</li>'
+                '<li>Type the 6-digit code the app shows and press <b>Turn on</b>.</li></ol>'
+                '%s<div class="field"><span>Or type this key into the app (time based)</span><div class="mono totp-key">%s</div></div>'
+                '<form method="post" action="/account/authenticator/confirm">%s<div class="field"><span>Code from the app</span>'
+                '<input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" autofocus required></div>'
+                '<div class="actions"><button class="btn primary" type="submit">Turn on</button>'
+                '<button class="btn ghost" type="submit" formaction="/account/authenticator/cancel" formnovalidate>Cancel</button></div></form>') % (
+                '' if qr else ' (or type the key below)', '<div class="qr">%s</div>' % qr if qr else '', esc(grouped), self.csrf_field())
+        else:
+            security = ('<p>Add an authenticator to protect your account. After your password, the game asks for a code from an app on your phone.</p>'
+                        '<ul class="perks"><li>4 extra backpack slots on all your characters</li><li>Full access to the Group Finder</li>'
+                        '<li>No "attach an Authenticator" reminders in game</li></ul>'
+                        '<form method="post" action="/account/authenticator/start">%s<div class="actions">'
+                        '<button class="btn primary" type="submit">Set up an authenticator</button></div></form>') % self.csrf_field()
+
+        # game accounts and characters
+        accounts = query(auth_db(), 'SELECT id, username, expansion, last_login, online FROM account WHERE battlenet_account = %s ORDER BY battlenet_index',
+                         (bnet['id'],))
+        chars = []
+        if accounts:
+            ids = tuple(a['id'] for a in accounts)
+            marks = ','.join(['%s'] * len(ids))
+            for realm_id in CFG['realms']:
+                try:
+                    rows = query(characters_db(realm_id), 'SELECT name, race, class, level, online, logout_time, account FROM characters '
+                                                          'WHERE account IN (%s) AND deleteInfos_Account IS NULL' % marks, ids)
+                except pymysql.MySQLError:
+                    continue
+                for c in rows:
+                    c['realm'] = realm_name(realm_id)
+                    chars.append(c)
+        chars.sort(key=lambda c: (-int(c['online'] or 0), -int(c['logout_time'] or 0)))
+
+        acc_rows = ''.join('<tr><td><b>%s</b></td><td class="num">%d</td><td>%s</td><td>%s</td></tr>' % (
+            esc('WoW' + a['username'].split('#', 1)[1] if '#' in a['username'] else a['username']),
+            sum(1 for c in chars if c['account'] == a['id']),
+            esc(str(a['last_login'])[:16]) if a['last_login'] else '<span class="muted">Never</span>',
+            '<span class="tag green">Online</span>' if a['online'] else '<span class="tag">Offline</span>') for a in accounts)
+        acc_table = ('<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Game account</th><th class="num">Characters</th><th>Last login</th>'
+                     '<th>Status</th></tr></thead><tbody>%s</tbody></table></div>') % acc_rows if accounts else '<div class="empty">No game accounts.</div>'
+
+        races = names('race')       # client race names (".armory export"), the vanilla list until then
+        char_rows = ''.join('<tr><td>%s</td><td class="num">%d</td><td class="hide-sm">%s %s</td><td>%s</td><td class="hide-sm">%s</td></tr>' % (
+            char_name(c), c['level'], esc(races[c['race']][0] if c['race'] in races else RACES.get(c['race'], '')), esc(CLASSES.get(c['class'], '')),
+            esc(c['realm']),
+            '<span class="tag green">Online</span>' if c['online'] else (esc(fmt_ago(c['logout_time'])) if c['logout_time'] else '')) for c in chars)
+        char_table = ('<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Character</th><th class="num">Level</th><th class="hide-sm">Race and class</th>'
+                      '<th>Realm</th><th class="hide-sm">Last played</th></tr></thead><tbody>%s</tbody></table></div>') % char_rows \
+            if chars else '<div class="empty">No characters yet.</div>'
+
+        body = note + '<div class="cols"><div class="stack">%s%s</div><div class="stack">%s%s</div></div>' % (
+            panel('Characters', char_table, sub='%d on all realms' % len(chars), flush=True),
+            panel('Game accounts', acc_table, flush=True),
+            panel('Battle.net account', info),
+            panel('Authenticator', security, right='<span class="tag green">Protected</span>' if secured else ''))
+        self.page('Account', body, 'Your Battle.net account, game accounts and characters.')
+
+    def authenticator_start(self):
+        bnet = self.bnet_account()
+        if bnet and not bnet['authenticator_secret']:
+            self.session['totp_pending'] = totp_new_secret()
+        self.redirect('/account')
+
+    def authenticator_cancel(self):
+        self.session.pop('totp_pending', None)
+        self.redirect('/account')
+
+    def authenticator_confirm(self):
+        pending = self.session.get('totp_pending')
+        if not pending:
+            return self.redirect('/account')
+        if not rate_ok(self.client_address[0], 'totp', 10):
+            return self.account_page(alert('bad', 'Too many tries. Wait a minute and try again.'))
+        if not totp_check(pending, self.form.get('code', '')):
+            return self.account_page(alert('bad', 'That code is not right. Check that the time on your phone is correct, then try the newest code.'))
+        execute(auth_db(), 'UPDATE battlenet_accounts SET authenticator_secret = %s WHERE id = %s AND authenticator_secret IS NULL',
+                (pending, self.session['bnet']))
+        self.session.pop('totp_pending', None)
+        log('authenticator added, bnet account', self.session['bnet'])
+        self.account_page(alert('ok', 'Your authenticator is on. From your next login the game asks for its code. '
+                                      'Log your character out and back in to get the 4 extra backpack slots.'))
+
+    def authenticator_remove(self):
+        bnet = self.bnet_account()
+        if not bnet or not bnet['authenticator_secret']:
+            return self.redirect('/account')
+        if not rate_ok(self.client_address[0], 'totp', 10):
+            return self.account_page(alert('bad', 'Too many tries. Wait a minute and try again.'))
+        if not totp_check(bnet['authenticator_secret'], self.form.get('code', '')):
+            return self.account_page(alert('bad', 'That code is not right. Try the newest code from your app.'))
+        execute(auth_db(), 'UPDATE battlenet_accounts SET authenticator_secret = NULL WHERE id = %s', (bnet['id'],))
+        log('authenticator removed, bnet account', bnet['id'])
+        self.account_page(alert('ok', 'The authenticator was removed. The 4 extra backpack slots go away at your next login '
+                                      '(items in them are sent to you by mail).'))
 
     # unstuck
 
@@ -1072,6 +1251,11 @@ DIRECT_ENTRY = {
 ROUTES = {
     ('GET', '/'): Handler.home,
     ('GET', '/faq'): Handler.faq,
+    ('GET', '/account'): Handler.account_page,
+    ('POST', '/account/authenticator/start'): Handler.authenticator_start,
+    ('POST', '/account/authenticator/cancel'): Handler.authenticator_cancel,
+    ('POST', '/account/authenticator/confirm'): Handler.authenticator_confirm,
+    ('POST', '/account/authenticator/remove'): Handler.authenticator_remove,
     ('GET', '/unstuck'): Handler.unstuck_form,
     ('POST', '/unstuck'): Handler.unstuck,
     ('GET', '/ticket/new'): Handler.ticket_new_form,

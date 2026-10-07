@@ -20,6 +20,8 @@
 #include "ScriptMgr.h"
 #include "AreaTrigger.h"
 #include "Creature.h"
+#include "Item.h"
+#include "ItemTemplate.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "SpellAuraEffects.h"
@@ -206,8 +208,204 @@ class classic_spell_profession_book : public SpellScript
     }
 };
 
+// 20154, 21084, 20287-20293 - Seal of Righteousness: each melee swing that lands adds the rank's Holy damage spell. Vanilla formula on the
+// seal's points (which grow per level) and the weapon: slower weapons hit harder, two-handers more (sniffs of the official beta:
+// 20154 -> 25742, 21084 -> 25741, 3-6 damage at low level)
+class classic_spell_pal_seal_of_righteousness : public AuraScript
+{
+    static uint32 GetDamageSpell(uint32 sealId)
+    {
+        switch (sealId)
+        {
+            case 20154: return 25742;
+            case 21084: return 25741;
+            case 20287: return 25740;
+            case 20288: return 25739;
+            case 20289: return 25738;
+            case 20290: return 25737;
+            case 20291: return 25736;
+            case 20292: return 25735;
+            case 20293: return 25713;
+            default:    return 0;
+        }
+    }
+
+    bool Validate(SpellInfo const* spellInfo) override
+    {
+        return ValidateSpellInfo({ GetDamageSpell(spellInfo->Id) });
+    }
+
+    bool CheckProc(ProcEventInfo& eventInfo)
+    {
+        return GetTarget()->IsPlayer() && eventInfo.GetActionTarget() && eventInfo.GetDamageInfo()
+            && eventInfo.GetDamageInfo()->GetAttackType() == BASE_ATTACK;
+    }
+
+    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
+    {
+        PreventDefaultAction();
+
+        Player* player = GetTarget()->ToPlayer();
+        Item* weapon = player->GetWeaponForAttack(BASE_ATTACK, true);
+        float const speed = (weapon ? weapon->GetTemplate()->GetDelay() : BASE_ATTACK_TIME) / 1000.0f;
+        float const points = float(aurEff->GetAmount());
+
+        float damage;
+        if (weapon && weapon->GetTemplate()->GetInventoryType() == INVTYPE_2HWEAPON)
+            damage = 1.2f * points * 1.2f * 1.03f * speed / 100.0f + 1.0f;
+        else
+            damage = 0.85f * std::ceil(points * 1.2f * 1.03f * speed / 100.0f) - 1.0f;
+        damage += 0.03f * (player->GetWeaponDamageRange(BASE_ATTACK, MINDAMAGE) + player->GetWeaponDamageRange(BASE_ATTACK, MAXDAMAGE)) / 2.0f;
+
+        // spell power is added by the damage spell itself (its bonus coefficient)
+        player->CastSpell(eventInfo.GetActionTarget(), GetDamageSpell(GetId()), CastSpellExtraArgs(aurEff)
+            .AddSpellMod(SPELLVALUE_BASE_POINT0, std::max(int32(damage) + 1, 1)));
+    }
+
+    void Register() override
+    {
+        DoCheckProc += AuraCheckProcFn(classic_spell_pal_seal_of_righteousness::CheckProc);
+        OnEffectProc += AuraEffectProcFn(classic_spell_pal_seal_of_righteousness::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+    }
+};
+
+// 20271 - Judgement: unleashes the active seal's judgement on the target; the seal stays (sniff of the official beta 2026-10-06: Seal of
+// Righteousness -> 20187, Seal of the Crusader -> 21183, Seal of Righteousness keeps adding Holy damage to the swings after Judgement)
+enum ClassicPaladinJudgement
+{
+    SPELL_JUDGEMENT_OF_THE_CRUSADER_REFRESH_PROC = 25942,
+    SPELL_JUDGEMENT_OF_THE_CRUSADER_REFRESH      = 25943
+};
+
+static bool IsCrusaderJudgement(uint32 spellId)
+{
+    switch (spellId)
+    {
+        case 21183: case 20188: case 20300: case 20301: case 20302: case 20303:
+            return true;
+        default:
+            return false;
+    }
+}
+
+class classic_spell_pal_judgement : public SpellScript
+{
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        Unit* caster = GetCaster();
+        Unit* target = GetHitUnit();
+        if (!target)
+            return;
+
+        for (auto const& [auraId, aurApp] : caster->GetAppliedAuras())
+        {
+            uint32 judgement = GetClassicSealJudgement(auraId);
+            if (!judgement || aurApp->GetBase()->GetCasterGUID() != caster->GetGUID())
+                continue;
+
+            caster->CastSpell(target, judgement, CastSpellExtraArgs(TRIGGERED_FULL_MASK).SetTriggeringSpell(GetSpell()));
+            // Judgement of the Crusader: the paladin's swings keep it on the target (25942 procs 25943, which casts it again)
+            if (IsCrusaderJudgement(judgement))
+                caster->CastSpell(caster, SPELL_JUDGEMENT_OF_THE_CRUSADER_REFRESH_PROC, CastSpellExtraArgs(TRIGGERED_FULL_MASK).SetTriggeringSpell(GetSpell()));
+            break;
+        }
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(classic_spell_pal_judgement::HandleScript, EFFECT_0, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+// 25943 - Judgement of the Crusader (refresh, from the 25942 swing proc): casts the paladin's Judgement of the Crusader on the target
+// again while it is on it (sniff 2026-10-06: every swing after the judgement shows 25942, 21183, 25943)
+class classic_spell_pal_judgement_of_the_crusader_refresh : public SpellScript
+{
+    void HandleDummy(SpellEffIndex /*effIndex*/)
+    {
+        Unit* caster = GetCaster();
+        Unit* target = GetHitUnit();
+        if (!target)
+            return;
+
+        for (auto const& [auraId, aurApp] : target->GetAppliedAuras())
+        {
+            if (!IsCrusaderJudgement(auraId) || aurApp->GetBase()->GetCasterGUID() != caster->GetGUID())
+                continue;
+
+            caster->CastSpell(target, auraId, CastSpellExtraArgs(TRIGGERED_FULL_MASK).SetTriggeringSpell(GetSpell()));
+            break;
+        }
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(classic_spell_pal_judgement_of_the_crusader_refresh::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+    }
+};
+
+// 20473, 20929, 20930 - Holy Shock (trainer, levels 40/48/56): heals a friendly target or damages an enemy with the rank's spell
+// (the retail script only knows rank 1)
+class classic_spell_pal_holy_shock : public SpellScript
+{
+    static std::pair<uint32, uint32> GetRankSpells(uint32 spellId) // damage, heal
+    {
+        switch (spellId)
+        {
+            case 20473: return { 25912, 25914 };
+            case 20929: return { 25911, 25913 };
+            case 20930: return { 25902, 25903 };
+            default:    return { 0, 0 };
+        }
+    }
+
+    bool Validate(SpellInfo const* spellInfo) override
+    {
+        auto [damage, heal] = GetRankSpells(spellInfo->Id);
+        return ValidateSpellInfo({ damage, heal });
+    }
+
+    SpellCastResult CheckCast()
+    {
+        Unit* caster = GetCaster();
+        Unit* target = GetExplTargetUnit();
+        if (!target)
+            return SPELL_FAILED_BAD_TARGETS;
+
+        if (!caster->IsFriendlyTo(target))
+        {
+            if (!caster->IsValidAttackTarget(target))
+                return SPELL_FAILED_BAD_TARGETS;
+            if (!caster->isInFront(target))
+                return SPELL_FAILED_UNIT_NOT_INFRONT;
+        }
+        return SPELL_CAST_OK;
+    }
+
+    void HandleDummy(SpellEffIndex /*effIndex*/)
+    {
+        Unit* caster = GetCaster();
+        Unit* target = GetHitUnit();
+        if (!target)
+            return;
+
+        auto [damage, heal] = GetRankSpells(GetSpellInfo()->Id);
+        caster->CastSpell(target, caster->IsFriendlyTo(target) ? heal : damage, GetSpell());
+    }
+
+    void Register() override
+    {
+        OnCheckCast += SpellCheckCastFn(classic_spell_pal_holy_shock::CheckCast);
+        OnEffectHitTarget += SpellEffectFn(classic_spell_pal_holy_shock::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+    }
+};
+
 void AddSC_classic_spell_scripts()
 {
+    RegisterSpellScript(classic_spell_pal_holy_shock);
+    RegisterSpellScript(classic_spell_pal_judgement_of_the_crusader_refresh);
+    RegisterSpellScript(classic_spell_pal_seal_of_righteousness);
+    RegisterSpellScript(classic_spell_pal_judgement);
     RegisterSpellScript(classic_spell_profession_book);
     RegisterSpellScript(classic_spell_ground_area_damage);
     RegisterSpellScript(classic_spell_heal_injured_druid);

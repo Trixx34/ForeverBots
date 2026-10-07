@@ -70,6 +70,8 @@ private:
     RequestHandlerResult HandleGetPortal(std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context) const;
 
     RequestHandlerResult HandlePostLogin(std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context) const;
+    RequestHandlerResult HandleAuthenticatorCode(std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context, std::string const& code) const;
+    std::string GetAuthenticatorUrl(LoginHttpSession const& session) const;
     static RequestHandlerResult HandlePostLoginSrpChallenge(std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context);
     RequestHandlerResult HandlePostRefreshLoginTicket(std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context) const;
 

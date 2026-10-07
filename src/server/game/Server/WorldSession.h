@@ -1255,6 +1255,7 @@ class TC_GAME_API WorldSession
         void Handle_NULL(WorldPackets::Null& null);          // not used
         void HandleClubFinderProbe(WorldPackets::Null& packet);  // Classic 1.60 Guild Finder
         void HandleLfgListProbe(WorldPackets::Null& packet);    // Classic 1.60 Group Finder: layouts still being worked out
+        void HandleRecentAllyProbe(WorldPackets::Null& packet); // Classic 1.60 Social window: Recent Allies tab (RecentAllies.cpp)
         void HandleGetLastCatalogFetch(WorldPackets::Null& null);   // Classic 1.60 catalog shop
         void Handle_EarlyProccess(WorldPackets::Null& null); // just mark packets processed in WorldSocket::ReadDataHandler
         void LogUnprocessedTail(WorldPacket const* packet);

@@ -90,6 +90,8 @@ uint32 Account::HandleGetAccountInfo(account::v2::client::GetAccountInfoRequest 
     account::v2::AccountInfo* info = response->mutable_info();
 
     info->set_account_id(_session->GetAccountId());
+    if (AccountInfo const* accountInfo = _session->GetAccountInfo(); accountInfo && !accountInfo->BattleTag.empty())
+        info->set_battle_tag(accountInfo->BattleTag);
     info->add_flags(account::v2::AccountInfo::FLAG_IS_HIDDEN_FROM_FRIEND_FINDER);
     // Classic 1.60 catalog shop builds its storefront requests from the account's region, country and currency
     info->set_country("USA");
