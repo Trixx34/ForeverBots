@@ -39,6 +39,8 @@ INSERT INTO `trainer` (`Id`, `Type`, `Greeting`, `VerifiedBuild`) VALUES (820000
 INSERT INTO `creature_trainer` (`CreatureID`, `TrainerID`, `MenuID`, `OptionID`) VALUES (8200001, 8200001, 4664, 0);
 INSERT INTO `trainer_spell` (`TrainerId`, `SpellId`, `MoneyCost`, `ReqSkillLine`, `ReqSkillRank`, `ReqAbility1`, `ReqAbility2`, `ReqAbility3`, `ReqLevel`, `VerifiedBuild`)
   SELECT 8200001, `SpellId`, `MoneyCost`, `ReqSkillLine`, `ReqSkillRank`, `ReqAbility1`, `ReqAbility2`, `ReqAbility3`, `ReqLevel`, 0 FROM `trainer_spell` WHERE `TrainerId` = 1000927;
+-- These spells do not exist in this client build (worldserver logs them as ignored): drop them.
+DELETE FROM `trainer_spell` WHERE `TrainerId` = 8200001 AND `SpellId` IN (20912, 20913, 20914, 25899);
 
 DROP TEMPORARY TABLE IF EXISTS tmp_pc;
 CREATE TEMPORARY TABLE tmp_pc AS SELECT * FROM `creature` WHERE `guid` = 20031865;
