@@ -8,7 +8,7 @@ needs to account for.
 
 - Remote: `https://github.com/advocaite/TrinityCore.git`
 - Branch `forever` runs **TrinityCore master** source against the **WoW Classic
-  beta client 1.60.1.70170** (`_classic_beta_\WowB.exe`), not WotLK/retail.
+  beta client 1.60.1.70245** (`_classic_beta_\WowB.exe`), not WotLK/retail.
 - World database: a **vanilla (1.12-era) world converted from VMaNGOS**, plus
   original custom content ("Skyborne" / Zephras Isle).
 - No MySQL/manual setup needed for players — a Windows repack handles it. For

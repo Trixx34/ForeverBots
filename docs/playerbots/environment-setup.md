@@ -77,7 +77,7 @@ it only touches the new `BotMgr` singleton. Everything below is for later
 phases (an actual bot character walking around) or for verifying the fork
 in-game generally:
 
-- **A legitimate copy of the WoW Classic Beta client, build 1.60.1.70170**
+- **A legitimate copy of the WoW Classic Beta client, build 1.60.1.70245**
   (`_classic_beta_\WowB.exe`). Needed to:
   - run this branch's `mapextractor` / `vmap4extractor` / `vmap4assembler` /
     `mmaps_generator` against it (CASC product `wow_classic_beta` — this
@@ -91,7 +91,7 @@ in-game generally:
   for that hostname (restricted with
   `nameConstraints = critical,permitted;DNS:actual.battle.net` — never share
   the CA's private key), and the
-  [Forever Launcher](https://github.com/advocaite/foreverlauncher) to point
+  [Forever Launcher](https://github.com/advocaite/foreverlauncher-releases) to point
   the client at the right portal/public key. The repack's `setup/Setup.ps1`
   has the exact `openssl` commands if you go this route.
 

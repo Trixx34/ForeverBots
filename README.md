@@ -1,8 +1,8 @@
 # ![logo](https://community.trinitycore.org/public/style_images/1_trinitycore.png) TrinityCore (master)
 
-## This fork: WoW Classic beta 1.60.1.70170 ("Forever")
+## This fork: WoW Classic beta 1.60.1.70245 ("Forever")
 
-Branch `forever` runs TrinityCore master against the **WoW Classic beta client 1.60.1.70170** (`_classic_beta_\WowB.exe`)
+Branch `forever` runs TrinityCore master against the **WoW Classic beta client 1.60.1.70245** (`_classic_beta_\WowB.exe`)
 with a vanilla world (converted from VMaNGOS) and the Skyborne / Zephras Isle content.
 
 **Just want to play?** Use the Windows repack from the releases: extract, run `Setup.bat`, start the servers in the
@@ -59,7 +59,7 @@ Then move `dbc`, `gt`, `maps`, `vmaps` and `mmaps` into the worldserver's `DataD
 - a certificate for `trinity.actual.battle.net` signed by a root CA that the client PC trusts. Create your **own** CA
   (restrict it with `nameConstraints = critical,permitted;DNS:actual.battle.net`) and never share its private key.
   The repack's `setup\Setup.ps1` shows the exact openssl commands.
-- start the client with the [Forever Launcher](https://github.com/advocaite/foreverlauncher), which sets the portal and
+- start the client with the [Forever Launcher](https://github.com/advocaite/foreverlauncher-releases), which sets the portal and
   the server's public key.
 
 [![Average time to resolve an issue](https://isitmaintained.com/badge/resolution/TrinityCore/TrinityCore.svg)](https://isitmaintained.com/project/TrinityCore/TrinityCore "Average time to resolve an issue") [![Percentage of issues still open](https://isitmaintained.com/badge/open/TrinityCore/TrinityCore.svg)](https://isitmaintained.com/project/TrinityCore/TrinityCore "Percentage of issues still open")
