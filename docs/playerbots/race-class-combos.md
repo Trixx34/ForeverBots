@@ -1,6 +1,6 @@
 # Race/class combinations on Forever
 
-Source: the owner's table of available combinations (screenshot, 2026-10-06), transcribed here. `*` marks a combination that is **new for Forever** (not in 1.12 vanilla). Skyborne is a race of its own and exists on both factions, except where noted.
+Source: a table of available combinations (screenshot, 2026-10-06), transcribed here. `*` marks a combination that is **new for Forever** (not in 1.12 vanilla). Skyborne is a race of its own and exists on both factions, except where noted.
 
 | Class | Allowed races |
 |---|---|

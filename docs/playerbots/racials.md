@@ -1,6 +1,6 @@
 # Racials on Forever (reference for bot behavior)
 
-Source: the owner pasted the Wowhead guide "All Racials and Available Class-Race Combinations in World of Warcraft: Forever" (by Serenal, updated 2026-09-25, written before the game's release), plus reader comments. **Treat this as a secondary source:** the guide itself says it may be incomplete, several racials were still being corrected, and comment claims are unverified. The authoritative data is this fork's spell/racial data (DBC/hotfix tables and `playercreateinfo*`); check there before coding anything. Paraphrased, not copied.
+Source: the Wowhead guide "All Racials and Available Class-Race Combinations in World of Warcraft: Forever" (by Serenal, updated 2026-09-25, written before the game's release), plus reader comments. **Treat this as a secondary source:** the guide itself says it may be incomplete, several racials were still being corrected, and comment claims are unverified. The authoritative data is this fork's spell/racial data (DBC/hotfix tables and `playercreateinfo*`); check there before coding anything. Paraphrased, not copied.
 
 ## Combinations
 - The six new combinations announced so far are Gnome Priest, Human Hunter, Dwarf Shaman, Orc Mage, Troll Warlock and Undead Paladin, "with more planned". They match the starred cells in [race-class-combos.md](race-class-combos.md). More combinations may be added later, so the bot factory must read the allowed set from the game data, not hard-code the table.
@@ -32,4 +32,4 @@ Readers noted the Horde variant looks weaker; that is a balance question, not a 
 ## Open questions that affect the bot code
 - Whether **haste** exists as a stat in this fork's combat code (a reader asked whether 1% haste does anything). Check the stat code before using haste in any bot decision.
 - Priest-specific racials per race (reader comments mention a Gnome Priest area stun and a resist-death ability): unverified, needs the real spell data.
-- Active racials with a defensive or utility role (Stoneform, Will of the Forsaken, Escape Artist, War Stomp, Berserking, Blood Fury) are candidates for the class-ai racial usage rules in phases 4 to 6. Not needed for Phase 1.
+- Active racials with a defensive or utility role (Stoneform, Will of the Forsaken, Escape Artist, War Stomp, Berserking, Blood Fury) are candidates for the combat AI racial usage rules in phases 4 to 6. Not needed for Phase 1.

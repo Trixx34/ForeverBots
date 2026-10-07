@@ -1,4 +1,4 @@
--- Missing class trainers found from TRAIN_NO_TRAINER events (sim run 2026-10-07). Apply to forever_world. Idempotent. NOT applied on any main DB by the agent.
+-- Missing class trainers found from TRAIN_NO_TRAINER events in a bot simulation run. Apply to forever_world. Idempotent.
 -- 1. Dwarf (race 3) shaman: new Ironforge trainer 8200002 (cloned from Haromm 986, faction 55 Alliance-friendly, dwarf model of Brandur Ironhammer 5149,
 --    trainer spell list of 1000986), creature guid 26300003 between Brandur Ironhammer and Beldruk Doombrow.
 -- 2. Exile's Reach (races 95/96, map 2991): the trainer NPCs already exist and are spawned (251964 warrior, 251376 hunter, 251389 rogue, 251374 shaman,

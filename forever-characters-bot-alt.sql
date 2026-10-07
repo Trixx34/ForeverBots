@@ -1,5 +1,5 @@
 -- Alt bots remembered across worldserver restarts (BotAlts, Bot.Alt.Persist).
--- Apply to the forever_characters database (idempotent). NOT applied anywhere by the agent: the owner applies it.
+-- Apply to the forever_characters database (idempotent).
 -- Without this table the worldserver logs one warning and simply does not remember alts (no crash).
 CREATE TABLE IF NOT EXISTS `bot_alt` (
   `guid` bigint unsigned NOT NULL COMMENT 'characters.guid of the alt bot',

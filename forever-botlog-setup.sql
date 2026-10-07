@@ -1,12 +1,12 @@
 -- Bot logging database for the Forever bots.
--- NOT yet run anywhere. Run as root on the NAS (after confirming):
---   docker exec -i MySQL mysql -uroot -p < forever-botlog-setup.sql
--- Replace CHANGE_ME first. Host 192.168.34.32 = the Forever VM.
+-- Creates the bot log database and user. Replace the password placeholder and host before running:
+--   mysql -h<db-host> -uroot -p < forever-botlog-setup.sql
+-- The host in the user definitions below is the address of the machine running the worldserver (<client-host>).
 
 CREATE DATABASE IF NOT EXISTS forever_botlog DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE USER IF NOT EXISTS 'foreverbot'@'192.168.34.32' IDENTIFIED BY 'CHANGE_ME';
-GRANT ALL PRIVILEGES ON forever_botlog.* TO 'foreverbot'@'192.168.34.32';
+CREATE USER IF NOT EXISTS 'forever_bot'@'<client-host>' IDENTIFIED BY 'CHANGE_ME';
+GRANT ALL PRIVILEGES ON forever_botlog.* TO 'forever_bot'@'<client-host>';
 FLUSH PRIVILEGES;
 
 USE forever_botlog;

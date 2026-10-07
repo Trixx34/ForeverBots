@@ -63,7 +63,7 @@ copied code keeps its notices and credits.
 - **Drop or re-author:** WotLK talent/glyph/dual-spec/DK/vehicle/arena/LFG-tool/emblem content; all per-class spell
   and talent data is re-authored from this fork's Classic spell and talent data; thresholds re-tuned against this
   fork's rewritten combat and stat code (`Unit::CalculateMeleeDamage`, `Player::UpdateStats`).
-- **Skyborne classes (confirmed by the owner):** six classes are available to Skyborne: Warrior, Hunter, Rogue, Druid,
+- **Skyborne classes (confirmed):** six classes are available to Skyborne: Warrior, Hunter, Rogue, Druid,
   plus Shaman (Horde only) and Mage (Alliance only). Class AI and quest paths must work for those on Zephras Isle too.
   Still to confirm: which classes the other races use for the "10 per class per faction" test target (plain Classic is
   9 classes, about 180 bots) and whether Skyborne bots count as a separate group.
@@ -73,7 +73,7 @@ copied code keeps its notices and credits.
 
 ## 3. Forever-specific requirement: the log is part of the engine
 Reference projects log for developers. Here the log drives bot scripting, so the engine records, per bot, in
-`forever_botlog` (plumber's `BotMgr::LogEvent`): which strategy/trigger/action ran and why (`reason` code, alternatives
+`forever_botlog` (`BotMgr::LogEvent`): which strategy/trigger/action ran and why (`reason` code, alternatives
 considered), state changes between combat/non-combat/dead, deaths in full (killer, damage taken, position, last
 decisions), quest progress and the specific blocker when a quest cannot complete (`quest_blocked`), `stuck`,
 `path_fail`, flee/wipe events. Rules: log on state change not per tick; severity levels; per-bot trace switch; never
@@ -81,26 +81,25 @@ a synchronous DB call from a map thread (the logger is already buffered and batc
 
 ## 4. Phased plan
 Each phase ends with a verify step run on a live worldserver with throwaway characters; do not start the next phase
-until it is confirmed (not "compiles"). Owners: `plumber` = infrastructure, `class-ai` = behavior, `server-ops`,
-`db-keeper`, `data-extractor` as named.
+until it is confirmed (not "compiles"). Work areas: infrastructure, behavior (combat AI), server setup, database, data extraction.
 
 | # | Phase | Deliverable | Verify | Needs |
 |---|---|---|---|---|
 | 0 | Scaffold (done) | `BotMgr`, `.bot hello`, `Bot.Enabled`, RBAC perm | `.bot hello` | build ok |
-| 0b | Bot log (written, unbuilt) | `BotLogDatabase` pool, batched `LogEvent`, `.bot logtest` | rows appear in `bot_event` | plumber builds and tests |
+| 0b | Bot log (written, unbuilt) | `BotLogDatabase` pool, batched `LogEvent`, `.bot logtest` | rows appear in `bot_event` | build and test |
 | 1 | Socket-less session and login | `LoginBot`/`LogoutBot`, trimmed login | bot visible, survives restart and shutdown with no data loss | `dbc`/`gt`/`maps` (done), worldserver running |
 | 2 | Engine core | Strategy/Trigger/Action/Value/Multiplier classes, three engines, relevance bands, name registries, action queue, `BotAI` tick from the map thread | unit-style test strategy fires and logs; tick cost measured with 180 idle bots | Phase 1 |
 | 3 | Non-combat basics | follow/stay/guard, loot, eat/drink/rest, release/revive, stuck detection | follows a GM through a zone, recovers from death | vmaps/mmaps for pathing |
 | 4 | Command and control | whisper/party-chat vocabulary, security (who may command), custom strategy editing, `.bot` GM commands | commands work, unauthorized ignored | 3 |
 | 5 | Combat core (generic) | target selection, threat/aggro, assist, pull, flee, potions, interrupts, wipe handling | bot does not over-pull, does not die trivially | 3 |
-| 6 | First class end to end | Warrior (melee, no mana) against this fork's formulas, then the other 8 classes one by one | sane damage/threat vs level and gear per class | 5, per-class agents (see 7) |
+| 6 | First class end to end | Warrior (melee, no mana) against this fork's formulas, then the other 8 classes one by one | sane damage/threat vs level and gear per class | 5 |
 | 7 | Factory and gearing | create bots, level, Classic talent premades, gear by stat weights/BiS, spell training, consumables | 10 per class per faction created and equipped reproducibly | 6 |
 | 8 | Travel, grind and quests | travel node graph generated from our mmaps/maps, RPG target choice, grind, quest accept/complete/reward, taxi, fishing | bot levels 1-10 by questing; blocked quests are logged with a reason | mmaps/vmaps, quest data |
 | 9 | Random-bot manager | login/logout rotation, level and zone distribution, teleports, activity throttling, performance limits | 180 bots stable, tick budget respected | 7, 8 |
-| 9b | Knowledge layer | strategy priorities, aura lists, mob/quest blacklists read from tables (not hard-coded); richer log events (encounter start/end, aura applied/removed, damage timeline, who could dispel/interrupt); `bot-analyst` post-mortems and proposed rules with owner approval, versioned with rollback | a rule changes bot behavior without a rebuild and can be rolled back; a death post-mortem is produced from log data | 9, plumber extends the schema |
+| 9b | Knowledge layer | strategy priorities, aura lists, mob/quest blacklists read from tables (not hard-coded); richer log events (encounter start/end, aura applied/removed, damage timeline, who could dispel/interrupt); log analysis post-mortems and proposed rules, reviewed before adoption, versioned with rollback | a rule changes bot behavior without a rebuild and can be rolled back; a death post-mortem is produced from log data | 9, extend the schema |
 | 10 | Economy and social | vendor/repair, bank, mail, trade, auction, guilds, professions, chat/emote text | bots trade and sell without duplicating items | 9 |
 | 11 | Group content | Classic dungeon and raid strategies (RFC to Scholomance, MC, Onyxia, BWL, ZG, AQ, Naxx), battlegrounds (WSG, AB, AV) | clear a dungeon with a mixed party | 6, 10 |
-| 11b | Simulation harness | separate sim worldserver and databases, auto-formed parties, instance reset, run ids and outcomes in the log, batch runner, A/B batches (`bot-sim`, results read by `bot-analyst`) | 100 unattended runs complete and are all visible in the log; an A/B batch yields a comparable result | 11, bots able to clear content |
+| 11b | Simulation harness | separate sim worldserver and databases, auto-formed parties, instance reset, run ids and outcomes in the log, batch runner, A/B batches (simulation, results read via the log analysis queries) | 100 unattended runs complete and are all visible in the log; an A/B batch yields a comparable result | 11, bots able to clear content |
 | 12 | Polish and tuning | config surface, perf monitor, text translation, docs | soak test | all |
 
 Cross-cutting: a per-phase validation note appended to `docs/playerbots/progress.md`; new SQL only as dated files in
@@ -116,14 +115,14 @@ Cross-cutting: a per-phase validation note appended to `docs/playerbots/progress
 5. **Class list** (Skyborne additions) and vanilla spell/talent data accuracy must be checked per class.
 6. **Scope control:** phases 8-11 are each months of work in the reference projects; consider cutting Phase 11 and
    parts of 10 for a first release.
-7. **Decided (owner, 2026-10-05): the first milestone is world population** (phases 1-9: bots that log in, level,
-   quest and roam on their own), not party fillers. Consequences: phase 8 (travel, grind, quests, `bot-nav`) and
+7. **Decision: the first milestone is world population** (phases 1-9: bots that log in, level,
+   quest and roam on their own), not party fillers. Consequences: phase 8 (travel, grind, quests, navigation) and
    phase 9 (random-bot manager) move from "later" to the critical path, `mmaps` quality becomes a hard dependency,
    and phase 4 (command/control) shrinks to GM commands plus a minimal vocabulary until population works. The engine
    must be cheap enough for ~180 bots acting independently from phase 2 on, and the log must make it possible to see
    why an unattended bot is stuck. Group-play features (parts of 5, 10, 11) follow after the milestone.
 
-## 5. Later development notes (owner)
+## 5. Later development notes
 
 - **Quest log (in scope now, Phase 2):** per bot, log which quest was accepted, progressed, completed, rewarded (chosen reward, xp, money), abandoned or failed, as `quest` events with `quest_id`, so questing can be reviewed per bot and per quest.
 - **Group quests (later, Phase 8 or 11):** when a bot has a quest meant for a group (the log marks these with `group_quest` and `suggested_players`), it should check chat (party, say or a world channel, whatever the Phase 4 vocabulary provides) for other bots that have the same quest or are free to help, and do it together. Needs: group-quest detection (already in the log), a chat vocabulary to ask and answer ("anyone for <quest>?"), matching bots by quest and zone, forming a group, and a shared objective until all members have completed or given up. The simulation can test this with several bots holding the same quest.

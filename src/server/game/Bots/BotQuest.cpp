@@ -973,7 +973,7 @@ void ObjectiveEntries(QuestObjective const& obj, std::vector<uint32>& out)
     }
 }
 
-// effective level gap used to skip dangerous kill targets (same shape as class-ai's flee check, stricter threshold)
+// effective level gap used to skip dangerous kill targets (same shape as the combat flee check, stricter threshold)
 int32 EffectiveDiff(Player const* bot, Creature const* c)
 {
     return int32(c->GetLevel()) - int32(bot->GetLevel()) + (c->IsElite() ? Cfg().EliteBonus : 0);

@@ -1,14 +1,14 @@
 # Bot questing design (levels 1-10, start zones)
 
-**Date:** 2026-10-06. Owner agent for the implementation: `bot-nav` (quest logic), with `class-ai`, `plumber`, `bot-sim`, `bot-analyst`
+**Date:** 2026-10-06. Work areas: navigation (quest logic), combat AI, bot infrastructure, simulation, log analysis
 (see section 9). Design only: nothing in the repo, the databases or the servers was changed to write this.
 
 **Evidence base.** Every number below comes from SELECT queries on the sim's frozen world copy `forever_sim_world` (queries in
 appendix A, re-runnable), from the sim worldserver's `DBErrors.log` of its current start (2026-10-06), from the core source in
 `src/server/game` and from the bot code in `src/server/game/Bots`. Where a claim is a heuristic or could not be verified from SQL it
-says so. The Python I used for chain/route statistics lives outside the repo; appendix B states the algorithm so it can be redone.
+says so. The Python used for chain/route statistics is not part of the repo; appendix B states the algorithm so it can be redone.
 
-## 0. Findings the owner should read first
+## 0. Key findings
 
 1. **The data is not ready for every race.** `playercreateinfo` starts **Troll at Echo Isles (-1171,-5264) and Gnome at (-4983,878)**,
    not in Valley of Trials / Coldridge Valley. There are 0 quest starters within 300 yd of either point (Echo Isles has only wildlife
@@ -37,8 +37,8 @@ says so. The Python I used for chain/route statistics lives outside the repo; ap
 
 **Goal.** A bot created at level 1 in its race's start zone finds quests, picks a sensible next quest, travels to the giver, accepts,
 does every objective, turns in, picks a reward and continues, until level 10, solo, unattended, on map threads, at 180-bot scale. Every
-time it cannot continue, a log row says why (`quest_blocked`, `stuck`, `path_fail`) with a stable reason code, so the owner and
-`bot-analyst` can script around it.
+time it cannot continue, a log row says why (`quest_blocked`, `stuck`, `path_fail`) with a stable reason code, so
+log analysis can script around it.
 
 **First target.** Levels 1-10 in the ten start zones (eight races, plus Skyborne Alliance and Horde), plus the 1-10 class quests that
 sit in those zones, plus the next ring of zones only as far as needed to keep a level 9-10 bot busy.
@@ -50,7 +50,7 @@ sit in those zones, plus the next ring of zones only as far as needed to keep a 
 - escort quests (blacklisted until a bot can follow and defend an NPC; section 4.4);
 - timed quests, quests needing a skill or reputation (blacklisted by default);
 - levels above 10 (the beta cap is 30; the data model here is level-agnostic, the pool and tests are not);
-- gold/vendor/repair/training loops (Phase 10 / class-ai Phase 7; quests only need bags not to be full);
+- gold/vendor/repair/training loops (Phase 10 / combat AI Phase 7; quests only need bags not to be full);
 - the travel node graph, taxis, boats and zeppelins (Phase 8 proper; section 5.7 says what the first milestone does without them).
 
 **Terms used throughout.**
@@ -70,7 +70,7 @@ sit in those zones, plus the next ring of zones only as far as needed to keep a 
 ### 2.1 Start positions
 
 `playercreateinfo` has 292 rows for 33 races (retail leftovers: Blood Elf, Draenei, Goblin, Worgen, Pandaren, allied races, Death
-Knight/Monk/Demon Hunter/Evoker rows). The bot factory must take the allowed race/class set from the owner's table
+Knight/Monk/Demon Hunter/Evoker rows). The bot factory must take the allowed race/class set from the table of available combinations
 (`race-class-combos.md`) / game data (`class_expansion_requirement`, `race_unlock_requirement` has Skyborne races 95 and 96 at
 expansion 0), not from `playercreateinfo` alone.
 
@@ -83,15 +83,15 @@ expansion 0), not from `playercreateinfo` alone.
 | Undead (5) | 0, 1699.9, 1706.6, 135.9 | Deathknell (area 154, Tirisfal 85) | yes | 17 (10 from sort 154) |
 | Tauren (6) | 1, -2915.6, -257.3, 59.3 | Camp Narache (area 220, Mulgore 215) | yes | 16 (8 from sort 220) |
 | **Gnome (7)** | 0, **-4983.4, 877.7, 274.3** | should be Coldridge Valley | **NO** | **0** (only a `Techbot` spawn nearby; the nearest NPC with the questgiver flag, Namdo Bizzfizzle, is 163 yd away and starts no quest) |
-| **Troll (8)** | 1, **-1171.5, -5263.7, 0.8** | should be Valley of Trials (owner's note) | **NO** | **0** (Echo Isles: only wildlife around the point, for example Surf Crawlers, Bloodtalon Taillashers, Durotar Tigers; no NPC) |
+| **Troll (8)** | 1, **-1171.5, -5263.7, 0.8** | should be Valley of Trials (per the design brief) | **NO** | **0** (Echo Isles: only wildlife around the point, for example Surf Crawlers, Bloodtalon Taillashers, Durotar Tigers; no NPC) |
 | Skyborne Alliance (95) | 2991, 4098.1, 1849.7, 975.6 | Thendal Village, Zephras Isle (area 16635) | yes | see 2.5 |
 | Skyborne Horde (96) | 2991, 4098.1, 1849.7, 975.6 | Thendal Village, Zephras Isle | yes | see 2.5 |
 
 Gnome and Troll look like retail start points (Echo Isles is the Cataclysm troll start). Whether the 1.60 beta really starts them
-elsewhere than their faction mates is unknown to me; the owner's brief says Valley of Trials for Orc and Troll and Coldridge/Anvilmar
+elsewhere than their faction mates is unknown; the design brief says Valley of Trials for Orc and Troll and Coldridge/Anvilmar
 for Dwarf and Gnome. See open question 1. Until decided, the Gnome and Troll rows in 2.2-2.4 assume the quest pool of Coldridge
 Valley / Valley of Trials (same pool as Dwarf / Orc, race-masked), and the factory must not create them at the current coordinates
-without a teleport. Skyborne class rows in `playercreateinfo`: 95 has classes 1,3,4,8,11 and 96 has 1,3,4,7,11, matching the owner's
+without a teleport. Skyborne class rows in `playercreateinfo`: 95 has classes 1,3,4,8,11 and 96 has 1,3,4,7,11, matching the
 table (Mage Alliance only, Shaman Horde only).
 
 ### 2.2 Quests available per start zone (classic pool, zone set, race-eligible)
@@ -283,7 +283,7 @@ Built once after `ObjectMgr` has loaded (same place the engine registry is built
 2. `SpawnIndex`: per creature/GO entry the spawn points on world maps (with `KillCredit` expansion); a coarse grid per map
    (for example 100 yd cells) for "nearest spawn of entry X from here" in O(1)-ish.
 3. `ZoneSets`: per race the pool order and hubs (derived offline or at startup from the sort ids and positions).
-4. `QuestRules` (Phase 9b): blacklist/whitelist/overrides from a table `bot_quest_rule` (to be created by `plumber` + `db-keeper`, dated
+4. `QuestRules` (Phase 9b): blacklist/whitelist/overrides from a table `bot_quest_rule` (to be created in a dated
    file in `sql/custom/`), loaded at startup and by an explicit reload command, versioned (rule version in every decision row).
 All structures are immutable after build; per-bot state lives in the bot's AI (temporary blacklist with expiry, plan, counters). Memory
 estimate: about 4605 quests x (a few hundred bytes) + 65 k spawn points: below 20 MB.
@@ -446,8 +446,7 @@ quests are reachable, the Horde main chain is cut at step 13 and the Alliance on
 The Phase 2 engine (`BotEngine.h`, `BotAI.h`, `engine-design.md`) gives three engines (NonCombat, Combat, Dead), one action per AI tick
 per bot (`Bot.AI.TickMs`, default 500 ms), O(1) triggers over cached values, relevance bands (Default 5, Normal 10, High 20, Move 30,
 Interrupt 40, Dispel 50, Raid 60, Emergency 90, Pull 105-107), multipliers (0 forbids), names in registries, `decision` rows with
-alternatives. The quest logic is implemented as new registry entries; `bot-nav` writes the quest files, `class-ai` owns the engine
-hooks (section 9). Names use the existing lower_snake style.
+alternatives. The quest logic is implemented as new registry entries; the quest files are separate from the engine hooks (section 9). Names use the existing lower_snake style.
 
 ### 5.1 State machine (per bot; the plan is derived from the player's quest log, so a relog or crash loses nothing)
 
@@ -473,7 +472,7 @@ when it is empty or stale. Transitions are logged on change only (a `decision` r
 | `quest` | NonCombat | umbrella: choose, accept, turn in, re-evaluate. Default on for levels 1-30 once Phase 8 ships. |
 | `quest_objective` | NonCombat | do the current objective: travel to target, loot, use object, talk, explore. |
 | `quest_recover` | NonCombat | stuck / path_fail / blocked handling ladder (5.6). |
-| `quest_combat` | Combat | quest-aware target preference and leash for class-ai's combat (hooks via multipliers), loot priority. |
+| `quest_combat` | Combat | quest-aware target preference and leash for the combat code (hooks via multipliers), loot priority. |
 | `quest_dead` | Dead | keep the plan across death, remember where it happened, back off from a target that killed the bot. |
 
 ### 5.3 Triggers (all O(1), read values; interval in ms for rate limiting)
@@ -486,7 +485,7 @@ when it is empty or stale. Transitions are logged on change only (a `decision` r
 | `quest_ready_turn_in` (500) | a quest is `QUEST_STATUS_COMPLETE` and the ender is within 4.5 yd | `quest_turn_in` | High 20 |
 | `quest_travel_giver` / `quest_travel_ender` (500) | plan step needs a giver/ender not yet near | `nav_move_to` (target = spawn) | Move 30 |
 | `quest_objective_pending` (500) | a quest has an unfinished objective | `quest_choose_target` then `nav_move_to` | Move 30 |
-| `quest_target_near` (500) | a valid target is visible and within pull range | `quest_engage` (hands over to class-ai pull actions, band Pull) / `quest_use_object` / `quest_talk` | High 20 |
+| `quest_target_near` (500) | a valid target is visible and within pull range | `quest_engage` (hands over to the combat pull actions, band Pull) / `quest_use_object` / `quest_talk` | High 20 |
 | `quest_loot_ready` (250) | a corpse of a quest target (or a quest GO) is lootable | `loot_target` (Phase 3 loot action) | High 20 |
 | `quest_area_trigger` (500) | explore objective: reached the trigger position | `nav_move_to` onto the trigger centre | Move 30 |
 | `quest_complete_event` (event) | `QUEST_COMPLETE` row seen (value change) | `quest_choose` (re-plan) | Normal 10 |
@@ -500,7 +499,7 @@ when it is empty or stale. Transitions are logged on change only (a `decision` r
 `quest_choose` (scores eligible quests, picks a plan, logs the decision with alternatives), `quest_choose_target` (nearest valid spawn
 of the objective entry, with `KillCredit` sources, loot sources for items), `nav_move_to` (7.5: PathGenerator + `MotionMaster::MovePoint`,
 hop chaining, no-progress detection), `quest_accept` (5.8), `quest_turn_in` (5.8, reward choice 5.9), `quest_engage` (selects the
-target and issues the pull through class-ai's attack action), `quest_use_object` (GO use for quest GOs), `quest_talk` (gossip hello on a
+target and issues the pull through the combat attack action), `quest_use_object` (GO use for quest GOs), `quest_talk` (gossip hello on a
 talk-to NPC), `quest_abandon` / `quest_abandon_worst`, `quest_block` (writes the `quest_blocked` row and the temporary blacklist),
 `quest_recover` (ladder), `quest_reevaluate`.
 
@@ -530,7 +529,7 @@ talk-to NPC), `quest_abandon` / `quest_abandon_worst`, `quest_block` (writes the
 | `quest_dead_backoff` | after a death at target T, x0 for engaging T's spawn area for 10 min (and a `TARGET_DANGEROUS` temp block after the second death) |
 | `quest_log_pressure` | at >= soft cap (12 active), x0 on `quest_accept` for non-chain quests |
 
-Relevance summary: survival (Emergency 90) and combat actions of class-ai always outrank quest actions. Within quest actions: turn-in 20
+Relevance summary: survival (Emergency 90) and combat actions always outrank quest actions. Within quest actions: turn-in 20
 > objective work 20 > travel 30 (movement band wins over idle/rest only when nothing urgent) > choose/accept 10. Quest actions never use
 a band above `Move` 30 except `quest_engage`, which delegates to the pull bands.
 
@@ -563,11 +562,11 @@ The first milestone (**local pathing only**) needs only:
 
 The `bot quest ...` test aids bypass interaction on purpose. The real flow must respect: the NPC is alive, has `UNIT_NPC_FLAG_QUESTGIVER`
 (`CanInteractWithQuestGiver` -> `GetNPCIfCanInteractWith`, 5 yd), is not hostile, `object->hasQuest(id)` (or `hasInvolvedQuest` for
-turn-in), `CanTakeQuest(quest, true)`, `CanAddQuest(quest, true)`. The most faithful and cheapest way is for `plumber` to expose
+turn-in), `CanTakeQuest(quest, true)`, `CanAddQuest(quest, true)`. The most faithful and cheapest way is to expose
 helpers that **synthesize the client packets and call the existing handlers** (`HandleQuestgiverHelloOpcode`,
 `HandleQuestgiverAcceptQuestOpcode`, `HandleQuestgiverChooseRewardOpcode`, `HandleGossipHelloOpcode` for talk-to objectives,
 `HandleLootOpcode` / `HandleAutostoreLootItemOpcode` for loot, `GameObject::Use` for GOs), so every core side effect (`TalkedToCreature`,
-`SaveToDB`, scripts, reputation, chain offers) is the real one. Open check for `plumber`: `SendPacket` on a socket-less bot session must be
+`SaveToDB`, scripts, reputation, chain offers) is the real one. Open check: `SendPacket` on a socket-less bot session must be
 a cheap no-op, and no handler may run a synchronous DB query on the map thread (`RewardQuest` ends with `SaveToDB(false)`: verify it
 stays asynchronous; 180 bots can turn in many quests per minute).
 
@@ -576,7 +575,7 @@ stays asynchronous; 180 bots can turn in many quests per minute).
 At turn-in with a non-empty `RewardChoiceItemID*` (pool: 161 of 847 quests have a choice, 2-6 options):
 1. Drop options the bot cannot use (`Player::CanUseItem`, class/armor/weapon proficiency, required level, `AllowableClass`).
 2. For each usable option compute the upgrade value = stat-weighted score of the item minus the score of the item in the same slot
-   (empty slot = full score), using class-ai's per-class stat weights (Phase 7 table; `class-ai` owns it). Until Phase 7 exists, use
+   (empty slot = full score), using the per-class stat weights (Phase 7 table). Until Phase 7 exists, use
    a simple proxy: armor class match (cloth/leather/mail/plate for the class) first, then item level / required level, then main stat.
 3. If no option is an upgrade or weights are unknown: **vendor price fallback**, the highest `ItemTemplate::GetSellPrice()`.
 4. Log `choice_item` (the existing QUEST_REWARDED field) plus a `decision` row `QUEST_REWARD_CHOICE` with the scored alternatives.
@@ -637,8 +636,8 @@ The engine already moves to the Dead engine on death (`DIED`, `REVIVED`, recent 
 the Dead engine except `quest_dead` (keeps the plan; core fails `COMPLETION_NO_DEATH` quests by itself and logs `QUEST_FAILED cause =
 died`). On revival: re-run `quest_choose` (the plan from the quest log may have changed). Death accounting: after one death at target
 entry T, a 10-minute back-off from T's spawn area; after two deaths, a temporary `TARGET_DANGEROUS` block on the quest (30 min) and a
-`quest_blocked` row; after the death run (corpse retrieval is a Phase 3/5 `class-ai` feature) the bot resumes at the plan's last
-waypoint, not at the target. Combined with the `Bot.AI` death rows the owner can see which quest killed whom.
+`quest_blocked` row; after the death run (corpse retrieval is a Phase 3/5 combat feature) the bot resumes at the plan's last
+waypoint, not at the target. Combined with the `Bot.AI` death rows it is visible which quest killed whom.
 
 ## 6. Logging
 
@@ -647,10 +646,10 @@ waypoint, not at the target. Combined with the `Bot.AI` death rows the owner can
 `QUEST_ACCEPTED`, `QUEST_PROGRESS` (first change, completing change, everything under trace), `QUEST_COMPLETE`, `QUEST_REWARDED`
 (choice item, xp, money, `accept_to_reward_s`), `QUEST_ABANDONED`, `QUEST_FAILED` (cause), all from `BotQuestLog` with `quest_id` set.
 `details.source` stays `"bot"` for real bot activity and `"test_command"` for `bot quest ...` aids (analysts filter
-`details->>'$.source' = 'bot'`). New: `details.strategy` (the strategy that caused it, for example `quest`), added by `plumber`; and
+`details->>'$.source' = 'bot'`). New: `details.strategy` (the strategy that caused it, for example `quest`), added to the log schema; and
 `details.run_id` for the sim (Phase 11b). No new event types are needed for the quest events.
 
-Changes requested from `plumber` (the schema is theirs): (1) the `group_quest` flag must use a new detector, `group_quest =
+Changes needed in the log schema: (1) the `group_quest` flag must use a new detector, `group_quest =
 (SuggestedGroupNum > 1) OR QuestInfoID in {1, 62, 81} OR any objective target is an elite`, and add `details.group_reason`; today it
 is false for every classic quest. (2) `QUEST_REWARDED` should carry the choice options and scores when the bot chose
 (`details.choices[]`); (3) a startup audit writes one `quest_blocked` row per static blocker with `source = "audit"` (a pseudo bot
@@ -659,7 +658,7 @@ guid 0 or a reserved system guid; the console panel groups by reason/zone/quest,
 ### 6.2 `quest_blocked` reason codes
 
 Event type `quest_blocked`, severity WARN (2) for a permanent block, INFO (1) for a temporary one; `Reason` = the code below (upper
-snake, like the existing codes; the owner's lower-case names map one to one: `no_starter_spawn` = `NO_STARTER_SPAWN` ...). Columns:
+snake, like the existing codes; the lower-case working names map one to one: `no_starter_spawn` = `NO_STARTER_SPAWN` ...). Columns:
 `quest_id` always; `target_entry` when the blocker names an NPC/creature/GO/item; position/zone/map/level as for every event.
 Logged **once per bot, quest and code** and again only when the code changes, or when a temporary block expires and recurs; static
 blockers are logged once per boot by the audit. Common `details` fields on every row: `source`, `strategy`, `title`, `quest_level`,
@@ -694,7 +693,7 @@ blockers are logged once per boot by the audit. Common `details` fields on every
 
 `path_fail` rows (separate event type) keep `NO_PATH`, `NO_PROGRESS`, `MMAP_MISSING`, `PARTIAL_PATH_LIMIT` with `details` {from, to,
 path_type, hops, distance, remaining}; `stuck` rows keep `NO_PROGRESS`, `GEOMETRY_TRAP`, `UNREACHABLE_TARGET`, `NO_PROGRESS_FALLBACK`.
-New codes are proposals for `plumber`; the console's demo reason lists (`QUEST_PREREQ`, `TARGET_ELITE`, `OBJECT_NOT_FOUND`) are
+New codes are proposals; the console's demo reason lists (`QUEST_PREREQ`, `TARGET_ELITE`, `OBJECT_NOT_FOUND`) are
 placeholders, map `TARGET_ELITE` to `ELITE_TOO_STRONG` and `OBJECT_NOT_FOUND` to `NO_TARGET_SPAWN`.
 
 #### 6.2.1 Implemented codes (BotQuest.cpp, registered)
@@ -811,8 +810,8 @@ The why-stuck panel (`api_stuck` in `C:\ForeverSim\console\app.py`) counts `even
 window and groups by `reason`, `zone_id` and `quest_id`, with distinct bot counts. It does not read `details`. Therefore: (1) each code
 above is one `reason` value, so the by-reason table is the first answer; (2) `zone_id` must be set on every row (the engine fills
 `GetZoneId()`), (3) `quest_id` must be set (the by-quest table shows the most-blocked quests), and (4) the detail JSON is for the live
-feed and for `bot-analyst` queries. `source` is not filtered by the panel today; since audit rows and test-command rows would
-inflate the counts, `plumber`/the console owner should add `details.source = 'bot'` to the panel's default filter (or the audit uses a
+feed and for log analysis queries. `source` is not filtered by the panel today; since audit rows and test-command rows would
+inflate the counts, the console should add `details.source = 'bot'` to the panel's default filter (or the audit uses a
 distinct event type `quest_audit`).
 
 ## 7. Metrics and success criteria for the first milestone
@@ -846,13 +845,13 @@ Mapping to the sim console scenarios (table `scenario` in `forever_sim_log`, ids
   faction-specific variants.
 - `Zone: Elwynn Forest L5-10` (id 14): the continuation test (hub batching, parent zone). `Load test: idle population` (id 17): the tick
   cost baseline, rerun with the quest strategy on.
-New scenarios to add (owner `bot-sim`):
+New scenarios to add (simulation):
 1. one `L1-10` scenario per start zone (Coldridge, Shadowglen, Deathknell, Camp Narache, Valley of Trials, Elwynn, Zephras Alliance and
    Horde), 10 bots with the zone's allowed classes;
 2. `Class matrix L1-5`: 10 bots per allowed race/class combination, short, to find class-specific failures (new combos Gnome Priest,
    Undead Paladin, Human Hunter, Orc Mage, Dwarf Shaman, Troll Warlock);
 3. `Blacklist audit`: one bot per seed-blacklist quest, `bot quest add` (source `test_command`) to prove or clear each entry, results go
-   to `bot-analyst`;
+   to log analysis;
 4. `Recovery`: forced deaths mid-quest (`bot kill`), checks the plan resumes and the back-off works;
 5. `Log pressure`: give a bot 35 quests, checks `QUEST_LOG_FULL`/abandon rules;
 6. `Stuck injection`: bots placed behind a known geometry trap, checks the ladder and `UNREACHABLE`;
@@ -860,7 +859,7 @@ New scenarios to add (owner `bot-sim`):
 
 ## 8. Group quests (later)
 
-What the owner described: a bot holding a group quest asks for help in chat; other bots that have the same quest, or are free, join
+Idea: a bot holding a group quest asks for help in chat; other bots that have the same quest, or are free, join
 and do it together.
 
 What exists: `BotQuestLog` marks `group_quest` and `suggested_players` on `QUEST_ACCEPTED/COMPLETE/...` events, **but the flag is
@@ -879,27 +878,27 @@ What is needed later:
    `CanShareQuest` and the existing `PushQuestToParty` path for bots that do not have it;
 5. forming a group (the core `Group` API, `IsInSameRaidWith` is checked by the accept handler), a shared objective until all members
    completed or gave up, and loot rules for quest items;
-6. scenarios: several bots holding the same quest (the owner's note says the sim can test this).
+6. scenarios: several bots holding the same quest (the sim can test this).
 Dungeon quests (`QuestInfoID` 81) come with Phase 11 and need party/instance logic, not chat alone.
 
 ## 9. Work breakdown, risks and open questions
 
 ### 9.1 Steps (ordered; each ends with a verify on the sim)
 
-| # | Step | Owner | Verify (sim) |
+| # | Step | Area | Verify (sim) |
 |---|---|---|---|
-| 0 | Data fixes proposed as dated `sql/custom/*` files for the owner to apply: Troll/Gnome start rows; relation rows for quests with item/script starts once probed; 94488-94491; creature templates for the Zephras objectives (252078 ...) and the broken Zephras chain (92528/93926/93927); only after the owner decides what the beta really does (open questions 1, 2) | `db-keeper` (SQL), `bot-nav` (list), owner applies | the audit counts in appendix A drop by the fixed ids; `playercreateinfo` row for race 7/8 points at the expected valley |
-| 1 | `QuestIndex`/`SpawnIndex` startup caches and the static-blocker audit as a GM command (`bot quest audit`) with a table of `Quest::XPValue` per zone set and level 1-10 | `bot-nav` (code), `plumber` (hook, log source `audit`) | the command output equals appendix A (94/10/73/11/21/61, 847 pool); load time and memory logged; no DB access from map threads |
-| 2 | Quest values, triggers, actions skeleton, `quest` strategy registered, not default; trace rows | `class-ai` (engine hooks), `bot-nav` | `bot strategy <name> +quest` on one bot; `decision` rows show `quest_choose` with candidates and rejects; zero cost when off |
-| 3 | Navigation: `nav_move_to` with hop chaining, no-progress detection, stuck ladder, `path_fail` / `stuck` rows | `bot-nav` | a bot walks Northshire start -> Goldshire (~590 yd) and Valley of Trials -> Razor Hill (~1000 yd) on the sim; a deliberately blocked goal produces `path_fail NO_PATH` with details |
-| 4 | Interaction helpers (synthesized client packets): hello, accept, reward, loot, GO use | `plumber` | a bot accepts quest 783 `A Threat Within` and turns in 7 `Kobold Camp Cleanup` through the real handlers; `QUEST_ACCEPTED/REWARDED source=bot` rows |
-| 5 | Kill/loot/GO/talk/area-trigger objectives with target choice, leash and combat hand-off | `bot-nav` + `class-ai` (pull actions) | the Northshire chain 783 -> 7 -> 15 -> 21 -> 54 (verified in the data: each has the previous as `PrevQuestID`/`RewardNextQuest`) completed by a Warrior bot, `QUEST_PROGRESS` and `QUEST_COMPLETE` rows, level 5 reached |
-| 6 | Scoring, hub batching, chain continuation, re-evaluation triggers, reward choice, soft cap and abandon rules | `bot-nav` | scenario 11/12 variant with races fixed: completion/blocked metrics from section 7 for L1-5 |
-| 7 | Death/recovery integration and the back-off multipliers | `class-ai` + `bot-nav` | `Recovery` scenario |
-| 8 | Seed blacklist as `bot_quest_rule` rows + reload; `BLACKLISTED` rows; first analyst loop | `plumber`/`db-keeper` (table), `bot-analyst` (rules from the log), owner approves | a rule added at runtime changes a bot's behavior without a rebuild and can be rolled back |
-| 9 | L1-10 per start zone incl. parent-zone hubs; Zephras specifics (criteria objectives, area triggers) | `bot-nav` | per-zone L1-10 scenarios meet the section 7 criteria, `quest_blocked` summary per zone from the console panel |
-| 10 | 180-bot load run, tick-cost report, log volume check | `bot-sim`, `plumber` | `Load L1-10 x 180` within the tick-cost budget |
-| 11 | Group quest layer (section 8) | `bot-nav`, `plumber`, `class-ai` | later |
+| 0 | Data fixes proposed as dated `sql/custom/*` files to apply: Troll/Gnome start rows; relation rows for quests with item/script starts once probed; 94488-94491; creature templates for the Zephras objectives (252078 ...) and the broken Zephras chain (92528/93926/93927); only after it is decided what the beta really does (open questions 1, 2) | Database (SQL), navigation | the audit counts in appendix A drop by the fixed ids; `playercreateinfo` row for race 7/8 points at the expected valley |
+| 1 | `QuestIndex`/`SpawnIndex` startup caches and the static-blocker audit as a GM command (`bot quest audit`) with a table of `Quest::XPValue` per zone set and level 1-10 | navigation (code), bot infrastructure (hook, log source `audit`) | the command output equals appendix A (94/10/73/11/21/61, 847 pool); load time and memory logged; no DB access from map threads |
+| 2 | Quest values, triggers, actions skeleton, `quest` strategy registered, not default; trace rows | combat AI (engine hooks), navigation | `bot strategy <name> +quest` on one bot; `decision` rows show `quest_choose` with candidates and rejects; zero cost when off |
+| 3 | Navigation: `nav_move_to` with hop chaining, no-progress detection, stuck ladder, `path_fail` / `stuck` rows | navigation | a bot walks Northshire start -> Goldshire (~590 yd) and Valley of Trials -> Razor Hill (~1000 yd) on the sim; a deliberately blocked goal produces `path_fail NO_PATH` with details |
+| 4 | Interaction helpers (synthesized client packets): hello, accept, reward, loot, GO use | bot infrastructure | a bot accepts quest 783 `A Threat Within` and turns in 7 `Kobold Camp Cleanup` through the real handlers; `QUEST_ACCEPTED/REWARDED source=bot` rows |
+| 5 | Kill/loot/GO/talk/area-trigger objectives with target choice, leash and combat hand-off | navigation + combat AI (pull actions) | the Northshire chain 783 -> 7 -> 15 -> 21 -> 54 (verified in the data: each has the previous as `PrevQuestID`/`RewardNextQuest`) completed by a Warrior bot, `QUEST_PROGRESS` and `QUEST_COMPLETE` rows, level 5 reached |
+| 6 | Scoring, hub batching, chain continuation, re-evaluation triggers, reward choice, soft cap and abandon rules | navigation | scenario 11/12 variant with races fixed: completion/blocked metrics from section 7 for L1-5 |
+| 7 | Death/recovery integration and the back-off multipliers | combat AI + navigation | `Recovery` scenario |
+| 8 | Seed blacklist as `bot_quest_rule` rows + reload; `BLACKLISTED` rows; first analyst loop | bot infrastructure/database (table), log analysis (rules from the log), reviewed before adoption | a rule added at runtime changes a bot's behavior without a rebuild and can be rolled back |
+| 9 | L1-10 per start zone incl. parent-zone hubs; Zephras specifics (criteria objectives, area triggers) | navigation | per-zone L1-10 scenarios meet the section 7 criteria, `quest_blocked` summary per zone from the console panel |
+| 10 | 180-bot load run, tick-cost report, log volume check | simulation, bot infrastructure | `Load L1-10 x 180` within the tick-cost budget |
+| 11 | Group quest layer (section 8) | navigation, bot infrastructure, combat AI | later |
 
 ### 9.2 Risks
 
@@ -908,17 +907,16 @@ Dungeon quests (`QuestInfoID` 81) come with Phase 11 and need party/instance log
 - **Navigation:** hop chaining over 1000-2000 yd valley-to-hub legs, water/cliff traps and partial paths are unproven on this data;
   mmaps for Zephras (33 tiles) have not been exercised by any bot.
 - **Dependencies on other phases:** looting (Phase 3), pull/combat quality and survivability at level 1-10 for six-to-nine classes
-  (Phases 5-6, `class-ai`), resting/eating, release/revive. Questing is only as good as the weakest of these.
+  (Phases 5-6, combat), resting/eating, release/revive. Questing is only as good as the weakest of these.
 - **Beta vs vanilla:** respawn rates were raised in several zones, escort bugs fixed, XP changes unknown (beta notes); the converted data
   follows VMaNGOS 1.12 plus sniffed Forever additions. Kill-credit and loot behavior may differ from VMaNGOS (multi-drop quest items
   were fixed in the beta).
 - **Competition:** 180 bots in the same start zone share spawns; respawn timers (`spawntimesecs`) will starve quest mobs. Needs a
   per-spawn reservation or fast target switching (and it is a population-manager question, Phase 9).
-- **Load:** `RewardQuest` does `SaveToDB(false)` per turn-in; with 180 bots turning in quests in bursts this may need batching by
-  `plumber`.
+- **Load:** `RewardQuest` does `SaveToDB(false)` per turn-in; with 180 bots turning in quests in bursts this may need batching.
 - **Log volume:** hub batching and `QUEST_PROGRESS` can spam; mitigated by logging first/last change only and state-change rules.
 
-### 9.3 Open questions for the owner
+### 9.3 Open questions
 
 1. **Gnome and Troll start positions.** Is (-4983,878) / Echo Isles really what the beta uses, or should they match Dwarf (Coldridge) and
    Orc (Valley of Trials) like the 1.12 start? Until decided, the factory must not create Gnome/Troll bots at these coordinates.
@@ -1140,7 +1138,7 @@ SELECT o.QuestID, o.ObjectID FROM quest_objectives o WHERE o.Type = 0 AND o.Ques
   AND NOT EXISTS (SELECT 1 FROM creature_template t WHERE t.entry = o.ObjectID);
 ```
 
-Log-file checks (sim worldserver `C:\ForeverSim\server\logs\DBErrors.log`, current start):
+Log-file checks (sim worldserver `DBErrors.log`, current start):
 
 ```
 grep -E "^Quest [0-9]+ .*(objective [0-9]+ has non existing|RewardItemId|RewardChoiceItemId|SourceItemId|RewardNextQuest)" DBErrors.log
@@ -1151,7 +1149,7 @@ Then restrict to quest ids in the pool (the counts in 4.3 are per distinct class
 ## Appendix B. Method notes for the numbers not in SQL
 
 The chain statistics, hubs, route lengths and the prerequisite cascade were computed offline from TSV dumps of the same tables (Python, kept in
-the session scratchpad, not in the repo). To redo them:
+a throwaway script). To redo them:
 - **Race eligibility:** `(AllowableRaces >> bit) & 1` with the bits above; **class eligibility:** `AllowableClasses = 0` or bit (class-1).
 - **Chain edges** inside a zone set: `PrevQuestID` (abs value) -> quest; `RewardNextQuest` and `NextQuestID` quest -> next. Roots = quests with
   no incoming edge inside the set; "longest chain" = longest path from a root (cycle guarded); components via undirected traversal.

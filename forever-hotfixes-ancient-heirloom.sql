@@ -2,7 +2,7 @@
 -- RECONSTRUCTED FROM WOWHEAD (not from client DB2): common quality, item level 1, binds when picked up, Finger (ring, inventory type 11),
 -- armor/misc subclass, no stats, no spells, icon inv_jewelry_ring_118 (FileDataID 629694, from the community listfile), flavour text below.
 -- No existing ring uses that icon and rings have no item_modified_appearance row, so no display id is needed.
--- Apply to the forever_hotfixes database. Idempotent (REPLACE). NOT applied on any main DB by the agent: the owner applies it.
+-- Apply to the forever_hotfixes database. Idempotent (REPLACE).
 -- The server reads item/item_sparse from hotfixes; hotfix_data rows (Status 1 = valid) make the client receive the records.
 -- Needs a worldserver restart to load. Unused stat slots are -1 like other items; remaining columns are cloned from ring 1076 / 1156.
 START TRANSACTION;

@@ -436,7 +436,7 @@ void BotCombatCtx::End(Player* bot)
                 Seq, RoleName(BotRole), Cfg().FleeMode, (ai->GetNowMs() - StartMs) / 1000, Picked, TargetsDead, casts, CastFails, Heals, NoPowerSkips,
                 MeleeFallback ? "true" : "false", (Fleeing || FleeGaveUp) ? "true" : "false", FleeGaveUp ? "true" : "false", FleeAttempts, FleeReason, RangedBroken ? "true" : "false",
                 BotStateName(ai->GetState()));
-        // plumber hunk: per-spell breakdown (casts, hits, damage, power) and unused spells, appended inside the details object
+        // per-spell breakdown (casts, hits, damage, power) and unused spells, appended inside the details object
         summaryJson.pop_back();
         summaryJson += "," + ai->TakeSpellBreakdownJson(bot) + "}";
         ai->EmitEvent(bot, "decision", BOTLOG_INFO, "COMBAT_SUMMARY",
@@ -543,7 +543,7 @@ bool Affordable(Player* bot, SpellInfo const* si)
     return bot->GetPower(bot->GetPowerType()) >= CostOf(bot, si);
 }
 
-// Decision log helper (the fight id is added by the plumber's combat events, the seq ties our rows to the summary).
+// Decision log helper (the fight id is added by the combat events, the seq ties our rows to the summary).
 void LogDecision(BotAI* ai, Player* bot, BotCombatCtx* ctx, char const* reason, std::string summary, std::string extra, uint8 sev = BOTLOG_INFO)
 {
     ai->EmitEvent(bot, "decision", sev, reason, std::move(summary),

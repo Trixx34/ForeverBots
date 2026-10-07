@@ -2,7 +2,7 @@
 -- 'no_friendly_trainer_for_race_in_world'. Cloned from Father Lazarus (4608, Undercity priest trainer: faction 68 Undead, same flags/model/level
 -- style) with the trainer spell list of the Alliance paladin trainer Brother Wilhelm (trainer 1000927, 136 spells) and his mace/shield equipment.
 -- Entry/trainer id 8200001, creature guids 26300001 (Deathknell church, next to the other class trainers) and 26300002 (Undercity, between the warrior and
--- priest trainers). Apply to the forever_world database. Idempotent. NOT applied on any main DB by the agent: the owner applies it. Needs a worldserver restart.
+-- priest trainers). Apply to the forever_world database. Idempotent. Needs a worldserver restart.
 START TRANSACTION;
 
 DELETE FROM `creature` WHERE `guid` IN (26300001, 26300002);

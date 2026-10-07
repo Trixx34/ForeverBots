@@ -2,7 +2,7 @@
 # Builds ONLY the data-extraction tools for Linux (mapextractor, vmap4extractor,
 # vmap4assembler, mmaps_generator). No server, no database needed.
 #
-# Intended to run inside a throwaway container so nothing is installed on the host, e.g. on the NAS:
+# Intended to run inside a throwaway container so nothing is installed on the host:
 #   docker run --rm -v /path/to/ForeverBots:/src -v /path/to/tools-out:/out ubuntu:24.04 \
 #       bash /src/contrib/build-tools-linux.sh
 # The binaries end up in /out (static-ish: they only need libstdc++/zlib/bzip2/boost shared libs

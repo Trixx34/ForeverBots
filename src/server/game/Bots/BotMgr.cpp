@@ -57,7 +57,7 @@ namespace
 // Classes bots are made from (Classic): Warrior, Paladin, Hunter, Rogue, Priest, Shaman, Mage, Warlock, Druid.
 constexpr std::array<uint8, 9> BotClasses = { CLASS_WARRIOR, CLASS_PALADIN, CLASS_HUNTER, CLASS_ROGUE, CLASS_PRIEST, CLASS_SHAMAN, CLASS_MAGE, CLASS_WARLOCK, CLASS_DRUID };
 
-// The owner's table of race/class combinations (docs/playerbots/race-class-combos.md), 52 combinations with Skyborne counted once
+// The table of supported race/class combinations (docs/playerbots/race-class-combos.md), 52 combinations with Skyborne counted once
 // per class. Race ids: 95 High Order Skyborne (Alliance), 96 Windshaper Skyborne (Horde). Mage: Alliance Skyborne only,
 // Shaman: Horde Skyborne only. This table decides what bots are created; playercreateinfo must agree (a refused combination
 // shows up as a creation failure, it is not worked around here).
@@ -914,7 +914,7 @@ int8 BotMgr::ParseFaction(std::string const& text)
     return -1;
 }
 
-// A race/class pair bots may be created with: only the owner's table.
+// A race/class pair bots may be created with: only the supported table.
 bool BotMgr::IsValidCombo(uint8 raceId, uint8 classId)
 {
     for (BotComboRow const& row : BotCombos)

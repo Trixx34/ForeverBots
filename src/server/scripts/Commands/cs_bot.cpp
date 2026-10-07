@@ -569,7 +569,7 @@ public:
 
     // bot tele <name> <map> <x> <y> <z>: test aid, teleports a bot (the teleport handshake is completed by the BotMgr).
     // A destination within 500 yd of the start point of a race of the other faction is refused (hostile guards kill the bot,
-    // see the Northshire deaths of 2026-10-06) unless the optional last argument is "force".
+    // see the observed Northshire deaths) unless the optional last argument is "force".
     static bool HandleBotTeleCommand(ChatHandler* handler, std::string name, uint32 mapId, float x, float y, float z, Optional<std::string> force)
     {
         Player* player = FindOneBot(handler, name);

@@ -22,7 +22,7 @@ RelWithDebInfo build, 10 to 180 bots, never on the real realm.
   fire when a per-bot time bucket changes (fixed random phase), so bots spread again after a stall. After the fix 1800 decisions
   over 100 s landed in 524 distinct 50 ms slots.
 
-**Quest log (owner addition)** `bot quest add|complete|reward|abandon|fail` on throwaway sim bots (quests 783, 7, 358, 9, 183, 788):
+**Quest log** `bot quest add|complete|reward|abandon|fail` on throwaway sim bots (quests 783, 7, 358, 9, 183, 788):
 QUEST_ACCEPTED, QUEST_PROGRESS (first change and the completing change only), QUEST_COMPLETE, QUEST_REWARDED (xp, money, reputation
 ids, choice item with name, accept_to_reward_s), QUEST_ABANDONED and QUEST_FAILED (WARN) all appeared in `bot_event` with `quest_id`,
 level/map/zone/position, `details.source = test_command`, `cause`, `alive`, `engine`. Not exercised: a real (non-test) failure cause
@@ -109,11 +109,11 @@ event; config is read once (no reload); trace rows are INFO severity by design (
   (details: path_type, end_gap, end_gap_3d, path_length, nav_end). The goal z is replaced by the navmesh height of the path end when the path is
   complete and within 10 yd, so arrival is judged against the walkable surface. NO_PATH details now carry `start_off_navmesh` /
   `goal_off_navmesh`; GOTO_START carries `end_gap_3d`, `goal_far_from_poly`. `bot nudge` now only moves a bot when the destination is a
-  complete walkable path (otherwise skipped and reported). PATH_PARTIAL_FAR is a new reason code (plumber to register it in the schema docs).
-- Sim tooling: `C:\ForeverSim\scripts\sim-burst.py` (`--mode valid` probes 16 headings per start and needs `type 0x01 valid 1 partial 0`, matched by
+  complete walkable path (otherwise skipped and reported). PATH_PARTIAL_FAR is a new reason code (to be registered in the schema docs).
+- Sim tooling: `scripts/sim-burst.py` (`--mode valid` probes 16 headings per start and needs `type 0x01 valid 1 partial 0`, matched by
   goal coordinates; `--expect 180` refuses to run unless exactly 180 bots are online), `reset-bot-positions.py` (despawn, reset to
   playercreateinfo, spawn 180). The sim has 360 bot characters; `bot spawn 180` must only run with 0 online (it created 180 extra characters when
-  run with 180 online). The sim worldserver is also restarted by other users of the sim (controller/console); check the uptime before a burst.
+  run with 180 online). The sim worldserver can also be restarted by the run controller or console; check the uptime before a burst.
 - Results (sim, 180 bots online, one terminal outcome per bot):
   - Fixed-offset burst, old code, same start positions: 91 arrived, 49 NO_PATH, 39 NO_PROGRESS then 39 UNREACHABLE_TARGET (stuck cycle 8 s x 3).
   - Fixed-offset burst, new code: 90 arrived, 50 NO_PATH (gnome 20 + Skyborne 30, goals on mesh holes), 39 PATH_PARTIAL_FAR (orc 18, dwarf 21)
@@ -130,11 +130,11 @@ event; config is read once (no reload); trace rows are INFO severity by design (
   per-bot `chat_command` bot_event with issuer, channel, match, outcome, reason; unauthorized attempts rate limited per issuer), test path
   `bot say <issuer> <party|raid|whisper> <text>` and `bot group form|move|list|disband|disbandall` (cs_bot.cpp), three one-line hooks in
   `Handlers/ChatHandler.cpp` (party, raid, whisper), documented `Bot.Chat.*` keys in `worldserver.conf.dist`.
-- Builds clean (worldserver, RelWithDebInfo). Not deployed: the sim was live with 180 bots and the permission classifier blocked the sim restart (the request to class-ai for a window got no answer), so none of the
+- Builds clean (worldserver, RelWithDebInfo). Not deployed: the sim was live with 180 bots and could not be restarted at that point, so none of the
   verify steps (g-prefix/role routing on a 10-40 bot raid, unauthorized issuer logged, verbose toggle, tick cost at 180 bots) have run yet.
 - Known gaps: `rest` only toggles the strategy (no forced rest without editing BotBehavior), role selectors map classes via `Bot.Chat.Role.*`
   (hybrids are not split by spec), the unauthorized event is logged against the first bot of the group (or the whispered bot).
-- Owner decisions applied: selectors combine as follows. Subgroup parts union among themselves (`g1,g3`), role/class parts union among themselves (`tank,dps`), and a subgroup plus a role/class is an INTERSECTION (`g1,tank` = tanks inside subgroup 1). Only the party/raid leader commands bots; verbose defaults to off. Selector change rebuilt but not yet verified on the sim.
+- Decisions: selectors combine as follows. Subgroup parts union among themselves (`g1,g3`), role/class parts union among themselves (`tank,dps`), and a subgroup plus a role/class is an INTERSECTION (`g1,tank` = tanks inside subgroup 1). Only the party/raid leader commands bots; verbose defaults to off. Selector change rebuilt but not yet verified on the sim.
 
 ## Quest pipeline (BotQuest.*), verified on the sim 2026-10-06 (partially), not committed
 - New: `src/server/game/Bots/BotQuest.{h,cpp}`; hunks in BotEngine.h, BotStrategies.cpp, BotMgr.cpp (EnsureIndex in StartLogin), worldserver.conf.dist (Bot.Quest.*).
@@ -148,16 +148,16 @@ event; config is read once (no reload); trace rows are INFO severity by design (
 ## Basic combat (BotCombat.*), verified on the sim 2026-10-06, not committed
 - Strategy `combat` (Combat engine, default `Bot.AI.Default.Combat = "combat"`): triggers `combat_engaged`, `combat_need_heal`, `combat_fleeing`; actions `combat_flee` (Emergency, BotMotion SetGoal+Step), `combat_heal` (SELF_HEAL below `HealBelowPct`), `combat_engage` (pick nearest opponent that is not too strong, Attack + MoveChase, ranged classes stop at `CasterRangePct` of spell range), `combat_cast` (per class table of 27 vanilla rank-1 spell ids, resolved against what the bot knows incl. rank chain; `bot spells <name>` shows it). Only level-gated spells are known: trainer spells (Serpent Sting, Arcane Shot, Battle Shout, Rend, Frostbolt, Fire Blast, Earth Shock, Immolate, Corruption, Moonfire, SWP, Judgement ...) are NOT known at level 1 and bots never train, so L1 rotations are 1-2 spells.
 - Config (`Bot.AI.Combat.*`, documented in worldserver.conf.dist): Flee.Enabled, Flee.LevelDiff (4), EliteLevelBonus (3), Flee.MaxSec, Flee.Yards, ApproachTimeoutSec, HealBelowPct, CasterRangePct.
-- Events: TARGET_PICKED, FLEE_LEVEL_DIFF / FLEE_ENDED / FLEE_GAVE_UP / FLEE_BLOCKED, FIGHT_TOO_STRONG, APPROACH_TIMEOUT, RANGED_TO_MELEE, CAST_FAILED (deduped, with result name), CAST_NO_POWER, SELF_HEAL, NO_TARGET (diagnostic), COMBAT_SUMMARY (casts per spell, targets, heals) next to plumber's COMBAT_START/END.
+- Events: TARGET_PICKED, FLEE_LEVEL_DIFF / FLEE_ENDED / FLEE_GAVE_UP / FLEE_BLOCKED, FIGHT_TOO_STRONG, APPROACH_TIMEOUT, RANGED_TO_MELEE, CAST_FAILED (deduped, with result name), CAST_NO_POWER, SELF_HEAL, NO_TARGET (diagnostic), COMBAT_SUMMARY (casts per spell, targets, heals) next to COMBAT_START/END.
 - ROOT CAUSE found on the way (fixed in CharacterHandler.cpp, HandleBotPlayerLogin, one line): `Player::CanNeverSee` hides every object from a player lacking PLAYER_LOCAL_FLAG_OVERRIDE_TRANSPORT_SERVER_TIME (normally set by the client time sync). Bots never got it, so a bot saw NOTHING: IsValidAttackTarget and spell target checks failed against every creature. Now set at bot login. Anything else that depends on bot visibility was affected before.
 - Evidence (sim, n = 4 bots per class = 36 bots, one run each, teleported next to Elwynn Young Wolf spawns, `bot aggro 30`, 4-5 min, same protocol both runs; "kills" = mobs killed per the combat_end rows): combat strategy removed (`bot strategy all -combat`): 44 fights, 0 kills, 0 damage dealt, 43 deaths. Combat on: 45 fights, 41 mobs killed (18 fights ended target_killed), 26 deaths; every class dealt damage (mobs killed per class: warrior 0, paladin 1, hunter 3, rogue 7, priest 6, shaman 6, mage 6, warlock 6, druid 6; deaths: warrior 6, paladin 6, hunter 6, rogue 0, others 1-2). Why warriors/paladins/hunters die more was not investigated (hypothesis: empty rage/mana at start, no ranged pull). A second run (all 180 bots `bot aggro 30` plus the same 36 teleported onto wolves): 120 fights, 30 ended target_killed, 21 deaths, 10 FLEE_LEVEL_DIFF each followed by FLEE_ENDED, but all 12 fights that had a FLEE_LEVEL_DIFF still ended `died` (Northshire Guard L55 one-shots, wolves outrun): the `bot_fled` outcome (set by BotAI.cpp when the bot is still moving to a goal at fight end) was NOT observed. Casts seen: Heroic Strike, Wrath, Healing Touch, Seal of Righteousness, Auto Shot, Raptor Strike, Sinister Strike, Eviscerate, Smite, Lightning Bolt, Fireball, Shadow Bolt.
 - Tick cost, 180 bots in combat: avg 14.2 us (baseline idle/no-combat 10.4-11.9 us); combat hooks 8 us avg per call outside the tick. Whole-server cost of the visibility fix (bots now get visibility updates) is NOT measured; `server info` showed update time diff 2 ms at 180 bots idle on this build, with no A/B against the old build.
 - Fight then `bot goto` on the same bot: GOTO_START/GOTO_ARRIVED fine (2 of 2), eat/drink after the fight works (EAT/DRINK_START/DONE/REST_END). Corpse run after a death works.
 - Not verified: Judgement (not known at L1), hunter ammo/Auto Shot failures at scale, rogue EQUIPPED_ITEM_CLASS (seen once for Sinister Strike), higher levels, groups, pets, PvP (CanFight uses IsValidAttackTarget, so neutral NPCs that are not at war are skipped with NO_TARGET).
 
-## bot-nav: E3 hubs, E1 trainers, E4 vendors, Skyborne data gap, quarantine (sim-verified, 60 bots, 20 min)
+## Navigation: E3 hubs, E1 trainers, E4 vendors, Skyborne data gap, quarantine (sim-verified, 60 bots, 20 min)
 - E3: startup index (starter quests, hubs, grind spawns). Events QUEST_NO_LOCAL, QUEST_HUB_TRAVEL, QUEST_HUB_NONE, QUEST_GRIND.
 - E1: class trainers cached at startup (Index.Trainers, key is class id; profession trainers would use 0x100|skill). Events TRAIN_TRIP, TRAINED, TRAIN_NO_MONEY, TRAIN_NO_TRAINER, TRAIN_UNREACHABLE. Trainer.h: GetSpell/CanTeachSpell/GetSpellState made public, GetSpells() added.
 - E4: vendors cached at startup. Sells greys then unusable armor/weapons (never quest items, bags), repairs, buys bigger bags after spell reserve. Events VENDOR_TRIP, SOLD_ITEMS, REPAIRED, BAG_BOUGHT, BAG_NO_MONEY, BAG_BUY_FAILED, VENDOR_NONE, VENDOR_UNREACHABLE. BAG_BOUGHT not yet seen in a run.
-- Skyborne: quest 92460 'Coming of Age' reward item 264908 has no item template; TurnIn now logs REWARD_ITEM_MISSING and rewards anyway. Data gap still needs a data-extractor/db-keeper fix.
+- Skyborne: quest 92460 'Coming of Age' reward item 264908 has no item template; TurnIn now logs REWARD_ITEM_MISSING and rewards anyway. Data gap still needs a data extraction/database fix.
 - Quarantine: per-bot escalation (quest blacklisted 6 h after 3 reach failures, QUEST_QUARANTINED) and global (10 drops across bots, 1 h, QUEST_QUARANTINED_GLOBAL).

@@ -1,14 +1,14 @@
 -- Upgrade of an EXISTING forever_botlog (created from the older forever-botlog-setup.sql) to the current schema. Idempotent: safe to
--- run twice. NOT run by the plumber: the NAS is read-only unless the owner confirms. Run as a user with ALTER/CREATE/DROP on forever_botlog
--- (foreverbot has ALL PRIVILEGES on it), e.g.:
---   mysql -h192.168.34.30 -uforeverbot -p < forever-botlog-migrate-1.sql
+-- run twice. Run as a user with ALTER/CREATE/DROP on forever_botlog
+-- (the bot log user has ALL PRIVILEGES on it), e.g.:
+--   mysql -h<db-host> -u<botlog-user> -p < forever-botlog-migrate-1.sql
 -- Stop the worldserver (or accept brief metadata locks) first: every ALTER below rebuilds the partitioned bot_event table.
 -- Takes a few seconds per 100k rows. The worldserver detects the new columns/tables when it opens the pool (restart it afterwards).
 --
 -- What it adds: bot_event.session_seq, STORED generated columns killer_entry/killer_level/xp_amount/spell_id and VIRTUAL outcome/lvl_diff,
 -- indexes idx_type_sev_ts/idx_session/idx_killer/idx_spell/idx_xp (idx_reason and idx_quest are KEPT: the console filters by reason and
--- the analysts group by reason/quest_id), bot_event_hot + view bot_event_all, the summary tables, and the new roll procedures/event.
--- Tested on the local sim database (forever_sim_log) with the USE line replaced.
+-- analysis queries group by reason/quest_id), bot_event_hot + view bot_event_all, the summary tables, and the new roll procedures/event.
+-- Tested on a local test database with the USE line replaced.
 
 USE forever_botlog;
 
