@@ -4867,6 +4867,46 @@ Bot.AH.MaxListingsPerBot = 5
 Bot.AH.MaxListingsTotal = 2000
 Bot.AH.UndercutPct = 5
 Bot.AH.VisitCooldownSec = 900
+#
+#    Bot.Bank.Enabled
+#        Description: Bots with tight bags (see FreeSlotsBelow) walk to a banker and deposit materials, gems and recipes (never quest items,
+#                     gear, consumables or reagents of recipes they craft), and fetch back gear upgrades that sit in the bank. Logged as
+#                     BANK_TRIP, BANK_DEPOSIT, BANK_WITHDREW, BANK_VISIT. Bank and mail calls run on the world thread.
+#        Default:     0 - (Disabled)
+#
+#    Bot.Bank.FreeSlotsBelow / Bot.Bank.FreeSlotsTarget / Bot.Bank.MaxStacksPerVisit
+#        Description: A bank trip is due at this many free bag slots or fewer / a deposit aims for this many free slots / most stacks moved
+#                     in one visit.
+#        Default:     4 / 10 / 12
+#
+#    Bot.Bank.VisitCooldownSec
+#        Description: Seconds between two bank or mailbox visits of one bot.
+#        Default:     600
+#
+#    Bot.Bank.Mail.Enabled
+#        Description: A bot with gold above Bot.Bank.Mail.ReserveGold mails the surplus to Bot.Bank.Mail.Recipient at a mailbox (30 copper
+#                     postage). Needs a recipient. Logged as MAIL_TRIP, MAIL_SENT, MAIL_NO_RECIPIENT.
+#        Default:     0 - (Disabled)
+#
+#    Bot.Bank.Mail.Recipient
+#        Description: Character name that receives the gold. Empty = no mail.
+#        Default:     ""
+#
+#    Bot.Bank.Mail.ReserveGold / Bot.Bank.Mail.MinGold / Bot.Bank.Mail.MaxGold
+#        Description: Gold a bot keeps / surplus above the reserve that makes a mail worth the trip / cap of one mail (0 = no cap).
+#        Default:     50 / 20 / 0
+#
+
+Bot.Bank.Enabled = 0
+Bot.Bank.FreeSlotsBelow = 4
+Bot.Bank.FreeSlotsTarget = 10
+Bot.Bank.MaxStacksPerVisit = 12
+Bot.Bank.VisitCooldownSec = 600
+Bot.Bank.Mail.Enabled = 0
+Bot.Bank.Mail.Recipient = ""
+Bot.Bank.Mail.ReserveGold = 50
+Bot.Bank.Mail.MinGold = 20
+Bot.Bank.Mail.MaxGold = 0
 Bot.Quest.StallSec = 240
 Bot.Quest.MaxMobLevelDiff = 2
 Bot.Quest.SelectRadius = 350
