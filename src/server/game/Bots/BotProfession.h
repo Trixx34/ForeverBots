@@ -54,6 +54,20 @@ namespace BotProfession
     // First planned skill the bot does not have yet and may go to a trainer for at this level; 0 when there is none.
     TC_GAME_API uint32 NextToLearn(std::vector<uint32> const& plan, std::vector<uint32> const& known, uint8 level);
 
+    struct Recipe
+    {
+        uint32 SpellId = 0;
+        int32 Yellow = 0;   // skill below this: the skill-up is certain (orange/yellow)
+        int32 Grey = 0;     // skill at or above this: never skills up
+    };
+
+    // Best craftable recipe for a skill-up at this skill value: certain skill-ups first, then chance-based ones, lowest grey
+    // threshold first (cheapest materials usually); recipes already grey are skipped. Returns the index, -1 when none.
+    TC_GAME_API int PickRecipe(int32 skillValue, std::vector<Recipe> const& craftable);
+
+    // Skinning skill needed to skin a creature of this level (core formula, EffectSkinning): lets the bot skip corpses it cannot skin yet.
+    TC_GAME_API uint32 SkinReqSkill(uint32 creatureLevel);
+
     // True when a new gathering node of this skill is worth detouring for: the bot has the skill and the node is not grey for it
     // (required skill within reach of the current value), so it can still skill up or at least loot.
     TC_GAME_API bool NodeWorthIt(uint32 skillValue, uint32 reqSkill);

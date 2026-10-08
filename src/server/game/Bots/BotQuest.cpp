@@ -30,6 +30,7 @@
 #include "BotEngine.h"
 #include "BotGear.h"
 #include "BotProfession.h"
+#include "GameTime.h"
 #include "BotMgr.h"
 #include "Config.h"
 #include "Creature.h"
@@ -179,6 +180,7 @@ struct BagOffer
     int32 ReqLevel = 0;
 };
 
+constexpr uint32 SPELL_SKINNING = 8613;
 constexpr float GRID_CELL = 200.0f;
 constexpr uint32 MAX_STARTER_POINTS = 8;
 
@@ -978,6 +980,10 @@ public:
     std::unordered_map<uint64, uint8> Repeats;      // (quest, npc) -> reach failures (quarantine)
     std::unordered_map<uint32, uint32> SvcBlack;    // npc entry -> AI clock until
     std::unordered_map<uint64, uint32> GoIgnore;    // chest spawn id -> AI clock until (empty / unusable for this bot)
+    uint32 CraftNextMs = 0;                // next craft attempt
+    std::unordered_map<uint32, uint32> CraftBackoff;   // skill -> time before which crafting it is not retried (failed cast)
+    ObjectGuid SkinGuid;                   // corpse being skinned
+    uint32 SkinSinceMs = 0;
     uint32 ProfNextMs = 0;                 // next profession check
     std::vector<uint32> ProfPlan;          // BotProfession::Plan for this bot, filled on first use
     std::unordered_set<uint32> ProfWarned; // skills already reported as PROF_NO_TRAINER / PROF_NO_MONEY at this level (cleared per level)
@@ -2244,6 +2250,65 @@ private:
             EquipIfUpgrade(ai, bot, best, "GEAR_EQUIPPED", 0);
     }
 
+    // E2: first aid and cooking level up by crafting what the bot already knows from materials it already carries. One cast per call,
+    // only while standing still and out of combat. A failed cast (no cooking fire nearby, missing tool) backs that skill off for 5 minutes.
+    void CraftForSkill(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        if (bot->IsInCombat() || !bot->IsAlive() || bot->isMoving() || bot->IsNonMeleeSpellCast(false) || bot->GetLevel() < 5)
+            return;
+        for (BotProfession::Info const& info : BotProfession::All())
+        {
+            if (info.Gathering || !bot->HasSkill(info.Skill))
+                continue;
+            auto back = c.CraftBackoff.find(info.Skill);
+            if (back != c.CraftBackoff.end() && now < back->second)
+                continue;
+            int32 const skill = int32(bot->GetSkillValue(info.Skill));
+            if (skill >= int32(bot->GetMaxSkillValue(info.Skill)))
+                continue;
+            std::vector<BotProfession::Recipe> craftable;
+            for (auto const& [spellId, ps] : bot->GetSpellMap())
+            {
+                if (ps.state == PLAYERSPELL_REMOVED || !ps.active || ps.disabled)
+                    continue;
+                auto bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+                SkillLineAbilityEntry const* ab = nullptr;
+                for (auto it = bounds.first; it != bounds.second; ++it)
+                    if (it->second->SkillLine == info.Skill)
+                        ab = it->second;
+                if (!ab || ab->TrivialSkillLineRankHigh <= 0)
+                    continue;
+                SpellInfo const* si = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE);
+                if (!si)
+                    continue;
+                bool haveAll = true, any = false;
+                for (size_t i = 0; i < si->Reagent.size(); ++i)
+                    if (si->Reagent[i] > 0 && si->ReagentCount[i] > 0)
+                    {
+                        any = true;
+                        haveAll = haveAll && bot->HasItemCount(uint32(si->Reagent[i]), uint32(si->ReagentCount[i]));
+                    }
+                if (!any || !haveAll || bot->GetFreeInventorySlotCount() == 0)
+                    continue;
+                craftable.push_back({ spellId, (ab->TrivialSkillLineRankHigh + ab->TrivialSkillLineRankLow) / 2, ab->TrivialSkillLineRankHigh });
+            }
+            int const pick = BotProfession::PickRecipe(skill, craftable);
+            if (pick < 0)
+                continue;
+            uint32 const spellId = craftable[pick].SpellId;
+            SpellCastResult const res = bot->CastSpell(bot, spellId, CastSpellExtraArgs(TRIGGERED_NONE));
+            if (res == SPELL_CAST_OK)
+            {
+                Decision(ai, bot, "PROF_CRAFT", StringFormat("crafting spell {} for {} (skill {})", spellId, info.Name, skill), 0, 0,
+                    StringFormat(R"({{"skill":{},"spell":{},"skill_value":{}}})", info.Skill, spellId, skill));
+                return;
+            }
+            c.CraftBackoff[info.Skill] = now + 300000;
+            Blocked(ai, bot, c, 0, "PROF_CRAFT_FAIL", StringFormat("cannot craft spell {} for {}: cast result {}", spellId, info.Name, uint32(res)),
+                StringFormat(R"({{"skill":{},"spell":{},"result":{}}})", info.Skill, spellId, uint32(res)), 0, false);
+        }
+    }
+
     // E2: one profession trainer trip at a time. A planned profession the bot lacks comes first, then ranks of the ones it has.
     bool ProfessionTrip(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
     {
@@ -2310,6 +2375,12 @@ private:
         {
             c.NextGearMs = now + 30000;
             EquipBagUpgrade(ai, bot);
+        }
+
+        if (now >= c.CraftNextMs)
+        {
+            c.CraftNextMs = now + 15000;
+            CraftForSkill(ai, bot, c, now);
         }
 
         // 1. trainer: new level, or enough money for the cheapest spell we could not afford before. Spells have money priority.
@@ -3537,14 +3608,8 @@ private:
     }
 
     // Loots every item and the money of one of our corpses when in range. Returns true when something was done.
-    bool LootCorpse(BotAI* ai, Player* bot, BotQuestCtx& c, Task& t, Creature* m)
+    static void TakeLoot(Player* bot, Creature* m, Loot* loot)
     {
-        (void)ai; (void)c; (void)t;
-        if (!m->IsWithinDistInMap(bot, 3.5f) || !m->isTappedBy(bot))
-            return false;
-        Loot* loot = m->GetLootForPlayer(bot);
-        if (!loot || loot->isLooted())
-            return false;
         bot->SendLoot(*loot);
         for (uint32 i = 0; i < loot->items.size(); ++i)
             if (LootItem* li = loot->LootItemInSlot(i, bot))
@@ -3557,7 +3622,56 @@ private:
             loot->NotifyMoneyRemoved(m->GetMap());
         }
         bot->GetSession()->DoLootRelease(loot);
-        return true;
+    }
+
+    // E2: skins a skinnable corpse the bot is able to skin (planned profession, skill high enough, room in the bags).
+    static bool CanSkin(Player* bot, Creature* m)
+    {
+        if (!m->HasUnitFlag(UNIT_FLAG_SKINNABLE) || m->HasUnitFlag3(UNIT_FLAG3_ALREADY_SKINNED) || !bot->HasSpell(SPELL_SKINNING))
+            return false;
+        if (bot->GetFreeInventorySlotCount() == 0)
+            return false;
+        return BotProfession::SkinReqSkill(m->GetLevel()) <= bot->GetSkillValue(BotProfession::SKILL_SKINNING) + 25;
+    }
+
+    // Loots the corpse; then skins it and loots the skin. Returns true while it did something this tick.
+    bool LootCorpse(BotAI* ai, Player* bot, BotQuestCtx& c, Task& t, Creature* m)
+    {
+        (void)ai; (void)t;
+        if (!m->IsWithinDistInMap(bot, 3.5f) || !m->isTappedBy(bot))
+            return false;
+        uint32 const nowMs = GameTime::GetGameTimeMS();
+        Loot* loot = m->GetLootForPlayer(bot);
+        if (c.SkinGuid == m->GetGUID())
+        {
+            if (bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) && nowMs - c.SkinSinceMs < 6000)
+                return true;   // still casting
+            c.SkinGuid.Clear();
+            if (loot && !loot->isLooted() && m->HasUnitFlag3(UNIT_FLAG3_ALREADY_SKINNED))
+            {
+                TakeLoot(bot, m, loot);
+                Decision(ai, bot, "SKINNED", StringFormat("skinned {} (skill {})", m->GetName(), bot->GetSkillValue(BotProfession::SKILL_SKINNING)), 0, m->GetEntry(),
+                    StringFormat(R"({{"creature_level":{},"skill":{}}})", m->GetLevel(), bot->GetSkillValue(BotProfession::SKILL_SKINNING)));
+                return true;
+            }
+            return false;
+        }
+        if (loot && !loot->isLooted())
+        {
+            TakeLoot(bot, m, loot);
+            return true;
+        }
+        if (CanSkin(bot, m))
+        {
+            bot->GetMotionMaster()->Clear();
+            if (bot->CastSpell(m, SPELL_SKINNING, CastSpellExtraArgs(TRIGGERED_NONE)) == SPELL_CAST_OK)
+            {
+                c.SkinGuid = m->GetGUID();
+                c.SkinSinceMs = nowMs;
+                return true;
+            }
+        }
+        return false;
     }
 };
 

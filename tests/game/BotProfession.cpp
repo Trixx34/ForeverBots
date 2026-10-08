@@ -62,3 +62,23 @@ TEST_CASE("BotProfession node range", "[BotProfession]")
     CHECK_FALSE(NodeWorthIt(1, 27));
     CHECK(NodeWorthIt(100, 50));
 }
+
+TEST_CASE("BotProfession skinning requirement follows the core formula", "[BotProfession]")
+{
+    CHECK(SkinReqSkill(1) == 1);
+    CHECK(SkinReqSkill(10) == 1);
+    CHECK(SkinReqSkill(11) == 10);
+    CHECK(SkinReqSkill(19) == 90);
+    CHECK(SkinReqSkill(20) == 100);
+    CHECK(SkinReqSkill(60) == 300);
+}
+
+TEST_CASE("BotProfession recipe pick prefers certain skill-ups and skips grey", "[BotProfession]")
+{
+    std::vector<Recipe> r = { { 1, 40, 60 }, { 2, 100, 130 }, { 3, 20, 30 } };
+    CHECK(PickRecipe(1, r) == 2);     // all certain, lowest grey threshold wins
+    CHECK(PickRecipe(35, r) == 0);    // recipe 3 is grey, recipe 1 is chance-based, recipe 2 still certain
+    CHECK(PickRecipe(45, r) == 1);    // recipe 2 certain beats recipe 1 chance
+    CHECK(PickRecipe(130, r) == -1);  // everything grey
+    CHECK(PickRecipe(5, {}) == -1);
+}

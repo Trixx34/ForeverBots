@@ -61,6 +61,34 @@ uint32 NextToLearn(std::vector<uint32> const& plan, std::vector<uint32> const& k
     return 0;
 }
 
+int PickRecipe(int32 skillValue, std::vector<Recipe> const& craftable)
+{
+    int best = -1;
+    int bestTier = 0;
+    for (size_t i = 0; i < craftable.size(); ++i)
+    {
+        Recipe const& r = craftable[i];
+        if (skillValue >= r.Grey)
+            continue;
+        int const tier = skillValue < r.Yellow ? 2 : 1;
+        if (best < 0 || tier > bestTier || (tier == bestTier && r.Grey < craftable[best].Grey))
+        {
+            best = int(i);
+            bestTier = tier;
+        }
+    }
+    return best;
+}
+
+uint32 SkinReqSkill(uint32 level)
+{
+    if (level <= 10)
+        return 1;
+    if (level < 20)
+        return (level - 10) * 10;
+    return level * 5;   // classic levels end at 60
+}
+
 bool NodeWorthIt(uint32 skillValue, uint32 reqSkill)
 {
     // nodes more than 25 points above the bot cannot be gathered; the rest can at least be looted
