@@ -29,12 +29,14 @@
 #include "BotBehavior.h"
 #include "BotEngine.h"
 #include "BotGear.h"
+#include "BotProfession.h"
 #include "BotMgr.h"
 #include "Config.h"
 #include "Creature.h"
 #include "CreatureData.h"
 #include "DB2Stores.h"
 #include "DB2Structure.h"
+#include "SpellMgr.h"
 #include "DatabaseEnv.h"
 #include "GameObject.h"
 #include "Item.h"
@@ -195,11 +197,11 @@ struct Index
     std::unordered_map<uint64, uint32> HubByCell;                  // (map, cell) -> index in Hubs
     std::unordered_map<uint64, std::vector<GrindPt>> GrindGrid;    // (map, cell) -> hostile normal-rank spawns (grind fallback)
     uint32 NumGrind = 0;
-    // trainers by key: class id (1..11). Profession trainers would use 0x100 | skill line (not indexed in v1).
+    // trainers by key: class id (1..11), or 0x100 | skill line for the profession trainers of BotProfession (first aid, cooking, gathering)
     std::unordered_map<uint32, std::vector<SvcPt>> Trainers;
     std::vector<SvcPt> Vendors;
     std::unordered_map<uint32, std::vector<BagOffer>> VendorBags;   // vendor entry -> plain bags it sells for gold
-    uint32 NumTrainers = 0, NumBagVendors = 0, MinBagPrice = 0xFFFFFFFFu;
+    uint32 NumTrainers = 0, NumProfTrainers = 0, NumBagVendors = 0, MinBagPrice = 0xFFFFFFFFu;
     uint32 NumStarterQuests = 0, NumStarterPoints = 0, NumSpawnEntries = 0, NumItemSources = 0, NumGoItems = 0, NumGoSpawns = 0;
 } g;
 
@@ -556,7 +558,8 @@ void BuildIndex()
         ++g.NumGrind;
     }
 
-    // 9. class trainers and vendors (E1/E4)
+    // 9. class trainers, profession trainers and vendors (E1/E2/E4)
+    std::unordered_map<uint32, std::vector<uint32>> profSkills;   // trainer id -> planned professions it teaches
     for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
     {
         CreatureTemplate const* t = sObjectMgr->GetCreatureTemplate(data.id);
@@ -576,6 +579,35 @@ void BuildIndex()
                 pt.TrainerId = tid;
                 g.Trainers[t->trainer_class].push_back(pt);
                 ++g.NumTrainers;
+            }
+        }
+        // profession trainers: any trainer whose spell list teaches a planned profession (spell -> skill line through SkillLineAbility)
+        if (!(t->trainer_class > 0 && t->trainer_class < 32))
+        {
+            uint32 const tid = sObjectMgr->GetCreatureDefaultTrainer(data.id);
+            Trainer::Trainer const* tr = tid ? sObjectMgr->GetTrainer(tid) : nullptr;
+            if (tr)
+            {
+                auto cached = profSkills.find(tid);
+                if (cached == profSkills.end())
+                {
+                    std::vector<uint32> skills;
+                    for (Trainer::Spell const& sp : tr->GetSpells())
+                    {
+                        auto bounds = sSpellMgr->GetSkillLineAbilityMapBounds(sp.SpellId);
+                        for (auto it = bounds.first; it != bounds.second; ++it)
+                            if (BotProfession::Find(it->second->SkillLine) && std::find(skills.begin(), skills.end(), uint32(it->second->SkillLine)) == skills.end())
+                                skills.push_back(it->second->SkillLine);
+                    }
+                    cached = profSkills.emplace(tid, std::move(skills)).first;
+                }
+                for (uint32 skill : cached->second)
+                {
+                    SvcPt ppt = pt;
+                    ppt.TrainerId = tid;
+                    g.Trainers[0x100 | skill].push_back(ppt);
+                    ++g.NumProfTrainers;
+                }
             }
         }
         if (flags & uint64(UNIT_NPC_FLAG_VENDOR))
@@ -946,6 +978,10 @@ public:
     std::unordered_map<uint64, uint8> Repeats;      // (quest, npc) -> reach failures (quarantine)
     std::unordered_map<uint32, uint32> SvcBlack;    // npc entry -> AI clock until
     std::unordered_map<uint64, uint32> GoIgnore;    // chest spawn id -> AI clock until (empty / unusable for this bot)
+    uint32 ProfNextMs = 0;                 // next profession check
+    std::vector<uint32> ProfPlan;          // BotProfession::Plan for this bot, filled on first use
+    std::unordered_set<uint32> ProfWarned; // skills already reported as PROF_NO_TRAINER / PROF_NO_MONEY at this level (cleared per level)
+    uint8 ProfWarnLevel = 0;
     uint32 NextGearMs = 0;   // next bag sweep for gear upgrades
     uint8 NoTrainerLevel = 0, NoMoneyLevel = 0, BagNoMoneyLevel = 0, NoVendorLevel = 0;
     std::string LastNote;
@@ -2208,6 +2244,59 @@ private:
             EquipIfUpgrade(ai, bot, best, "GEAR_EQUIPPED", 0);
     }
 
+    // E2: one profession trainer trip at a time. A planned profession the bot lacks comes first, then ranks of the ones it has.
+    bool ProfessionTrip(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        c.ProfNextMs = now + 60000;
+        uint8 const level = bot->GetLevel();
+        if (c.ProfWarnLevel != level)
+        {
+            c.ProfWarnLevel = level;
+            c.ProfWarned.clear();
+        }
+        if (c.ProfPlan.empty())
+            c.ProfPlan = BotProfession::Plan(bot->GetGUID().GetCounter());
+
+        std::vector<uint32> known;
+        for (uint32 skill : c.ProfPlan)
+            if (bot->HasSkill(skill))
+                known.push_back(skill);
+
+        std::vector<uint32> order;
+        if (uint32 next = BotProfession::NextToLearn(c.ProfPlan, known, level))
+            order.push_back(next);
+        order.insert(order.end(), known.begin(), known.end());
+
+        for (uint32 skill : order)
+        {
+            char const* name = BotProfession::Find(skill)->Name;
+            bool const have = bot->HasSkill(skill);
+            auto tl = g.Trainers.find(0x100 | skill);
+            float d = 0.0f;
+            SvcPt const* tp = tl == g.Trainers.end() ? nullptr : NearestSvc(bot, c, now, tl->second, false, false, 3000.0f, d);
+            Trainer::Trainer const* tr = tp ? sObjectMgr->GetTrainer(tp->TrainerId) : nullptr;
+            if (!tr)
+            {
+                if (!have && c.ProfWarned.insert(skill).second)
+                    Blocked(ai, bot, c, 0, "PROF_NO_TRAINER", StringFormat("no reachable {} trainer on map {} within 3000 yd", name, bot->GetMapId()),
+                        StringFormat(R"({{"skill":{},"map":{},"level":{},"x":{:.0f},"y":{:.0f}}})", skill, bot->GetMapId(), level, bot->GetPositionX(), bot->GetPositionY()), 0, false);
+                continue;
+            }
+            TrainEval ev = EvalTrain(bot, tr);
+            if (ev.Affordable)
+            {
+                StartService(bot, c, now, 1, *tp, false, false);
+                Decision(ai, bot, "PROF_TRIP", StringFormat("walking to {} trainer {} ({:.0f} yd), {} spells", name, tp->Entry, d, ev.Affordable), 0, tp->Entry,
+                    StringFormat(R"({{"skill":{},"have":{},"trainer_id":{},"dist":{:.0f},"affordable":{},"money":{},"skill_value":{}}})", skill, have, tp->TrainerId, d, ev.Affordable, bot->GetMoney(), bot->GetSkillValue(skill)));
+                return true;
+            }
+            if (!have && ev.Avail && c.ProfWarned.insert(skill).second)
+                Blocked(ai, bot, c, 0, "PROF_NO_MONEY", StringFormat("{} costs {} copper, bot has {}", name, ev.Want, bot->GetMoney()),
+                    StringFormat(R"({{"skill":{},"cheapest":{},"money":{},"level":{}}})", skill, ev.Want, bot->GetMoney(), level), tp->Entry, false);
+        }
+        return false;
+    }
+
     // Decides whether a trainer or vendor trip is due and starts it. Throttled, cheap in the common case.
     bool ServiceDue(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
     {
@@ -2280,6 +2369,10 @@ private:
                 }
             }
         }
+
+        // 1b. professions: learn the planned ones, then buy the next ranks when skill and money allow
+        if (level >= 5 && now >= c.ProfNextMs && ProfessionTrip(ai, bot, c, now))
+            return true;
 
         // 2. vendor
         uint32 const freeSlots = bot->GetFreeInventorySlotCount();
@@ -2372,7 +2465,11 @@ private:
         uint32 const tid = sObjectMgr->GetCreatureDefaultTrainer(npc->GetEntry());
         Trainer::Trainer const* tr = tid ? sObjectMgr->GetTrainer(tid) : nullptr;
         uint8 const level = bot->GetLevel();
-        c.TrainLevel = level;
+        // profession trainers must not touch the class-spell bookkeeping (it decides when the next class trainer trip is due)
+        CreatureTemplate const* ct = npc->GetCreatureTemplate();
+        bool const classTrainer = ct && ct->trainer_class > 0 && ct->trainer_class < 32;
+        if (classTrainer)
+            c.TrainLevel = level;
         if (!tr)
         {
             Blocked(ai, bot, c, 0, "TRAIN_NO_TRAINER", StringFormat("npc {} has no trainer data", npc->GetEntry()), std::string(), npc->GetEntry(), false);
@@ -2412,7 +2509,8 @@ private:
                 break;
         }
         TrainEval left = EvalTrain(bot, tr);
-        c.TrainWant = left.Want;
+        if (classTrainer)
+            c.TrainWant = left.Want;
         c.TrainedTotal += learned;
         if (learned)
             Decision(ai, bot, "TRAINED", StringFormat("learned {} spells from trainer {} for {} copper", learned, npc->GetEntry(), moneyBefore - bot->GetMoney()), 0, npc->GetEntry(),
