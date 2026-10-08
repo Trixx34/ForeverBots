@@ -5133,6 +5133,41 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: Trip threshold (rounds), top-up target (rounds) and minimum seconds between ammo trips of one bot.
 #        Default:     60 / 400 / 300
 #
+#    Bot.AI.Party.Enabled
+#        Description: Bots form their own parties out in the world. Free bots that are close to each other, of similar level and carry the
+#                     same unfinished quest team up in a real group: the highest level bot leads and keeps questing, the others follow it and
+#                     fight with their normal combat AI, so kills count for everybody. A party ends when its time is up, the leader is lost,
+#                     or a member finishes the shared quest, dies, strays or outlevels the rest. Logged as PARTY_FORMED / PARTY_MEMBER_DROPPED /
+#                     PARTY_DISBANDED. Bots in a party refuse invites from players (one group per bot). See
+#                     docs/playerbots/feature-bot-parties-20261008.md.
+#        Default:     0 - Off
+#
+#    Bot.AI.Party.MinSize / Bot.AI.Party.MaxSize
+#        Description: Smallest and largest party (2-5).
+#        Default:     2 / 3
+#
+#    Bot.AI.Party.JoinRadius / Bot.AI.Party.MaxLevelSpread / Bot.AI.Party.MinSharedQuests / Bot.AI.Party.MinLevel
+#        Description: Yards between the bot that looks for company and a joiner (5-200) / highest minus lowest level in a party (0-20) /
+#                     unfinished quests two bots must have in common (1-10) / lowest level that takes part (1-80).
+#        Default:     40 / 3 / 1 / 5
+#
+#    Bot.AI.Party.FormChancePct / Bot.AI.Party.FormEverySec / Bot.AI.Party.MaxParties
+#        Description: Chance per check that a free bot looks for company (0-100) / seconds between two checks (5-3600) / parties at a time (1-500).
+#        Default:     25 / 20 / 10
+#
+#    Bot.AI.Party.LifetimeMin
+#        Description: Longest life of a party in minutes (2-240); each party lives between 50 and 100 percent of it.
+#        Default:     20
+#
+#    Bot.AI.Party.LeashYards / Bot.AI.Party.LeashSec / Bot.AI.Party.LeaderGoneSec
+#        Description: A member farther than this from the leader (20-500) for this many seconds (5-600), or on another map, is dropped /
+#                     seconds the leader may be dead or away before the party ends (5-600).
+#        Default:     70 / 45 / 30
+#
+#    Bot.AI.Party.IntervalSec
+#        Description: Seconds between two upkeep passes over the parties (1-60).
+#        Default:     5
+#
 #    Bot.AI.Travel.Enabled
 #        Description: Travel and leveling progression. A bot that has outgrown its zone (or has nothing left to quest for) picks the next
 #                     leveling zone for its level and faction, walks or flies there, and the quest strategy continues in the new zone.

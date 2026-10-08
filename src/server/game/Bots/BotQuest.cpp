@@ -31,6 +31,7 @@
 #include "BotBehavior.h"
 #include "BotCombat.h"
 #include "BotDungeonRun.h"
+#include "BotParty.h"
 #include "BotEngine.h"
 #include "BotLootPlan.h"
 #include "BotGear.h"
@@ -1674,6 +1675,12 @@ public:
         if (BotDungeonRun::Busy(ai)) // the dungeon group moves the bot
         {
             c.Why = "dungeon";
+            return false;
+        }
+
+        if (BotParty::Busy(ai) && bot->IsAlive()) // a member of a bot party follows its leader
+        {
+            c.Why = "party";
             return false;
         }
 
