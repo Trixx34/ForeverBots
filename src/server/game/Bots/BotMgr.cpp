@@ -576,6 +576,12 @@ void BotMgr::FlushSuppressed(uint64 botGuid)
         _logBuffer.push_back(std::move(row));
 }
 
+void BotMgr::EraseLogState(uint64 botGuid)
+{
+    std::lock_guard<std::mutex> lock(_logMutex);
+    _botLogState.erase(botGuid);
+}
+
 void BotMgr::BeginLogSession(BotInfo& bot)
 {
     std::lock_guard<std::mutex> lock(_logMutex);
@@ -1444,6 +1450,7 @@ void BotMgr::FinishCreate(uint64 guid, bool success)
         LogLifecycle(bot, "error", "CREATE_FAILED", "bot character could not be saved", BOTLOG_ERROR, Trinity::StringFormat(R"({{"account_id":{}}})", bot.AccountId));
         sCharacterCache->DeleteCharacterCacheEntry(ObjectGuid::Create<HighGuid::Player>(bot.Guid), bot.Name);
         _freeAccounts.emplace_back(bot.AccountId, bot.AccountName);
+        EraseLogState(bot.Guid);
         _bots.erase(itr);
         return;
     }
@@ -1541,6 +1548,7 @@ void BotMgr::LogoutBot(BotInfo& bot, char const* reason)
     bot.Session->LogoutPlayer(true);
     delete bot.Session;
     bot.Session = nullptr;
+    EraseLogState(bot.Guid); // after the last row of this session; BeginLogSession recreates it on the next login
 
     if (bot.State == BOT_ONLINE)
         --_onlineCount;

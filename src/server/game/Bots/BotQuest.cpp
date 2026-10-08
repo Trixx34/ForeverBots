@@ -981,6 +981,8 @@ public:
     std::unordered_set<uint64> Logged;              // (quest, code) pairs already written
     std::unordered_map<uint64, uint32> Ignore;      // mob guid (counter) -> AI clock until
     std::vector<Visited> Seen;                      // recently searched spawn points
+    uint32 NextPruneMs = 0;                         // next sweep of expired Ignore entries
+    uint32 LastMapId = 0xFFFFFFFFu;                 // map seen on the previous tick
     uint32 SelBlocks = 0;
     uint8 IdleLoggedLevel = 0;
     uint32 IdleLogMs = 0;          // R5: IDLE_WAIT_SPAWN rows at most one per 60 s
@@ -1258,6 +1260,17 @@ public:
         }
         c.Why = "run";
 
+        if (bot->GetMapId() != c.LastMapId)
+        {
+            // spawn points and mob guids are per map: forget what was learned on the previous one
+            if (c.LastMapId != 0xFFFFFFFFu)
+            {
+                c.Ignore.clear();
+                c.Seen.clear();
+            }
+            c.LastMapId = bot->GetMapId();
+        }
+
         CheckGoalOutcome(ai, bot, c, now);
 
         if (c.T.K == Kind::None)
@@ -1471,6 +1484,11 @@ private:
     // ----- choosing -----
     bool Choose(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
     {
+        if (int32(now - c.NextPruneMs) >= 0)
+        {
+            c.NextPruneMs = now + 5000;
+            std::erase_if(c.Ignore, [now](auto const& e) { return now >= e.second; });
+        }
         if (ServiceDue(ai, bot, c, now))
             return true;
 
