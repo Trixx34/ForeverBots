@@ -17,9 +17,12 @@
 
 #include "BotAI.h"
 #include "BotCombat.h"
+#include "BotDummy.h"
 #include "BotPet.h"
+#include "BotConsumables.h"
 #include "BotTravel.h"
 #include "BotTravelPlan.h"
+#include "BotWatchdog.h"
 #include "BotQuest.h"
 #include "CellImpl.h"
 #include "Config.h"
@@ -126,9 +129,15 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
     if (state == BotState::NonCombat && BotMove::Natural().Enabled && BotMove::Natural().Idle
         && std::find(names.begin(), names.end(), "natural_idle") == names.end())
         names.push_back("natural_idle");
+    if (state == BotState::NonCombat && BotCombatRotationEnabled() && std::find(names.begin(), names.end(), "prebuff") == names.end())
+        names.push_back("prebuff");   // pre-pull buffs of the class rotations
     if (BotPet::Cfg().Enabled && bot && bot->GetClass() == CLASS_HUNTER && state != BotState::Dead
         && std::find(names.begin(), names.end(), "pet") == names.end())
         names.push_back("pet");
+    if (BotConsumable::Enabled() && bot && state == BotState::Combat && std::find(names.begin(), names.end(), "consumables") == names.end())
+        names.push_back("consumables");
+    if (BotWatchdog::Enabled() && bot && state == BotState::NonCombat && std::find(names.begin(), names.end(), "watchdog") == names.end())
+        names.push_back("watchdog");
     if (BotTravel::Cfg().Enabled && bot && state == BotState::NonCombat && !(bot->GetSession() && bot->GetSession()->IsAltBot())
         && std::find(names.begin(), names.end(), "travel") == names.end())
         names.push_back("travel");
@@ -943,6 +952,7 @@ void BotAI::OnLogout(Player* bot, char const* reason)
     _fight = Fight();
     BotPet::OnLogout(this, bot); // dismisses the pet, drops a taming run
     BotTravel::OnLogout(this, bot); // drops a running trip
+    BotDummy::OnLogout(this, bot); // despawns the training dummy
     BotQuest::OnLogout(this); // releases the loot claim of the quest task
 }
 

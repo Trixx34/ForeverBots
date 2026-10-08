@@ -16,6 +16,7 @@
  */
 
 #include "BotMgr.h"
+#include "BotPopulation.h"
 #include "BotSocial.h"
 #include "AccountMgr.h"
 #include "BotAI.h"
@@ -358,6 +359,7 @@ void BotMgr::Update(uint32 diff)
     BotDungeonRun::Update(diff);
     UpdateProbe(diff);
     BotSocial::Update(diff);
+    BotPopulation::Update(diff);
     BotAlts::RestoreOnce();
 
     if (!IsLogDatabaseAvailable())
@@ -1280,6 +1282,40 @@ BotSpawnResult BotMgr::SpawnBots(uint32 count, uint8 classId, int8 faction, std:
     }
 
     return result;
+}
+
+uint32 BotMgr::PoolBotCount() const
+{
+    uint32 n = 0;
+    for (auto const& [guid, bot] : _bots)
+        if (!bot.Alt && bot.State != BOT_OFFLINE)
+            ++n;
+    return n;
+}
+
+uint32 BotMgr::TrimPoolBots(uint32 count)
+{
+    uint32 done = 0;
+    for (auto& [guid, bot] : _bots)
+    {
+        if (done >= count)
+            break;
+        if (bot.Alt || bot.State != BOT_ONLINE || !bot.Session)
+            continue;
+        Player* player = bot.Session->GetPlayer();
+        if (!player || !player->IsInWorld() || player->IsInCombat())
+            continue;
+        bool withPlayer = false;
+        if (Group* group = player->GetGroup())
+            for (GroupReference const& ref : group->GetMembers())
+                if (Player* m = ref.GetSource(); m && m->GetSession() && !m->GetSession()->IsBot())
+                    withPlayer = true;
+        if (withPlayer)
+            continue;
+        LogoutBot(bot, "LOGOUT_POPULATION");
+        ++done;
+    }
+    return done;
 }
 
 uint32 BotMgr::DespawnBots(std::string const& name)

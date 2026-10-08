@@ -16,6 +16,7 @@
  */
 
 #include "ScriptMgr.h"
+#include "BotDummy.h"
 #include "CellImpl.h"
 #include "CharmInfo.h"
 #include "CombatAI.h"
@@ -1388,8 +1389,9 @@ struct npc_training_dummy : NullCreatureAI
         _combatTimer[who->GetGUID()] = 5s;
     }
 
-    void DamageTaken(Unit* attacker, uint32& damage, DamageEffectType damageType, SpellInfo const* /*spellInfo = nullptr*/) override
+    void DamageTaken(Unit* attacker, uint32& damage, DamageEffectType damageType, SpellInfo const* spellInfo) override
     {
+        BotDummy::NoteDamage(me, attacker, damage, spellInfo);   // training dummy runs of the bots (Bot.AI.Dummy.*); no-op for anyone else
         damage = 0;
 
         if (!attacker || damageType == DOT)

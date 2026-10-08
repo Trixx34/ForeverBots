@@ -16,6 +16,7 @@
  */
 
 #include "Loot.h"
+#include "BotLootRoll.h"
 #include "DB2Stores.h"
 #include "DatabaseEnv.h"
 #include "GameTime.h"
@@ -508,6 +509,18 @@ bool LootRoll::TryToStart(Map* map, Loot& loot, uint32 lootListId, uint16 enchan
             SendStartRoll();
             m_endTime = GameTime::Now() + LOOT_ROLL_TIMEOUT;
             m_isStarted = true;
+            // bots have no client to answer the roll window: they vote at once (Bot.Loot.Roll.*)
+            for (auto& [looterGuid, looterVote] : m_rollVoteMap)
+            {
+                if (looterVote.Vote != RollVote::NotEmitedYet)
+                    continue;
+                Player* looter = ObjectAccessor::GetPlayer(m_map, looterGuid);
+                if (!looter)
+                    continue;
+                int32 const botVote = BotLootRoll::ChooseVote(looter, itemTemplate, (m_voteMask & ROLL_FLAG_TYPE_NEED) != 0);
+                if (botVote >= 0)
+                    PlayerVote(looter, RollVote(botVote));
+            }
             return true;
         }
         // no need to start roll if one or less player can loot this item so place it under threshold
