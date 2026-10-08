@@ -832,6 +832,7 @@ enum OpcodeClient : uint32
     CMSG_READ_ITEM                                                  = 0x3D0212,
     CMSG_RECENT_ALLY_REQUEST_DATA                                   = 0x430198,
     CMSG_RECENT_ALLY_SET_NOTE                                       = 0x430199,
+    CMSG_CLASSIC_SOCIAL_WINDOW_OPEN                                 = 0x43017C, // Classic 0x44017C: sent with the Recent Allies request when the Social window opens
     CMSG_RECLAIM_CORPSE                                             = 0x3E0076,
     CMSG_REFRESH_BLEEP_TOKENS                                       = 0x4301A2,
     CMSG_REFRESH_ENTITLEMENTS_ON_ORDER_COMPLETE                     = 0x43019C,
@@ -916,6 +917,7 @@ enum OpcodeClient : uint32
     CMSG_SET_ACTION_BAR_TOGGLES                                     = 0x3E00D4,
     CMSG_SET_ACTION_BUTTON                                          = 0x430062,
     CMSG_SET_ACTIVE_MOVER                                           = 0x41005B,
+    CMSG_SET_AMMO                                                   = 0x3E0105, // Classic 1.60 only (0x3F0105): uint32 item id, 0 = none
     CMSG_SET_ADVANCED_COMBAT_LOGGING                                = 0x3D0193,
     CMSG_SET_ALLOW_RECENT_ALLIES_SEE_LOCATION                       = 0x3D030F,
     CMSG_SET_ASSISTANT_LEADER                                       = 0x43007B,
@@ -1063,6 +1065,9 @@ enum OpcodeClient : uint32
 
     CMSG_BATTLE_PET_DELETE_PET_CHEAT                                = CMSG_BATTLE_PET_DELETE_PET + 1,
     CMSG_PET_BATTLE_WILD_LOCATION_FAIL                              = CMSG_PET_BATTLE_REQUEST_WILD + 1,
+
+    // Classic 1.60: Classic 0x44013A (u32 request id, u32 tag) lands on retail BATTLE_PAY_OPEN_CHECKOUT, it is the SSO token request
+    CMSG_GENERATE_SSO_TOKEN                                         = CMSG_BATTLE_PAY_OPEN_CHECKOUT,
 
     // Deleted opcodes, here only to allow compile
     CMSG_TRANSMOGRIFY_ITEMS                                         = CMSG_REQUEST_SCHEDULED_PVP_INFO + 1,
@@ -2233,6 +2238,8 @@ enum OpcodeServer : uint32
     SMSG_RECEIVE_PING_WORLD_POINT                                   = 0x45003A,
     SMSG_RECENT_ALLY_DATA_RESPONSE                                  = 0x450362,
     SMSG_RECENT_ALLY_NOTE_UPDATED                                   = 0x450363,
+    SMSG_RECENT_ALLY_LIST                                           = 0x450364, // Classic 0x460364: the Allies tab (sniff 2026-10-06)
+    SMSG_CLASSIC_SOCIAL_WINDOW_OPEN_RESPONSE                        = 0x450359, // Classic 0x460359: answer to CMSG_CLASSIC_SOCIAL_WINDOW_OPEN (uint32 0)
     SMSG_RECRAFT_ITEM_RESULT                                        = 0x45033B,
     SMSG_RECRUIT_A_FRIEND_FAILURE                                   = 0x45016C,
     SMSG_REFETCH_TACT_KEYS                                          = 0x450376,

@@ -68,6 +68,10 @@ uint32 GameUtilities::HandleClientRequest(WorldSession const* session,
             return GetRealmList(session, params, responseValues);
         case Trinity::HashFnv1a<>::GetHash("Command_RealmJoinRequest_v1"sv):
             return JoinRealm(session, params, responseValues);
+        case Trinity::HashFnv1a<>::GetHash("Command_SuperDistrictListRequest_v1"sv):
+            return GetSuperDistrictList(session, params, responseValues);
+        case Trinity::HashFnv1a<>::GetHash("Command_LastCharPlayedRequest_v1"sv):
+            return GetLastCharPlayed(session, params, responseValues);
         default:
             break;
     }
@@ -125,6 +129,68 @@ uint32 GameUtilities::GetRealmList(WorldSession const* session,
     responseValues.emplace_back("Param_RealmList"sv, std::move(realmListJson));
     responseValues.emplace_back("Param_CharacterCountList"sv, std::move(characterCountsJson));
 
+    return ERROR_OK;
+}
+
+static std::vector<uint8> CompressClassicJson(std::string const& json)
+{
+    uLongf compressedLength = compressBound(json.length() + 1);
+    std::vector<uint8> compressed(4 + compressedLength);
+    *reinterpret_cast<uint32*>(compressed.data()) = json.length() + 1;
+
+    if (compress(compressed.data() + 4, &compressedLength, reinterpret_cast<uint8 const*>(json.c_str()), json.length() + 1) != Z_OK)
+        return {};
+
+    compressed.resize(compressedLength + 4);
+    return compressed;
+}
+
+// Classic (1.60+) super districts (gameplay rulesets), same answer as bnetserver's GameUtilities
+uint32 GameUtilities::GetSuperDistrictList(WorldSession const* /*session*/,
+    std::vector<std::pair<std::string_view, Variant>>& /*params*/,
+    std::vector<std::pair<std::string_view, Variant>>& responseValues)
+{
+    std::string superDistricts = sRealmList->GetClassicSuperDistrictListEntries();
+
+    std::vector<uint8> json = CompressClassicJson(Trinity::StringFormat(R"(JSONSuperDistrictList:{{"superDistricts":[{}]}})", superDistricts));
+    if (json.empty())
+        return ERROR_UTIL_SERVER_FAILED_TO_SERIALIZE_RESPONSE;
+
+    responseValues.emplace_back("Param_SuperDistrictList"sv, std::move(json));
+    return ERROR_OK;
+}
+
+// Classic (1.60+) clients pick the realm for the selected super district with Param_ContentSetIDFilter; answer with our realm.
+// The client requires Param_LastPlayedTime right after Param_RealmEntry.
+uint32 GameUtilities::GetLastCharPlayed(WorldSession const* session,
+    std::vector<std::pair<std::string_view, Variant>>& params,
+    std::vector<std::pair<std::string_view, Variant>>& responseValues)
+{
+    Variant const* contentSetFilter = FindParamValue(params, "Param_ContentSetIDFilter");
+    int64 contentSetId = contentSetFilter ? std::visit([]<typename T>(T const& v) -> int64
+    {
+        if constexpr (std::is_arithmetic_v<T>)
+            return int64(v);
+        else
+            return -1;
+    }, *contentSetFilter) : -1;
+
+    Optional<Battlenet::RealmHandle> realmId = contentSetId >= 0 ? sRealmList->GetRealmIdForContentSet(uint32(contentSetId)) : Optional<Battlenet::RealmHandle>();
+    if (!realmId)
+        realmId = sRealmList->GetFirstRealmId();   // no realm for that ruleset: fall back to the first one
+    if (contentSetId < 0 || !realmId)
+        return ERROR_OK;
+
+    std::string realmEntryJson = sRealmList->GetRealmEntryJSON(*realmId, session->GetClientBuild(), session->GetSecurity());
+    if (realmEntryJson.empty())
+        return ERROR_OK;
+
+    ::JSON::RealmList::UtilityInfo utilityInfo;
+    utilityInfo.set_realmpermissions(0x200);
+
+    responseValues.emplace_back("Param_RealmEntry"sv, CompressClassicJson("JamJSONRealmEntry:" + realmEntryJson));
+    responseValues.emplace_back("Param_LastPlayedTime"sv, int64(time(nullptr)));
+    responseValues.emplace_back("Param_UtilityInfo"sv, CompressClassicJson("JSONUtilityInfo:" + ::JSON::Serialize(utilityInfo)));
     return ERROR_OK;
 }
 

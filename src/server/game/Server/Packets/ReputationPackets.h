@@ -51,11 +51,12 @@ namespace WorldPackets
         struct FactionStandingData
         {
             FactionStandingData() { }
-            FactionStandingData(int32 index, int32 standing, int32 factionId) : Index(index), Standing(standing), FactionID(factionId) { }
+            FactionStandingData(int32 index, int32 standing, int32 factionId, int32 change = 0) : Index(index), Standing(standing), FactionID(factionId), Change(change) { }
 
             int32 Index = 0;
             int32 Standing = 0;
             int32 FactionID = 0;
+            int32 Change = 0;
         };
 
         class SetFactionStanding final : public ServerPacket

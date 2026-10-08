@@ -857,6 +857,10 @@ bool WorldObject::CanSeeOrDetect(WorldObject const* obj, CanSeeOrDetectExtraArgs
     if (this == obj)
         return true;
 
+    // death recap: the viewer sees the replay actors (private to them), not the live units standing there now
+    if (Player const* viewer = ToPlayer(); viewer && viewer->IsWatchingDeathRecap() && obj->IsUnit() && !obj->IsPrivateObject())
+        return false;
+
     if (obj->IsNeverVisibleFor(this, args.ImplicitDetection) || CanNeverSee(obj, args.IgnorePhaseShift))
         return false;
 

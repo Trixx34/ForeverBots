@@ -336,7 +336,14 @@ bool Pet::LoadPetFromDB(Player* owner, uint32 petEntry, uint32 petnumber, bool c
         else
         {
             SetHealth(savedhealth);
-            SetPower(POWER_MANA, savedmana);
+            // Classic 1.60: hunter pets have no mana; their curmana column keeps the happiness (pets saved before: content)
+            if (HasHappiness())
+            {
+                SetMaxPower(POWER_HAPPINESS, HAPPINESS_MAX);
+                SetPower(POWER_HAPPINESS, savedmana ? std::min<int32>(savedmana, HAPPINESS_MAX) : HAPPINESS_MAX / 2);
+            }
+            else
+                SetPower(POWER_MANA, savedmana);
         }
     }
 
@@ -476,7 +483,7 @@ void Pet::SavePetToDB(PetSaveMode mode)
     }
 
     uint32 curhealth = GetHealth();
-    uint32 curmana = GetPower(POWER_MANA);
+    uint32 curmana = GetPower(HasHappiness() ? POWER_HAPPINESS : POWER_MANA);    // Classic 1.60: hunter pets save happiness
 
     CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
     // save auras before possibly removing them
@@ -552,7 +559,7 @@ void Pet::FillPetInfo(PetStable::PetInfo* petInfo, Optional<ReactStates> forcedR
     petInfo->Name = GetName();
     petInfo->WasRenamed = !HasPetFlag(UNIT_PET_FLAG_CAN_BE_RENAMED);
     petInfo->Health = GetHealth();
-    petInfo->Mana = GetPower(POWER_MANA);
+    petInfo->Mana = GetPower(HasHappiness() ? POWER_HAPPINESS : POWER_MANA);
     petInfo->ActionBar = GenerateActionBarData();
     petInfo->LastSaveTime = GameTime::GetGameTime();
     petInfo->CreatedBySpellId = m_unitData->CreatedBySpell;
@@ -665,6 +672,18 @@ void Pet::Update(uint32 diff)
                 {
                     Remove(getPetType() != SUMMON_PET ? PET_SAVE_AS_DELETED : PET_SAVE_NOT_IN_SLOT);
                     return;
+                }
+            }
+
+            // Classic 1.60: hunter pets slowly lose happiness, twice as fast in combat
+            if (HasHappiness())
+            {
+                if (m_happinessTimer > diff)
+                    m_happinessTimer -= diff;
+                else
+                {
+                    m_happinessTimer = HAPPINESS_LOSS_INTERVAL;
+                    ModifyPower(POWER_HAPPINESS, -(IsInCombat() ? 2 * HAPPINESS_LOSS : HAPPINESS_LOSS));
                 }
             }
 
@@ -809,6 +828,40 @@ bool Pet::CreateBaseAtCreatureInfo(CreatureTemplate const* cinfo, Unit* owner)
     Relocate(owner->GetPositionX(), owner->GetPositionY(), owner->GetPositionZ(), owner->GetOrientation());
 
     return true;
+}
+
+Pet::HappinessState Pet::GetHappinessState() const
+{
+    int32 happiness = GetPower(POWER_HAPPINESS);
+    if (happiness < HAPPINESS_MAX / 3)
+        return UNHAPPY;
+    if (happiness >= 2 * HAPPINESS_MAX / 3)
+        return HAPPY;
+    return CONTENT;
+}
+
+float Pet::GetHappinessDamageMod() const
+{
+    if (!HasHappiness())
+        return 1.0f;
+
+    switch (GetHappinessState())
+    {
+        case UNHAPPY: return 0.75f;
+        case HAPPY:   return 1.25f;
+        default:      return 1.0f;
+    }
+}
+
+int32 Pet::GetFoodBenefit(uint8 petLevel, uint32 foodLevel)
+{
+    if (petLevel <= foodLevel + 5)
+        return 35000;
+    if (petLevel <= foodLevel + 10)
+        return 17000;
+    if (petLevel <= foodLevel + 14)
+        return 8000;
+    return 0;
 }
 
 bool Pet::CreateBaseAtTamed(CreatureTemplate const* cinfo, Map* map)

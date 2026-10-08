@@ -54,6 +54,8 @@ namespace Battlenet::Services
                 std::vector<std::pair<std::string_view, Variant>>& responseValues);
             static uint32 GetBleepProxies(Session const* session, std::vector<std::pair<std::string_view, Variant>>& params,
                 std::vector<std::pair<std::string_view, Variant>>& responseValues);
+            static uint32 GetSuperDistrictList(Session const* session, std::vector<std::pair<std::string_view, Variant>>& params,
+                std::vector<std::pair<std::string_view, Variant>>& responseValues);
         };
     }
 

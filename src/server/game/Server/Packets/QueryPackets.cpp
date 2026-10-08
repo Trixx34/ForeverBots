@@ -63,15 +63,24 @@ namespace WorldPackets::Query
 {
 void QueryCreature::Read()
 {
-    _worldPacket >> CreatureID;
+    // Classic 1.60: 6-bit entry count (flushed), then the creature ids; the official client batches up to 11 per query
+    // (sniffs of the official beta), reading only one left the others nameless ("Unknown")
+    uint32 count = _worldPacket.ReadBits(6);
+    _worldPacket.ResetBitPos();
+    CreatureIDs.resize(count);
+    for (uint32& creatureId : CreatureIDs)
+        _worldPacket >> creatureId;
 }
 
 WorldPacket const* QueryCreatureResponse::Write()
 {
-    _worldPacket << uint32(CreatureID);
-    _worldPacket << Bits<1>(Allow);
-
+    // Classic 1.60.1.70009 batches creature queries: 6-bit entry count (flushed), then per entry the retail layout below
+    // (client decoder rva 0xA0D800; CMSG_QUERY_CREATURE also starts with the count byte, 0x04 = 1 entry)
+    _worldPacket << Bits<6>(1);
     _worldPacket.FlushBits();
+
+    _worldPacket << uint32(CreatureID);
+    _worldPacket << uint8(Allow ? 0 : 1);       // Classic: result byte, stats follow only when it is 0 (retail: Allow bit)
 
     if (Allow)
     {
@@ -180,6 +189,7 @@ bool PlayerGuidLookupData::Initialize(ObjectGuid const& guid, Player const* play
     }
 
     IsDeleted = characterInfo->IsDeleted;
+    Surname = characterInfo->Surname;
     GuidActual = guid;
     GuildClubMemberID = ::Battlenet::Services::Clubs::CreateClubMemberId(guid);
     VirtualRealmAddress = GetVirtualRealmAddress();
@@ -189,8 +199,12 @@ bool PlayerGuidLookupData::Initialize(ObjectGuid const& guid, Player const* play
 
 ByteBuffer& operator<<(ByteBuffer& data, PlayerGuidLookupData const& lookupData)
 {
+    // Classic 1.60 (client reader rva 0x98D8C0, used by name lookups and /who): two 9 bit sized strings after the name length -
+    // the surname and one more (sent empty) - and their text after the name
     data << Bits<1>(lookupData.IsDeleted);
     data << SizedString::BitsSize<6>(lookupData.Name);
+    data << SizedString::BitsSize<9>(lookupData.Surname);
+    data << Bits<9>(0);
 
     for (uint8 i = 0; i < MAX_DECLINED_NAME_CASES; ++i)
         data << SizedString::BitsSize<7>(lookupData.DeclinedNames.name[i]);
@@ -210,6 +224,7 @@ ByteBuffer& operator<<(ByteBuffer& data, PlayerGuidLookupData const& lookupData)
     data << uint8(lookupData.PvpFaction);
     data << int32(lookupData.TimerunningSeasonID);
     data << SizedString::Data(lookupData.Name);
+    data << SizedString::Data(lookupData.Surname);
 
     return data;
 }

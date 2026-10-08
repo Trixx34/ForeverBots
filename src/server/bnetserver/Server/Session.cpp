@@ -40,8 +40,9 @@ void Battlenet::AccountInfo::LoadResult(PreparedQueryResult result)
     LoginTicketExpiry = fields[5].GetUInt32();
     IsBanned = fields[6].GetUInt64() != 0;
     IsPermanenetlyBanned = fields[7].GetUInt64() != 0;
+    BattleTag = fields[8].IsNull() ? "" : fields[8].GetString();
 
-    static constexpr uint32 GameAccountFieldsOffset = 8;
+    static constexpr uint32 GameAccountFieldsOffset = 9;
 
     do
     {

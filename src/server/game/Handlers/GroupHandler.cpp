@@ -16,9 +16,11 @@
  */
 
 #include "WorldSession.h"
+#include "CharacterCache.h"
 #include "Common.h"
 #include "DatabaseEnv.h"
 #include "Group.h"
+#include "GroupFinderListings.h"
 #include "GroupMgr.h"
 #include "LFG.h"
 #include "Log.h"
@@ -29,6 +31,7 @@
 #include "Player.h"
 #include "SocialMgr.h"
 #include "World.h"
+#include "BotSocial.h"
 
 class Aura;
 
@@ -48,6 +51,8 @@ void WorldSession::SendPartyResult(PartyOperation operation, const std::string& 
     WorldPackets::Party::PartyCommandResult packet;
 
     packet.Name = member;
+    if (ObjectGuid memberGuid = sCharacterCache->GetCharacterGuidByName(member); !memberGuid.IsEmpty())
+        packet.Surname = sCharacterCache->GetCharacterSurnameByGuid(memberGuid);
     packet.Command = uint8(operation);
     packet.Result = uint8(res);
     packet.ResultData = val;
@@ -121,6 +126,7 @@ void WorldSession::HandlePartyInviteOpcode(WorldPackets::Party::PartyInviteClien
     if (group2 || invitedPlayer->GetGroupInvite())
     {
         SendPartyResult(PARTY_OP_INVITE, invitedPlayer->GetName(), ERR_ALREADY_IN_GROUP_S);
+        BotSocial::OnPartyInviteAlreadyGrouped(invitingPlayer, invitedPlayer);
 
         if (group2)
         {
@@ -183,6 +189,8 @@ void WorldSession::HandlePartyInviteOpcode(WorldPackets::Party::PartyInviteClien
     invitedPlayer->SendDirectMessage(partyInvite.Write());
 
     SendPartyResult(PARTY_OP_INVITE, invitedPlayer->GetName(), ERR_PARTY_RESULT_OK);
+
+    BotSocial::OnPartyInvite(invitingPlayer, invitedPlayer);
 }
 
 void WorldSession::HandlePartyInviteResponseOpcode(WorldPackets::Party::PartyInviteResponse& packet)
@@ -326,6 +334,7 @@ void WorldSession::HandleSetRoleOpcode(WorldPackets::Party::SetRole& packet)
         roleChangedInform.PartyIndex = group->GetGroupCategory();
         group->BroadcastPacket(roleChangedInform.Write(), false);
         group->SetLfgRoles(packet.TargetGUID, packet.Role);
+        GroupFinderListings::OnGroupChanged(group);     // the group's Group Finder post in Discord shows the new role
     }
     else
         SendPacket(roleChangedInform.Write());

@@ -117,6 +117,7 @@ WorldPacket const* RespecWipeConfirm::Write()
     _worldPacket << int8(RespecType);
     _worldPacket << uint32(Cost);
     _worldPacket << RespecMaster;
+    _worldPacket << int32(0);                   // Classic 1.60.1.70009: extra int32 (client decoder rva 0x803190, stored at +0x38)
 
     return &_worldPacket;
 }

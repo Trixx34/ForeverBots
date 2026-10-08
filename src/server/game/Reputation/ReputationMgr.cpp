@@ -332,6 +332,13 @@ ReputationFlags ReputationMgr::GetDefaultStateFlags(FactionEntry const* factionE
     return flags;
 }
 
+bool ReputationMgr::IsOtherSideFaction(FactionEntry const* factionEntry) const
+{
+    uint16 const flags = uint16(GetDefaultStateFlags(factionEntry));
+    uint16 const otherSide = uint16(ReputationFlags::Hidden) | uint16(ReputationFlags::AtWar);
+    return (flags & otherSide) == otherSide;
+}
+
 void ReputationMgr::SendState(FactionState const* faction)
 {
     WorldPackets::Reputation::SetFactionStanding setFactionStanding;
@@ -343,7 +350,7 @@ void ReputationMgr::SendState(FactionState const* faction)
     };
 
     if (faction)
-        setFactionStanding.Faction.emplace_back(int32(faction->ReputationListID), getStandingForPacket(faction), faction->ID);
+        setFactionStanding.Faction.emplace_back(int32(faction->ReputationListID), getStandingForPacket(faction), faction->ID, faction->ClassicStandingChange);
 
     for (auto& [reputationIndex, state] : _factions)
     {
@@ -351,9 +358,12 @@ void ReputationMgr::SendState(FactionState const* faction)
         {
             state.needSend = false;
             if (!faction || state.ReputationListID != faction->ReputationListID)
-                setFactionStanding.Faction.emplace_back(int32(state.ReputationListID), getStandingForPacket(&state), state.ID);
+                setFactionStanding.Faction.emplace_back(int32(state.ReputationListID), getStandingForPacket(&state), state.ID, state.ClassicStandingChange);
         }
     }
+
+    for (auto& [reputationIndex, state] : _factions)
+        state.ClassicStandingChange = 0;
 
     setFactionStanding.ShowVisual = _sendFactionIncreased;
     _player->SendDirectMessage(setFactionStanding.Write());
@@ -592,6 +602,7 @@ bool ReputationMgr::SetOneFactionReputation(FactionEntry const* factionEntry, in
         }
 
         _player->ReputationChanged(factionEntry, reputationChange);
+        itr->second.ClassicStandingChange += reputationChange;
 
         itr->second.Standing = newStanding;
         itr->second.needSend = true;

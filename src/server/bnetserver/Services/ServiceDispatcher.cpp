@@ -65,6 +65,7 @@ Battlenet::ServiceDispatcher::ServiceDispatcher()
 
 void Battlenet::ServiceDispatcher::Dispatch(Session* session, uint32 serviceHash, uint32 token, uint32 methodId, MessageBuffer buffer)
 {
+    TC_LOG_TRACE("session.rpc", "{} called service 0x{:X} method {} ({} bytes)", session->GetClientInfo(), serviceHash, methodId, buffer.GetActiveSize());
     auto itr = _dispatchers.find(serviceHash);
     if (itr != _dispatchers.end())
         itr->second(session, token, methodId, std::move(buffer));

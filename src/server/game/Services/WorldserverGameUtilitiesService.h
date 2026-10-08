@@ -45,6 +45,10 @@ namespace Battlenet::Services
                 std::vector<std::pair<std::string_view, Variant>>& responseValues);
             static uint32 JoinRealm(WorldSession const* session, std::vector<std::pair<std::string_view, Variant>>& params,
                 std::vector<std::pair<std::string_view, Variant>>& responseValues);
+            static uint32 GetSuperDistrictList(WorldSession const* session, std::vector<std::pair<std::string_view, Variant>>& params,
+                std::vector<std::pair<std::string_view, Variant>>& responseValues);
+            static uint32 GetLastCharPlayed(WorldSession const* session, std::vector<std::pair<std::string_view, Variant>>& params,
+                std::vector<std::pair<std::string_view, Variant>>& responseValues);
         };
     }
 

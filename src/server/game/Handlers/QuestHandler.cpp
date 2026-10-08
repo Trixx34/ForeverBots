@@ -41,6 +41,7 @@
 #include "ReputationMgr.h"
 #include "ScriptMgr.h"
 #include "World.h"
+#include "BotSocial.h"
 
 void WorldSession::HandleQuestgiverStatusQueryOpcode(WorldPackets::Quest::QuestGiverStatusQuery& packet)
 {
@@ -77,6 +78,9 @@ void WorldSession::HandleQuestgiverHelloOpcode(WorldPackets::Quest::QuestGiverHe
     if (uint32 pause = creature->GetMovementTemplate().GetInteractionPauseTimer())
         creature->PauseMovement(pause);
     creature->SetHomePosition(creature->GetPosition());
+
+    // Classic 1.60: "talk to" objectives are credited when the creature is talked to (see HandleGossipHelloOpcode)
+    _player->TalkedToCreature(creature->GetEntry(), creature->GetGUID());
 
     _player->PlayerTalkClass->ClearMenus();
     if (creature->AI()->OnGossipHello(_player))
@@ -602,6 +606,12 @@ void WorldSession::HandlePushQuestToParty(WorldPackets::Quest::PushQuestToParty&
 
         if (receiver == sender)
             continue;
+
+        if (receiver->GetSession()->IsBot())
+        {
+            BotSocial::OnQuestPushed(sender, receiver, packet.QuestID);
+            continue;
+        }
 
         if (!receiver->GetPlayerSharingQuest().IsEmpty())
         {

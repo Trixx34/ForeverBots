@@ -172,25 +172,33 @@ void TransmogMgr::Load()
     for (std::vector<TransmogOutfitEntryEntry const*>& transmogOutfitEntries : TransmogOutfitsBySource)
         std::ranges::sort(transmogOutfitEntries, {}, &TransmogOutfitEntryEntry::OrderIndex);
 
+    // Classic (1.60+) client data may contain slots/options retail does not know about: skip them instead of asserting
     for (TransmogOutfitSlotInfoEntry const* transmogOutfitSlot : sTransmogOutfitSlotInfoStore)
     {
-        ASSERT(transmogOutfitSlot->GetSlot() < TransmogOutfitSlot::Max);
+        if (transmogOutfitSlot->GetSlot() >= TransmogOutfitSlot::Max
+            || (!transmogOutfitSlot->HasFlag(TransmogOutfitSlotFlags::IsSecondarySlot) && transmogOutfitSlot->InventorySlotEnum >= EQUIPMENT_SLOT_END))
+        {
+            TC_LOG_ERROR("server.loading", "TransmogOutfitSlotInfo.db2: skipping ID {} with unknown slot {} / inventory slot {}",
+                transmogOutfitSlot->ID, AsUnderlyingType(transmogOutfitSlot->GetSlot()), int32(transmogOutfitSlot->InventorySlotEnum));
+            continue;
+        }
 
         TransmogOutfitSlotInfo* slot = &SlotInfoByOutfitSlot[AsUnderlyingType(transmogOutfitSlot->GetSlot())];
         slot->Data = transmogOutfitSlot;
 
         if (!transmogOutfitSlot->HasFlag(TransmogOutfitSlotFlags::IsSecondarySlot))
-        {
-            ASSERT(transmogOutfitSlot->InventorySlotEnum < EQUIPMENT_SLOT_END);
             SlotInfoByInvSlot[transmogOutfitSlot->InventorySlotEnum] = slot;
-        }
     }
 
     for (TransmogOutfitSlotOptionEntry const* transmogOutfitSlotOption : sTransmogOutfitSlotOptionInfoStore)
     {
-        ASSERT(transmogOutfitSlotOption->GetOption() < TransmogOutfitSlotOption::Max);
-
-        TransmogOutfitSlotInfoEntry const* transmogOutfitSlot = sTransmogOutfitSlotInfoStore.AssertEntry(transmogOutfitSlotOption->TransmogOutfitSlotInfoID);
+        TransmogOutfitSlotInfoEntry const* transmogOutfitSlot = sTransmogOutfitSlotInfoStore.LookupEntry(transmogOutfitSlotOption->TransmogOutfitSlotInfoID);
+        if (transmogOutfitSlotOption->GetOption() >= TransmogOutfitSlotOption::Max || !transmogOutfitSlot || transmogOutfitSlot->GetSlot() >= TransmogOutfitSlot::Max)
+        {
+            TC_LOG_ERROR("server.loading", "TransmogOutfitSlotOption.db2: skipping ID {} with unknown option {} or slot info {}",
+                transmogOutfitSlotOption->ID, AsUnderlyingType(transmogOutfitSlotOption->GetOption()), transmogOutfitSlotOption->TransmogOutfitSlotInfoID);
+            continue;
+        }
 
         TransmogOutfitSlotInfo& slotInfo = SlotInfoByOutfitSlot[AsUnderlyingType(transmogOutfitSlot->GetSlot())];
         if (!std::holds_alternative<std::unique_ptr<TransmogOutfitSlotOptionInfo[]>>(slotInfo.SlotIndexOrOptions))

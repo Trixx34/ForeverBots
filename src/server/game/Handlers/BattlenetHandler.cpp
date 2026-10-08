@@ -17,6 +17,13 @@
 
 #include "WorldSession.h"
 #include "BattlenetPackets.h"
+#include "CryptoRandom.h"
+#include "DatabaseEnv.h"
+#include "GameTime.h"
+#include "Player.h"
+#include "RealmList.h"
+#include "StringFormat.h"
+#include "Util.h"
 #include "WorldserverServiceDispatcher.h"
 #include "ObjectDefines.h"
 
@@ -35,6 +42,43 @@ void WorldSession::HandleBattlenetChangeRealmTicket(WorldPackets::Battlenet::Cha
 void WorldSession::HandleBattlenetRequest(WorldPackets::Battlenet::Request& request)
 {
     sServiceDispatcher.Dispatch(this, request.Method.GetServiceHash(), request.Method.Token, request.Method.GetMethodId(), std::move(request.Data));
+}
+
+// Classic 1.60: tokens for the in-game browser (Support window), stored in battlenet_sso_tokens so our support site can tell who opened it.
+// Same shape as the official ones: "TUS-" + 32 lowercase hex + "-" + battle.net account id, valid for 4 hours.
+std::string WorldSession::CreateSsoToken(time_t issued, time_t expires)
+{
+    std::string secret = ByteArrayToHexStr(Trinity::Crypto::GetRandomBytes<16>());
+    strToLower(secret);
+    std::string token = Trinity::StringFormat("TUS-{}-{}", secret, GetBattlenetAccountId());
+
+    LoginDatabaseTransaction trans = LoginDatabase.BeginTransaction();
+    trans->Append(LoginDatabase.GetPreparedStatement(LOGIN_DEL_BNET_SSO_TOKENS_EXPIRED));
+
+    LoginDatabasePreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_INS_BNET_SSO_TOKEN);
+    stmt->setString(0, token);
+    stmt->setUInt32(1, GetBattlenetAccountId());
+    stmt->setUInt32(2, GetAccountId());
+    stmt->setUInt32(3, sRealmList->GetCurrentRealmId().Realm);
+    stmt->setUInt64(4, _player ? _player->GetGUID().GetCounter() : 0);
+    stmt->setInt64(5, issued);
+    stmt->setInt64(6, expires);
+    stmt->setString(7, GetRemoteAddress());
+    trans->Append(stmt);
+    LoginDatabase.CommitTransaction(trans);
+
+    return token;
+}
+
+void WorldSession::HandleGenerateSsoToken(WorldPackets::Battlenet::GenerateSsoToken& generateSsoToken)
+{
+    WorldPackets::Battlenet::GenerateSsoTokenResponse response;
+    response.RequestID = generateSsoToken.RequestID;
+    response.Issued = GameTime::GetGameTime();
+    response.Expires = response.Issued + SsoTokenDuration;
+    response.Token = CreateSsoToken(response.Issued, response.Expires);
+
+    SendPacket(response.Write());
 }
 
 void WorldSession::SendBattlenetResponse(uint32 serviceHash, uint32 methodId, uint32 token, pb::Message const* response)

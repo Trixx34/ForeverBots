@@ -444,13 +444,14 @@ Item* AuctionHouseMgr::GetAItem(ObjectGuid itemGuid)
 uint64 AuctionHouseMgr::GetCommodityAuctionDeposit(ItemTemplate const* item, Minutes time, uint32 quantity)
 {
     uint32 sellPrice = item->GetSellPrice();
-    return uint64(std::ceil(std::floor(fmax(0.15 * quantity * sellPrice, 100.0)) / int64(SILVER)) * int64(SILVER)) * (time.count() / (MIN_AUCTION_TIME / MINUTE));
+    // Classic 1.60: deposit 5% of the vendor price per 2 hours (AuctionHouse.db2 DepositRate 5), at least 1 copper, no silver rounding
+    return uint64(std::max(1.0, std::floor(0.05 * quantity * sellPrice))) * (time.count() / (MIN_AUCTION_TIME / MINUTE));
 }
 
 uint64 AuctionHouseMgr::GetItemAuctionDeposit(Player const* player, Item const* item, Minutes time)
 {
     uint32 sellPrice = item->GetSellPrice(player);
-    return uint64(std::ceil(std::floor(fmax(sellPrice * 0.15, 100.0)) / int64(SILVER)) * int64(SILVER)) * (time.count() / (MIN_AUCTION_TIME / MINUTE));
+    return uint64(std::max(1.0, std::floor(sellPrice * 0.05))) * (time.count() / (MIN_AUCTION_TIME / MINUTE));
 }
 
 std::string AuctionHouseMgr::BuildItemAuctionMailSubject(AuctionMailType type, AuctionPosting const* auction)

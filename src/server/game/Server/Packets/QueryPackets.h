@@ -45,7 +45,7 @@ namespace WorldPackets
 
             void Read() override;
 
-            uint32 CreatureID = 0;
+            std::vector<uint32> CreatureIDs;    // Classic 1.60 batches up to 63 entries in one query
         };
 
         struct CreatureXDisplay
@@ -120,6 +120,7 @@ namespace WorldPackets
             ObjectGuid BnetAccountID;
             ObjectGuid GuidActual;
             std::string Name;
+            std::string Surname;            // Classic 1.60
             uint64 GuildClubMemberID = 0;   // same as bgs.protocol.club.v1.MemberId.unique_id
             uint32 VirtualRealmAddress = 0;
             uint8 Race = RACE_NONE;

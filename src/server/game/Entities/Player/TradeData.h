@@ -67,6 +67,10 @@ public:
     uint32 GetServerStateIndex() const { return _serverStateIndex; }
     void UpdateServerStateIndex();
 
+    // Classic 1.60: the proposer also gets TRADE_STATUS_PROPOSED and its client answers CMSG_BUSY_TRADE until the trade begins
+    bool IsAwaitingProposerBusy() const { return _awaitingProposerBusy; }
+    void SetAwaitingProposerBusy(bool state) { _awaitingProposerBusy = state; }
+
 private:
     void Update(bool for_trader = true) const;
 
@@ -85,6 +89,8 @@ private:
 
     uint32     _clientStateIndex;
     uint32     _serverStateIndex;
+
+    bool       _awaitingProposerBusy = false;
 };
 
 #endif // TradeData_h__

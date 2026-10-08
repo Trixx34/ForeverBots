@@ -181,10 +181,13 @@ void WorldSession::HandleGossipHelloOpcode(WorldPackets::NPC::Hello& packet)
         _player->SendAreaSpiritHealerTime(unit);
     }
 
+    // Classic 1.60: "talk to" objectives are credited when the gossip opens (official beta sniff 70205: Find Valennia on the Road,
+    // Making Our Move, The Turncoat... credit right after the hello), scripted creatures included
+    _player->TalkedToCreature(unit->GetEntry(), unit->GetGUID());
+
     _player->PlayerTalkClass->ClearMenus();
     if (!unit->AI()->OnGossipHello(_player))
     {
-//        _player->TalkedToCreature(unit->GetEntry(), unit->GetGUID());
         _player->PrepareGossipMenu(unit, _player->GetGossipMenuForSource(unit), true);
         _player->SendPreparedGossip(unit);
     }
@@ -289,6 +292,10 @@ void WorldSession::HandleSpiritHealerActivate(WorldPackets::NPC::SpiritHealerAct
 
 void WorldSession::SendSpiritResurrect()
 {
+    // Classic 1.60 Hardcore: refuse before the durability loss and before the corpse turns into bones
+    if (_player->RefuseHardcoreResurrect())
+        return;
+
     _player->ResurrectPlayer(0.5f, true);
     _player->DurabilityLossAll(0.25f, true);
 
@@ -342,6 +349,16 @@ void WorldSession::SendBindPoint(Creature* npc)
 
     // send spell for homebinding (3286)
     npc->CastSpell(_player, bindspell, true);
+
+    // binding at an inn hands out a Hearthstone when the player has none (an existing one simply follows the new home)
+    constexpr uint32 ITEM_HEARTHSTONE = 6948;
+    if (!_player->HasItemCount(ITEM_HEARTHSTONE, 1, true))
+    {
+        ItemPosCountVec dest;
+        if (_player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, ITEM_HEARTHSTONE, 1) == EQUIP_ERR_OK)
+            if (Item* item = _player->StoreNewItem(dest, ITEM_HEARTHSTONE, true))
+                _player->SendNewItem(item, 1, true, false);
+    }
 
     _player->PlayerTalkClass->SendCloseGossip();
 }

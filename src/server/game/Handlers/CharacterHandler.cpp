@@ -26,12 +26,16 @@
 #include "Battleground.h"
 #include "BattlegroundPackets.h"
 #include "CalendarMgr.h"
+#include "BotAlts.h"
 #include "CharacterCache.h"
 #include "CharacterPackets.h"
 #include "Chat.h"
 #include "Common.h"
+#include "Config.h"
 #include "DB2Stores.h"
 #include "DatabaseEnv.h"
+#include "DiscordChannel.h"
+#include "FriendsService.h"
 #include "EquipmentSetPackets.h"
 #include "GameObject.h"
 #include "GameTime.h"
@@ -43,6 +47,7 @@
 #include "Item.h"
 #include "Language.h"
 #include "Log.h"
+#include "Mail.h"
 #include "Map.h"
 #include "MapUtils.h"
 #include "Metric.h"
@@ -51,6 +56,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Pet.h"
+#include "PhasingHandler.h"
 #include "Player.h"
 #include "PlayerDump.h"
 #include "QueryHolder.h"
@@ -502,7 +508,168 @@ void WorldSession::HandleCharEnum(CharacterDatabaseQueryHolder const& holder)
         });
     }
 
+    // Classic 1.60: the official server sends every character as a regionwide entry (Realmless set, no realm entries; sniff 70235,
+    // 2026-10-06). Only that entry has money; the character select tooltip shows it with the two primary professions.
+    std::vector<WorldPackets::Character::EnumCharactersResult::CharacterInfo> realmCharacters;
+    if (!charEnum.IsDeletedCharacters && !charEnum.Characters.empty())
+    {
+        std::string guids;
+        for (WorldPackets::Character::EnumCharactersResult::CharacterInfo const& character : charEnum.Characters)
+            guids += (guids.empty() ? "" : ",") + std::to_string(character.Basic.Guid.GetCounter());
+
+        std::unordered_map<ObjectGuid::LowType, uint64> money;
+        if (QueryResult result = CharacterDatabase.PQuery("SELECT guid, money FROM characters WHERE guid IN ({})", guids))
+        {
+            do
+                money[(*result)[0].GetUInt64()] = (*result)[1].GetUInt64();
+            while (result->NextRow());
+        }
+
+        std::unordered_map<ObjectGuid::LowType, std::vector<uint32>> professions;
+        if (QueryResult result = CharacterDatabase.PQuery("SELECT guid, skill FROM character_skills WHERE guid IN ({})", guids))
+        {
+            do
+            {
+                uint32 const skill = (*result)[1].GetUInt16();
+                SkillLineEntry const* skillLine = sSkillLineStore.LookupEntry(skill);
+                if (skillLine && skillLine->CategoryID == SKILL_CATEGORY_PROFESSION && !skillLine->ParentSkillLineID)
+                    professions[(*result)[0].GetUInt64()].push_back(skill);
+            } while (result->NextRow());
+        }
+
+        for (WorldPackets::Character::EnumCharactersResult::CharacterInfo const& character : charEnum.Characters)
+        {
+            WorldPackets::Character::EnumCharactersResult::RegionwideCharacterListEntry& entry = charEnum.RegionwideCharacters.emplace_back(character.Basic);
+            ObjectGuid::LowType const guid = character.Basic.Guid.GetCounter();
+            entry.Basic.RealmInfoFound = true;
+            if (std::vector<uint32> const* list = Trinity::Containers::MapGetValuePtr(professions, guid))
+                for (std::size_t i = 0; i < list->size() && i < 2; ++i)
+                    entry.Basic.ProfessionIds[i] = (*list)[i];
+            if (uint64 const* gold = Trinity::Containers::MapGetValuePtr(money, guid))
+                entry.Money = *gold;
+            entry.PvpRatingBracket = -1;
+        }
+
+        charEnum.Realmless = true;
+        realmCharacters = std::move(charEnum.Characters);
+        charEnum.Characters.clear();
+    }
+
     SendPacket(charEnum.Write());
+
+    if (!realmCharacters.empty())
+        charEnum.Characters = std::move(realmCharacters);
+
+    // Classic 1.60: per character restrictions, right after the enum result as on the official server (sniff 70205: Classic
+    // opcode 0x460019; per character: 2 bits (own byte), packed guid, uint32 0, uint32 10).
+    if (!charEnum.IsDeletedCharacters && !charEnum.Characters.empty())
+    {
+        WorldPacket restrictions(SMSG_REGIONWIDE_CHARACTER_RESTRICTIONS_DATA, 4 + charEnum.Characters.size() * 20);
+        restrictions << uint32(charEnum.Characters.size());
+        for (WorldPackets::Character::EnumCharactersResult::CharacterInfo const& character : charEnum.Characters)
+        {
+            restrictions.WriteBit(false);
+            restrictions.WriteBit(false);
+            restrictions.FlushBits();
+            restrictions << character.Basic.Guid;
+            restrictions << uint32(0);
+            restrictions << uint32(10);
+        }
+        SendPacket(&restrictions);
+    }
+
+    // Classic 1.60.1.70009: character select keeps the enum result pending (never shows the characters) until it receives
+    // Classic opcode 0x460362 (retail numbering: SMSG_RECENT_ALLY_DATA_RESPONSE), whose handler (rva 0x24F1E50) releases it.
+    // Layout: uint32, uint8 (handler only uses the list when this is 7), uint32 count, entries - send it empty.
+    // Official sniffs (70235, 2026-10-06) send 0x08ECBD10, 7, 0; with 0, 0, 0 the Social window kept its old layout (no Allies tabs).
+    {
+        WorldPacket release(SMSG_RECENT_ALLY_DATA_RESPONSE, 9);
+        release << uint32(0x08ECBD10);
+        release << uint8(7);
+        release << uint32(0);
+        SendPacket(&release, true);
+    }
+
+    // Classic 1.60: unread mail of each character, the character list shows a mail icon with the senders (official beta sniff
+    // 70205, Classic opcode 0x46001A). Per character: 2 bits (own byte), packed guid, uint32 senders, uint32 sender types,
+    // types, 6-bit name lengths (with the terminating zero), names. Sender type of the Auction House is 8.
+    // With the 2 bits after the entry instead of before it the client read past the end and crashed (2026-10-03 23:40, 23:47).
+    // Sent right after the enum the client ignores it (icon shown only with the 3 s delay): the official server sends it ~2.6 s
+    // after the enum result, WorldSession::Update sends it after the same delay.
+    if (!charEnum.IsDeletedCharacters && !charEnum.Characters.empty())
+    {
+        std::string receivers;
+        for (WorldPackets::Character::EnumCharactersResult::CharacterInfo const& character : charEnum.Characters)
+            receivers += (receivers.empty() ? "" : ",") + std::to_string(character.Basic.Guid.GetCounter());
+
+        std::unordered_map<ObjectGuid::LowType, std::vector<std::pair<uint32, std::string>>> senders;
+        if (QueryResult mails = CharacterDatabase.PQuery("SELECT m.receiver, m.messageType, m.sender, c.name FROM mail m "
+            "LEFT JOIN characters c ON m.messageType = {} AND c.guid = m.sender WHERE m.receiver IN ({}) AND m.deliver_time <= UNIX_TIMESTAMP() "
+            "AND (m.checked & {}) = 0", uint32(MAIL_NORMAL), receivers, uint32(MAIL_CHECK_MASK_READ)))
+        {
+            do
+            {
+                Field* fields = mails->Fetch();
+                uint32 type = 0;
+                std::string name;
+                switch (fields[1].GetUInt8())
+                {
+                    case MAIL_NORMAL:
+                        name = fields[3].GetString();
+                        break;
+                    case MAIL_AUCTION:
+                        type = 8;
+                        name = "Auction House";
+                        break;
+                    case MAIL_CREATURE:
+                        if (CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(fields[2].GetUInt64()))
+                            name = creature->Name;
+                        break;
+                    case MAIL_GAMEOBJECT:
+                        if (GameObjectTemplate const* go = sObjectMgr->GetGameObjectTemplate(fields[2].GetUInt64()))
+                            name = go->name;
+                        break;
+                    default:
+                        break;
+                }
+                if (name.empty() || name.length() > 62)
+                    continue;
+
+                std::vector<std::pair<uint32, std::string>>& list = senders[fields[0].GetUInt64()];
+                if (list.size() < 10 && std::ranges::find(list, std::make_pair(type, name)) == list.end())
+                    list.emplace_back(type, std::move(name));
+            } while (mails->NextRow());
+        }
+
+        _classicCharacterMailData = std::make_unique<WorldPacket>(SMSG_REGIONWIDE_CHARACTER_MAIL_DATA, 4 + charEnum.Characters.size() * 20);
+        _classicCharacterMailDataTimer = 3000;
+        WorldPacket& mailData = *_classicCharacterMailData;
+        mailData << uint32(charEnum.Characters.size());
+        for (WorldPackets::Character::EnumCharactersResult::CharacterInfo const& character : charEnum.Characters)
+        {
+            std::vector<std::pair<uint32, std::string>> const* list = Trinity::Containers::MapGetValuePtr(senders, character.Basic.Guid.GetCounter());
+            std::size_t count = list ? list->size() : 0;
+            mailData.WriteBit(false);
+            mailData.WriteBit(false);
+            mailData.FlushBits();
+            mailData << character.Basic.Guid;
+            mailData << uint32(count);
+            mailData << uint32(count);
+            if (list)
+            {
+                for (auto const& [type, name] : *list)
+                    mailData << uint32(type);
+                for (auto const& [type, name] : *list)
+                    mailData.WriteBits(name.length() + 1, 6);
+                mailData.FlushBits();
+                for (auto const& [type, name] : *list)
+                {
+                    mailData.WriteString(name);
+                    mailData << uint8(0);
+                }
+            }
+        }
+    }
 
     if (!charEnum.IsDeletedCharacters)
         _collectionMgr->SendWarbandSceneCollectionData();
@@ -1004,13 +1171,24 @@ void WorldSession::HandleCharCreateOpcode(WorldPackets::Character::CreateCharact
             newChar->SaveToDB(trans, characterTransaction, true);
             createInfo->CharCount += 1;
 
+            // Classic 1.60: surname chosen in character creation ("Name Surname"), up to 48 characters
+            std::string surname = createInfo->Surname;
+            if (utf8length(surname) > 48)
+                surname.clear();
+            if (!surname.empty())
+            {
+                std::string escapedSurname = surname;
+                CharacterDatabase.EscapeString(escapedSurname);
+                characterTransaction->Append(Trinity::StringFormat("UPDATE characters SET surname = '{}' WHERE guid = {}", escapedSurname, newChar->GetGUID().GetCounter()).c_str());
+            }
+
             LoginDatabasePreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_REP_REALM_CHARACTERS);
             stmt->setUInt32(0, createInfo->CharCount);
             stmt->setUInt32(1, GetAccountId());
             stmt->setUInt32(2, sRealmList->GetCurrentRealmId().Realm);
             trans->Append(stmt);
 
-            AddTransactionCallback(CharacterDatabase.AsyncCommitTransaction(characterTransaction)).AfterComplete([this, newChar = std::move(newChar), trans](bool success)
+            AddTransactionCallback(CharacterDatabase.AsyncCommitTransaction(characterTransaction)).AfterComplete([this, newChar = std::move(newChar), trans, surname](bool success)
             {
                 if (success)
                 {
@@ -1019,6 +1197,7 @@ void WorldSession::HandleCharCreateOpcode(WorldPackets::Character::CreateCharact
                     TC_LOG_INFO("entities.player.character", "Account: {} (IP: {}) Create Character: {} {}", GetAccountId(), GetRemoteAddress(), newChar->GetName(), newChar->GetGUID().ToString());
                     sScriptMgr->OnPlayerCreate(newChar.get());
                     sCharacterCache->AddCharacterCacheEntry(newChar->GetGUID(), GetAccountId(), newChar->GetName(), newChar->GetNativeGender(), newChar->GetRace(), newChar->GetClass(), newChar->GetLevel(), false);
+                    sCharacterCache->UpdateCharacterSurname(newChar->GetGUID(), surname);
 
                     SendCharCreate(CHAR_CREATE_SUCCESS, newChar->GetGUID());
                 }
@@ -1122,6 +1301,13 @@ void WorldSession::HandlePlayerLoginOpcode(WorldPackets::Character::PlayerLogin&
     {
         TC_LOG_ERROR("network", "Account ({}) can't login with that character ({}).", GetAccountId(), playerLogin.Guid.ToString());
         KickPlayer("WorldSession::HandlePlayerLoginOpcode Trying to login with a character of another account");
+        return;
+    }
+
+    if (BotAlts::IsLoggedInAsBot(playerLogin.Guid.GetCounter())) // A3: a character that is a bot right now cannot also be a player
+    {
+        TC_LOG_INFO("network", "Account {} tried to log in {} which is logged in as a bot", GetAccountId(), playerLogin.Guid.ToString());
+        AbortLogin(WorldPackets::Character::LoginFailureReason::DuplicateCharacter);
         return;
     }
 
@@ -1297,6 +1483,14 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
             chH.PSendSysMessage("%s", sWorld->GetNewCharString().c_str());
     }
 
+    // Classic 1.60.1.70009: start positions imported from client recordings have no height (-15000); use the ground below
+    if (pCurrChar->GetPositionZ() <= -14999.0f)
+    {
+        float z = pCurrChar->GetMap()->GetClassicSpawnHeight(pCurrChar->GetPhaseShift(), pCurrChar->GetPositionX(), pCurrChar->GetPositionY());
+        if (z > INVALID_HEIGHT)
+            pCurrChar->Relocate(pCurrChar->GetPositionX(), pCurrChar->GetPositionY(), z + 0.5f, pCurrChar->GetOrientation());
+    }
+
     if (!pCurrChar->GetMap()->AddPlayerToMap(pCurrChar))
     {
         if (AreaTriggerTeleport const* at = sObjectMgr->GetGoBackTrigger(pCurrChar->GetMapId()))
@@ -1323,6 +1517,13 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
     pCurrChar->RemoveAurasWithInterruptFlags(SpellAuraInterruptFlags::Login);
 
     pCurrChar->SendInitialPacketsAfterAddToMap();
+
+    // Classic 1.60: characters that were already level 25+ get the Legacy unlock on login
+    pCurrChar->UpdateClassicLegacyUnlock();
+
+    // Classic 1.60: characters start without bank tabs, the first one (BankTab.db2 character tab 0) is bought for 0 at the banker like
+    // on the official beta (sniff 70170: "Tab 1" created by the purchase). Granting it at login is not needed.
+    // pCurrChar->GrantClassicFreeBankTab();
 
     CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CHAR_ONLINE);
     stmt->setUInt64(0, pCurrChar->GetGUID().GetCounter());
@@ -1516,7 +1717,203 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
 
     sScriptMgr->OnPlayerLogin(pCurrChar, firstLogin);
 
+    // the Discord bot's chat channel (DiscordChannel.h): joined unless the player left it
+    DiscordChannel::OnLogin(pCurrChar);
+
+    // Battle.net presence: the client takes the account's BattleTag from it (Social window, Battle.net friends); online friends are told
+    BattlenetPresence::OnLogin(this);
+
+    // Battle.net account with an authenticator (support site account page): "account secured", +4 backpack slots and no
+    // "attach an Authenticator" prompts. Removing it takes the slots away again (items in them are mailed).
+    {
+        bool secured = false;
+        if (QueryResult result = LoginDatabase.PQuery("SELECT COUNT(*) FROM battlenet_accounts WHERE id = {} AND authenticator_secret IS NOT NULL "
+            "AND authenticator_secret <> ''", GetBattlenetAccountId()))
+            secured = (*result)[0].GetUInt64() != 0;
+
+        if (secured)
+            pCurrChar->SetAccountSecured(true);
+        else if (pCurrChar->GetInventorySlotCount() == INVENTORY_DEFAULT_SIZE + INVENTORY_ACCOUNT_SECURED_BONUS_SIZE)
+            pCurrChar->SetAccountSecured(false);
+    }
+
     TC_METRIC_EVENT("player_events", "Login", pCurrChar->GetName());
+}
+
+void WorldSession::BeginBotLogin(ObjectGuid guid)
+{
+    // permissions are needed by gameplay code running on map threads, load them here (world thread) once
+    if (!_RBACData)
+        LoadPermissions();
+
+    m_playerLoading = guid;
+
+    std::shared_ptr<LoginQueryHolder> holder = std::make_shared<LoginQueryHolder>(GetAccountId(), guid);
+    if (!holder->Initialize())
+    {
+        m_playerLoading.Clear();
+        return;
+    }
+
+    AddQueryHolderCallback(CharacterDatabase.DelayQueryHolder(holder)).AfterComplete([this](SQLQueryHolderBase const& holder)
+    {
+        HandleBotPlayerLogin(static_cast<LoginQueryHolder const&>(holder));
+    });
+}
+
+void WorldSession::ProcessBotLoginCallbacks()
+{
+    _queryHolderProcessor.ProcessReadyCallbacks();
+}
+
+// Trimmed copy of HandlePlayerLogin for player bots: same world state, none of the client packets
+// (account data, MOTD, feature status, initial packets, cinematics...), see docs/playerbots/login-flow-notes.md.
+void WorldSession::HandleBotPlayerLogin(LoginQueryHolder const& holder)
+{
+    ObjectGuid playerGuid = holder.GetGuid();
+
+    Player* pCurrChar = new Player(this);
+
+    if (!pCurrChar->LoadFromDB(playerGuid, holder))
+    {
+        SetPlayer(nullptr);
+        delete pCurrChar;
+        m_playerLoading.Clear();
+        return;
+    }
+
+    pCurrChar->SetVirtualPlayerRealm(GetVirtualRealmAddress());
+    pCurrChar->GetMotionMaster()->Initialize();
+
+    // Classic 1.60 spawn height fix, same as the stock login (start positions imported from sniffs have no height)
+    if (pCurrChar->GetPositionZ() <= -14999.0f)
+    {
+        float z = pCurrChar->GetMap()->GetClassicSpawnHeight(pCurrChar->GetPhaseShift(), pCurrChar->GetPositionX(), pCurrChar->GetPositionY());
+        if (z > INVALID_HEIGHT)
+            pCurrChar->Relocate(pCurrChar->GetPositionX(), pCurrChar->GetPositionY(), z + 0.5f, pCurrChar->GetOrientation());
+    }
+
+    if (!pCurrChar->getCinematic())
+        pCurrChar->setCinematic(1);
+
+    if (PreparedQueryResult resultGuild = holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_GUILD))
+    {
+        Field* fields = resultGuild->Fetch();
+        pCurrChar->SetInGuild(fields[0].GetUInt64());
+        pCurrChar->SetGuildRank(fields[1].GetUInt8());
+        if (Guild* guild = sGuildMgr->GetGuildById(pCurrChar->GetGuildId()))
+            pCurrChar->SetGuildLevel(guild->GetLevel());
+    }
+    else if (pCurrChar->GetGuildId())
+    {
+        pCurrChar->SetInGuild(UI64LIT(0));
+        pCurrChar->SetGuildRank(0);
+        pCurrChar->SetGuildLevel(0);
+    }
+
+    if (!pCurrChar->GetMap()->AddPlayerToMap(pCurrChar))
+    {
+        if (AreaTriggerTeleport const* at = sObjectMgr->GetGoBackTrigger(pCurrChar->GetMapId()))
+            pCurrChar->TeleportTo(at->Loc);
+        else
+            pCurrChar->TeleportTo(pCurrChar->m_homebind);
+    }
+
+    ObjectAccessor::AddObject(pCurrChar);
+
+    if (pCurrChar->GetGuildId())
+    {
+        if (!sGuildMgr->GetGuildById(pCurrChar->GetGuildId()))
+            pCurrChar->SetInGuild(UI64LIT(0));
+    }
+
+    pCurrChar->RemoveAurasWithInterruptFlags(SpellAuraInterruptFlags::Login);
+
+    // the world-state part of SendInitialPacketsAfterAddToMap
+    uint32 newzone, newarea;
+    pCurrChar->GetZoneAndAreaId(newzone, newarea);
+    pCurrChar->UpdateZone(newzone, newarea);
+    PhasingHandler::OnMapChange(pCurrChar);
+    pCurrChar->UpdateItemLevelAreaBasedScaling();
+
+    pCurrChar->UpdateClassicLegacyUnlock();
+
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CHAR_ONLINE);
+    stmt->setUInt64(0, pCurrChar->GetGUID().GetCounter());
+    CharacterDatabase.Execute(stmt);
+
+    LoginDatabasePreparedStatement* loginStmt = LoginDatabase.GetPreparedStatement(LOGIN_UPD_ACCOUNT_ONLINE);
+    loginStmt->setUInt32(0, GetAccountId());
+    LoginDatabase.Execute(loginStmt);
+
+    pCurrChar->SetInGameTime(GameTime::GetGameTimeMS());
+
+    // Player::CanNeverSee hides every object from a player without this flag (normally set by the client time sync, which a bot never
+    // does): without it a bot sees nothing, so IsValidAttackTarget / spell target checks fail against every creature.
+    pCurrChar->SetPlayerLocalFlag(PLAYER_LOCAL_FLAG_OVERRIDE_TRANSPORT_SERVER_TIME);
+
+    if (Group* group = pCurrChar->GetGroup())
+    {
+        group->SendUpdate();
+        if (group->GetLeaderGUID() == pCurrChar->GetGUID())
+            group->StopLeaderOfflineTimer();
+    }
+
+    sSocialMgr->SendFriendStatus(pCurrChar, FRIEND_ONLINE, pCurrChar->GetGUID(), true);
+
+    pCurrChar->LoadCorpse(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_CORPSE_LOCATION));
+
+    // ghost state of a character that was dead when it logged out
+    if (pCurrChar->m_deathState == DEAD)
+    {
+        if (pCurrChar->GetRace() == RACE_NIGHTELF && !pCurrChar->HasAura(20584))
+            pCurrChar->CastSpell(pCurrChar, 20584, true);
+
+        if (!pCurrChar->HasAura(8326))
+            pCurrChar->CastSpell(pCurrChar, 8326, true);
+
+        pCurrChar->SetWaterWalking(true);
+    }
+
+    pCurrChar->ContinueTaxiFlight();
+
+    pCurrChar->ResummonPetTemporaryUnSummonedIfAny();
+
+    if (pCurrChar->HasPlayerFlag(PLAYER_FLAGS_CONTESTED_PVP))
+        pCurrChar->SetContestedPvP();
+
+    if (pCurrChar->HasAtLoginFlag(AT_LOGIN_RESET_SPELLS))
+        pCurrChar->ResetSpells();
+
+    if (pCurrChar->HasAtLoginFlag(AT_LOGIN_RESET_TALENTS))
+    {
+        pCurrChar->ResetTalents(true);
+        pCurrChar->ResetTalentSpecialization();
+    }
+
+    bool firstLogin = pCurrChar->HasAtLoginFlag(AT_LOGIN_FIRST);
+    if (firstLogin)
+    {
+        pCurrChar->RemoveAtLoginFlag(AT_LOGIN_FIRST);
+
+        PlayerInfo const* info = sObjectMgr->GetPlayerInfo(pCurrChar->GetRace(), pCurrChar->GetClass());
+        for (uint32 spellId : info->castSpells[AsUnderlyingType(pCurrChar->GetCreateMode())])
+            pCurrChar->CastSpell(pCurrChar, spellId, true);
+    }
+
+    if (!pCurrChar->IsStandState() && !pCurrChar->HasUnitState(UNIT_STATE_STUNNED))
+        pCurrChar->SetStandState(UNIT_STAND_STATE_STAND);
+
+    pCurrChar->UpdateAverageItemLevelTotal();
+    pCurrChar->UpdateAverageItemLevelEquipped();
+
+    m_playerLoading.Clear();
+
+    _player->UpdateMountCapability();
+
+    _player->UpdateCriteria(CriteriaType::Login, 1);
+
+    sScriptMgr->OnPlayerLogin(pCurrChar, firstLogin);
 }
 
 void WorldSession::SendFeatureSystemStatus()
@@ -1529,6 +1926,11 @@ void WorldSession::SendFeatureSystemStatus()
     features.CfgRealmRecID = sRealmList->GetCurrentRealmId().Realm;
     features.CommercePricePollTimeSeconds = 300;
     features.VoiceEnabled = false;
+    features.BpayStoreAvailable = true;             // Classic 1.60: custom shop2 catalog shop (classic_re/shop_server.py)
+    features.CommerceServerEnabled = true;
+
+    // Classic 1.60: the realm's season. Content set 137 = Cfg_SuperDistrict 2 "Normal" (bnetserver Realm.CfgContentSetID).
+    features.ContentSetID = int32(sRealmList->GetCurrentRealmContentSet());
 
     // Enable guilds only.
     // This is required to restore old guild channel behavior for GMs.
@@ -1538,6 +1940,17 @@ void WorldSession::SendFeatureSystemStatus()
     features.CharacterCommunitiesEnabled = false;
     features.ClubPresenceAllowSubscribeAll = true;
     features.ClubPresenceUnsubscribeDelay = 60000;
+    features.ClubFinderEnabled = sConfigMgr->GetBoolDefault("Classic.GuildFinder", false);   // Classic 1.60: Guild Finder (work in progress)
+    // Classic 1.60: the client starts its clubs (guild in Guild & Communities, C_Club.IsEnabled) from bit 16 of this message's
+    // flags (struct +0xF9, applied at rva 0x24C1B43 in 70058 -> club startup 0x2BFB8E0), which is RedeemForBalanceAvailable in
+    // the retail field order; the retail CommunitiesEnabled bit lands two bits later in Classic.
+    features.RedeemForBalanceAvailable = true;
+    // Same two-bit shift for Club Finder: C_ClubFinder.IsEnabled() reads the bit the retail order calls QuestSessionEnabled
+    features.QuestSessionEnabled = features.ClubFinderEnabled;
+    // and for the group finder: Classic LfdEnabled / LfrEnabled are the bits the retail order calls PlayerIdentityOptionsEnabled /
+    // IsPlayerContentTrackingEnabled (C_LFGInfo.CanPlayerUseGroupFinder() was false: the Group Finder window never opened)
+    features.PlayerIdentityOptionsEnabled = true;
+    features.IsPlayerContentTrackingEnabled = true;
 
     features.EuropaTicketSystemStatus.emplace();
     features.EuropaTicketSystemStatus->ThrottleState.MaxTries = 10;
@@ -1578,6 +1991,76 @@ void WorldSession::SendFeatureSystemStatus()
     features.GuildChatThrottle.TriesRestoredPerSecond = 20;
     features.GroupChatThrottle.UsedTriesPerMessage = 1;
     features.GroupChatThrottle.TriesRestoredPerSecond = 20;
+
+    // Classic 1.60: every flag as the official server sends it (sniffs 70205 and 70235 are identical). Field names follow the
+    // retail order, which is not the Classic meaning of each bit. Classic.OfficialFeatureFlags = 0 goes back to the values above.
+    if (sConfigMgr->GetBoolDefault("Classic.OfficialFeatureFlags", true))
+    {
+        features.VoiceEnabled = true;
+        features.BpayStoreAvailable = true;
+        features.ItemRestorationButtonEnabled = false;
+        features.SessionAlert.reset();
+        features.RAFSystem.Enabled = false;
+        features.RAFSystem.RecruitingEnabled = false;
+        features.CharUndeleteEnabled = true;
+        features.RestrictedAccount = false;
+        features.CommerceServerEnabled = false;
+        features.TutorialEnabled = true;
+        features.VeteranTokenRedeemWillKick = true;
+        features.WorldTokenRedeemWillKick = false;
+        features.KioskModeEnabled = false;
+        features.CompetitiveModeEnabled = true;
+        features.RedeemForBalanceAvailable = true;
+        features.WarModeEnabled = true;
+        features.CommunitiesEnabled = true;
+        features.BnetGroupsEnabled = true;
+        features.CharacterCommunitiesEnabled = false;
+        features.ClubPresenceAllowSubscribeAll = false;
+        features.VoiceChatParentalDisabled = true;
+        features.VoiceChatParentalMuted = false;
+        features.QuestSessionEnabled = false;
+        features.ClubFinderEnabled = true;
+        features.CommunityFinderEnabled = true;
+        features.BrowserCrashReporterEnabled = false;
+        features.SpeakForMeAllowed = false;
+        // official sends this bit on; in Classic it is the group finder "attach an Authenticator and SMS Protect" requirement
+        // (official accounts there were secured). Off until accounts can have an authenticator here.
+        features.DoesAccountNeedAADCPrompt = false;
+        features.IsAccountOptedInToAADC = false;
+        features.LfgRequireAuthenticatorEnabled = false;
+        features.ScriptsDisallowedForBeta = false;
+        features.TimerunningEnabled = true;
+        features.PlayerIdentityOptionsEnabled = false;
+        features.IsPlayerContentTrackingEnabled = false;
+        features.LfdEnabled = true;
+        features.LfrEnabled = false;
+        features.PetHappinessEnabled = false;
+        features.GuildEventsEditsEnabled = false;
+        features.GuildTradeSkillsEnabled = false;
+        features.ClassicFlagBits10 = 2;
+        features.IsAccountCurrencyTransferEnabled = false;
+        features.NetEaseChatTelemetryEnabled = false;
+        features.LobbyMatchmakerQueueFromMainlineEnabled = true;
+        features.CanSendLobbyMatchmakerPartyCustomizations = false;
+        features.AddonProfilingEnabled = false;
+        features.GlobalUserGeneratedContentMuteEnabled = false;
+        features.AccountUserGeneratedContentIsRisky = false;
+        features.FriendsDisabled = false;
+
+        features.EuropaTicketSystemStatus->TicketsEnabled = false;
+        features.EuropaTicketSystemStatus->BugsEnabled = true;
+        features.EuropaTicketSystemStatus->ComplaintsEnabled = true;
+        features.EuropaTicketSystemStatus->SuggestionsEnabled = true;
+        features.EuropaTicketSystemStatus->ThrottleState = { .MaxTries = 10, .PerMilliseconds = 60000, .TryCount = 0, .LastResetTimeBeforeNow = 130929 };
+        features.EuropaTicketSystemStatus->ExpensiveThrottleState = { .MaxTries = 1, .PerMilliseconds = 60000, .TryCount = 0, .LastResetTimeBeforeNow = 130929 };
+
+        features.QuickJoinConfig = { false, 7.0f, 10.0f, 1.0f, 1.0f, 5.0f, 1.0f, 0.0f, 60.0f, 20.0f, 0.0f, 50.0f, 1.0f, 10.0f, 50.0f, 100.0f,
+            50.0f, 1.0f, 1.0f, 100.0f, 1.0f, 850.0f, 80.0f };
+        features.RemainingTimerunningSeasonSeconds = 32767;
+        features.MaxPlayerGuidLookupsPerRequest = 32;
+        features.NameLookupTelemetryInterval = 32;
+        features.DisabledGameModes = { { .GameMode = 3, .ContentSetID = 13, .GameModeRecordID = 0 }, { .GameMode = 2, .ContentSetID = 5, .GameModeRecordID = 0 } };
+    }
 
     SendPacket(features.Write());
 }

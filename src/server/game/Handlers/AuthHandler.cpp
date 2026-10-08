@@ -108,12 +108,14 @@ void WorldSession::SendSetTimeZoneInformation()
 void WorldSession::SendFeatureSystemStatusGlueScreen()
 {
     WorldPackets::System::FeatureSystemStatusGlueScreen features;
-    features.BpayStoreAvailable = false;
+    features.BpayStoreAvailable = true;             // Classic 1.60: custom shop2 catalog shop (classic_re/shop_server.py)
     features.BpayStoreDisabledByParentalControls = false;
+    features.CommerceServerEnabled = true;
     features.CharUndeleteEnabled = sWorld->getBoolConfig(CONFIG_FEATURE_SYSTEM_CHARACTER_UNDELETE_ENABLED);
     features.MaxCharactersOnThisRealm = sWorld->getIntConfig(CONFIG_CHARACTERS_PER_REALM);
     features.MinimumExpansionLevel = EXPANSION_CLASSIC;
     features.MaximumExpansionLevel = sWorld->getIntConfig(CONFIG_EXPANSION);
+    features.ContentSetID = int32(sRealmList->GetCurrentRealmContentSet()); // Classic 1.60: season of this realm's ruleset
 
     features.EuropaTicketSystemStatus.emplace();
     features.EuropaTicketSystemStatus->ThrottleState.MaxTries = 10;
@@ -147,10 +149,28 @@ void WorldSession::SendFeatureSystemStatusGlueScreen()
         { "raidLockoutExtendEnabled"sv, "1"sv },
         { "sellAllJunkEnabled"sv, "1"sv },
         { "bypassItemLevelScalingCode"sv, "0"sv },
-        { "shop2Enabled"sv, "0"sv },
-        { "bpayStoreEnable"sv, "0"sv },
-        { "recentAlliesEnabledClient"sv, "0"sv },
-        { "browserEnabled"sv, "0"sv },
+        // Classic 1.60: custom shop - the client's shop2 REST calls go to classic_re/shop_server.py
+        { "shop2Enabled"sv, "1"sv },
+        { "shop2HostUrlRequests"sv, "https://trinity.actual.battle.net:8443"sv },
+        { "shop2HostUrlAuth"sv, "https://trinity.actual.battle.net:8443"sv },
+        { "shop2UseConnectedRealmGameServiceRegionId"sv, "0"sv },   // realm region is the fake 70 of the Classic super realm; use the account region (1)
+        { "bpayStoreEnable"sv, "1"sv },
+        // Classic 1.60: the Social window (O) layout, as the official server sends it (mirror vars of the 70124 sniff): side tabs with
+        // Recent Allies and the raid list; without these the client shows the old window with Raid as a bottom tab.
+        // socialUIEnabledClient was 0 in 70124 and is 1 from the 70235 sniff on.
+        { "recentAlliesEnabledClient"sv, "1"sv },
+        { "recentAlliesRequestDataThrottle"sv, "180"sv },
+        { "socialUIEnabledClient"sv, "1"sv },
+        { "battleNetTitleFriendsEnabledClient"sv, "1"sv },
+        { "battleNetTitleFriendTagsEnabledClient"sv, "1"sv },
+        { "battleNetTitleFriendCustomNamesEnabledClient"sv, "1"sv },
+        { "socialUIFriendsListEnabledClient"sv, "1"sv },
+        { "socialUIRaidListEnabledClient"sv, "1"sv },
+        { "socialUISocialQueueEnabledClient"sv, "1"sv },
+        // official sends 0 (its players have Battle.net friends); with 0 the Add Friend button only offers BattleTag friends, which need the
+        // Battle.net friends service bnetserver does not have ("Battle.net services are not available"). 1 = add characters by name.
+        { "legacyFriendSystemEnabledClient"sv, "1"sv },
+        { "browserEnabled"sv, "1"sv },         // Classic 1.60: support and shop windows use the in-game browser
         { "housingEnableCreateGuildNeighborhood"sv, "0"sv },
         { "housingEnableDeleteHouse"sv, "0"sv },
         { "housingServiceEnabled"sv, "0"sv },

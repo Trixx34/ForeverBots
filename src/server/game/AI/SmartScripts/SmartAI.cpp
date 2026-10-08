@@ -16,6 +16,7 @@
  */
 
 #include "SmartAI.h"
+#include "BotQuestLog.h"
 #include "AreaTrigger.h"
 #include "ConditionMgr.h"
 #include "Creature.h"
@@ -197,6 +198,7 @@ void SmartAI::EndPath(bool fail)
     ObjectVector const* targets = GetScript()->GetStoredTargetVector(SMART_ESCORT_TARGETS, *me);
     if (targets && _escortQuestId)
     {
+        BotQuestLog::Scope escortScope("escort_failed"); // only FailQuest calls read it
         if (targets->size() == 1 && targets->front()->IsPlayer())
         {
             Player* player = targets->front()->ToPlayer();

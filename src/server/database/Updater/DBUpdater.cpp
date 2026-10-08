@@ -20,14 +20,20 @@
 #include "Config.h"
 #include "DatabaseEnv.h"
 #include "DatabaseLoader.h"
+#include "Implementation/BotLogDatabase.h"
 #include "GitRevision.h"
 #include "Log.h"
 #include "QueryResult.h"
 #include "StartProcess.h"
 #include "UpdateFetcher.h"
+#include "MySQLWorkaround.h"
+#include "StringConvert.h"
+#include <iterator>
+#include "StringFormat.h"
 #include <boost/filesystem/operations.hpp>
 #include <fstream>
 #include <iostream>
+#include <random>
 
 std::string DBUpdaterUtil::GetCorrectedMySQLExecutable()
 {
@@ -180,6 +186,37 @@ template<>
 BaseLocation DBUpdater<HotfixDatabaseConnection>::GetBaseLocationType()
 {
     return LOCATION_DOWNLOAD;
+}
+
+// Bot log database: schema is managed by forever-botlog-setup.sql, never auto-created or auto-updated
+template<>
+std::string DBUpdater<BotLogDatabaseConnection>::GetConfigEntry()
+{
+    return "Updates.BotLog";
+}
+
+template<>
+std::string DBUpdater<BotLogDatabaseConnection>::GetTableName()
+{
+    return "BotLog";
+}
+
+template<>
+std::string DBUpdater<BotLogDatabaseConnection>::GetBaseFile()
+{
+    return {};
+}
+
+template<>
+bool DBUpdater<BotLogDatabaseConnection>::IsEnabled(uint32 const /*updateMask*/)
+{
+    return false;
+}
+
+template<>
+BaseLocation DBUpdater<BotLogDatabaseConnection>::GetBaseLocationType()
+{
+    return LOCATION_REPOSITORY;
 }
 
 // All
@@ -354,8 +391,145 @@ void DBUpdater<T>::Apply(DatabaseWorkerPool<T>& pool, std::string const& query)
 template<class T>
 void DBUpdater<T>::ApplyFile(DatabaseWorkerPool<T>& pool, Path const& path)
 {
-    DBUpdater<T>::ApplyFile(pool, pool.GetConnectionInfo()->host, pool.GetConnectionInfo()->user, pool.GetConnectionInfo()->password,
-        pool.GetConnectionInfo()->port_or_socket, pool.GetConnectionInfo()->database, pool.GetConnectionInfo()->ssl, path);
+    // Classic 1.60 fork: the mysql client sometimes exits with success without running a single statement of the file (binlog of
+    // 2026-10-05: 30 files "reapplied", only the `updates` rows written), so the database silently missed them. The file is applied
+    // with a marker statement at its end and the marker is read back over our own connection: a run that did nothing is retried and
+    // then stops the server instead of being recorded as applied.
+    pool.DirectExecute("CREATE TABLE IF NOT EXISTS `updates_apply_check` (`name` VARCHAR(255) NOT NULL PRIMARY KEY, "
+        "`token` BIGINT UNSIGNED NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    std::string name = path.filename().generic_string();
+    pool.EscapeString(name);
+    uint64 const token = (uint64(time(nullptr)) << 24) ^ uint64(std::random_device{}());
+    Path const temp = boost::filesystem::temp_directory_path() / ("tc_update_" + std::to_string(token) + ".sql");
+    {
+        std::ifstream in(path.generic_string(), std::ios::binary);
+        std::ofstream out(temp.generic_string(), std::ios::binary | std::ios::trunc);
+        if (!in.is_open() || !out.is_open())
+        {
+            TC_LOG_FATAL("sql.updates", "Failed to prepare the update file \"{}\" (temporary copy \"{}\")!", path.generic_string(), temp.generic_string());
+            throw UpdateException("update failed");
+        }
+        out << in.rdbuf();
+        out << "\n\nREPLACE INTO `updates_apply_check` (`name`, `token`) VALUES ('" << name << "', " << token << ");\n";
+    }
+
+    auto const applied = [&]() -> bool
+    {
+        QueryResult result = pool.Query(Trinity::StringFormat("SELECT `token` FROM `updates_apply_check` WHERE `name` = '{}'", name).c_str());
+        return result && (*result)[0].GetUInt64() == token;
+    };
+
+    try
+    {
+        for (uint32 attempt = 1; ; ++attempt)
+        {
+            DBUpdater<T>::ApplyFile(pool, pool.GetConnectionInfo()->host, pool.GetConnectionInfo()->user, pool.GetConnectionInfo()->password,
+                pool.GetConnectionInfo()->port_or_socket, pool.GetConnectionInfo()->database, pool.GetConnectionInfo()->ssl, temp);
+            if (applied())
+                break;
+
+            if (attempt >= 3)
+            {
+                TC_LOG_FATAL("sql.updates", "The mysql client reported success for \"{}\" but did not run it ({} attempts)! The file was not applied.",
+                    path.generic_string(), attempt);
+                throw UpdateException("update failed");
+            }
+
+            TC_LOG_ERROR("sql.updates", "The mysql client reported success for \"{}\" but did not run it, applying it again...", path.generic_string());
+        }
+    }
+    catch (...)
+    {
+        boost::system::error_code ec;
+        boost::filesystem::remove(temp, ec);
+        throw;
+    }
+
+    boost::system::error_code ec;
+    boost::filesystem::remove(temp, ec);
+}
+
+// Classic 1.60 fork: the files are run over our own MySQL connection (multi statements), not through the mysql command line client.
+// The client silently stopped reading some files (quotes in `--` comments) and, started from the worldserver, sometimes ran nothing
+// at all while exiting with success (2026-10-05). The file is cut into chunks at statement ends (outside strings and comments).
+namespace
+{
+    // splits SQL text at the `;` that end statements, skipping strings, quoted names and comments; whole statements only
+    std::vector<std::string> SplitSqlStatements(std::string const& text)
+    {
+        std::vector<std::string> statements;
+        std::string current;
+        size_t i = 0;
+        size_t const n = text.size();
+        auto flush = [&]()
+        {
+            if (current.find_first_not_of(" \t\r\n") != std::string::npos)
+                statements.push_back(current);
+            current.clear();
+        };
+        auto isSpace = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+        while (i < n)
+        {
+            char const c = text[i];
+            // comments: `-- ` (or `--` at the end of the text), `#`, `/* */` (`/*!` version comments are kept as code)
+            if (c == '-' && i + 1 < n && text[i + 1] == '-' && (i + 2 >= n || isSpace(text[i + 2])))
+            {
+                while (i < n && text[i] != '\n')
+                    ++i;
+                continue;
+            }
+            if (c == '#')
+            {
+                while (i < n && text[i] != '\n')
+                    ++i;
+                continue;
+            }
+            if (c == '/' && i + 1 < n && text[i + 1] == '*' && !(i + 2 < n && text[i + 2] == '!'))
+            {
+                i += 2;
+                while (i + 1 < n && !(text[i] == '*' && text[i + 1] == '/'))
+                    ++i;
+                i += 2;
+                continue;
+            }
+            if (c == '\'' || c == '"' || c == '`')
+            {
+                char const quote = c;
+                current += c;
+                ++i;
+                while (i < n)
+                {
+                    char const d = text[i];
+                    current += d;
+                    ++i;
+                    if (d == '\\' && quote != '`' && i < n)
+                    {
+                        current += text[i];
+                        ++i;
+                        continue;
+                    }
+                    if (d == quote)
+                    {
+                        if (i < n && text[i] == quote)      // doubled quote inside the string
+                        {
+                            current += text[i];
+                            ++i;
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                continue;
+            }
+            current += c;
+            ++i;
+            if (c == ';')
+                flush();
+        }
+        flush();
+        return statements;
+    }
 }
 
 template<class T>
@@ -363,91 +537,95 @@ void DBUpdater<T>::ApplyFile(DatabaseWorkerPool<T>& pool, std::string const& hos
     std::string const& password, std::string const& port_or_socket, std::string const& database, std::string const& ssl,
     Path const& path)
 {
-    std::vector<std::string> args;
-    args.reserve(9);
-
-    // CLI Client connection info
-    args.emplace_back("-h" + host);
-    args.emplace_back("-u" + user);
-
-    if (!password.empty())
-        args.emplace_back("-p" + password);
-
-    // Check if we want to connect through ip or socket (Unix only)
-#ifdef _WIN32
-
-    if (host == ".")
-        args.emplace_back("--protocol=PIPE");
-    else
-        args.emplace_back("-P" + port_or_socket);
-
-#else
-
-    if (!std::isdigit(port_or_socket[0]))
+    MYSQL* mysql = nullptr;
+    auto fail = [&](std::string const& reason)
     {
-        // We can't check if host == "." here, because it is named localhost if socket option is enabled
-        args.emplace_back("-P0");
-        args.emplace_back("--protocol=SOCKET");
-        args.emplace_back("-S" + port_or_socket);
-    }
+        if (mysql)
+            mysql_close(mysql);
+        TC_LOG_FATAL("sql.updates", "Applying of file \'{}\' to database \'{}\' failed: {}", path.generic_string(), pool.GetConnectionInfo()->database, reason);
+        throw UpdateException("update failed");
+    };
+
+    std::ifstream in(path.generic_string(), std::ios::binary);
+    if (!in.is_open())
+        fail("the file can not be read");
+    std::string const text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::vector<std::string> const statements = SplitSqlStatements(text);
+
+    mysql = mysql_init(nullptr);
+    if (!mysql)
+        fail("mysql_init");
+
+    mysql_options(mysql, MYSQL_SET_CHARSET_NAME, "utf8mb4");
+    unsigned long maxPacket = 1024ul * 1024ul * 1024ul;
+    mysql_options(mysql, MYSQL_OPT_MAX_ALLOWED_PACKET, &maxPacket);
+
+    int port = 0;
+    char const* socket = nullptr;
+    std::string connectHost = host;
+    if (host != ".")
+        port = Trinity::StringTo<int32>(port_or_socket).value_or(0);
     else
-        // generic case
-        args.emplace_back("-P" + port_or_socket);
-
+    {
+#ifdef _WIN32
+        unsigned int protocol = MYSQL_PROTOCOL_PIPE;
+#else
+        connectHost = "localhost";
+        socket = port_or_socket.c_str();
+        unsigned int protocol = MYSQL_PROTOCOL_SOCKET;
 #endif
-
-    // Set the default charset to utf8
-    args.emplace_back("--default-character-set=utf8mb4");
-
-    // Set max allowed packet to 1 GB
-    args.emplace_back("--max-allowed-packet=1GB");
+        mysql_options(mysql, MYSQL_OPT_PROTOCOL, (char const*)&protocol);
+    }
 
 #if !defined(MARIADB_VERSION_ID) && MYSQL_VERSION_ID >= 80000
-
-    if (ssl == "ssl")
-        args.emplace_back("--ssl-mode=REQUIRED");
-
-#if MYSQL_VERSION_ID >= 90400
-
-    // Since MySQL 9.4 command line client commands are disabled by default
-    // We need to enable them to use `SOURCE` command
-    args.emplace_back("--commands=ON");
-
-#endif
-
-#else
-
-    if (ssl == "ssl")
-        args.emplace_back("--ssl");
-
-#endif
-
-    // Execute sql file
-    args.emplace_back("-e");
-    args.emplace_back(Trinity::StringFormat("BEGIN; SOURCE {}; COMMIT;", path.generic_string()));
-
-    // Database
-    if (!database.empty())
-        args.emplace_back(database);
-
-    // Invokes a mysql process which doesn't leak credentials to logs
-    int32 const ret = Trinity::StartProcess(DBUpdaterUtil::GetCorrectedMySQLExecutable(), std::move(args),
-                                 "sql.updates", "", true);
-
-    if (ret != EXIT_SUCCESS)
+    if (!ssl.empty())
     {
-        TC_LOG_FATAL("sql.updates", "Applying of file \'{}\' to database \'{}\' failed!" \
-            " If you are a user, please pull the latest revision from the repository. "
-            "Also make sure you have not applied any of the databases with your sql client. "
-            "You cannot use auto-update system and import sql files from TrinityCore repository with your sql client. "
-            "If you are a developer, please fix your sql query.",
-            path.generic_string(), pool.GetConnectionInfo()->database);
-
-        throw UpdateException("update failed");
+        mysql_ssl_mode sslMode = ssl == "ssl" ? SSL_MODE_REQUIRED : SSL_MODE_DISABLED;
+        mysql_options(mysql, MYSQL_OPT_SSL_MODE, (char const*)&sslMode);
     }
+#endif
+
+    if (!mysql_real_connect(mysql, connectHost.c_str(), user.c_str(), password.c_str(), database.empty() ? nullptr : database.c_str(), port, socket,
+        CLIENT_MULTI_STATEMENTS))
+        fail(std::string("connect: ") + mysql_error(mysql));
+
+    // run the statements in chunks of about 4 MB (multi statements), reading every result
+    std::string chunk;
+    size_t sent = 0;
+    auto runChunk = [&]()
+    {
+        if (chunk.empty())
+            return;
+        if (mysql_real_query(mysql, chunk.c_str(), static_cast<unsigned long>(chunk.size())) != 0)
+            fail(Trinity::StringFormat("error {} in the statements before #{}: {}", mysql_errno(mysql), sent + 1, mysql_error(mysql)));
+        int status = 0;
+        do
+        {
+            if (MYSQL_RES* result = mysql_store_result(mysql))
+                mysql_free_result(result);
+            else if (mysql_field_count(mysql) != 0)
+                fail(Trinity::StringFormat("result error {}: {}", mysql_errno(mysql), mysql_error(mysql)));
+            status = mysql_next_result(mysql);
+            if (status > 0)
+                fail(Trinity::StringFormat("error {} in the statements before #{}: {}", mysql_errno(mysql), sent + 1, mysql_error(mysql)));
+        } while (status == 0);
+        chunk.clear();
+    };
+
+    for (std::string const& statement : statements)
+    {
+        if (!chunk.empty() && chunk.size() + statement.size() > 4 * 1024 * 1024)
+            runChunk();
+        chunk += statement;
+        chunk += '\n';
+        ++sent;
+    }
+    runChunk();
+    mysql_close(mysql);
 }
 
 template class TC_DATABASE_API DBUpdater<LoginDatabaseConnection>;
 template class TC_DATABASE_API DBUpdater<WorldDatabaseConnection>;
 template class TC_DATABASE_API DBUpdater<CharacterDatabaseConnection>;
 template class TC_DATABASE_API DBUpdater<HotfixDatabaseConnection>;
+template class TC_DATABASE_API DBUpdater<BotLogDatabaseConnection>;

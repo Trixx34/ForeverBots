@@ -204,6 +204,7 @@ uint32 Authentication::HandleVerifyAuthToken(Session* session, std::string_view 
 
 uint32 Authentication::HandleGenerateAuthToken(Session* session, std::function<void(std::string_view)> sendResponse)
 {
+    TC_LOG_DEBUG("session", "{} requested a web auth token (GenerateAuthToken)", session->GetClientInfo());
     LoginDatabasePreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_SEL_BNET_EXISTING_AUTHENTICATION_BY_ID);
     stmt->setUInt32(0, session->GetAccountId());
 
@@ -279,6 +280,9 @@ uint32 Authentication::HandleVerifyWebCredentials(std::string_view webCredential
 
         if (!country.empty())
             logonResult.set_geoip_country(country.data(), country.size());
+
+        if (!accountInfo->BattleTag.empty())
+            logonResult.set_battle_tag(accountInfo->BattleTag);
 
         std::array<uint8, 64> k = Trinity::Crypto::GetRandomBytes<64>();
         logonResult.set_session_key(k.data(), 64);
@@ -389,6 +393,10 @@ uint32 Authentication::HandleVerifyAuthToken(std::string_view authToken, std::fu
 
         if (!country.empty())
             logonRecord->set_geoip_country(country.data(), country.size());
+
+        // the client shows it in the Social window and only offers Battle.net friends when it has one
+        if (!accountInfo->BattleTag.empty())
+            logonRecord->set_battle_tag(accountInfo->BattleTag);
 
         std::array<uint8, 64> k = Trinity::Crypto::GetRandomBytes<64>();
         logonRecord->set_session_key(k.data(), 64);

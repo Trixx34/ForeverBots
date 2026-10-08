@@ -21,6 +21,7 @@
 #include "Packet.h"
 #include "BattlenetRpcErrorCodes.h"
 #include "MessageBuffer.h"
+#include "PacketUtilities.h"
 #include <array>
 
 namespace WorldPackets
@@ -103,6 +104,32 @@ namespace WorldPackets
 
             uint32 Token = 0;
             std::array<uint8, 32> Secret = { };
+        };
+
+        // Classic 1.60: the in-game browser (Support window) opens <sso url>?token=<Token>&ref=<page>
+        class GenerateSsoToken final : public ClientPacket
+        {
+        public:
+            explicit GenerateSsoToken(WorldPacket&& packet) : ClientPacket(CMSG_GENERATE_SSO_TOKEN, std::move(packet)) { }
+
+            void Read() override;
+
+            uint32 RequestID = 0;
+            uint32 Usage = 0;   // 0x00417070 ("ppA") in every request seen
+        };
+
+        class GenerateSsoTokenResponse final : public ServerPacket
+        {
+        public:
+            explicit GenerateSsoTokenResponse() : ServerPacket(SMSG_GENERATE_SSO_TOKEN_RESPONSE, 4 + 4 + 8 + 8 + 64) { }
+
+            WorldPacket const* Write() override;
+
+            uint32 RequestID = 0;
+            uint32 Result = 0;
+            Timestamp<> Issued;
+            Timestamp<> Expires;
+            std::string Token;  // no length prefix, the rest of the packet
         };
     }
 }

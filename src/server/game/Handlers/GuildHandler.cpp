@@ -18,14 +18,24 @@
 #include "WorldSession.h"
 #include "AchievementPackets.h"
 #include "Common.h"
+#include "StringFormat.h"
+#include "DatabaseEnv.h"
+#include "CharacterCache.h"
+#include "Config.h"
 #include "GameTime.h"
 #include "GossipDef.h"
+#include "Group.h"
+#include "GroupFinderListings.h"
 #include "Guild.h"
 #include "GuildMgr.h"
 #include "GuildPackets.h"
+#include "LFG.h"
+#include "LFGPacketsCommon.h"
 #include "Log.h"
 #include "ObjectMgr.h"
+#include "ObjectAccessor.h"
 #include "Player.h"
+#include "World.h"
 
 void WorldSession::HandleGuildQueryOpcode(WorldPackets::Guild::QueryGuildInfo& query)
 {
@@ -606,4 +616,783 @@ void WorldSession::HandleGuildGetAchievementMembers(WorldPackets::Achievement::G
 {
     if (Guild* guild = GetPlayer()->GetGuild())
         guild->HandleGetAchievementMembers(this, uint32(getAchievementMembers.AchievementID));
+}
+
+// Classic 1.60 Guild Finder (Club Finder, guilds only). Layouts read from the 70058 client (classic_re/readseq58.py):
+//   CMSG_CLUB_FINDER_POST (writer rva 0x8C4520): bits name 7, description 12, type 3, crossFaction 1; uint64 clubId (guild id),
+//     uint64 specs, int32 recruitment flags (1 << ClubFinderSettingFlags), int32 min item level, uint32 avatar; name, description
+//   SMSG_CLUB_FINDER_RESPONSE_POST_RECRUITMENT_MESSAGE (0x4602E6): guid clubFinderGUID, bits type 3 + 3
+//   SMSG_CLUB_FINDER_LOOKUP_CLUB_POSTINGS_LIST (0x4602E5): uint32 count, postings (reader 0xA46BC0), bits type 3 + last 1
+// Requests not understood yet are logged with their bytes and answered with an empty reply.
+namespace
+{
+    constexpr uint8 CLUB_FINDER_TYPE_GUILD = 1;
+
+    struct GuildFinderPosting
+    {
+        ObjectGuid::LowType GuildId = 0;
+        ObjectGuid::LowType Poster = 0;
+        std::string Description;
+        uint64 Specs = 0;
+        int32 Flags = 0;
+        int32 MinItemLevel = 0;
+        uint32 Avatar = 0;
+        int64 Updated = 0;
+    };
+
+    std::vector<GuildFinderPosting> LoadGuildFinderPostings(Optional<ObjectGuid::LowType> guildId = {})
+    {
+        std::vector<GuildFinderPosting> postings;
+        std::string query = "SELECT guildId, poster, description, specs, flags, minItemLevel, avatar, updated FROM guild_finder_posting";
+        if (guildId)
+            query += Trinity::StringFormat(" WHERE guildId = {}", *guildId);
+        if (QueryResult result = CharacterDatabase.Query(query.c_str()))
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                GuildFinderPosting& posting = postings.emplace_back();
+                posting.GuildId = fields[0].GetUInt64();
+                posting.Poster = fields[1].GetUInt64();
+                posting.Description = fields[2].GetString();
+                posting.Specs = fields[3].GetUInt64();
+                posting.Flags = fields[4].GetInt32();
+                posting.MinItemLevel = fields[5].GetInt32();
+                posting.Avatar = fields[6].GetUInt32();
+                posting.Updated = fields[7].GetInt64();
+            } while (result->NextRow());
+        }
+        return postings;
+    }
+
+    ObjectGuid GuildFinderGuid(ObjectGuid::LowType guildId)
+    {
+        return ObjectGuid::Create<HighGuid::ClubFinder>(CLUB_FINDER_TYPE_GUILD, uint32(guildId), guildId);
+    }
+
+    // one entry of SMSG_CLUB_FINDER_LOOKUP_CLUB_POSTINGS_LIST (client reader rva 0xA46BC0)
+    void WriteGuildFinderPosting(WorldPacket& data, GuildFinderPosting const& posting, Guild const* guild)
+    {
+        std::string leaderName;
+        sCharacterCache->GetCharacterNameByGuid(guild->GetLeaderGUID(), leaderName);
+        std::string const& name = guild->GetName();
+
+        data.WriteBits(name.size(), 7);
+        data.WriteBits(posting.Description.size(), 12);
+        data.WriteBits(leaderName.size(), 6);
+        data.FlushBits();
+
+        data << GuildFinderGuid(posting.GuildId);
+        data << uint32(guild->GetMembersCount());               // numActiveMembers
+        data << int64(posting.GuildId);                          // clubId
+        data << int32(posting.MinItemLevel);
+        data << int32(posting.Avatar);                           // emblemInfo
+        data << uint32(posting.Flags);                           // recruitmentFlags
+        data << ObjectGuid::Create<HighGuid::Player>(posting.Poster); // lastPosterGUID
+        data << int64(posting.Updated);                          // lastUpdatedTime
+        data << uint64(posting.Specs);                           // recruitingSpecIds
+        data.WriteString(name);
+        data.WriteString(posting.Description);
+        data.WriteString(leaderName);
+    }
+
+    void SendGuildFinderPostings(WorldSession* session, std::vector<GuildFinderPosting> const& postings, bool listedOnly)
+    {
+        WorldPacket data(SMSG_CLUB_FINDER_LOOKUP_CLUB_POSTINGS_LIST, 64);
+        size_t countPos = data.wpos();
+        data << uint32(0);
+        uint32 count = 0;
+        for (GuildFinderPosting const& posting : postings)
+        {
+            Guild const* guild = sGuildMgr->GetGuildById(posting.GuildId);
+            if (!guild || (listedOnly && !(posting.Flags & (1 << 12))))  // ClubFinderSettingFlags::EnableListing
+                continue;
+            WriteGuildFinderPosting(data, posting, guild);
+            ++count;
+        }
+        data.put<uint32>(countPos, count);
+        data.WriteBits(CLUB_FINDER_TYPE_GUILD, 3);
+        data.WriteBit(true);                                     // last part of the list
+        data.FlushBits();
+        session->SendPacket(&data);
+    }
+
+    // ---- applications (guild_finder_application.status = PlayerClubRequestStatus: 1 Pending, 3 Declined, 4 Approved, 5 Joined,
+    // 6 JoinedAnother)
+    struct GuildFinderApplication
+    {
+        ObjectGuid::LowType GuildId = 0;
+        ObjectGuid::LowType Player = 0;
+        std::string Comment;
+        uint64 Specs = 0;
+        uint8 Status = 1;
+        int64 Created = 0;
+    };
+
+    std::vector<GuildFinderApplication> LoadGuildFinderApplications(char const* column, ObjectGuid::LowType id)
+    {
+        std::vector<GuildFinderApplication> applications;
+        if (QueryResult result = CharacterDatabase.Query(Trinity::StringFormat(
+            "SELECT guildId, player, comment, specs, status, created FROM guild_finder_application WHERE {} = {}", column, id).c_str()))
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                GuildFinderApplication& application = applications.emplace_back();
+                application.GuildId = fields[0].GetUInt64();
+                application.Player = fields[1].GetUInt64();
+                application.Comment = fields[2].GetString();
+                application.Specs = fields[3].GetUInt64();
+                application.Status = fields[4].GetUInt8();
+                application.Created = fields[5].GetInt64();
+            } while (result->NextRow());
+        }
+        return applications;
+    }
+
+    // SMSG_RETURN_APPLICANT_LIST (client reader rva 0x8304F0): the applicants the guild's officers see
+    void SendGuildFinderApplicants(WorldSession* session, ObjectGuid::LowType guildId)
+    {
+        std::vector<GuildFinderApplication> applications = LoadGuildFinderApplications("guildId", guildId);
+        std::erase_if(applications, [](GuildFinderApplication const& application) { return application.Status != 1; });
+
+        WorldPacket data(SMSG_RETURN_APPLICANT_LIST, 64);
+        data << GuildFinderGuid(guildId);
+        data << uint32(applications.size());
+        for (GuildFinderApplication const& application : applications)
+        {
+            ObjectGuid playerGuid = ObjectGuid::Create<HighGuid::Player>(application.Player);
+            CharacterCacheEntry const* info = sCharacterCache->GetCharacterCacheByGuid(playerGuid);
+            Player const* online = ObjectAccessor::FindConnectedPlayer(playerGuid);
+            std::string const name = info ? info->Name : "";
+            data << GuildFinderGuid(guildId);
+            data << playerGuid;
+            data << uint32(0);                                               // closed
+            data << int8(info ? info->Level : 1);                            // level
+            data << int8(info ? info->Class : 0);                            // classID
+            data << int32(online ? int32(online->GetAverageItemLevel()) : 0); // ilvl
+            data << int32(0);
+            data << int64(application.Created);                              // lastUpdatedTime
+            data << uint64(application.Specs);                               // specIds
+            data << int8(info && Player::TeamForRace(info->Race) == HORDE ? 1 : 0); // faction
+            data.WriteBits(name.size(), 6);
+            data.WriteBits(application.Comment.size(), 10);
+            data.WriteBits(application.Status, 4);                           // requestStatus
+            data.WriteBit(true);                                             // lookupSuccess
+            data.FlushBits();
+            data.WriteString(name);
+            data.WriteString(application.Comment);
+        }
+        data.WriteBits(CLUB_FINDER_TYPE_GUILD, 3);
+        data.FlushBits();
+        session->SendPacket(&data);
+    }
+
+    // SMSG_CLUB_FINDER_RESPONSE_CHARACTER_APPLICATION_LIST (reader rva 0x830870): the applications of the player
+    void SendGuildFinderPlayerApplications(WorldSession* session, ObjectGuid const& playerGuid)
+    {
+        std::vector<GuildFinderApplication> applications = LoadGuildFinderApplications("player", playerGuid.GetCounter());
+
+        WorldPacket data(SMSG_CLUB_FINDER_RESPONSE_CHARACTER_APPLICATION_LIST, 32);
+        data << uint32(applications.size());
+        for (GuildFinderApplication const& application : applications)
+        {
+            data << GuildFinderGuid(application.GuildId);
+            data << playerGuid;
+            data << uint32(0);
+            data << uint64(application.Created);
+            data.WriteBits(application.Status, 4);
+            data.FlushBits();
+        }
+        data.WriteBits(CLUB_FINDER_TYPE_GUILD, 3);
+        data.FlushBits();
+        session->SendPacket(&data);
+    }
+
+    // refreshes the applicant list of the online officers (guild master and the rank below)
+    void NotifyGuildFinderOfficers(ObjectGuid::LowType guildId)
+    {
+        Guild* guild = sGuildMgr->GetGuildById(guildId);
+        if (!guild)
+            return;
+        for (auto const& [guid, member] : guild->GetMembers())
+            if (uint8(member.GetRankId()) <= 1)
+                if (Player* officer = ObjectAccessor::FindConnectedPlayer(guid))
+                    SendGuildFinderApplicants(officer->GetSession(), guildId);
+    }
+}
+
+void WorldSession::HandleClubFinderProbe(WorldPackets::Null& packet)
+{
+    WorldPacket const* raw = packet.GetRawPacket();
+    std::string const hex = Trinity::Impl::ByteArrayToHexStr(raw->data(), std::min<size_t>(raw->size(), 256));
+    TC_LOG_INFO("network.opcode", "ClubFinder: {} size {} data {} from {}", GetOpcodeNameForLogging(packet.GetOpcode()), raw->size(), hex, GetPlayerInfo());
+
+    if (!sConfigMgr->GetBoolDefault("Classic.GuildFinder", false))
+        return;
+
+    WorldPacket data(*raw);
+    data.rpos(4);   // skip the opcode
+
+    auto sendEmpty = [this](OpcodeServer opcode, size_t zeroBytes)
+    {
+        WorldPacket response(opcode, zeroBytes);
+        for (size_t i = 0; i < zeroBytes; ++i)
+            response << uint8(0);
+        SendPacket(&response);
+    };
+
+    try
+    {
+        switch (packet.GetOpcode())
+        {
+            case CMSG_CLUB_FINDER_POST:
+            {
+                uint32 nameLength = data.ReadBits(7);
+                uint32 descriptionLength = data.ReadBits(12);
+                uint32 type = data.ReadBits(3);
+                data.ReadBit();                                  // cross faction
+                data.ResetBitPos();
+                uint64 clubId = data.read<uint64>();
+                uint64 specs = data.read<uint64>();
+                int32 flags = data.read<int32>();
+                int32 minItemLevel = data.read<int32>();
+                uint32 avatar = data.read<uint32>();
+                data.ReadString(nameLength);
+                std::string description(data.ReadString(descriptionLength));
+
+                Guild const* guild = _player->GetGuild();
+                Guild::Member const* member = guild ? static_cast<Guild const*>(guild)->GetMember(_player->GetGUID()) : nullptr;
+                if (type != CLUB_FINDER_TYPE_GUILD || !guild || guild->GetId() != clubId || !member
+                    || uint8(member->GetRankId()) > 1)          // guild master or the rank below
+                {
+                    sendEmpty(SMSG_CLUB_FINDER_RESPONSE_POST_RECRUITMENT_MESSAGE, 3);
+                    break;
+                }
+
+                CharacterDatabase.DirectExecute(Trinity::StringFormat(
+                    "REPLACE INTO guild_finder_posting (guildId, poster, name, description, specs, flags, minItemLevel, avatar, crossFaction, updated) "
+                    "VALUES ({}, {}, '', '{}', {}, {}, {}, {}, 0, {})",
+                    guild->GetId(), _player->GetGUID().GetCounter(), [&] { std::string escaped = description; CharacterDatabase.EscapeString(escaped); return escaped; }(),
+                    specs, flags, minItemLevel, avatar, int64(GameTime::GetGameTime())).c_str());
+
+                WorldPacket response(SMSG_CLUB_FINDER_RESPONSE_POST_RECRUITMENT_MESSAGE, 20);
+                response << GuildFinderGuid(guild->GetId());
+                response.WriteBits(CLUB_FINDER_TYPE_GUILD, 3);
+                response.WriteBits(0, 3);
+                response.FlushBits();
+                SendPacket(&response);
+                break;
+            }
+            case CMSG_CLUB_FINDER_REQUEST_CLUBS_LIST:
+                // search filters are not applied yet: every listed guild is returned
+                SendGuildFinderPostings(this, LoadGuildFinderPostings(), true);
+                break;
+            case CMSG_CLUB_FINDER_REQUEST_CLUBS_DATA:
+                // postings asked for by id (the recruitment dialog loads its own guild's, listed or not)
+                SendGuildFinderPostings(this, LoadGuildFinderPostings(), false);
+                break;
+            case CMSG_CLUB_FINDER_REQUEST_SUBSCRIBED_CLUB_POSTING_IDS:
+            {
+                // which posting belongs to each of the player's clubs: the recruiter UI finds its applicants through it
+                // (reply reader rva 0x8310C0: uint32 count, {int64 clubId, uint32, uint32})
+                WorldPacket response(SMSG_CLUB_FINDER_GET_CLUB_POSTING_IDS_RESPONSE, 20);
+                Guild const* guild = _player->GetGuild();
+                bool posted = guild && !LoadGuildFinderPostings(guild->GetId()).empty();
+                response << uint32(posted ? 1 : 0);
+                if (posted)
+                {
+                    response << int64(guild->GetId());              // clubId
+                    response << uint32(guild->GetId());             // clubFinderId (posting)
+                    response << uint32(CLUB_FINDER_TYPE_GUILD);
+                }
+                SendPacket(&response);
+                break;
+            }
+            case CMSG_CLUB_FINDER_GET_APPLICANTS_LIST:          // officer: who applied to the guild
+                if (Guild const* guild = _player->GetGuild())
+                    SendGuildFinderApplicants(this, guild->GetId());
+                break;
+            case CMSG_CLUB_FINDER_REQUEST_PENDING_CLUBS_LIST:   // player: own applications
+                SendGuildFinderPlayerApplications(this, _player->GetGUID());
+                break;
+            case CMSG_CLUB_FINDER_REQUEST_MEMBERSHIP_TO_CLUB:   // apply (writer rva 0x8C4C20): guid posting, uint64 specs, comment (10 bit length)
+            {
+                ObjectGuid posting;
+                data >> posting;
+                uint64 specs = data.read<uint64>();
+                uint32 commentLength = data.ReadBits(10);
+                data.ResetBitPos();
+                std::string comment(data.ReadString(commentLength));
+                ObjectGuid::LowType guildId = posting.GetCounter();
+                if (!sGuildMgr->GetGuildById(guildId) || _player->GetGuildId())
+                    break;
+                CharacterDatabase.EscapeString(comment);
+                CharacterDatabase.DirectExecute(Trinity::StringFormat(
+                    "REPLACE INTO guild_finder_application (guildId, player, comment, specs, status, created) VALUES ({}, {}, '{}', {}, 1, {})",
+                    guildId, _player->GetGUID().GetCounter(), comment, specs, int64(GameTime::GetGameTime())).c_str());
+                SendGuildFinderPlayerApplications(this, _player->GetGUID());
+                NotifyGuildFinderOfficers(guildId);
+                break;
+            }
+            case CMSG_CLUB_FINDER_RESPOND_TO_APPLICANT:         // officer (writer rva 0x8C4F90): guid posting, guid player, accept, type 3, force
+            {
+                ObjectGuid posting, applicant;
+                data >> posting >> applicant;
+                bool accept = data.ReadBit();
+                data.ReadBits(3);
+                data.ReadBit();
+                ObjectGuid::LowType guildId = posting.GetCounter();
+                Guild* guild = sGuildMgr->GetGuildById(guildId);
+                Guild::Member const* member = guild ? static_cast<Guild const*>(guild)->GetMember(_player->GetGUID()) : nullptr;
+                if (!member || uint8(member->GetRankId()) > 1)
+                    break;
+                bool joined = false;
+                if (accept && !sCharacterCache->GetCharacterGuildIdByGuid(applicant))
+                {
+                    CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+                    joined = guild->AddMember(trans, applicant);
+                    CharacterDatabase.CommitTransaction(trans);
+                }
+                CharacterDatabase.DirectExecute(Trinity::StringFormat(
+                    "UPDATE guild_finder_application SET status = {} WHERE guildId = {} AND player = {}",
+                    accept ? (joined ? 5 : 4) : 3, guildId, applicant.GetCounter()).c_str());   // Joined / Approved / Declined
+                if (joined)   // only one guild: the other pending applications of the player are done
+                    CharacterDatabase.DirectExecute(Trinity::StringFormat(
+                        "UPDATE guild_finder_application SET status = 6 WHERE player = {} AND guildId <> {} AND status = 1",
+                        applicant.GetCounter(), guildId).c_str());
+                NotifyGuildFinderOfficers(guildId);
+                if (Player* target = ObjectAccessor::FindConnectedPlayer(applicant))
+                    SendGuildFinderPlayerApplications(target->GetSession(), applicant);
+                break;
+            }
+            case CMSG_CLUB_FINDER_APPLICATION_RESPONSE:         // player (writer rva 0x8C51C0): guid posting, type 3, ClubFinderApplicationUpdateType 3
+            {
+                ObjectGuid posting;
+                data >> posting;
+                data.ReadBits(3);
+                uint32 update = data.ReadBits(3);
+                ObjectGuid::LowType guildId = posting.GetCounter();
+                if (update == 3)   // Cancel
+                    CharacterDatabase.DirectExecute(Trinity::StringFormat(
+                        "DELETE FROM guild_finder_application WHERE guildId = {} AND player = {}", guildId, _player->GetGUID().GetCounter()).c_str());
+                SendGuildFinderPlayerApplications(this, _player->GetGUID());
+                NotifyGuildFinderOfficers(guildId);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    catch (ByteBufferException const& e)
+    {
+        TC_LOG_ERROR("network.opcode", "ClubFinder: {} could not be read: {}", GetOpcodeNameForLogging(packet.GetOpcode()), e.what());
+    }
+}
+
+// Classic 1.60 Group Finder (vanilla style premade groups, CMSG_LFG_LIST_*). Listings live in memory only.
+namespace
+{
+    // One posted listing. Request = the client's LFGListJoinRequest bytes as sent (writer rva 0xA4D640); the client reads a
+    // request with the mirrored reader (rva 0xA4D0A0), so it is echoed back unchanged in the status and the search results.
+    struct LfgListing
+    {
+        uint32 Id = 0;
+        uint32 CategoryId = 0;
+        std::vector<uint32> Activities;
+        std::vector<uint8> Request;
+        time_t Created = 0;
+        std::string Name, Comment;                  // as the leader typed them (for the Discord bot's LFG channel)
+        uint8 PlayStyle = 0;                        // the play style dropdown: 1 Learning, 2 Relaxed, 3 Competitive, 4 Carry Offered
+    };
+
+    std::unordered_map<ObjectGuid, LfgListing> LfgListings;
+    std::unordered_map<ObjectGuid, uint8> LfgListRoles;     // roles the player ticked (Classic roles message)
+    uint32 NextLfgListingId = 1;
+
+    // LFGListJoinRequest: bits activity count 5, name 10, comment 11, voice chat 8, 9 flags (4 bools, has int32 x3, has uint8,
+    // bool); uint32 category, float item level, {float, float, uint32 n, n x 16 bytes}, int8, n x uint32 activity ids, name,
+    // comment, voice chat, the optional int32 x3 and uint8
+    bool ReadLfgListRequest(ByteBuffer& data, LfgListing& listing)
+    {
+        size_t const start = data.rpos();
+        uint32 const activityCount = data.ReadBits(5);
+        uint32 const nameLength = data.ReadBits(10);
+        uint32 const commentLength = data.ReadBits(11);
+        uint32 const voiceChatLength = data.ReadBits(8);
+        std::array<bool, 9> bits;
+        for (bool& bit : bits)
+            bit = data.ReadBit();
+        data.ResetBitPos();
+
+        listing.CategoryId = data.read<uint32>();
+        data.read_skip<float>();                    // required item level
+        data.read_skip<float>();
+        data.read_skip<float>();
+        uint32 const extraCount = data.read<uint32>();
+        data.read_skip(extraCount * 16);
+        data.read_skip<int8>();
+        listing.Activities.clear();
+        for (uint32 i = 0; i < activityCount; ++i)
+            listing.Activities.push_back(data.read<uint32>());
+        listing.Name = data.ReadString(nameLength, false);
+        listing.Comment = data.ReadString(commentLength, false);
+        data.read_skip(voiceChatLength);
+        for (uint8 i = 4; i < 7; ++i)
+            if (bits[i])
+                data.read_skip<int32>();
+        if (bits[7])
+            listing.PlayStyle = data.read<uint8>();     // play style (retail LFGEntryGeneralPlaystyle)
+
+        listing.Request.assign(data.data() + start, data.data() + data.rpos());
+        return data.rpos() == data.size();
+    }
+
+    WorldPackets::LFG::RideTicket LfgListTicket(ObjectGuid const& leader, LfgListing const& listing)
+    {
+        WorldPackets::LFG::RideTicket ticket;
+        ticket.RequesterGuid = leader;
+        ticket.Id = listing.Id;
+        ticket.Type = WorldPackets::LFG::RideType::Lfg;
+        ticket.Time = listing.Created;
+        return ticket;
+    }
+
+    // SMSG_LFG_LIST_UPDATE_STATUS (Classic 0x5B000A, reader rva 0xA49980): ticket, request, uint64 remaining time, uint8 result,
+    // bits listed, has guid, has uint8, then the optional guid and uint8
+    void SendLfgListStatus(WorldSession* session, LfgListing const& listing, bool listed)
+    {
+        WorldPacket data(SMSG_LFG_LIST_UPDATE_STATUS, 64);
+        data << LfgListTicket(session->GetPlayer()->GetGUID(), listing);
+        data.append(listing.Request.data(), listing.Request.size());
+        data << uint64(listed ? 1800 : 0);
+        data << uint8(0);
+        data.WriteBit(listed);
+        data.WriteBit(false);
+        data.WriteBit(false);
+        data.FlushBits();
+        session->SendPacket(&data);
+    }
+
+    // one LFGListSearchResult (Classic reader rva 0xA4EC70)
+    void WriteLfgListSearchResult(WorldPacket& data, ObjectGuid const& leader, LfgListing const& listing)
+    {
+        data << LfgListTicket(leader, listing);
+        data << uint32(listing.Id);                 // sequence
+        data.append(listing.Request.data(), listing.Request.size());
+        data << uint8(0);
+        data << leader;                             // leader
+        data << leader;                             // last touched: any, name, comment
+        data << leader;
+        data << leader;
+        data << ObjectGuid::Empty;                  // last touched voice chat
+        data << uint32(GetVirtualRealmAddress());
+        data << uint32(0);
+        data << uint32(0);
+        data << uint32(0);                          // battle.net friends
+        data << uint32(0);                          // character friends
+        data << uint32(0);                          // guild mates
+        // the leader's group as it is now (only the leader when not in a group)
+        std::vector<ObjectGuid> members;
+        Player const* leaderPlayer = ObjectAccessor::FindConnectedPlayer(leader);
+        if (Group const* group = leaderPlayer ? leaderPlayer->GetGroup() : nullptr)
+            for (Group::MemberSlot const& slot : group->GetMemberSlots())
+                members.push_back(slot.guid);
+        else
+            members.push_back(leader);
+        data << uint32(members.size());
+        data << uint32(0);                          // completed encounters
+        data << uint64(listing.Created);
+        data << uint8(0);                           // application status
+        data << ObjectGuid::Empty;                  // party
+        data << float(0.0f);
+        data << float(0.0f);
+        data << uint32(0);
+        for (uint8 i = 0; i < 9; ++i)
+        {
+            data << int32(0);
+            data << int8(0);
+        }
+        data << uint8(0);
+        data << uint8(0);
+
+        // members (Classic reader rva 0xA4EA40): guid, int8 level, int8 class, int8 role, int32 area, uint8, {guid, float, uint32 x3,
+        // int32, uint64 x2, int32, uint8}, bit leader. The role is the one of the character's talent specialization (0 tank,
+        // 1 healer, 2 damage), not the roles ticked in the window: official search results of 2026-10-06 (70235) show the same
+        // role for a member whatever they ticked, and tank/healer only for classes and specs that can do it.
+        for (ObjectGuid const& guid : members)
+        {
+            Player const* member = ObjectAccessor::FindConnectedPlayer(guid);
+            CharacterCacheEntry const* info = sCharacterCache->GetCharacterCacheByGuid(guid);
+            ChrSpecializationEntry const* spec = member ? member->GetPrimarySpecializationEntry() : nullptr;
+            data << guid;
+            data << int8(member ? member->GetLevel() : info ? info->Level : 0);
+            data << int8(member ? member->GetClass() : info ? info->Class : 0);
+            data << int8(spec ? spec->Role : 2);
+            data << int32(member ? member->GetZoneId() : 0);
+            data << uint8(member ? member->GetLevel() : 0);
+            data << ObjectGuid::Empty;
+            data << float(0.0f);
+            data << uint32(0);
+            data << uint32(0);
+            data << uint32(0);
+            data << int32(0);
+            data << uint64(0);
+            data << uint64(0);
+            data << int32(0);
+            data << uint8(0);
+            data.WriteBit(guid == leader);
+            data.FlushBits();
+        }
+
+        data.WriteBit(false);                       // (entry reader ends with one bit)
+        data.FlushBits();
+    }
+
+    std::string JsonString(std::string_view text)
+    {
+        std::string out = "\"";
+        for (char c : text)
+        {
+            switch (c)
+            {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': case '\t': out += ' '; break;
+                default:
+                    if (uint8(c) < 0x20)
+                        out += ' ';
+                    else
+                        out += c;
+            }
+        }
+        return out + "\"";
+    }
+
+    // One line of the "groupfinder" log per change of a listing, read by the Discord bot (contrib/discord_bot, its LFG channel):
+    // {"event": "listed" | "updated" | "delisted", "id", "faction", "activities", "title", "comment", "members": [...]}
+    void LogLfgListing(char const* event, ObjectGuid const& leader, LfgListing const& listing)
+    {
+        if (!sLog->ShouldLog("groupfinder", LOG_LEVEL_INFO))
+            return;
+
+        std::string json = Trinity::StringFormat(R"({{"event":"{}","id":{},"time":{})", event, listing.Id, uint64(listing.Created));
+        if (strcmp(event, "delisted") != 0)
+        {
+            Player const* leaderPlayer = ObjectAccessor::FindConnectedPlayer(leader);
+            json += Trinity::StringFormat(R"(,"faction":"{}","activities":[)", leaderPlayer && leaderPlayer->GetTeam() == ALLIANCE ? "A" : "H");
+            for (size_t i = 0; i < listing.Activities.size(); ++i)
+                json += (i ? "," : "") + std::to_string(listing.Activities[i]);
+            json += "],\"title\":" + JsonString(listing.Name) + ",\"comment\":" + JsonString(listing.Comment)
+                + ",\"playstyle\":" + std::to_string(listing.PlayStyle) + ",\"members\":[";
+
+            // the leader's group as it is now (only the leader when not in a group)
+            std::vector<ObjectGuid> members;
+            Group const* group = leaderPlayer ? leaderPlayer->GetGroup() : nullptr;
+            if (group)
+                for (Group::MemberSlot const& slot : group->GetMemberSlots())
+                    members.push_back(slot.guid);
+            else
+                members.push_back(leader);
+            bool first = true;
+            for (ObjectGuid const& guid : members)
+            {
+                CharacterCacheEntry const* info = sCharacterCache->GetCharacterCacheByGuid(guid);
+                if (!info)
+                    continue;
+                // the party role (set in the group, CMSG_SET_ROLE) wins over the role ticked in the Group Finder window
+                auto roles = LfgListRoles.find(guid);
+                uint8 const partyRole = group ? group->GetLfgRoles(guid) : 0;
+                uint8 const mask = (partyRole & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE))
+                    ? partyRole : (roles != LfgListRoles.end() ? roles->second : 0);
+                json += Trinity::StringFormat(R"({}{{"name":{},"class":{},"level":{},"leader":{},"tank":{},"healer":{},"damage":{}}})",
+                    first ? "" : ",", JsonString(info->Name), info->Class, info->Level, guid == leader ? "true" : "false",
+                    (mask & lfg::PLAYER_ROLE_TANK) ? "true" : "false", (mask & lfg::PLAYER_ROLE_HEALER) ? "true" : "false",
+                    (mask & lfg::PLAYER_ROLE_DAMAGE) ? "true" : "false");
+                first = false;
+            }
+            json += "]";
+        }
+        json += "}";
+        TC_LOG_INFO("groupfinder", "{}", json);
+    }
+
+    // the listing a player belongs to: their own, or their group leader's
+    std::pair<ObjectGuid, LfgListing const*> LfgListingOf(Player const* player)
+    {
+        ObjectGuid leader = player->GetGroup() ? player->GetGroup()->GetLeaderGUID() : player->GetGUID();
+        auto itr = LfgListings.find(leader);
+        if (itr == LfgListings.end())
+        {
+            leader = player->GetGUID();
+            itr = LfgListings.find(leader);
+        }
+        return { leader, itr != LfgListings.end() ? &itr->second : nullptr };
+    }
+}
+
+// Discord bot LFG channel (GroupFinderListings.h): keep the posted group up to date when its members change
+void GroupFinderListings::OnGroupChanged(Group const* group)
+{
+    if (!group)
+        return;
+    auto itr = LfgListings.find(group->GetLeaderGUID());
+    if (itr != LfgListings.end())
+        LogLfgListing("updated", itr->first, itr->second);
+}
+
+void GroupFinderListings::OnLogout(Player const* player)
+{
+    auto itr = LfgListings.find(player->GetGUID());
+    if (itr == LfgListings.end())
+        return;
+    LogLfgListing("delisted", itr->first, itr->second);
+    LfgListings.erase(itr);
+}
+
+void WorldSession::HandleLfgListProbe(WorldPackets::Null& packet)
+{
+    WorldPacket const* raw = packet.GetRawPacket();
+    std::string const hex = Trinity::Impl::ByteArrayToHexStr(raw->data(), std::min<size_t>(raw->size(), 256));
+    TC_LOG_INFO("network.opcode", "GroupFinder: {} size {} data {} from {}", GetOpcodeNameForLogging(packet.GetOpcode()), raw->size(), hex, GetPlayerInfo());
+
+    WorldPacket data(*raw);
+    data.rpos(4);   // skip the opcode
+
+    try
+    {
+        switch (packet.GetOpcode())
+        {
+            case CMSG_LFG_LIST_JOIN:            // create or re-post the player's listing
+            {
+                LfgListing listing;
+                if (!ReadLfgListRequest(data, listing))
+                    TC_LOG_ERROR("network.opcode", "GroupFinder: join request has {} unread bytes", data.size() - data.rpos());
+                auto itr = LfgListings.find(_player->GetGUID());
+                listing.Id = itr != LfgListings.end() ? itr->second.Id : NextLfgListingId++;
+                listing.Created = GameTime::GetGameTime();
+                LfgListing const& stored = LfgListings[_player->GetGUID()] = std::move(listing);
+
+                // SMSG_LFG_LIST_JOIN_RESULT (Classic 0x5B0001, case 0xA4A958): ticket, int32, uint8 result, uint8 detail
+                WorldPacket result(SMSG_LFG_LIST_JOIN_RESULT, 40);
+                result << LfgListTicket(_player->GetGUID(), stored);
+                result << int32(0);
+                result << uint8(0);
+                result << uint8(0);
+                SendPacket(&result);
+                SendLfgListStatus(this, stored, true);
+                LogLfgListing("listed", _player->GetGUID(), stored);
+                break;
+            }
+            case CMSG_LFG_LIST_UPDATE_REQUEST:  // edit (serializer rva 0x944C00): ticket, request
+            {
+                WorldPackets::LFG::RideTicket ticket;
+                data >> ticket;
+                auto itr = LfgListings.find(_player->GetGUID());
+                if (itr == LfgListings.end())
+                    break;
+                LfgListing listing;
+                if (!ReadLfgListRequest(data, listing))
+                    TC_LOG_ERROR("network.opcode", "GroupFinder: update request has {} unread bytes", data.size() - data.rpos());
+                listing.Id = itr->second.Id;
+                listing.Created = itr->second.Created;
+                itr->second = std::move(listing);
+                SendLfgListStatus(this, itr->second, true);
+                LogLfgListing("updated", itr->first, itr->second);
+                break;
+            }
+            case CMSG_LFG_LIST_LEAVE:           // delist (Classic 0x440038): ticket
+            {
+                auto itr = LfgListings.find(_player->GetGUID());
+                if (itr == LfgListings.end())
+                    break;
+                LfgListing const listing = std::move(itr->second);
+                LfgListings.erase(itr);
+                SendLfgListStatus(this, listing, false);
+                LogLfgListing("delisted", _player->GetGUID(), listing);
+                break;
+            }
+            case CMSG_PERKS_PROGRAM_REQUEST_REFUND: // Classic 0x3E02B3: the roles ticked in the Group Finder (uint8 mask)
+            {
+                LfgListRoles[_player->GetGUID()] = data.read<uint8>();
+                auto [leader, listing] = LfgListingOf(_player);
+                if (listing)
+                    LogLfgListing("updated", leader, *listing);
+                break;
+            }
+            case CMSG_LFG_LIST_GET_STATUS:      // login
+            {
+                auto itr = LfgListings.find(_player->GetGUID());
+                if (itr != LfgListings.end())
+                    SendLfgListStatus(this, itr->second, true);
+                break;
+            }
+            case CMSG_LFG_LIST_SEARCH:          // (writer rva 0xA4E3B0) see below; the ticked activity ids come last
+            {
+                // flags byte, uint32 category, uint32, uint32, int32, uint32 count A, uint32, uint32 count B, uint32 count C,
+                // uint32, uint8, uint8, uint32 count D, D entries (not read: only 0 seen), A x uint32, B x uint32, C x activity id
+                data.read_skip<uint8>();
+                uint32 const categoryId = data.read<uint32>();
+                data.read_skip(3 * sizeof(uint32));
+                uint32 const countA = data.read<uint32>();
+                data.read_skip<uint32>();
+                uint32 const countB = data.read<uint32>();
+                uint32 const countC = data.read<uint32>();
+                data.read_skip<uint32>();
+                data.read_skip(2 * sizeof(uint8));
+                uint32 const countD = data.read<uint32>();
+                std::unordered_set<uint32> activities;
+                if (!countD)
+                {
+                    data.read_skip((countA + countB) * sizeof(uint32));
+                    for (uint32 i = 0; i < countC; ++i)
+                        activities.insert(data.read<uint32>());
+                }
+
+                WorldPacket results(SMSG_LFG_LIST_SEARCH_RESULTS, 256);
+                std::vector<std::pair<ObjectGuid, LfgListing const*>> found;
+                bool const crossFaction = sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_GROUP);
+                for (auto itr = LfgListings.begin(); itr != LfgListings.end();)
+                {
+                    Player* leaderPlayer = ObjectAccessor::FindConnectedPlayer(itr->first);
+                    if (!leaderPlayer)
+                    {
+                        LogLfgListing("delisted", itr->first, itr->second);
+                        itr = LfgListings.erase(itr);   // leader logged out
+                        continue;
+                    }
+                    // only groups of the searcher's own faction, like groups themselves (AllowTwoSide.Interaction.Group)
+                    if (!crossFaction && leaderPlayer->GetTeam() != GetPlayer()->GetTeam())
+                    {
+                        ++itr;
+                        continue;
+                    }
+                    if (itr->second.CategoryId == categoryId && (activities.empty() || std::ranges::any_of(itr->second.Activities,
+                        [&](uint32 activityId) { return activities.contains(activityId); })))
+                        found.emplace_back(itr->first, &itr->second);
+                    ++itr;
+                }
+                results << uint16(found.size());
+                results << uint32(found.size());
+                for (auto const& [leader, listing] : found)
+                    WriteLfgListSearchResult(results, leader, *listing);
+                SendPacket(&results);
+                break;
+            }
+            case CMSG_REQUEST_LFG_LIST_BLACKLIST:     // login: empty blacklist (uint32 count), the category list waits for it
+            {
+                WorldPacket blacklist(SMSG_LFG_LIST_UPDATE_BLACKLIST, 4);
+                blacklist << uint32(0);
+                SendPacket(&blacklist);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    catch (ByteBufferException const& e)
+    {
+        TC_LOG_ERROR("network.opcode", "GroupFinder: {} could not be read: {}", GetOpcodeNameForLogging(packet.GetOpcode()), e.what());
+    }
 }

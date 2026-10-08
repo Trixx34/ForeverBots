@@ -16,6 +16,7 @@
  */
 
 #include "SmartScript.h"
+#include "BotQuestLog.h"
 #include "CellImpl.h"
 #include "ChatTextBuilder.h"
 #include "Containers.h"
@@ -475,7 +476,10 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
             {
                 if (Player* playerTarget = target->ToPlayer())
                 {
-                    playerTarget->FailQuest(e.action.quest.quest);
+                    {
+                        BotQuestLog::Scope scope("event_failed");
+                        playerTarget->FailQuest(e.action.quest.quest);
+                    }
                     TC_LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_FAIL_QUEST: Player {} fails quest {}",
                         target->GetGUID(), e.action.quest.quest);
                 }

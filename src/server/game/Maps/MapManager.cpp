@@ -203,8 +203,9 @@ Map* MapManager::CreateMap(uint32 mapId, Player* player, Optional<uint32> lfgDun
         else
         {
             // Try finding instance id for normal dungeon
-            if (!entries.MapDifficulty->HasResetSchedule())
-                newInstanceId = group ? group->GetRecentInstanceId(mapId) : player->GetRecentInstanceId(mapId);
+            // Classic 1.60: vanilla keeps the same instance until it resets even without a boss kill lock, but Classic
+            // MapDifficulty rows have a reset schedule - always reuse the recent instance
+            newInstanceId = group ? group->GetRecentInstanceId(mapId) : player->GetRecentInstanceId(mapId);
 
             // If not found or instance is not a normal dungeon, generate new one
             if (!newInstanceId)
@@ -293,7 +294,7 @@ uint32 MapManager::FindInstanceIdForPlayer(uint32 mapId, Player const* player) c
         uint32 newInstanceId = 0;
         if (instanceLock)
             newInstanceId = instanceLock->GetInstanceId();
-        else if (!entries.MapDifficulty->HasResetSchedule()) // Try finding instance id for normal dungeon
+        else // Try finding instance id for normal dungeon (Classic 1.60: also for maps with a reset schedule, see CreateMap)
             newInstanceId = group ? group->GetRecentInstanceId(mapId) : player->GetRecentInstanceId(mapId);
 
         if (!newInstanceId)

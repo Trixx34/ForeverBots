@@ -49,7 +49,7 @@ namespace WorldPackets
     }
 }
 
-uint32 constexpr MIN_AUCTION_TIME = 12 * HOUR;
+uint32 constexpr MIN_AUCTION_TIME = 2 * HOUR;     // Classic 1.60: auctions run 2, 8 or 24 hours (retail 12/24/48)
 
 enum class AuctionResult : int8
 {

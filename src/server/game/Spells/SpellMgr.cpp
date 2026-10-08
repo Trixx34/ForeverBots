@@ -2506,13 +2506,23 @@ void SpellMgr::LoadSpellInfoStore()
         if (battlePetSpecies->CreatureID)
             battlePetSpeciesByCreature[battlePetSpecies->CreatureID] = battlePetSpecies;
 
+    // Classic (1.60+) client data uses effect/aura/target values retail does not define yet: skip those effects and report them once
+    std::map<std::string_view, std::map<int32, uint32>> unknownEffectValues;
     for (SpellEffectEntry const* effect : sSpellEffectStore)
     {
         ASSERT(effect->EffectIndex < MAX_SPELL_EFFECTS, "MAX_SPELL_EFFECTS must be at least %d", effect->EffectIndex + 1);
-        ASSERT(effect->Effect < TOTAL_SPELL_EFFECTS, "TOTAL_SPELL_EFFECTS must be at least %u", effect->Effect + 1);
-        ASSERT(effect->EffectAura < int32(TOTAL_AURAS), "TOTAL_AURAS must be at least %d", effect->EffectAura + 1);
-        ASSERT(effect->ImplicitTarget[0] < TOTAL_SPELL_TARGETS, "TOTAL_SPELL_TARGETS must be at least %u", effect->ImplicitTarget[0] + 1);
-        ASSERT(effect->ImplicitTarget[1] < TOTAL_SPELL_TARGETS, "TOTAL_SPELL_TARGETS must be at least %u", effect->ImplicitTarget[1] + 1);
+        if (effect->Effect >= TOTAL_SPELL_EFFECTS || effect->EffectAura < 0 || effect->EffectAura >= int32(TOTAL_AURAS)
+            || effect->ImplicitTarget[0] >= TOTAL_SPELL_TARGETS || effect->ImplicitTarget[1] >= TOTAL_SPELL_TARGETS)
+        {
+            if (effect->Effect >= TOTAL_SPELL_EFFECTS)
+                ++unknownEffectValues["Effect"][effect->Effect];
+            if (effect->EffectAura < 0 || effect->EffectAura >= int32(TOTAL_AURAS))
+                ++unknownEffectValues["EffectAura"][effect->EffectAura];
+            for (int32 target : { int32(effect->ImplicitTarget[0]), int32(effect->ImplicitTarget[1]) })
+                if (target >= TOTAL_SPELL_TARGETS)
+                    ++unknownEffectValues["ImplicitTarget"][target];
+            continue;
+        }
 
         loadData[{ effect->SpellID, Difficulty(effect->DifficultyID) }].Effects[effect->EffectIndex] = effect;
 
@@ -2541,6 +2551,10 @@ void SpellMgr::LoadSpellInfoStore()
                 break;
         }
     }
+
+    for (auto const& [field, values] : unknownEffectValues)
+        for (auto const& [value, count] : values)
+            TC_LOG_ERROR("server.loading", "SpellEffect.db2: skipped {} effects with unknown {} {}", count, field, value);
 
     for (SpellAuraOptionsEntry const* auraOptions : sSpellAuraOptionsStore)
         loadData[{ auraOptions->SpellID, Difficulty(auraOptions->DifficultyID) }].AuraOptions = auraOptions;
@@ -3121,6 +3135,7 @@ void SpellMgr::LoadSpellInfoCustomAttributes()
                     break;
                 case SPELL_EFFECT_ENCHANT_ITEM:
                 case SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY:
+                case SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY_2:
                 case SPELL_EFFECT_ENCHANT_ITEM_PRISMATIC:
                 case SPELL_EFFECT_ENCHANT_HELD_ITEM:
                 {

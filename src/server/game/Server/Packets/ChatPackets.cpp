@@ -48,10 +48,14 @@ void ChatMessageWhisper::Read()
     _worldPacket >> TargetGUID;
     _worldPacket >> TargetVirtualRealmAddress;
 
+    // Classic 1.60: a second 9 bit sized string sits between Target and Text (seen empty in every sniffed whisper)
+    std::string unknownName;
     _worldPacket >> SizedCString::BitsSize<9>(Target);
+    _worldPacket >> SizedCString::BitsSize<9>(unknownName);
     _worldPacket >> SizedCString::BitsSize<11>(Text);
 
     _worldPacket >> SizedCString::Data(Target);
+    _worldPacket >> SizedCString::Data(unknownName);
     _worldPacket >> SizedCString::Data(Text);
 }
 

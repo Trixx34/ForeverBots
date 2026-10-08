@@ -194,17 +194,29 @@ void WorldSession::HandleBuyBankTab(WorldPackets::Bank::BuyBankTab const& buyBan
     if (!_player->HasEnoughMoney(price))
         return;
 
-    uint16 inventoryPos = 0;
-    InventoryResult msg = _player->CanEquipNewItem(inventorySlot, inventoryPos, itemId, false);
-    if (msg != EQUIP_ERR_OK)
+    // Classic 1.60 (official sniff 70170): only the first character tab comes with the tab bag (the bank's own slots); every later
+    // purchase unlocks a bank bag slot for one of the player's bags (8 of them, slots 64..71).
+    bool classicBagSlotOnly = buyBankTab.BankType == BankType::Character && slot > 0;
+    if (buyBankTab.BankType == BankType::Character && inventorySlot >= BANK_SLOT_BAG_END)
     {
-        _player->SendEquipError(msg, nullptr, nullptr, itemId);
+        _player->SendEquipError(EQUIP_ERR_BANK_FULL);
         return;
     }
 
-    Item* bag = _player->EquipNewItem(inventoryPos, itemId, ItemContext::NONE, true);
-    if (!bag)
-        return;
+    if (!classicBagSlotOnly)
+    {
+        uint16 inventoryPos = 0;
+        InventoryResult msg = _player->CanEquipNewItem(inventorySlot, inventoryPos, itemId, false);
+        if (msg != EQUIP_ERR_OK)
+        {
+            _player->SendEquipError(msg, nullptr, nullptr, itemId);
+            return;
+        }
+
+        Item* bag = _player->EquipNewItem(inventoryPos, itemId, ItemContext::NONE, true);
+        if (!bag)
+            return;
+    }
 
     switch (buyBankTab.BankType)
     {

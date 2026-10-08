@@ -136,6 +136,7 @@ struct AreaTableEntry
     uint16 UwAmbience;
     uint16 ZoneMusic;
     uint16 UwZoneMusic;
+    int8 ExplorationLevel;
     uint16 IntroSound;
     uint32 UwIntroSound;
     uint8 FactionGroupMask;
@@ -618,6 +619,7 @@ struct Cfg_RegionsEntry
 {
     uint32 ID;
     char const* Tag;
+    LocalizedString Name;
     uint16 RegionID;
     uint32 Raidorigin;                                              // Date of first raid reset, all other resets are calculated as this date plus interval
     uint8 RegionGroupMask;
@@ -659,6 +661,7 @@ struct CharacterLoadoutEntry
     int8 ChrClassID;
     int32 Purpose;
     uint8 ItemContext;
+    int32 Field_1_60_1_69876_003;
     Trinity::RaceMask<int32, 2> RaceMask;
 
     bool IsForNewCharacter() const { return Purpose == 9; }
@@ -1457,6 +1460,7 @@ struct CurrencyTypesEntry
     uint32 RechargingAmountPerCycle;
     uint32 RechargingCycleDurationMS;
     float AccountTransferPercentage;
+    int32 MaxQtyCurveID;
     uint8 OrderIndex;
     float RecraftReagentCountPercentage;
     uint8 OrderSource;
@@ -1683,6 +1687,7 @@ struct FactionEntry
     uint16 ParagonFactionID;
     int32 RenownFactionID;
     int32 RenownCurrencyID;
+    int32 RenownThresholdCurveID;
     std::array<int16, 4> ReputationClassMask;
     std::array<uint16, 4> ReputationFlags;
     std::array<int32, 4> ReputationBase;
@@ -2079,6 +2084,7 @@ struct GlobalCurveEntry
     uint32 ID;
     int32 CurveID;
     int32 Type;
+    int32 Subtype;
 };
 
 struct GlyphBindableSpellEntry
@@ -2225,12 +2231,13 @@ struct ItemEntry
     uint8 Material;
     int8 InventoryType;
     uint8 SheatheType;
+    int32 ItemPetFoodID;
     int8 SoundOverrideSubclassID;
     int32 IconFileDataID;
     uint32 ItemGroupSoundsID;
     int32 ContentTuningID;
     int32 ModifiedCraftingReagentItemID;
-    uint8 Unknown1200;
+    uint8 Unknown1200;                                              // AmmunitionType in 1.60.x Classic
     int32 CraftingQualityID;
     int32 ItemSquishEraID;
     float RecraftReagentCountPercentage;
@@ -2659,6 +2666,7 @@ struct ItemSparseEntry
     int8 RequiredLevel;
     int8 InventoryType;
     int8 OverallQualityID;
+    uint8 AmmunitionType;
 };
 
 struct ItemSpecEntry
@@ -2920,6 +2928,7 @@ struct MapEntry
     int16 WindSettingsID;
     int32 ZmpFileDataID;
     int32 WdtFileDataID;
+    int32 OceanLiquidTypeID;
     int32 NavigationMaxDistance;
     int32 PreloadFileDataID;
     std::array<int32, 3> Flags;
@@ -3155,6 +3164,7 @@ struct NameGenEntry
     char const* Name;
     int8 RaceID;
     int8 Sex;
+    uint8 NameType;
 };
 
 struct NamesProfanityEntry
@@ -3359,6 +3369,7 @@ struct PlayerDataElementAccountEntry
     int32 StorageIndex;
     int32 Type;
     int32 Unknown1125;
+    int32 Field_12_1_5_69594_004;
 
     PlayerDataElementType GetType() const { return static_cast<PlayerDataElementType>(Type); }
 };
@@ -3369,6 +3380,7 @@ struct PlayerDataElementCharacterEntry
     int32 StorageIndex;
     int32 Type;
     int32 Unknown1125;
+    int32 Field_12_1_5_69594_004;
 
     PlayerDataElementType GetType() const { return static_cast<PlayerDataElementType>(Type); }
 };
@@ -3712,6 +3724,7 @@ struct SkillLineAbilityEntry
     int16 UniqueBit;
     int16 TradeSkillCategoryID;
     int16 SkillupSkillLineID;
+    std::array<int32, 2> Field_5_5_4_67090_014;
     Trinity::RaceMask<int32, 2> RaceMask;
 
     SkillLineAbilityAcquireMethod GetAcquireMethod() const { return static_cast<SkillLineAbilityAcquireMethod>(AcquireMethod); }
@@ -3977,26 +3990,27 @@ struct SpellItemEnchantmentEntry
     LocalizedString Name;
     LocalizedString HordeName;
     int32 Duration;
+    uint32 Charges;
+    std::array<uint32, MAX_ITEM_ENCHANTMENT_EFFECTS> Effect;
+    std::array<int32, MAX_ITEM_ENCHANTMENT_EFFECTS> EffectPointsMin;
     std::array<uint32, MAX_ITEM_ENCHANTMENT_EFFECTS> EffectArg;
     int32 Flags;
     std::array<float, MAX_ITEM_ENCHANTMENT_EFFECTS> EffectScalingPoints;
+    int32 ScalingClass;
+    int32 ScalingClassRestricted;
+    uint32 ConditionID;                                             // Field_12_1_5_69594_011 in 1.60.x Classic - sits where Condition_ID was in 1.15 layouts, all 0 in build 70009 data
+    uint32 RequiredSkillID;
+    uint32 RequiredSkillRank;
+    uint32 MinLevel;
+    uint32 MaxLevel;
     uint32 IconFileDataID;
     int32 MinItemLevel;
     int32 MaxItemLevel;
     uint32 TransmogUseConditionID;
     uint32 TransmogCost;
-    std::array<int16, MAX_ITEM_ENCHANTMENT_EFFECTS> EffectPointsMin;
+    int32 Field_12_1_5_69594_021;
     uint16 ItemVisual;
-    uint16 RequiredSkillID;
-    uint16 RequiredSkillRank;
     uint16 ItemLevel;
-    uint8 Charges;
-    std::array<uint8, MAX_ITEM_ENCHANTMENT_EFFECTS> Effect;
-    int8 ScalingClass;
-    int8 ScalingClassRestricted;
-    uint8 ConditionID;
-    uint8 MinLevel;
-    uint8 MaxLevel;
 
     EnumFlag<SpellItemEnchantmentFlags> GetFlags() const { return static_cast<SpellItemEnchantmentFlags>(Flags); }
 };
@@ -4115,6 +4129,7 @@ struct SpellProcsPerMinuteModEntry
     int32 Type;
     int32 Param;
     float Coeff;
+    int32 Field_12_1_5_69594_003;
     uint32 SpellProcsPerMinuteID;
 };
 
@@ -4295,6 +4310,10 @@ struct SpellVisualMissileEntry
     int32 ClutterLevel;
     int32 DecayTimeAfterImpact;
     uint16 Unused1100;
+    int32 Field_12_1_5_69594_018;
+    int32 Field_12_1_5_69594_019;
+    int32 Field_12_1_5_69594_020;
+    int32 Field_12_1_5_69594_021;
     uint32 SpellVisualMissileSetID;
 };
 
@@ -4486,6 +4505,7 @@ struct TraitCurrencyEntry
     int32 Icon;
     int32 PlayerDataElementAccountID;
     int32 PlayerDataElementCharacterID;
+    int32 SourcedMax;
 
     TraitCurrencyType GetType() const { return static_cast<TraitCurrencyType>(Type); }
 };
@@ -4500,6 +4520,7 @@ struct TraitCurrencySourceEntry
     int32 AchievementID;
     int32 PlayerLevel;
     int32 TraitNodeEntryID;
+    int32 SuperDistrictSetID;
     int32 OrderIndex;
 };
 

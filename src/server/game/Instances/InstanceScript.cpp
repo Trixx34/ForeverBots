@@ -215,7 +215,13 @@ void InstanceScript::LoadDungeonEncounterData(uint32 bossId, std::array<uint32, 
     if (bossId < bosses.size())
         for (std::size_t i = 0, j = 0; i < MAX_DUNGEON_ENCOUNTERS_PER_BOSS; ++i)
             if (dungeonEncounterIds[i])
-                bosses[bossId].DungeonEncounters[j++] = sDungeonEncounterStore.AssertEntry(dungeonEncounterIds[i]);
+            {
+                // Classic 1.60: scripts carry retail encounter ids, some of which the Classic DungeonEncounter data lacks
+                if (DungeonEncounterEntry const* dungeonEncounter = sDungeonEncounterStore.LookupEntry(dungeonEncounterIds[i]))
+                    bosses[bossId].DungeonEncounters[j++] = dungeonEncounter;
+                else
+                    TC_LOG_ERROR("scripts", "InstanceScript: map {} boss {} uses DungeonEncounter {} which does not exist", instance->GetId(), bossId, dungeonEncounterIds[i]);
+            }
 }
 
 void InstanceScript::UpdateDoorState(GameObject* door)

@@ -98,4 +98,21 @@ void ChangeRealmTicket::Read()
     _worldPacket >> Token;
     _worldPacket.read(Secret.data(), Secret.size());
 }
+
+void GenerateSsoToken::Read()
+{
+    _worldPacket >> RequestID;
+    _worldPacket >> Usage;
+}
+
+WorldPacket const* GenerateSsoTokenResponse::Write()
+{
+    _worldPacket << uint32(RequestID);
+    _worldPacket << uint32(Result);
+    _worldPacket << Issued;
+    _worldPacket << Expires;
+    _worldPacket.append(reinterpret_cast<uint8 const*>(Token.data()), Token.size());
+
+    return &_worldPacket;
+}
 }

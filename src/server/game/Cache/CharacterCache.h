@@ -28,6 +28,7 @@ struct CharacterCacheEntry
 {
     ObjectGuid Guid;
     std::string Name;
+    std::string Surname;    // Classic 1.60: shown after the name ("Name Surname")
     uint32 AccountId;
     uint8 Class;
     uint8 Race;
@@ -60,6 +61,8 @@ class TC_GAME_API CharacterCache
         void UpdateCharacterGuildId(ObjectGuid const& guid, ObjectGuid::LowType guildId);
         void UpdateCharacterArenaTeamId(ObjectGuid const& guid, uint8 slot, uint32 arenaTeamId);
         void UpdateCharacterInfoDeleted(ObjectGuid const& guid, bool deleted, std::string const& name);
+        void UpdateCharacterSurname(ObjectGuid const& guid, std::string const& surname);
+        std::string GetCharacterSurnameByGuid(ObjectGuid guid) const;
 
         bool HasCharacterCacheEntry(ObjectGuid const& guid) const;
         CharacterCacheEntry const* GetCharacterCacheByGuid(ObjectGuid const& guid) const;

@@ -16,6 +16,7 @@
  */
 
 #include "LoginRESTService.h"
+#include "Base32.h"
 #include "Base64.h"
 #include "Common.h"
 #include "Configuration/Config.h"
@@ -26,7 +27,9 @@
 #include "ProtobufJSON.h"
 #include "Resolver.h"
 #include "SslContext.h"
+#include "StringConvert.h"
 #include "Timer.h"
+#include "TOTP.h"
 #include "Util.h"
 
 namespace Battlenet
@@ -87,6 +90,11 @@ bool LoginRESTService::StartNetwork(Trinity::Asio::IoContext& ioContext, std::st
     });
 
     RegisterHandler(boost::beast::http::verb::post, "/bnetserver/login/"sv, [this](std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context)
+    {
+        return HandlePostLogin(std::move(session), context);
+    }, RequestHandlerFlag::DoNotLogRequestContent);
+
+    RegisterHandler(boost::beast::http::verb::post, "/bnetserver/login/authenticator/"sv, [this](std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context)
     {
         return HandlePostLogin(std::move(session), context);
     }, RequestHandlerFlag::DoNotLogRequestContent);
@@ -259,6 +267,11 @@ LoginRESTService::RequestHandlerResult LoginRESTService::HandlePostLogin(std::sh
         return "";
     };
 
+    // second step of an authenticator login: the code typed into the client's authenticator prompt
+    for (int32 i = 0; i < loginForm->inputs_size(); ++i)
+        if (loginForm->inputs(i).input_id() == "authenticator_input")
+            return HandleAuthenticatorCode(std::move(session), context, loginForm->inputs(i).value());
+
     std::string login(getInputValue(loginForm.get(), "account_name"));
     Utf8ToUpperOnlyLatin(login);
 
@@ -373,6 +386,28 @@ LoginRESTService::RequestHandlerResult LoginRESTService::HandlePostLogin(std::sh
             return;
         }
 
+        // account with an authenticator: ask for the code first (the client shows its authenticator prompt for this state and posts
+        // authenticator_input to next_url with the same JSESSIONID); the ticket is issued in HandleAuthenticatorCode
+        if (!fields[8].IsNull() && !fields[8].GetStringView().empty())
+        {
+            LoginSessionState* state = session->GetSessionState();
+            state->AuthenticatorAccountId = accountId;
+            state->AuthenticatorSecret = fields[8].GetString();
+            state->AuthenticatorServerM2 = serverM2.value_or("");
+            state->AuthenticatorTries = 0;
+
+            JSON::Login::LoginResult loginResult;
+            loginResult.set_authentication_state(JSON::Login::AUTHENTICATOR);
+            loginResult.set_next_url(GetAuthenticatorUrl(*session));
+            if (serverM2)
+                loginResult.set_server_evidence_m2(*serverM2);
+
+            context.response.set(boost::beast::http::field::content_type, "application/json;charset=utf-8");
+            context.response.body() = ::JSON::Serialize(loginResult);
+            session->SendResponse(context);
+            return;
+        }
+
         if (loginTicket.empty() || loginTicketExpiry < time(nullptr))
             loginTicket = "TC-" + ByteArrayToHexStr(Trinity::Crypto::GetRandomBytes<20>());
 
@@ -392,6 +427,84 @@ LoginRESTService::RequestHandlerResult LoginRESTService::HandlePostLogin(std::sh
             context.response.body() = ::JSON::Serialize(loginResult);
             session->SendResponse(context);
         }).SetNextQuery(LoginDatabase.AsyncQuery(stmt));
+    }));
+
+    return RequestHandlerResult::Async;
+}
+
+std::string LoginRESTService::GetAuthenticatorUrl(LoginHttpSession const& session) const
+{
+    return Trinity::StringFormat("http{}://{}:{}/bnetserver/login/authenticator/", !SslContext::UsesDevWildcardCertificate() ? "s" : "",
+        GetHostnameForClient(session.GetRemoteIpAddress()), _port);
+}
+
+LoginRESTService::RequestHandlerResult LoginRESTService::HandleAuthenticatorCode(std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context,
+    std::string const& code) const
+{
+    constexpr uint32 MaxAuthenticatorTries = 5;
+
+    auto respond = [](LoginHttpSession& session, HttpRequestContext& context, JSON::Login::LoginResult const& loginResult)
+    {
+        context.response.set(boost::beast::http::field::content_type, "application/json;charset=utf-8");
+        context.response.body() = ::JSON::Serialize(loginResult);
+        session.SendResponse(context);
+    };
+
+    LoginSessionState* state = session->GetSessionState();
+    if (!state || !state->AuthenticatorAccountId)
+    {
+        // no password step before this (or it expired): fail the login
+        JSON::Login::LoginResult loginResult;
+        loginResult.set_authentication_state(JSON::Login::DONE);
+        respond(*session, context, loginResult);
+        return RequestHandlerResult::Handled;
+    }
+
+    std::string digits;
+    for (char c : code)
+        if (c >= '0' && c <= '9')
+            digits += c;
+
+    Optional<std::vector<uint8>> secret = Trinity::Encoding::Base32::Decode(state->AuthenticatorSecret);
+    Optional<uint32> token = digits.length() == 6 ? Trinity::StringTo<uint32>(digits) : Optional<uint32>();
+    if (!secret || !token || !Trinity::Crypto::TOTP::ValidateToken(*secret, *token))
+    {
+        JSON::Login::LoginResult loginResult;
+        if (++state->AuthenticatorTries >= MaxAuthenticatorTries)
+        {
+            TC_LOG_DEBUG("server.http.login", "[{}, Id {}] Too many wrong authenticator codes", session->GetClientInfo(), state->AuthenticatorAccountId);
+            state->AuthenticatorAccountId = 0;
+            state->AuthenticatorSecret.clear();
+            loginResult.set_authentication_state(JSON::Login::DONE);
+        }
+        else
+        {
+            loginResult.set_authentication_state(JSON::Login::AUTHENTICATOR);
+            loginResult.set_next_url(GetAuthenticatorUrl(*session));
+        }
+        respond(*session, context, loginResult);
+        return RequestHandlerResult::Handled;
+    }
+
+    uint32 const accountId = state->AuthenticatorAccountId;
+    std::string serverM2 = std::move(state->AuthenticatorServerM2);
+    state->AuthenticatorAccountId = 0;
+    state->AuthenticatorSecret.clear();
+
+    std::string loginTicket = "TC-" + ByteArrayToHexStr(Trinity::Crypto::GetRandomBytes<20>());
+    LoginDatabasePreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_UPD_BNET_AUTHENTICATION);
+    stmt->setString(0, loginTicket);
+    stmt->setUInt32(1, time(nullptr) + _loginTicketDuration);
+    stmt->setUInt32(2, accountId);
+    session->QueueQuery(LoginDatabase.AsyncQuery(stmt)
+        .WithPreparedCallback([session, context = std::move(context), loginTicket = std::move(loginTicket), serverM2 = std::move(serverM2), respond](PreparedQueryResult) mutable
+    {
+        JSON::Login::LoginResult loginResult;
+        loginResult.set_authentication_state(JSON::Login::DONE);
+        loginResult.set_login_ticket(loginTicket);
+        if (!serverM2.empty())
+            loginResult.set_server_evidence_m2(serverM2);
+        respond(*session, context, loginResult);
     }));
 
     return RequestHandlerResult::Async;

@@ -18,6 +18,7 @@
 #include "WorldSession.h"
 #include "Battleground.h"
 #include "DB2Stores.h"
+#include "Log.h"
 #include "Player.h"
 #include "SpellHistory.h"
 #include "TraitMgr.h"
@@ -130,6 +131,7 @@ void WorldSession::HandleTraitsCommitConfig(WorldPackets::Traits::TraitsCommitCo
     TraitMgr::LearnResult validationResult = TraitMgr::ValidateConfig(newConfigState, _player, true);
     if (validationResult != TraitMgr::LearnResult::Ok)
     {
+        TC_LOG_INFO("entities.player", "Player {} talent/trait config {} commit rejected: LearnResult {}", _player->GetName(), configId, AsUnderlyingType(validationResult));
         SendPacket(WorldPackets::Traits::TraitConfigCommitFailed(configId, 0, AsUnderlyingType(validationResult)).Write());
         return;
     }

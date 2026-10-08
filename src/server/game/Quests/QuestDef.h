@@ -604,7 +604,7 @@ class TC_GAME_API Quest
         void LoadRewardHouseDecor(Field* fields);
 
         uint32 XPValue(Player const* player) const;
-        static uint32 XPValue(Player const* player, uint32 contentTuningId, uint32 xpDifficulty, float xpMultiplier = 1.0f, int32 expansion = -1);
+        static uint32 XPValue(Player const* player, uint32 contentTuningId, uint32 xpDifficulty, float xpMultiplier = 1.0f, int32 expansion = -1, int32 questLevelOverride = 0);
         uint32 MoneyValue(Player const* player) const;
         uint32 MaxMoneyValue() const;
         uint32 GetMaxMoneyReward() const;
@@ -633,6 +633,13 @@ class TC_GAME_API Quest
         uint32 GetQuestId() const { return _id; }
         uint32 GetQuestType() const { return _type; }
         uint32 GetQuestPackageID() const { return _packageID; }
+        // Classic 1.60: quest level shown in the quest log (quest_template_classic_level)
+        int32 GetClassicLevelType() const { return _classicLevelType; }
+        int32 GetClassicQuestLevel() const { return _classicQuestLevel; }
+        void SetClassicQuestLevel(int32 levelType, int32 level) { _classicLevelType = levelType; _classicQuestLevel = level; }
+        // Classic 1.60: fixed level range of the quest (quest_classic_level) instead of ContentTuning, 0 = none
+        int32 GetClassicMinLevel() const { return _classicMinLevel; }
+        void SetClassicLevelRange(int32 minLevel, uint32 maxLevel) { _classicMinLevel = minLevel; if (maxLevel) _maxLevel = maxLevel; }
         uint32 GetContentTuningId() const { return _contentTuningID; }
         int32  GetZoneOrSort() const { return _questSortID; }
         uint32 GetMaxLevel() const { return _maxLevel; }
@@ -785,6 +792,9 @@ class TC_GAME_API Quest
         uint32 _id = 0;
         uint32 _type = 0;
         uint32 _packageID = 0;
+        int32 _classicLevelType = 2;
+        int32 _classicQuestLevel = 0;
+        int32 _classicMinLevel = 0;
         uint32 _contentTuningID = 0;
         int32 _questSortID = 0;
         uint32 _questInfoID = 0;

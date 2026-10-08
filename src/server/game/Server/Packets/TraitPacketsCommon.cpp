@@ -118,6 +118,8 @@ ByteBuffer& operator>>(ByteBuffer& data, TraitConfig& traitConfig)
 {
     data >> traitConfig.ID;
     data >> As<int32>(traitConfig.Type);
+    if (AsUnderlyingType(traitConfig.Type) == 4)   // Classic 1.60: TraitConfigType::CamelotCombat is our Combat
+        traitConfig.Type = TraitConfigType::Combat;
     uint32 entriesSize = data.read<uint32>();
     if (entriesSize > 100)
         OnInvalidArraySize(entriesSize, 100);
@@ -165,7 +167,7 @@ ByteBuffer& operator>>(ByteBuffer& data, TraitConfig& traitConfig)
 ByteBuffer& operator<<(ByteBuffer& data, TraitConfig const& traitConfig)
 {
     data << int32(traitConfig.ID);
-    data << int32(traitConfig.Type);
+    data << int32(traitConfig.Type == TraitConfigType::Combat ? 4 : AsUnderlyingType(traitConfig.Type));   // Classic 1.60: CamelotCombat
     data << Size<uint32>(traitConfig.Entries);
     data << Size<uint32>(traitConfig.SubTrees);
     switch (traitConfig.Type)

@@ -74,6 +74,7 @@ namespace Battlenet
         uint32 LoginTicketExpiry;
         bool IsBanned;
         bool IsPermanenetlyBanned;
+        std::string BattleTag;                  // "Name#1234", empty = none
 
         std::unordered_map<uint32, GameAccountInfo> GameAccounts;
     };

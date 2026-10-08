@@ -1,0 +1,164 @@
+/*
+ * This file is part of the TrinityCore Project. See AUTHORS file for Copyright information
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
+// Classic 1.60 port of VMaNGOS src/scripts/eastern_kingdoms/loch_modan/loch_modan.cpp (ScriptDev2 lineage, GPL-2)
+// Quest support: 309 (Protecting the Shipment)
+// Not ported here (not requested): at_huldar_miran (area trigger 171, quest 273).
+
+#include "ScriptMgr.h"
+#include "Player.h"
+#include "QuestDef.h"
+#include "ScriptedCreature.h"
+#include "ScriptedEscortAI.h"
+#include "TemporarySummon.h"
+#include "classic_script_text.h"
+
+/*######
+## npc_miran
+######*/
+
+enum MiranData
+{
+    QUEST_PROTECTING_THE_SHIPMENT = 309,
+
+    SAY_MIRAN_1           = 510,
+    SAY_DARK_IRON_DWARF   = 1936,
+    SAY_MIRAN_2           = 511,
+    SAY_MIRAN_3           = 498,
+
+    NPC_DARK_IRON_RAIDER  = 2149
+};
+
+Position const MiranAmbushSpawn[] =
+{
+    { -5691.93f, -3745.91f, 319.159f, 2.21f },
+    { -5706.98f, -3745.39f, 318.728f, 1.04f }
+};
+
+namespace
+{
+struct ClassicEscortPoint
+{
+    uint32 Id;
+    float X, Y, Z;
+    uint32 WaitTime;
+};
+}
+
+// VMaNGOS script_waypoint entry 1379 (pointid, x, y, z, waittime ms). VMaNGOS point ids start at 1; TC EscortAI needs
+// node ids equal to the node index (0-based), so node id = VMaNGOS pointid - 1 (translated back in WaypointReached).
+ClassicEscortPoint const MiranPath[] =
+{
+    {  1, -5751.12f, -3441.01f, 301.743f,     0 },
+    {  2, -5738.58f, -3485.14f, 302.41f,      0 },
+    {  3, -5721.62f, -3507.85f, 304.011f,     0 },
+    {  4, -5710.21f, -3527.97f, 304.708f,     0 },
+    {  5, -5706.92f, -3542.89f, 304.871f,     0 },
+    {  6, -5701.53f, -3551.24f, 305.962f,     0 },
+    {  7, -5699.53f, -3555.69f, 306.505f,     0 },
+    {  8, -5690.56f, -3571.98f, 309.035f,     0 },
+    {  9, -5678.61f, -3587.17f, 310.607f,     0 },
+    { 10, -5677.05f, -3594.35f, 311.527f,     0 },
+    { 11, -5674.39f, -3605.19f, 312.239f,     0 },
+    { 12, -5674.45f, -3614.39f, 312.337f,     0 },
+    { 13, -5673.05f, -3630.56f, 311.105f,     0 },
+    { 14, -5680.34f, -3645.44f, 315.185f,     0 },
+    { 15, -5684.46f, -3650.05f, 314.687f,     0 },
+    { 16, -5693.9f,  -3674.14f, 313.03f,      0 },
+    { 17, -5701.43f, -3712.54f, 313.959f,     0 },
+    { 18, -5698.79f, -3720.88f, 316.943f,     0 },
+    { 19, -5699.95f, -3733.63f, 318.597f,     0 }, // Protecting the Shipment - Ambush
+    { 20, -5698.61f, -3754.74f, 322.047f,     0 },
+    { 21, -5688.68f, -3769.0f,  323.957f,     0 },
+    { 22, -5688.14f, -3782.65f, 322.667f,     0 },
+    { 23, -5699.23f, -3792.65f, 322.448f, 30000 }, // Protecting the Shipment - End
+    { 24, -5700.8f,  -3792.78f, 322.588f,     0 }
+};
+
+struct classic_npc_miran : public EscortAI
+{
+    classic_npc_miran(Creature* creature) : EscortAI(creature), _dwarves(0) { }
+
+    void Reset() override
+    {
+        if (!HasEscortState(STATE_ESCORT_ESCORTING))
+            _dwarves = 0;
+    }
+
+    void WaypointReached(uint32 waypointId, uint32 /*pathId*/) override
+    {
+        switch (waypointId + 1) // VMaNGOS point id
+        {
+            case 19:
+                ClassicScriptText(SAY_MIRAN_1, me);
+                me->SummonCreature(NPC_DARK_IRON_RAIDER, MiranAmbushSpawn[0], TEMPSUMMON_TIMED_OR_DEAD_DESPAWN, 25s);
+                me->SummonCreature(NPC_DARK_IRON_RAIDER, MiranAmbushSpawn[1], TEMPSUMMON_TIMED_OR_DEAD_DESPAWN, 25s);
+                break;
+            case 23:
+                ClassicScriptText(SAY_MIRAN_3, me);
+                if (Player* player = GetPlayerForEscort())
+                    player->GroupEventHappens(QUEST_PROTECTING_THE_SHIPMENT, me);
+                break;
+        }
+    }
+
+    void SummonedCreatureDies(Creature* summoned, Unit* /*killer*/) override
+    {
+        if (summoned->GetEntry() == NPC_DARK_IRON_RAIDER)
+        {
+            --_dwarves;
+            if (!_dwarves)
+                ClassicScriptText(SAY_MIRAN_2, me);
+        }
+    }
+
+    void JustSummoned(Creature* summoned) override
+    {
+        if (summoned->GetEntry() == NPC_DARK_IRON_RAIDER)
+        {
+            if (!_dwarves)
+                ClassicScriptText(SAY_DARK_IRON_DWARF, summoned);
+            ++_dwarves;
+            if (summoned->AI())
+                summoned->AI()->AttackStart(me);
+        }
+    }
+
+    void OnQuestAccept(Player* player, Quest const* quest) override
+    {
+        if (quest->GetQuestId() == QUEST_PROTECTING_THE_SHIPMENT)
+        {
+            ResetPath();
+            for (ClassicEscortPoint const& point : MiranPath)
+            {
+                Optional<Milliseconds> wait;
+                if (point.WaitTime)
+                    wait = Milliseconds(point.WaitTime);
+                AddWaypoint(point.Id - 1, point.X, point.Y, point.Z, 0.0f, wait, false);
+            }
+            Start(false, player->GetGUID(), quest);
+        }
+    }
+
+private:
+    uint8 _dwarves;
+};
+
+void AddSC_classic_loch_modan()
+{
+    RegisterCreatureAI(classic_npc_miran);
+}

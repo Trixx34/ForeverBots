@@ -751,6 +751,27 @@ void Channel::Say(ObjectGuid const& guid, std::string const& what, uint32 lang) 
         !playerInfo.IsModerator() && player ? player->GetSession()->GetAccountGUID() : ObjectGuid::Empty);
 }
 
+void Channel::SayAs(std::string const& senderName, std::string const& what) const
+{
+    if (what.empty())
+        return;
+
+    auto builder = [&](LocaleConstant locale)
+    {
+        LocaleConstant localeIdx = sWorld->GetAvailableDbcLocale(locale);
+
+        Trinity::PacketSenderOwning<WorldPackets::Chat::Chat>* packet = new Trinity::PacketSenderOwning<WorldPackets::Chat::Chat>();
+        packet->Data.ChannelGUID = _channelGuid;
+        packet->Data.Initialize(CHAT_MSG_CHANNEL, LANG_UNIVERSAL, nullptr, nullptr, what, 0, GetName(localeIdx));
+        packet->Data.SenderName = senderName;
+        packet->Data.FakeSenderName = true;         // a name without a character behind it
+        packet->Data.Write();
+        return packet;
+    };
+
+    SendToAll(builder);
+}
+
 void Channel::AddonSay(ObjectGuid const& guid, std::string const& prefix, std::string const& what, bool isLogged) const
 {
     if (what.empty())

@@ -51,6 +51,7 @@ namespace WorldPackets
             uint32 MaxHealth = 0;
             uint32 Speed = 0;
             uint8 Quality = 0;
+            int64 ClassicUnknown = 0;   // Classic 1.60: client reads an int64 after Quality (pet reader 0x7fea10 in 70009), meaning unknown
             Optional<BattlePetOwnerInfo> OwnerInfo;
             std::string Name;
             bool NoRename = false;

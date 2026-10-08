@@ -45,16 +45,20 @@ ByteBuffer& operator>>(ByteBuffer& data, WhoWord& word)
     return data;
 }
 
+// Classic 1.60 layout (client writer rva 0x98DF70, message serializer 0x8BB4C0): ServerInfo is uint8, int32, 6 x uint32, bool
 ByteBuffer& operator>>(ByteBuffer& data, WhoRequestServerInfo& serverInfo)
 {
     data >> serverInfo.FactionGroup;
     data >> serverInfo.Locale;
     data >> serverInfo.RequesterVirtualRealmAddress;
+    data.read_skip(5 * sizeof(uint32) + sizeof(uint8));
 
     return data;
 }
 
-ByteBuffer& operator>>(ByteBuffer& data, WhoRequest& request)
+// Classic 1.60: an extra 9 bit sized string (surname) after the realm name, a fourth flag bit, and the areas (6 bit count)
+// moved into the request
+static void ReadWhoRequest(ByteBuffer& data, WhoRequest& request, Array<int32, 63>& areas)
 {
     data >> request.MinLevel;
     data >> request.MaxLevel;
@@ -63,50 +67,63 @@ ByteBuffer& operator>>(ByteBuffer& data, WhoRequest& request)
     data >> request.ClassFilter;
     data >> SizedString::BitsSize<6>(request.Name);
     data >> SizedString::BitsSize<9>(request.VirtualRealmName);
+    data >> SizedString::BitsSize<9>(request.Surname);
     data >> SizedString::BitsSize<7>(request.Guild);
     data >> SizedString::BitsSize<9>(request.GuildVirtualRealmName);
     data >> BitsSize<3>(request.Words);
     data >> Bits<1>(request.ShowEnemies);
     data >> Bits<1>(request.ShowArenaPlayers);
     data >> Bits<1>(request.ExactName);
+    data >> Bits<1>(request.Unknown);
+    data >> BitsSize<6>(areas);
     data >> OptionalInit(request.ServerInfo);
+    data.ResetBitPos();
 
     data >> SizedString::Data(request.Name);
     data >> SizedString::Data(request.VirtualRealmName);
+    data >> SizedString::Data(request.Surname);
     data >> SizedString::Data(request.Guild);
     data >> SizedString::Data(request.GuildVirtualRealmName);
 
     for (size_t i = 0; i < request.Words.size(); ++i)
-        data >> request.Words[i];
+    {
+        data >> SizedString::BitsSize<7>(request.Words[i].Word);
+        data.ResetBitPos();
+        data >> SizedString::Data(request.Words[i].Word);
+    }
+
+    for (size_t i = 0; i < areas.size(); ++i)
+        data >> areas[i];
 
     if (request.ServerInfo)
         data >> *request.ServerInfo;
-
-    return data;
 }
 
 void WhoRequestPkt::Read()
 {
-    _worldPacket >> BitsSize<4>(Areas);
-    _worldPacket >> Bits<1>(IsAddon);
-    _worldPacket >> Request;
+    ReadWhoRequest(_worldPacket, Request, Areas);
     _worldPacket >> Token;
     _worldPacket >> Origin;
-
-    for (size_t i = 0; i < Areas.size(); ++i)
-        _worldPacket >> Areas[i];
+    _worldPacket >> Bits<1>(IsAddon);
 }
 
 ByteBuffer& operator<<(ByteBuffer& data, WhoEntry const& entry)
 {
     data << entry.PlayerData;
 
+    // Classic 1.60 (client reader rva 0x98ECC0): two more int32 after the area, a {4 x uint32, int8} block and one more bit
     data << entry.GuildGUID;
     data << uint32(entry.GuildVirtualRealmAddress);
     data << int32(entry.AreaID);
+    data << int32(0);
+    data << int32(0);
+    for (uint8 i = 0; i < 4; ++i)
+        data << uint32(0);
+    data << int8(0);
 
     data << SizedString::BitsSize<7>(entry.GuildName);
     data << Bits<1>(entry.IsGM);
+    data << Bits<1>(false);
     data.FlushBits();
 
     data << SizedString::Data(entry.GuildName);
@@ -116,8 +133,7 @@ ByteBuffer& operator<<(ByteBuffer& data, WhoEntry const& entry)
 
 ByteBuffer& operator<<(ByteBuffer& data, WhoResponse const& response)
 {
-    data << BitsSize<6>(response.Entries);
-    data.FlushBits();
+    data << Size<uint32>(response.Entries);     // Classic 1.60: uint32 count
 
     for (WhoEntry const& whoEntry : response.Entries)
         data << whoEntry;

@@ -15,7 +15,9 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "Opcodes.h"
 #include "TokenPackets.h"
+#include "WorldPacket.h"
 #include "WorldSession.h"
 
 void WorldSession::HandleCommerceTokenGetLog(WorldPackets::Token::CommerceTokenGetLog& commerceTokenGetLog)
@@ -37,4 +39,13 @@ void WorldSession::HandleCommerceTokenGetMarketPrice(WorldPackets::Token::Commer
     response.Result = TOKEN_RESULT_ERROR_DISABLED;
 
     SendPacket(response.Write());
+}
+
+// Classic 1.60 catalog shop: the client asks at login when it last fetched the catalog. CLASSIC_CATALOG_PROBE: layout not
+// known yet (decoder captured while this reply arrives); send "never" as an int64 timestamp.
+void WorldSession::HandleGetLastCatalogFetch(WorldPackets::Null& /*null*/)
+{
+    WorldPacket data(SMSG_LAST_CATALOG_FETCH_RESPONSE, 8);
+    data << int64(0);
+    SendPacket(&data);
 }

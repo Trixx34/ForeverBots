@@ -104,19 +104,18 @@ public:
                 executable, fmt::join(args, " "));
         }
 
-        // prepare file with only read permission (boost process opens with read_write)
-        auto inputFile = Trinity::make_unique_ptr_with_deleter<&::fclose>(!input_file.empty() ? fopen(input_file.c_str(), "rb") : nullptr);
-
         std::error_code ec;
 
         // Start the child process
-        if (inputFile)
+        if (!input_file.empty())
         {
+            // Classic 1.60 fork: handing the child a FILE* (fopen) as stdin gave it an empty stdin on Windows (the mysql client ran
+            // nothing and exited with success); boost opens and redirects the file itself here.
             my_child.emplace(
                 bp::exe = boost::filesystem::absolute(executable).string(),
                 bp::args = args,
                 bp::env = bp::environment(boost::this_process::environment()),
-                bp::std_in = inputFile.get(),
+                bp::std_in < boost::filesystem::path(input_file),
                 bp::std_out = outStream,
                 bp::std_err = errStream,
                 bp::error = ec

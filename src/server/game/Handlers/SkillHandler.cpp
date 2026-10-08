@@ -23,6 +23,7 @@
 #include "ObjectAccessor.h"
 #include "Pet.h"
 #include "Player.h"
+#include "SpellMgr.h"
 #include "SpellPackets.h"
 #include "TalentPackets.h"
 
@@ -128,4 +129,51 @@ void WorldSession::HandleTradeSkillSetFavorite(WorldPackets::Spells::TradeSkillS
         return;
 
     _player->SetSpellFavorite(tradeSkillSetFavorite.RecipeID, tradeSkillSetFavorite.IsFavorite);
+}
+
+// Classic 1.60: a click on another player's profession link in chat. The answer lists that player's profession line and its
+// Classic child line (e.g. Enchanting 333 + 2940), their ranks and every recipe known on them (official beta sniff, build 70170).
+void WorldSession::HandleShowTradeSkill(WorldPackets::Spells::ShowTradeSkill& packet)
+{
+    Player* target = ObjectAccessor::FindConnectedPlayer(packet.PlayerGUID);
+    if (!target)
+        return;
+
+    uint32 skill = Player::GetClassicProfessionSkill(uint32(packet.SkillLineID));
+    if (!target->HasSkill(skill))
+        return;
+
+    std::vector<uint32> lines = { skill };
+    if (std::vector<SkillLineEntry const*> const* children = sDB2Manager.GetSkillLinesForParentSkill(skill))
+        for (SkillLineEntry const* child : *children)
+            if (target->HasSkill(child->ID))
+                lines.push_back(child->ID);
+
+    WorldPackets::Spells::ShowTradeSkillResponse response;
+    response.PlayerGUID = packet.PlayerGUID;
+    response.SpellID = packet.SpellID;
+    for (uint32 line : lines)
+    {
+        response.SkillLineIDs.push_back(int32(line));
+        response.SkillRanks.push_back(int32(target->GetSkillValue(line)));
+        response.SkillMaxRanks.push_back(int32(target->GetMaxSkillValue(line)));
+    }
+
+    for (auto const& [spellId, spell] : target->GetSpellMap())
+    {
+        if (spell.state == PLAYERSPELL_REMOVED || !spell.active || spell.disabled)
+            continue;
+
+        SkillLineAbilityMapBounds bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+        for (auto itr = bounds.first; itr != bounds.second; ++itr)
+        {
+            if (std::find(lines.begin(), lines.end(), uint32(itr->second->SkillLine)) != lines.end())
+            {
+                response.KnownAbilitySpellIDs.push_back(int32(spellId));
+                break;
+            }
+        }
+    }
+
+    SendPacket(response.Write());
 }

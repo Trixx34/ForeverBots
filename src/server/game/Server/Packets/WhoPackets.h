@@ -65,6 +65,7 @@ namespace WorldPackets
             int32 MaxLevel = 0;
             std::string Name;
             std::string VirtualRealmName;
+            std::string Surname;                            // Classic 1.60
             std::string Guild;
             std::string GuildVirtualRealmName;
             Trinity::RaceMask<int32, 2> RaceFilter = { 0, 0 };
@@ -73,6 +74,7 @@ namespace WorldPackets
             bool ShowEnemies = false;
             bool ShowArenaPlayers = false;
             bool ExactName = false;
+            bool Unknown = false;                           // Classic 1.60: fourth flag bit
             Optional<WhoRequestServerInfo> ServerInfo;
         };
 
@@ -87,7 +89,7 @@ namespace WorldPackets
             uint32 Token = 0;
             uint8 Origin = 0;   // 1 = Social, 2 = Chat, 3 = Item
             bool IsAddon = false;
-            Array<int32, 10> Areas;
+            Array<int32, 63> Areas;                             // Classic 1.60: inside the request, 6 bit count
         };
 
         struct WhoEntry

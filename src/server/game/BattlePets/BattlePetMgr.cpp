@@ -50,7 +50,11 @@ void BattlePet::CalculateStats()
     // get base breed stats
     auto breedState = _battlePetBreedStates.find(PacketInfo.Breed);
     if (breedState == _battlePetBreedStates.end()) // non existing breed id
+    {
+        // Classic 1.60: no breed state data (no pet battles), companions only need a sane health
+        PacketInfo.MaxHealth = 100;
         return;
+    }
 
     float health = breedState->second[STATE_STAT_STAMINA];
     float power = breedState->second[STATE_STAT_POWER];

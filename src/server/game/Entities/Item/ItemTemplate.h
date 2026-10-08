@@ -105,6 +105,20 @@ enum ItemModType
     ITEM_MOD_PROFESSION_CRAFTING_SPEED = 80,
     ITEM_MOD_PROFESSION_MULTICRAFT    = 81,
     ITEM_MOD_PROFESSION_INGENUITY     = 82,
+
+    // Classic 1.60: the vanilla "Equip:" spells became item stats (client table of ITEM_MOD_*_SHORT strings, build 70124)
+    ITEM_MOD_CLASSIC_PHYSICAL_DAMAGE_DONE    = 83,  // 83..89: damage done by school, in SpellSchools order (physical .. arcane)
+    ITEM_MOD_CLASSIC_ARCANE_DAMAGE_DONE      = 89,
+    ITEM_MOD_CLASSIC_TWOHANDED_AXES          = 90,  // 90..118: skill bonus, see ClassicItemModSkills
+    ITEM_MOD_CLASSIC_TAILORING               = 118,
+    ITEM_MOD_CLASSIC_FIRE_PENETRATION        = 119, // 119..123: fire, nature, frost, shadow, arcane
+    ITEM_MOD_CLASSIC_ARCANE_PENETRATION      = 123,
+    ITEM_MOD_CLASSIC_RESISTANCE_ALL_SCHOOLS  = 124,
+    ITEM_MOD_CLASSIC_ATTACK_POWER_VS_HUMANOID = 125, // 125..132: humanoid, elemental, demon, undead, dragonkin, giant, beast, mechanical
+    ITEM_MOD_CLASSIC_ATTACK_POWER_VS_MECHANICAL = 132,
+    ITEM_MOD_CLASSIC_SPELL_DAMAGE_VS_HUMANOID = 133, // 133..139: same order, without mechanical
+    ITEM_MOD_CLASSIC_SPELL_DAMAGE_VS_BEAST   = 139,
+    ITEM_MOD_CLASSIC_END                     = 140
 };
 
 enum ItemSpelltriggerType

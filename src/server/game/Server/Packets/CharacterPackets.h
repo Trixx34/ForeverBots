@@ -67,6 +67,7 @@ namespace WorldPackets
             bool UseNPE           = false;
             bool HardcoreSelfFound = false;
             std::string Name;
+            std::string Surname;    // Classic 1.60
 
             /// Server side data
             uint8 CharCount  = 0;
@@ -223,6 +224,7 @@ namespace WorldPackets
             struct RegionwideCharacterListEntry
             {
                 RegionwideCharacterListEntry(Field const* fields);
+                explicit RegionwideCharacterListEntry(CharacterInfoBasic const& basic) : Basic(basic) { }
 
                 CharacterInfoBasic Basic;
                 uint64 Money = 0;

@@ -55,9 +55,12 @@ WorldPacket const* WorldPackets::Reputation::InitializeFactions::Write()
 
 ByteBuffer& operator<<(ByteBuffer& data, WorldPackets::Reputation::FactionStandingData const& factionStanding)
 {
+    // Classic 1.60 (official sniff 70205): index, change, new standing, 0 ("(70, 50) 2265", then "(70, 50) 2315"); the client
+    // shows the second value as the gain, TC's index/standing/faction made it print the whole standing
     data << int32(factionStanding.Index);
+    data << int32(factionStanding.Change);
     data << int32(factionStanding.Standing);
-    data << int32(factionStanding.FactionID);
+    data << int32(0);
 
     return data;
 }

@@ -573,7 +573,7 @@ SpellEffectValue SpellEffectInfo::CalcValue(WorldObject const* caster /*= nullpt
         if (Scaling.ResourceCoefficient)
             comboDamage = value * Scaling.ResourceCoefficient;
     }
-    else if (GetScalingExpectedStat() == ExpectedStatType::None)
+    else if (GetScalingExpectedStat() == ExpectedStatType::None || UsesClassicFlatBasePoints(caster))
     {
         if (casterUnit && basePointsPerLevel != 0.0)
         {
@@ -659,6 +659,12 @@ SpellEffectValue SpellEffectInfo::CalcValue(WorldObject const* caster /*= nullpt
     return std::clamp(value, MinValue, MaxValue);
 }
 
+// Classic 1.60: spells of players and of what they control (pets, totems, traps) use their base points as flat values
+bool SpellEffectInfo::UsesClassicFlatBasePoints(WorldObject const* caster)
+{
+    return caster && caster->GetAffectingPlayer();
+}
+
 SpellEffectValue SpellEffectInfo::CalcBaseValue(WorldObject const* caster, Unit const* target, uint32 itemId, int32 itemLevel) const
 {
     if (Scaling.Coefficient != 0.0f)
@@ -725,7 +731,10 @@ SpellEffectValue SpellEffectInfo::CalcBaseValue(WorldObject const* caster, Unit 
     {
         float value = BasePoints;
         ExpectedStatType stat = GetScalingExpectedStat();
-        if (stat != ExpectedStatType::None)
+        // Classic 1.60: base points of player spells are flat vanilla values (Fireball rank 1: 18 +-22% = 14..22); only creature
+        // spells are a percentage of the expected stat (Living Storm Shock: 10 -> 16..18 on the official beta). Scaling Scorch made
+        // it hit for 7-8k.
+        if (stat != ExpectedStatType::None && !UsesClassicFlatBasePoints(caster))
         {
             if (_spellInfo->HasAttribute(SPELL_ATTR0_SCALES_WITH_CREATURE_LEVEL))
                 stat = ExpectedStatType::CreatureAutoAttackDps;
@@ -1319,7 +1328,33 @@ std::array<SpellEffectInfo::StaticData, TOTAL_SPELL_EFFECTS> SpellEffectInfo::_d
     {EFFECT_IMPLICIT_TARGET_EXPLICIT, TARGET_OBJECT_TYPE_ITEM}, // 357 SPELL_EFFECT_357
     {EFFECT_IMPLICIT_TARGET_EXPLICIT, TARGET_OBJECT_TYPE_ITEM}, // 358 SPELL_EFFECT_358
     {EFFECT_IMPLICIT_TARGET_EXPLICIT, TARGET_OBJECT_TYPE_ITEM}, // 359 SPELL_EFFECT_359
+    {EFFECT_IMPLICIT_TARGET_EXPLICIT, TARGET_OBJECT_TYPE_ITEM}, // 360 SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY_2
 } };
+
+// Classic 1.60 seal -> judgement (client SpellEffect: seal effect 2 is a dummy whose points are the judgement spell). 20154, the Forever
+// Seal of Righteousness rank 1 without that effect, unleashes Judgement of Righteousness rank 1 like 21084.
+static std::unordered_map<uint32, uint32> const ClassicSealJudgements =
+{
+    { 20154, 20187 }, { 21084, 20187 },                                             // Seal of Righteousness
+    { 20287, 20280 }, { 20288, 20281 }, { 20289, 20282 }, { 20290, 20283 }, { 20291, 20284 }, { 20292, 20285 }, { 20293, 20286 },
+    { 21082, 21183 }, { 20162, 20188 }, { 20305, 20300 }, { 20306, 20301 }, { 20307, 20302 }, { 20308, 20303 }, // Seal of the Crusader
+    { 20164, 20184 },                                                               // Seal of Justice
+    { 20165, 20185 }, { 20347, 20344 }, { 20348, 20345 }, { 20349, 20346 },         // Seal of Light
+    { 20166, 20186 }, { 20356, 20354 }, { 20357, 20355 },                           // Seal of Wisdom
+    { 20375, 20425 }, { 20915, 20962 }, { 20918, 20961 }, { 20919, 20967 }, { 20920, 20968 }, // Seal of Command
+    { 407798, 407803 },                                                             // Seal of Martyrdom
+};
+
+bool IsClassicPaladinSeal(uint32 spellId)
+{
+    return ClassicSealJudgements.contains(spellId);
+}
+
+uint32 GetClassicSealJudgement(uint32 sealSpellId)
+{
+    auto itr = ClassicSealJudgements.find(sealSpellId);
+    return itr != ClassicSealJudgements.end() ? itr->second : 0;
+}
 
 SpellInfo::SpellInfo(SpellNameEntry const* spellName, ::Difficulty difficulty, SpellInfoLoadHelper const& data)
     : Id(spellName->ID), Difficulty(difficulty)
@@ -2718,6 +2753,10 @@ void SpellInfo::_LoadAuraState()
 {
     _auraState = [this]()->AuraStateType
     {
+        // Classic 1.60: an active seal is what Judgement (20271, CasterAuraState 5) needs
+        if (IsClassicPaladinSeal(Id))
+            return AURA_STATE_MARKED;
+
         // Faerie Fire (Feral)
         if (GetCategory() == 1133)
             return AURA_STATE_FAERIE_FIRE;
@@ -2807,6 +2846,9 @@ void SpellInfo::_LoadSpellSpecific()
 {
     _spellSpecific = [this]()->SpellSpecificType
     {
+        if (IsClassicPaladinSeal(Id))
+            return SPELL_SPECIFIC_SEAL;
+
         switch (SpellFamilyName)
         {
             case SPELLFAMILY_GENERIC:
@@ -5001,6 +5043,7 @@ bool _isPositiveEffectImpl(SpellInfo const* spellInfo, SpellEffectInfo const& ef
                     case SpellModOp::Period:
                     case SpellModOp::PowerCostOnMiss:
                     case SpellModOp::StartCooldown:
+                    case SpellModOp::ProcCooldown:          // Classic 1.60 Moonkin Form (24858): -50% proc cooldown
                         if (bp > 0)
                             return false;
                         break;

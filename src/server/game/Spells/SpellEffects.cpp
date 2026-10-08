@@ -16,6 +16,7 @@
  */
 
 #include "Spell.h"
+#include "BotQuestLog.h"
 #include "AccountMgr.h"
 #include "AreaTrigger.h"
 #include "AzeriteEmpoweredItem.h"
@@ -449,6 +450,7 @@ NonDefaultConstructible<SpellEffectHandlerFn> SpellEffectHandlers[TOTAL_SPELL_EF
     &Spell::EffectNULL,                                     //357 SPELL_EFFECT_357
     &Spell::EffectNULL,                                     //358 SPELL_EFFECT_358
     &Spell::EffectNULL,                                     //359 SPELL_EFFECT_359
+    &Spell::EffectEnchantItemTmp,                           //360 SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY_2
 };
 
 void Spell::EffectNULL()
@@ -2578,8 +2580,10 @@ void Spell::EffectEnchantItemTmp()
         return;
     }
 
-    // select enchantment duration
+    // select enchantment duration (Classic 1.60 poisons and imbues: from the spell, e.g. 1800 s, the enchant has none)
     uint32 duration = pEnchant->Duration;
+    if (!duration && effectValue > 0)
+        duration = uint32(effectValue);
 
     // item can be in trade slot and have owner diff. from caster
     Player* item_owner = itemTarget->GetOwner();
@@ -3562,6 +3566,23 @@ void Spell::EffectFeedPet()
 
     ExecuteLogEffectDestroyItem(effectInfo->Effect, foodItem->GetEntry());
 
+    // Classic 1.60: food gives hunter pets happiness, the trigger (Feed Pet Effect 1539) adds it every 2 s; vanilla benefit by level
+    if (pet->HasHappiness())
+    {
+        int32 benefit = Pet::GetFoodBenefit(pet->GetLevel(), foodItem->GetTemplate()->GetBaseItemLevel());
+        if (!benefit)
+            return;
+
+        uint32 count = 1;
+        player->DestroyItemCount(foodItem, count, true);
+
+        CastSpellExtraArgs args(TRIGGERED_FULL_MASK);
+        args.SetTriggeringSpell(this);
+        args.AddSpellMod(SPELLVALUE_BASE_POINT0, benefit);
+        m_caster->CastSpell(pet, effectInfo->TriggerSpell, args);
+        return;
+    }
+
     int32 pct;
     int32 levelDiff = int32(pet->GetLevel()) - int32(foodItem->GetTemplate()->GetBaseItemLevel());
     if (levelDiff >= 30)
@@ -3921,11 +3942,9 @@ void Spell::EffectSkinning()
         else
             reqValue = 900;
 
+        // Classic 1.60: many creatures (the Zephras Isle beasts from the sniffs) have no content tuning; they are Classic content
         ContentTuningEntry const* contentTuning = sContentTuningStore.LookupEntry(creature->GetContentTuning());
-        if (!contentTuning)
-            return;
-
-        uint32 skinningSkill = player->GetProfessionSkillForExp(skill, contentTuning->ExpansionID);
+        uint32 skinningSkill = player->GetProfessionSkillForExp(skill, contentTuning ? contentTuning->ExpansionID : 0);
         if (!skinningSkill)
             return;
 
@@ -4526,13 +4545,9 @@ void Spell::EffectTransmitted()
 
             // end time of range when possible catch fish (FISHING_BOBBER_READY_TIME..GetDuration(m_spellInfo))
             // start time == fish-FISHING_BOBBER_READY_TIME (0..GetDuration(m_spellInfo)-FISHING_BOBBER_READY_TIME)
-            int32 lastSec = 0;
-            switch (urand(0, 2))
-            {
-                case 0: lastSec =  3; break;
-                case 1: lastSec =  7; break;
-                case 2: lastSec = 13; break;
-            }
+            // Classic 1.60 (official beta sniff): the fish bites anywhere from a few seconds after the cast to near the end of
+            // the 30 s channel (8-25 s seen), not only at TC's three fixed times (17/23/25 s)
+            int32 lastSec = irand(3, std::max(3, duration / IN_MILLISECONDS - 5));
 
             // Duration of the fishing bobber can't be higher than the Fishing channeling duration
             duration = std::min(duration, duration - lastSec*IN_MILLISECONDS + FISHING_BOBBER_READY_TIME*IN_MILLISECONDS);
@@ -4560,7 +4575,7 @@ void Spell::EffectTransmitted()
 
     go->SetOwnerGUID(unitCaster->GetGUID());
 
-    //go->SetLevel(unitCaster->getLevel());
+    go->SetLevel(unitCaster->GetLevel());           // Classic 1.60: objects placed by players carry the owner's level (official sniff)
     go->SetSpellId(m_spellInfo->Id);
 
     ExecuteLogEffectSummonObject(effectInfo->Effect, go);
@@ -4878,6 +4893,7 @@ void Spell::EffectQuestFail()
     if (!unitTarget || unitTarget->GetTypeId() != TYPEID_PLAYER)
         return;
 
+    BotQuestLog::Scope scope("event_failed");
     unitTarget->ToPlayer()->FailQuest(effectInfo->MiscValue);
 }
 
@@ -5109,6 +5125,14 @@ void Spell::EffectActivateSpec()
         return;
 
     Player* player = unitTarget->ToPlayer();
+
+    // Classic 1.60 dual spec (checked in Spell::CheckCast)
+    if (m_spellInfo->Id == 63644 || m_spellInfo->Id == 63645)
+    {
+        player->ActivateClassicSpecGroup(m_spellInfo->Id == 63644);
+        return;
+    }
+
     uint32 specID = m_misc.SpecializationId;
     ChrSpecializationEntry const* spec = sChrSpecializationStore.AssertEntry(specID);
 

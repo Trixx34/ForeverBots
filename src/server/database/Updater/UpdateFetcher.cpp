@@ -195,6 +195,13 @@ UpdateResult UpdateFetcher::Update(bool const redundancyChecks,
 
     size_t importedUpdates = 0;
 
+    // Classic 1.60 fork: our custom files build on each other (a later file changes rows an earlier one writes, e.g. the sniff
+    // import and the fixes after it). Once a custom file is applied again because it changed, every later custom file is applied
+    // again too, else the earlier file silently undoes their changes (2026-10-05: the skinning fix lost to a re-run sniff import).
+    // All custom files are written to be safe to run again.
+    auto isCustomFile = [](Path const& path) { return path.generic_string().find("/custom/") != std::string::npos; };
+    bool reapplyLaterCustomFiles = false;
+
     for (auto const& availableQuery : available)
     {
         std::string availableQueryFilename = availableQuery.first.filename().string();
@@ -278,6 +285,11 @@ UpdateResult UpdateFetcher::Update(bool const redundancyChecks,
                 TC_LOG_INFO("sql.updates", ">> Reapplying update \"{}\" \'{}\' -> \'{}\' (it changed)...", availableQueryFilename,
                     iter->second.hash.substr(0, 7), hash.substr(0, 7));
             }
+            else if (reapplyLaterCustomFiles && isCustomFile(availableQuery.first))
+            {
+                TC_LOG_INFO("sql.updates", ">> Reapplying update \"{}\" \'{}\' (an earlier custom file was applied again)...",
+                    availableQueryFilename, hash.substr(0, 7));
+            }
             else
             {
                 // If the file wasn't changed and just moved, update its state (if necessary).
@@ -303,6 +315,8 @@ UpdateResult UpdateFetcher::Update(bool const redundancyChecks,
         {
             case MODE_APPLY:
                 speed = Apply(availableQuery.first);
+                if (iter != applied.end() && isCustomFile(availableQuery.first))
+                    reapplyLaterCustomFiles = true;
                 [[fallthrough]];
             case MODE_REHASH:
                 UpdateEntry(file, speed);

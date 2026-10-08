@@ -5568,7 +5568,17 @@ void AuraEffect::HandlePeriodicTriggerSpellAuraTick(Unit* target, Unit* caster) 
     {
         if (Unit* triggerCaster = triggeredSpellInfo->NeedsToBeTriggeredByCaster(m_spellInfo) ? caster : target)
         {
-            triggerCaster->CastSpell(target, triggerSpellId, CastSpellExtraArgsInit{
+            // Classic 1.60: the aura of a channel sits on the caster while the triggered spell needs an enemy target (Arcane
+            // Missiles 5143 -> 7268 with TARGET_UNIT_TARGET_ENEMY, older data had the channel target): aim it at the channel's
+            // target, otherwise every missile is cast at the caster, fails and ends the channel after the first tick
+            Unit* triggerTarget = target;
+            if (target == caster && m_spellInfo->IsChanneled() && triggeredSpellInfo->NeedsExplicitUnitTarget())
+                if (Spell const* channel = caster->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+                    if (channel->GetSpellInfo()->Id == m_spellInfo->Id)
+                        if (Unit* channelTarget = channel->m_targets.GetUnitTarget())
+                            triggerTarget = channelTarget;
+
+            triggerCaster->CastSpell(triggerTarget, triggerSpellId, CastSpellExtraArgsInit{
                 .TriggerFlags = TRIGGERED_FULL_MASK & ~(TRIGGERED_IGNORE_POWER_COST | TRIGGERED_IGNORE_REAGENT_COST),
                 .TriggeringAura = this
             });

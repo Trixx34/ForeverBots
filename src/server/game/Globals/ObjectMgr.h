@@ -629,6 +629,7 @@ typedef std::vector<PlayerCreateInfoItem> PlayerCreateInfoItems;
 struct PlayerLevelInfo
 {
     int32 stats[MAX_STATS] = { };
+    uint32 baseHealth = 0;      // Classic 1.60 (vanilla): base health of the class at this level, stamina adds on top
 };
 
 typedef std::vector<uint32> PlayerCreateInfoSpells;
@@ -1042,6 +1043,9 @@ class TC_GAME_API ObjectMgr
         CreatureModelInfo const* GetCreatureModelInfo(uint32 modelId) const;
         CreatureModelInfo const* GetCreatureModelRandomGender(CreatureModel* model, CreatureTemplate const* creatureTemplate) const;
         CreatureSummonedData const* GetCreatureSummonedData(uint32 entryId) const;
+        std::pair<uint8, uint8> const* GetCreatureClassicLevel(uint32 entry) const;
+        void LoadItemClassicBlock();
+        uint32 GetItemClassicBlock(uint32 entry) const;
         static CreatureModel const* ChooseDisplayId(CreatureTemplate const* cinfo, CreatureData const* data = nullptr);
         static void ChooseCreatureFlags(CreatureTemplate const* cInfo, uint64* npcFlags, uint32* unitFlags, uint32* unitFlags2, uint32* unitFlags3, CreatureStaticFlagsHolder const& staticFlags, CreatureData const* data = nullptr);
         EquipmentInfo const* GetEquipmentInfo(uint32 entry, int8& id) const;
@@ -1217,6 +1221,7 @@ class TC_GAME_API ObjectMgr
         void LoadCreatureClassLevelStats();
         void LoadCreatureLocales();
         void LoadCreatureTemplates();
+        void LoadCreatureClassicLevels();
         void LoadCreatureTemplateAddons();
         void LoadCreatureTemplateSparring();
         void LoadCreatureTemplate(Field* fields);
@@ -1548,7 +1553,16 @@ class TC_GAME_API ObjectMgr
         Trainer::Trainer const* GetTrainer(uint32 trainerId) const;
         uint32 GetCreatureDefaultTrainer(uint32 creatureId) const
         {
-            return GetCreatureTrainerForGossipOption(creatureId, 0, 0);
+            if (uint32 trainerId = GetCreatureTrainerForGossipOption(creatureId, 0, 0))
+                return trainerId;
+
+            // Classic 1.60: the client opens trainers without gossip (CMSG_TRAINER_LIST) also for creatures whose only
+            // creature_trainer row is tied to a gossip option (sniffed trainers): use that trainer
+            auto itr = _creatureDefaultTrainers.lower_bound(std::make_tuple(creatureId, 0u, 0u));
+            if (itr != _creatureDefaultTrainers.end() && std::get<0>(itr->first) == creatureId)
+                return itr->second;
+
+            return 0;
         }
         uint32 GetCreatureTrainerForGossipOption(uint32 creatureId, uint32 gossipMenuId, uint32 gossipOptionId) const;
 
@@ -1806,6 +1820,8 @@ class TC_GAME_API ObjectMgr
         MapPersonalObjectGuids _mapPersonalObjectGuidsStore;
         CreatureDataContainer _creatureDataStore;
         CreatureTemplateContainer _creatureTemplateStore;
+        std::unordered_map<uint32, std::pair<uint8, uint8>> _creatureClassicLevelStore;
+        std::unordered_map<uint32, uint32> _itemClassicBlockStore;
         CreatureModelContainer _creatureModelStore;
         std::unordered_map<uint32, CreatureSummonedData> _creatureSummonedDataStore;
         CreatureAddonContainer _creatureAddonStore;

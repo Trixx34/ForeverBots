@@ -141,6 +141,14 @@ void WorldSession::SendLfgPlayerLockInfo()
 {
     TC_LOG_DEBUG("lfg", "SMSG_LFG_PLAYER_INFO {}", GetPlayerInfo());
 
+    // Classic 1.60 has no Dungeon Finder: send the lists empty. Once the Forever LFGDungeons rows got their TypeID (calendar
+    // hotfix 2026_10_01_01) the retail-format dungeon/lock entries crashed the client's LFG code at login.
+    {
+        WorldPackets::LFG::LfgPlayerInfo emptyInfo;
+        SendPacket(emptyInfo.Write());
+        return;
+    }
+
     // Get Random dungeons that can be done at a certain level and expansion
     uint8 level = GetPlayer()->GetLevel();
     std::span<uint32 const> contentTuningReplacementConditionMask = GetPlayer()->m_playerData->CtrOptions->ConditionalFlags;
@@ -205,6 +213,13 @@ void WorldSession::SendLfgPartyLockInfo()
     Group* group = GetPlayer()->GetGroup();
     if (!group)
         return;
+
+    // Classic 1.60 has no Dungeon Finder: no lock entries (see SendLfgPlayerLockInfo)
+    {
+        WorldPackets::LFG::LfgPartyInfo emptyInfo;
+        SendPacket(emptyInfo.Write());
+        return;
+    }
 
     WorldPackets::LFG::LfgPartyInfo lfgPartyInfo;
 

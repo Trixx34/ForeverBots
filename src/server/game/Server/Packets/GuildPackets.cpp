@@ -16,6 +16,7 @@
  */
 
 #include "GuildPackets.h"
+#include "CharacterCache.h"
 #include "PacketOperators.h"
 
 namespace WorldPackets::Guild
@@ -42,6 +43,7 @@ WorldPacket const* QueryGuildInfoResponse::Write()
         _worldPacket << uint32(Info->BorderStyle);
         _worldPacket << uint32(Info->BorderColor);
         _worldPacket << uint32(Info->BackgroundColor);
+        _worldPacket << int32(0);   // Classic 1.60 (reader rva 0xA235E0 in 70058): a sixth emblem int32 before the ranks
         for (GuildInfo::GuildInfoRank const& rank : Info->Ranks)
         {
             _worldPacket << uint32(rank.RankID);
@@ -92,13 +94,17 @@ ByteBuffer& operator<<(ByteBuffer& data, GuildRosterMemberData const& rosterMemb
     data << uint8(rosterMemberData.RaceID);
     data << int32(rosterMemberData.TimerunningSeasonID);
 
+    // Classic 1.60 (member reader rva 0x8F5C10 in 70058): the surname (9 bit length) follows the name
+    std::string const surname = sCharacterCache->GetCharacterSurnameByGuid(rosterMemberData.Guid);
     data << SizedString::BitsSize<6>(rosterMemberData.Name);
+    data << SizedString::BitsSize<9>(surname);
     data << SizedString::BitsSize<8>(rosterMemberData.Note);
     data << SizedString::BitsSize<8>(rosterMemberData.OfficerNote);
     data << Bits<1>(rosterMemberData.Authenticated);
     data.FlushBits();
 
     data << SizedString::Data(rosterMemberData.Name);
+    data << SizedString::Data(surname);
     data << SizedString::Data(rosterMemberData.Note);
     data << SizedString::Data(rosterMemberData.OfficerNote);
 
@@ -210,14 +216,18 @@ WorldPacket const* GuildEventStatusChange::Write()
 
 WorldPacket const* GuildEventPresenceChange::Write()
 {
+    // Classic 1.60 (client reader rva 0x8F90C0 in 70058): name (6 bit length) and surname (9 bit length), no Mobile bit
+    std::string const surname = sCharacterCache->GetCharacterSurnameByGuid(Guid);
     _worldPacket << Guid;
     _worldPacket << uint32(VirtualRealmAddress);
 
     _worldPacket << SizedString::BitsSize<6>(Name);
+    _worldPacket << SizedString::BitsSize<9>(surname);
     _worldPacket << Bits<1>(LoggedOn);
     _worldPacket.FlushBits();
 
     _worldPacket << SizedString::Data(Name);
+    _worldPacket << SizedString::Data(surname);
 
     return &_worldPacket;
 }
@@ -234,13 +244,17 @@ WorldPacket const* GuildEventMotd::Write()
 
 WorldPacket const* GuildEventPlayerJoined::Write()
 {
+    // Classic 1.60 (guild switch case 0x31): name (6 bit length) and surname (9 bit length)
+    std::string const surname = sCharacterCache->GetCharacterSurnameByGuid(Guid);
     _worldPacket << Guid;
     _worldPacket << uint32(VirtualRealmAddress);
 
     _worldPacket << SizedString::BitsSize<6>(Name);
+    _worldPacket << SizedString::BitsSize<9>(surname);
     _worldPacket.FlushBits();
 
     _worldPacket << SizedString::Data(Name);
+    _worldPacket << SizedString::Data(surname);
 
     return &_worldPacket;
 }

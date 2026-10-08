@@ -445,7 +445,7 @@ WorldPacket const* EnableBarberShop::Write()
 
 ByteBuffer& operator<<(ByteBuffer& data, PhaseShiftDataPhase const& phaseShiftDataPhase)
 {
-    data << uint32(phaseShiftDataPhase.PhaseFlags);
+    data << uint8(phaseShiftDataPhase.PhaseFlags);              // Classic 1.60: 1 byte (official sniff 70205: "01 6d 74" = flags 1, phase 29805)
     data << uint16(phaseShiftDataPhase.Id);
 
     return data;

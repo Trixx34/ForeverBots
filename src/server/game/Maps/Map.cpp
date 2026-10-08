@@ -1737,6 +1737,28 @@ float Map::GetStaticHeight(PhaseShift const& phaseShift, float x, float y, float
     return m_terrain->GetStaticHeight(phaseShift, GetId(), x, y, z, checkVMap, maxSearchDist);
 }
 
+// Classic 1.60.1.70009: spawns imported from client recordings have no height (the client API reports z = 0).
+// Walk down through every surface at x,y (tree canopies, roofs, upper floors) and keep the lowest one that is not below the terrain
+float Map::GetClassicSpawnHeight(PhaseShift const& phaseShift, float x, float y)
+{
+    float const terrain = GetGridHeight(phaseShift, x, y);
+    float best = INVALID_HEIGHT;
+    float start = 3000.0f;
+    for (uint32 i = 0; i < 64; ++i)
+    {
+        float z = GetHeight(phaseShift, x, y, start, true, 5000.0f);
+        if (z <= INVALID_HEIGHT || z >= start)
+            break;
+
+        if (terrain > INVALID_HEIGHT && z < terrain - 1.0f)
+            break; // caves / tunnels below the ground
+
+        best = z;
+        start = z - 2.5f;
+    }
+    return best;
+}
+
 float Map::GetWaterLevel(PhaseShift const& phaseShift, float x, float y)
 {
     return m_terrain->GetWaterLevel(phaseShift, GetId(), x, y);

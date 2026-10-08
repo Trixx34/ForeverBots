@@ -66,6 +66,22 @@ void WorldSession::HandleSplitItemOpcode(WorldPackets::Item::SplitItem& splitIte
     _player->SplitItem(src, dst, splitItem.Quantity);
 }
 
+// Classic 1.60: the ammo "slot" only names the arrows or bullets to shoot (ActivePlayerData AmmoID); the ammo stays in the bags
+void WorldSession::HandleSetAmmo(WorldPackets::Null& packet)
+{
+    WorldPacket data(*packet.GetRawPacket());
+    data.rpos(4);   // skip the opcode
+    if (data.size() < 8)
+        return;
+
+    uint32 itemId = data.read<uint32>();
+    bool ok = _player->SetAmmo(itemId);
+    ItemTemplate const* proto = itemId ? sObjectMgr->GetItemTemplate(itemId) : nullptr;
+    TC_LOG_DEBUG("network", "HandleSetAmmo: {} ammo {} -> {} (template {}, class {}, in bags {}, can use {}, ammo now {})", _player->GetName(), itemId,
+        ok ? "set" : "refused", proto != nullptr, proto ? proto->GetClass() : 0, itemId && _player->HasItemCount(itemId),
+        proto ? uint32(_player->CanUseItem(proto)) : 0, _player->GetAmmoId());
+}
+
 void WorldSession::HandleSwapInvItemOpcode(WorldPackets::Item::SwapInvItem& swapInvItem)
 {
     if (swapInvItem.Inv.Items.size() != 2)

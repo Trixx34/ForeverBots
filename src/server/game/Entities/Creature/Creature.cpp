@@ -669,7 +669,11 @@ bool Creature::UpdateEntry(uint32 entry, CreatureData const* data /*= nullptr*/,
     // checked and error show at loading templates
     if (FactionTemplateEntry const* factionTemplate = sFactionTemplateStore.LookupEntry(cInfo->faction))
     {
-        SetPvP((factionTemplate->Flags & FACTION_TEMPLATE_FLAG_PVP) != 0);
+        // Classic 1.60: the client refuses spells on PvP-flagged units while the player is not flagged, so monster factions
+        // (e.g. Defias, 17) that carry FACTION_TEMPLATE_FLAG_PVP could only be meleed; like vanilla, only Alliance / Horde
+        // aligned NPCs (guards) are PvP flagged
+        SetPvP((factionTemplate->Flags & FACTION_TEMPLATE_FLAG_PVP) != 0
+            && (factionTemplate->FactionGroup & (FACTION_MASK_ALLIANCE | FACTION_MASK_HORDE)) != 0);
         if (IsTaxi())
         {
             uint32 taxiNodesId = sObjectMgr->GetNearestTaxiNode(GetPositionX(), GetPositionY(), GetPositionZ(), GetMapId(),
@@ -1347,7 +1351,7 @@ bool Creature::isCanInteractWithBattleMaster(Player* player, bool msg) const
 
 bool Creature::CanResetTalents(Player* player) const
 {
-    return player->GetLevel() >= 15
+    return player->GetLevel() >= 10                 // Classic 1.60: vanilla talents start at level 10 (retail: 15)
         && player->GetClass() == GetCreatureTemplate()->trainer_class;
 }
 
@@ -1647,8 +1651,11 @@ void Creature::UpdateLevelDependantStats()
     // damage
     float basedamage = GetBaseDamageForLevel(level);
 
-    float weaponBaseMinDamage = basedamage;
-    float weaponBaseMaxDamage = basedamage * 1.5f;
+    // Classic 1.60 (vanilla): the client's ExpectedStat CreatureAutoAttackDps is the whole average damage per second (x 2 s =
+    // VMaNGOS melee_damage at every level); hits vary by 14% around it (VMaNGOS damage_variance). Retail: dps to 1.5 x dps,
+    // plus attack power on top.
+    float weaponBaseMinDamage = basedamage * 0.86f;
+    float weaponBaseMaxDamage = basedamage * 1.14f;
 
     SetBaseWeaponDamage(BASE_ATTACK, MINDAMAGE, weaponBaseMinDamage);
     SetBaseWeaponDamage(BASE_ATTACK, MAXDAMAGE, weaponBaseMaxDamage);
@@ -1893,6 +1900,15 @@ bool Creature::LoadFromDB(ObjectGuid::LowType spawnId, Map* map, bool addToMap, 
     }
 
     m_spawnId = spawnId;
+
+    // Classic 1.60.1.70009: spawns imported from client recordings have no height (position_z = -15000);
+    // take the ground (terrain + vmaps) below the spot once and keep it in the spawn data (also used for respawns)
+    if (data->spawnPoint.GetPositionZ() <= -14999.0f)
+    {
+        float z = map->GetClassicSpawnHeight(PhaseShift(), data->spawnPoint.GetPositionX(), data->spawnPoint.GetPositionY());
+        if (z > INVALID_HEIGHT)
+            const_cast<CreatureData*>(data)->spawnPoint.m_positionZ = z + 0.1f;
+    }
 
     m_respawnCompatibilityMode = ((data->spawnGroupData->flags & SPAWNGROUP_FLAG_COMPATIBILITY_MODE) != 0);
     m_creatureData = data;
@@ -3121,6 +3137,16 @@ bool Creature::HasScalableLevels() const
 
 void Creature::ApplyLevelScaling()
 {
+    // Classic 1.60.1.70009: vanilla creatures have a fixed level range instead of ContentTuning scaling
+    if (std::pair<uint8, uint8> const* classicLevel = sObjectMgr->GetCreatureClassicLevel(GetEntry()))
+    {
+        uint8 level = uint8(urand(classicLevel->first, classicLevel->second));
+        SetUpdateFieldValue(m_values.ModifyValue(&Unit::m_unitData).ModifyValue(&UF::UnitData::ScalingLevelMin), level);
+        SetUpdateFieldValue(m_values.ModifyValue(&Unit::m_unitData).ModifyValue(&UF::UnitData::ScalingLevelMax), level);
+        SetUpdateFieldValue(m_values.ModifyValue(&Unit::m_unitData).ModifyValue(&UF::UnitData::ScalingLevelDelta), 0);
+        return;
+    }
+
     CreatureDifficulty const* creatureDifficulty = GetCreatureDifficulty();
 
     int32 contentTuningId = creatureDifficulty->ContentTuningID;

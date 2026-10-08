@@ -55,6 +55,7 @@ struct FactionState
     RepListID ReputationListID;
     int32 Standing;
     int32 VisualStandingIncrease;
+    int32 ClassicStandingChange = 0;                        // Classic 1.60: SMSG_SET_FACTION_STANDING carries the change
     EnumFlag<ReputationFlags> Flags = ReputationFlags::None;
     bool needSend;
     bool needSave;
@@ -146,6 +147,9 @@ class TC_GAME_API ReputationMgr
     public:                                                 // senders
         void SendInitialReputations();
         void SendState(FactionState const* faction);
+
+        // Classic 1.60: the other side's faction of a pair (Windshapers / High Order): hidden and at war by default for this race
+        bool IsOtherSideFaction(FactionEntry const* factionEntry) const;
 
     private:                                                // internal helper functions
         void Initialize();

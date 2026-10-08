@@ -1316,7 +1316,7 @@ struct TransmogOutfitMetadata : public IsUpdateFieldStructureTag
     bool operator!=(TransmogOutfitMetadata const& right) const { return !(*this == right); }
 };
 
-struct ActivePlayerData : public IsUpdateFieldStructureTag, public HasChangesMask<398>
+struct ActivePlayerData : public IsUpdateFieldStructureTag, public HasChangesMask<401>
 {
     UpdateField<bool, 0, 1> BackpackAutoSortDisabled;
     UpdateField<bool, 0, 2> BackpackSellJunkDisabled;
@@ -1473,21 +1473,21 @@ struct ActivePlayerData : public IsUpdateFieldStructureTag, public HasChangesMas
     OptionalUpdateField<UF::ChallengeModeData, 134, 160> ChallengeModeData;
     UpdateField<UF::TransmogOutfitData, 134, 161> ViewedOutfit;
     UpdateField<UF::TransmogOutfitMetadata, 134, 162> TransmogMetadata;
-    UpdateFieldArray<ObjectGuid, 105, 163, 164> InvSlots;
-    UpdateFieldArray<UF::RestInfo, 2, 269, 270> RestInfo;
-    UpdateFieldArray<int32, 7, 272, 273> ModDamageDonePos;
-    UpdateFieldArray<int32, 7, 272, 280> ModDamageDoneNeg;
-    UpdateFieldArray<float, 7, 272, 287> ModDamageDonePercent;
-    UpdateFieldArray<float, 7, 272, 294> ModHealingDonePercent;
-    UpdateFieldArray<float, 3, 301, 302> WeaponDmgMultipliers;
-    UpdateFieldArray<float, 3, 301, 305> WeaponAtkSpeedMultipliers;
-    UpdateFieldArray<uint32, 12, 308, 309> BuybackPrice;
-    UpdateFieldArray<int64, 12, 308, 321> BuybackTimestamp;
-    UpdateFieldArray<int32, 32, 333, 334> CombatRatings;
-    UpdateFieldArray<uint32, 4, 366, 367> NoReagentCostMask;
-    UpdateFieldArray<int32, 2, 371, 372> ProfessionSkillLine;
-    UpdateFieldArray<uint32, 5, 374, 375> BagSlotFlags;
-    UpdateFieldArray<float, 17, 380, 381> ItemUpgradeHighWatermark;
+    UpdateFieldArray<ObjectGuid, 108, 163, 164> InvSlots;     // Classic 1.60: 108 used (client has 145), bits after it +3
+    UpdateFieldArray<UF::RestInfo, 2, 272, 273> RestInfo;
+    UpdateFieldArray<int32, 7, 275, 276> ModDamageDonePos;
+    UpdateFieldArray<int32, 7, 275, 283> ModDamageDoneNeg;
+    UpdateFieldArray<float, 7, 275, 290> ModDamageDonePercent;
+    UpdateFieldArray<float, 7, 275, 297> ModHealingDonePercent;
+    UpdateFieldArray<float, 3, 304, 305> WeaponDmgMultipliers;
+    UpdateFieldArray<float, 3, 304, 308> WeaponAtkSpeedMultipliers;
+    UpdateFieldArray<uint32, 12, 311, 312> BuybackPrice;
+    UpdateFieldArray<int64, 12, 311, 324> BuybackTimestamp;
+    UpdateFieldArray<int32, 32, 336, 337> CombatRatings;
+    UpdateFieldArray<uint32, 4, 369, 370> NoReagentCostMask;
+    UpdateFieldArray<int32, 2, 374, 375> ProfessionSkillLine;
+    UpdateFieldArray<uint32, 5, 377, 378> BagSlotFlags;
+    UpdateFieldArray<float, 17, 383, 384> ItemUpgradeHighWatermark;
 
     using OwnerObject = Player;
     void WriteCreate(EnumFlag<UpdateFieldFlag> fieldVisibilityFlags, ByteBuffer& data, Player const* receiver, Player const* owner) const;

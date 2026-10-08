@@ -1055,9 +1055,11 @@ uint32 DB2Manager::LoadStores(std::string const& dataPath, LocaleConstant defaul
     // error checks
 
     // Check loaded DB2 files proper version
+    // Classic 1.60.x client: bank tab bags are retail-only items and do not exist in its ItemSparse.db2,
+    // so report them as a warning instead of a fatal error (buying a bank tab just fails with ITEM_NOT_FOUND)
     for (uint32 criticalItemId : { ITEM_ACCOUNT_BANK_TAB_BAG, ITEM_CHARACTER_BANK_TAB_BAG })
         if (!sItemSparseStore.LookupEntry(criticalItemId))
-            loadErrors.emplace_back(Trinity::StringFormat("Missing required item {} from ItemSparse.db2 (or its hotfix table)", criticalItemId));
+            TC_LOG_WARN("server.loading", "Missing item {} from ItemSparse.db2 (or its hotfix table) - retail-only item, ignored for Classic client", criticalItemId);
 
     if (!loadErrors.empty())
     {
@@ -1260,6 +1262,37 @@ void DB2Manager::IndexLoadedStores()
                         data.Displays[i] = Trinity::Containers::MapGetValuePtr(displayInfoByCustomizationChoice, (*data.Choices)[i]->ID);
                 }
             }
+        }
+    }
+
+    // Classic 1.60: the druid form appearances are options of their own form models (ChrModel 189 bear, 190 cat, 191 aquatic,
+    // 192 travel, 194 moonkin), not of the race models; the race comes from each choice's requirement (Skyborne druids: req 4906)
+    for (std::pair<uint32 const, std::pair<uint32, uint8>> const& shapeshiftOption : shapeshiftFormByModel)
+    {
+        std::vector<ChrCustomizationChoiceEntry const*> const* choices = Trinity::Containers::MapGetValuePtr(_chrCustomizationChoicesByOption, shapeshiftOption.second.first);
+        if (!choices)
+            continue;
+
+        for (std::pair<std::pair<uint8, uint8> const, ChrModelEntry const*> const& raceModel : _chrModelsByRaceAndGender)
+        {
+            std::tuple<uint8, uint8, uint8> key{ raceModel.first.first, raceModel.first.second, shapeshiftOption.second.second };
+            if (_chrCustomizationChoicesForShapeshifts.contains(key))
+                continue;
+
+            bool forRace = std::ranges::any_of(*choices, [race = raceModel.first.first](ChrCustomizationChoiceEntry const* choice)
+            {
+                ChrCustomizationReqEntry const* req = sChrCustomizationReqStore.LookupEntry(choice->ChrCustomizationReqID);
+                return req && !req->RaceMask.IsEmpty() && req->RaceMask != RACEMASK_ALL_v<int32, 2> && req->RaceMask.HasRace(race);
+            });
+            if (!forRace)
+                continue;
+
+            ShapeshiftFormModelData& data = _chrCustomizationChoicesForShapeshifts[key];
+            data.OptionID = shapeshiftOption.second.first;
+            data.Choices = choices;
+            data.Displays.resize(choices->size());
+            for (std::size_t i = 0; i < choices->size(); ++i)
+                data.Displays[i] = Trinity::Containers::MapGetValuePtr(displayInfoByCustomizationChoice, (*choices)[i]->ID);
         }
     }
 
@@ -1488,8 +1521,13 @@ void DB2Manager::IndexLoadedStores()
 
     for (PowerTypeEntry const* powerType : sPowerTypeStore)
     {
-        ASSERT(powerType->PowerTypeEnum < MAX_POWERS);
-        ASSERT(!_powerTypes[powerType->PowerTypeEnum]);
+        // Classic (1.60+) client data has power types retail does not know about
+        if (powerType->PowerTypeEnum < 0 || powerType->PowerTypeEnum >= MAX_POWERS || _powerTypes[powerType->PowerTypeEnum])
+        {
+            TC_LOG_ERROR("misc", "PowerType.db2: skipping ID {} (PowerTypeEnum {}, NameGlobalStringTag '{}') - unknown or duplicate power type",
+                powerType->ID, int32(powerType->PowerTypeEnum), powerType->NameGlobalStringTag);
+            continue;
+        }
 
         _powerTypes[powerType->PowerTypeEnum] = powerType;
     }
@@ -1711,11 +1749,9 @@ void DB2Manager::IndexLoadedStores()
         if (node->GetFlags().HasFlag(TaxiNodeFlags::ShowOnAllianceMap))
             sAllianceTaxiNodesMask[field] |= submask;
 
-        uint32 uiMapId = uint32(-1);
-        if (!GetUiMapPosition(node->Pos.X, node->Pos.Y, node->Pos.Z, node->ContinentID, 0, 0, 0, UI_MAP_SYSTEM_ADVENTURE, false, &uiMapId))
-            GetUiMapPosition(node->Pos.X, node->Pos.Y, node->Pos.Z, node->ContinentID, 0, 0, 0, UI_MAP_SYSTEM_TAXI, false, &uiMapId);
-
-        if (uiMapId == 985 || uiMapId == 986)
+        // Classic 1.60: the old continents are simply Eastern Kingdoms (map 0) and Kalimdor (map 1); retail looked them up by the
+        // Cataclysm world map ids 985/986, which the Classic UiMap data does not use (the mask stayed empty)
+        if (node->ContinentID == 0 || node->ContinentID == 1)
             sOldContinentsNodesMask[field] |= submask;
     }
 
@@ -1956,7 +1992,11 @@ std::vector<DB2Manager::HotfixOptionalData> const* DB2Manager::GetHotfixOptional
 
 uint32 DB2Manager::GetEmptyAnimStateID() const
 {
-    return sAnimationDataStore.GetNumRows();
+    // "no state animation" = one past the last AnimationData row OF THE CLIENT. Classic 1.60.1.70170 expects 1866 (official beta
+    // sniff: every gameobject create carries 1866); our extracted DB2s are older (1806), and the client then plays animation 1806 as
+    // a state: fishing bobbers never splash, NPC/object animations break. Remove when the DB2s are re-extracted from 70170 or newer.
+    static constexpr uint32 CLASSIC_EMPTY_ANIM_STATE_ID = 1866;
+    return std::max<uint32>(sAnimationDataStore.GetNumRows(), CLASSIC_EMPTY_ANIM_STATE_ID);
 }
 
 void DB2Manager::InsertNewHotfix(uint32 tableHash, uint32 recordId)
@@ -2181,7 +2221,15 @@ ChrSpecializationEntry const* DB2Manager::GetChrSpecializationByIndex(uint32 cla
 
 ChrSpecializationEntry const* DB2Manager::GetDefaultChrSpecializationForClass(uint32 class_) const
 {
-    return GetChrSpecializationByIndex(class_, INITIAL_SPECIALIZATION_INDEX);
+    if (ChrSpecializationEntry const* initialSpec = GetChrSpecializationByIndex(class_, INITIAL_SPECIALIZATION_INDEX))
+        return initialSpec;
+
+    // Classic 1.60 data has no "initial" (index 4) specializations, fall back to the first specialization of the class
+    for (uint32 i = 0; i < MAX_SPECIALIZATIONS; ++i)
+        if (ChrSpecializationEntry const* spec = GetChrSpecializationByIndex(class_, i))
+            return spec;
+
+    return nullptr;
 }
 
 uint32 DB2Manager::GetRedirectedContentTuningId(uint32 contentTuningId, std::span<uint32 const> redirectFlag) const
@@ -2783,7 +2831,7 @@ MapDifficultyEntry const* DB2Manager::GetDownscaledMapDifficultyData(uint32 mapI
     {
         mapDiff = GetMapDifficultyData(mapId, currentDifficulty);
         DifficultyEntry const* difficultyEntry = sDifficultyStore.LookupEntry(currentDifficulty);
-        if (!currentDifficulty)
+        if (!currentDifficulty || !difficultyEntry) // Classic 1.60 data lacks some retail difficulties
             break;
 
         currentDifficulty = Difficulty(difficultyEntry->FallbackDifficultyID);

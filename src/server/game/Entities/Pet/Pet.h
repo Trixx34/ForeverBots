@@ -86,6 +86,18 @@ class TC_GAME_API Pet final : public Guardian
         void SetPetNextLevelExperience(uint32 xp) { SetUpdateFieldValue(m_values.ModifyValue(&Unit::m_unitData).ModifyValue(&UF::UnitData::PetNextLevelExperience), xp); }
         void SynchronizeLevelWithOwner();
         bool HaveInDiet(ItemTemplate const* item) const;
+
+        // Classic 1.60 hunter pet happiness (POWER_HAPPINESS, 0..1000000): vanilla rules
+        enum HappinessState : uint8 { UNHAPPY = 1, CONTENT = 2, HAPPY = 3 };
+        static constexpr int32 HAPPINESS_MAX = 1000000;
+        static constexpr int32 HAPPINESS_TAMED = 166500;         // a freshly tamed beast is unhappy until fed
+        static constexpr int32 HAPPINESS_LOSS = 670;             // every 7.5 s, twice that in combat
+        static constexpr uint32 HAPPINESS_LOSS_INTERVAL = 7500;
+        bool HasHappiness() const { return getPetType() == HUNTER_PET; }
+        HappinessState GetHappinessState() const;
+        float GetHappinessDamageMod() const;                    // unhappy 75%, content 100%, happy 125%
+        static int32 GetFoodBenefit(uint8 petLevel, uint32 foodLevel); // happiness per Feed Pet tick, 0 = too low level
+
         void SetDuration(int32 dur) { m_duration = dur; }
         int32 GetDuration() const { return m_duration; }
 
@@ -152,6 +164,7 @@ class TC_GAME_API Pet final : public Guardian
         int32   m_duration;                                 // time until unsummon (used mostly for summoned guardians and not used for controlled pets)
         bool    m_loading;
         uint32  m_focusRegenTimer;
+        uint32  m_happinessTimer = HAPPINESS_LOSS_INTERVAL;
         uint32  m_groupUpdateMask;
 
         std::unique_ptr<DeclinedName> m_declinedname;

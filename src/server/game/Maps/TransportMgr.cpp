@@ -225,6 +225,13 @@ void TransportMgr::LoadTransportTemplates()
         if (!goInfo->moTransport.taxiPathID)
             continue;
 
+        // retail world DB transports may use taxi paths that have no nodes in Classic (1.60+) client data
+        if (sTaxiPathNodesByPath[goInfo->moTransport.taxiPathID].empty())
+        {
+            TC_LOG_ERROR("sql.sql", "Transport {} (name: {}) uses taxi path {} which has no nodes in TaxiPathNode.db2, skipped.", entry, goInfo->name, goInfo->moTransport.taxiPathID);
+            continue;
+        }
+
         // paths are generated per template, saves us from generating it again in case of instanced transports
         TransportTemplate& transport = _transportTemplates[entry];
 

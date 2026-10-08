@@ -26,9 +26,40 @@
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/read_until.hpp>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <thread>
 
+namespace
+{
+    std::mutex OpenSessionsLock;
+    std::set<RASession*> OpenSessions;
+}
+
 void RASession::Start()
+{
+    {
+        std::lock_guard<std::mutex> lock(OpenSessionsLock);
+        OpenSessions.insert(this);
+    }
+
+    Run();
+
+    std::lock_guard<std::mutex> lock(OpenSessionsLock);
+    OpenSessions.erase(this);
+}
+
+void RASession::CloseAll()
+{
+    std::lock_guard<std::mutex> lock(OpenSessionsLock);
+    for (RASession* session : OpenSessions)
+    {
+        boost::system::error_code error;
+        session->_socket.shutdown(boost::asio::socket_base::shutdown_both, error);
+    }
+}
+
+void RASession::Run()
 {
     _socket.non_blocking(false);
 

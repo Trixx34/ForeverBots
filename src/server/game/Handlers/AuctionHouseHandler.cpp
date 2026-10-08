@@ -363,12 +363,6 @@ void WorldSession::HandleAuctionPlaceBid(WorldPackets::AuctionHouse::AuctionPlac
         return;
     }
 
-    // auction house does not deal with copper
-    if (placeBid.BidAmount % SILVER)
-    {
-        SendAuctionCommandResult(placeBid.AuctionID, AuctionCommand::PlaceBid, AuctionResult::BidIncrement, throttle.DelayUntilNext);
-        return;
-    }
 
     // remove fake death
     if (GetPlayer()->HasUnitState(UNIT_STATE_DIED))
@@ -617,12 +611,6 @@ void WorldSession::HandleAuctionSellCommodity(WorldPackets::AuctionHouse::Auctio
         return;
     }
 
-    // auction house does not deal with copper
-    if (sellCommodity.UnitPrice % SILVER)
-    {
-        SendAuctionCommandResult(0, AuctionCommand::SellItem, AuctionResult::DatabaseError, throttle.DelayUntilNext);
-        return;
-    }
 
     Creature* creature = GetPlayer()->GetNPCIfCanInteractWith(sellCommodity.Auctioneer, UNIT_NPC_FLAG_AUCTIONEER, UNIT_NPC_FLAG_2_NONE);
     if (!creature)
@@ -641,9 +629,9 @@ void WorldSession::HandleAuctionSellCommodity(WorldPackets::AuctionHouse::Auctio
 
     switch (sellCommodity.RunTime)
     {
-        case 1 * MIN_AUCTION_TIME / MINUTE:
-        case 2 * MIN_AUCTION_TIME / MINUTE:
+        case 1 * MIN_AUCTION_TIME / MINUTE:     // Classic 1.60: 2, 8 and 24 hours
         case 4 * MIN_AUCTION_TIME / MINUTE:
+        case 12 * MIN_AUCTION_TIME / MINUTE:
             break;
         default:
             SendAuctionCommandResult(0, AuctionCommand::SellItem, AuctionResult::AuctionHouseBusy, throttle.DelayUntilNext);
@@ -841,12 +829,6 @@ void WorldSession::HandleAuctionSellItem(WorldPackets::AuctionHouse::AuctionSell
         return;
     }
 
-    // auction house does not deal with copper
-    if (sellItem.MinBid % SILVER || sellItem.BuyoutPrice % SILVER)
-    {
-        SendAuctionCommandResult(0, AuctionCommand::SellItem, AuctionResult::DatabaseError, throttle.DelayUntilNext);
-        return;
-    }
 
     Creature* creature = GetPlayer()->GetNPCIfCanInteractWith(sellItem.Auctioneer, UNIT_NPC_FLAG_AUCTIONEER, UNIT_NPC_FLAG_2_NONE);
     if (!creature)
@@ -865,9 +847,9 @@ void WorldSession::HandleAuctionSellItem(WorldPackets::AuctionHouse::AuctionSell
 
     switch (sellItem.RunTime)
     {
-        case 1 * MIN_AUCTION_TIME / MINUTE:
-        case 2 * MIN_AUCTION_TIME / MINUTE:
+        case 1 * MIN_AUCTION_TIME / MINUTE:     // Classic 1.60: 2, 8 and 24 hours
         case 4 * MIN_AUCTION_TIME / MINUTE:
+        case 12 * MIN_AUCTION_TIME / MINUTE:
             break;
         default:
             SendAuctionCommandResult(0, AuctionCommand::SellItem, AuctionResult::AuctionHouseBusy, throttle.DelayUntilNext);

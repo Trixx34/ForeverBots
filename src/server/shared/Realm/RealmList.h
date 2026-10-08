@@ -67,6 +67,13 @@ public:
     std::shared_ptr<Realm const> GetCurrentRealm() const;
 
     std::vector<std::string> GetSubRegions() const;
+    Optional<Battlenet::RealmHandle> GetFirstRealmId() const;
+    // Classic (1.60+) rulesets: realm serving a season (Cfg_SuperDistrict.ContentSetID), and the season/ruleset of this worldserver's realm
+    Optional<Battlenet::RealmHandle> GetRealmIdForContentSet(uint32 contentSetId) const;
+    uint32 GetCurrentRealmContentSet() const;
+    uint32 GetCurrentRealmSuperDistrict() const;
+    // JSONSuperDistrictList entries for the rulesets that have a realm (all of them if none is configured)
+    std::string GetClassicSuperDistrictListEntries() const;
     std::string GetRealmEntryJSON(Battlenet::RealmHandle const& id, uint32 build, AccountTypes accountSecurityLevel) const;
     std::vector<uint8> GetRealmList(uint32 build, AccountTypes accountSecurityLevel, std::string const& subRegion) const;
     RealmJoinResult JoinRealm(uint32 realmAddress, uint32 build, ClientBuild::VariantId const& buildVariant, boost::asio::ip::address const& clientAddress,

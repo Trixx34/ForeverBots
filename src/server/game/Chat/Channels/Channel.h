@@ -181,6 +181,7 @@ class TC_GAME_API Channel
         bool CheckPassword(std::string const& password) const { return _channelPassword.empty() || (_channelPassword == password); }
 
         uint32 GetNumPlayers() const { return uint32(_playersStore.size()); }
+        bool HasMember(ObjectGuid const& guid) const { return IsOn(guid); }
 
         uint8 GetFlags() const { return _channelFlags; }
         bool HasFlag(uint8 flag) const { return (_channelFlags & flag) != 0; }
@@ -213,6 +214,7 @@ class TC_GAME_API Channel
         void List(Player const* player) const;
         void Announce(Player const* player);
         void Say(ObjectGuid const& guid, std::string const& what, uint32 lang) const;
+        void SayAs(std::string const& senderName, std::string const& what) const;     // not a player: the Discord bot (DiscordChannel)
         void AddonSay(ObjectGuid const& guid, std::string const& prefix, std::string const& what, bool isLogged) const;
         void DeclineInvite(Player const* player);
         void Invite(Player const* player, std::string const& newp);

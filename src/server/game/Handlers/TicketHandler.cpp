@@ -18,6 +18,7 @@
 #include "WorldSession.h"
 #include "Common.h"
 #include "DatabaseEnv.h"
+#include "GameTime.h"
 #include "SupportMgr.h"
 #include "TicketPackets.h"
 
@@ -35,6 +36,11 @@ void WorldSession::HandleGMTicketSystemStatusOpcode(WorldPackets::Ticket::GMTick
     WorldPackets::Ticket::GMTicketSystemStatus response;
     response.Status = sSupportMgr->GetSupportSystemStatus() ? GMTICKET_QUEUE_STATUS_ENABLED : GMTICKET_QUEUE_STATUS_DISABLED;
     SendPacket(response.Write());
+
+    // Classic 1.60: sent when the Help window opens, which then loads our support site without a token in the URL. A token issued now
+    // tells the site which session (account, character) opened it, also when several accounts play from one address.
+    time_t now = GameTime::GetGameTime();
+    CreateSsoToken(now, now + SsoTokenDuration);
 }
 
 void WorldSession::HandleSubmitUserFeedback(WorldPackets::Ticket::SubmitUserFeedback& userFeedback)

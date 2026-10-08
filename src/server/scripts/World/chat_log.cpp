@@ -127,16 +127,18 @@ class ChatLogScript : public PlayerScript
                              channel->HasFlag(CHANNEL_FLAG_CITY) ||
                              channel->HasFlag(CHANNEL_FLAG_LFG));
 
+            // (A) / (H) after the name: the Discord bot (contrib/discord_bot) shows which faction is talking
+            char const* faction = player->GetTeam() == ALLIANCE ? "A" : "H";
             if (isSystem)
             {
-                TC_LOG_CHAT("system", "Player {} tells channel {}: {}",
-                    player->GetName(), channel->GetName(), msg);
+                TC_LOG_CHAT("system", "Player {} ({}) tells channel {}: {}",
+                    player->GetName(), faction, channel->GetName(), msg);
             }
             else
             {
                 std::string channelName = channel ? channel->GetName() : "<unknown>";
-                TC_LOG_CHAT("channel." + channelName, "Player {} tells channel {}: {}",
-                    player->GetName(), channelName, msg);
+                TC_LOG_CHAT("channel." + channelName, "Player {} ({}) tells channel {}: {}",
+                    player->GetName(), faction, channelName, msg);
             }
         }
 };

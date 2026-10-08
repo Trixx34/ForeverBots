@@ -188,7 +188,13 @@ void BaseEntity::BuildValuesUpdateBlockForPlayer(UpdateData* data, Player const*
 
 inline void BaseEntity::BuildEntityFragments(ByteBuffer& data, std::span<WowCS::EntityFragment const> fragments)
 {
-    data.append(fragments.data(), fragments.size());
+    // Classic 1.60.1.70009: every non-tag fragment id is retail + 1 (client fragment registry at rva 0x80146D0:
+    // registered 3, 18, 20-24, 28, 31-35, 38 = retail 2, 17, 19-23, 27, 30-34, 37), tag ids (200+) are unchanged
+    for (WowCS::EntityFragment fragment : fragments)
+    {
+        uint8 id = uint8(fragment);
+        data << uint8(id < uint8(WowCS::EntityFragment::Tag_Item) ? id + 1 : id);
+    }
     data << uint8(WowCS::EntityFragment::End);
 }
 

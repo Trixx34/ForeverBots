@@ -71,7 +71,7 @@ void CharacterCache::LoadCharacterCacheStorage()
     _characterCacheStore.clear();
     uint32 oldMSTime = getMSTime();
 
-    QueryResult result = CharacterDatabase.Query("SELECT guid, name, account, race, gender, class, level, deleteDate FROM characters");
+    QueryResult result = CharacterDatabase.Query("SELECT guid, name, account, race, gender, class, level, deleteDate, surname FROM characters");
     if (!result)
     {
         TC_LOG_INFO("server.loading", "No character name data loaded, empty query");
@@ -83,6 +83,7 @@ void CharacterCache::LoadCharacterCacheStorage()
         Field* fields = result->Fetch();
         AddCharacterCacheEntry(ObjectGuid::Create<HighGuid::Player>(fields[0].GetUInt64()) /*guid*/, fields[2].GetUInt32() /*account*/, fields[1].GetString() /*name*/,
             fields[4].GetUInt8() /*gender*/, fields[3].GetUInt8() /*race*/, fields[5].GetUInt8() /*class*/, fields[6].GetUInt8() /*level*/, fields[7].GetUInt32() != 0);
+        _characterCacheStore[ObjectGuid::Create<HighGuid::Player>(fields[0].GetUInt64())].Surname = fields[8].GetString();
     } while (result->NextRow());
 
     TC_LOG_INFO("server.loading", "Loaded character infos for {} characters in {} ms", _characterCacheStore.size(), GetMSTimeDiffToNow(oldMSTime));
@@ -109,6 +110,19 @@ void CharacterCache::AddCharacterCacheEntry(ObjectGuid const& guid, uint32 accou
     // Fill Name to Guid Store
     if (!isDeleted)
         _characterCacheByNameStore[name] = &data;
+}
+
+void CharacterCache::UpdateCharacterSurname(ObjectGuid const& guid, std::string const& surname)
+{
+    auto itr = _characterCacheStore.find(guid);
+    if (itr != _characterCacheStore.end())
+        itr->second.Surname = surname;
+}
+
+std::string CharacterCache::GetCharacterSurnameByGuid(ObjectGuid guid) const
+{
+    auto itr = _characterCacheStore.find(guid);
+    return itr != _characterCacheStore.end() ? itr->second.Surname : std::string();
 }
 
 void CharacterCache::DeleteCharacterCacheEntry(ObjectGuid const& guid, std::string const& name)

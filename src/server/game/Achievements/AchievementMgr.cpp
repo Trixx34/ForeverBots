@@ -496,6 +496,10 @@ void PlayerAchievementMgr::CompletedAchievement(AchievementEntry const* achievem
 
     sScriptMgr->OnAchievementCompleted(referencePlayer, achievement);
 
+    // Classic 1.60: Legacy challenges are achievements; their Legacy Points raise the Legacy reward track renown
+    if (!_owner->GetSession()->PlayerLoading())
+        _owner->UpdateClassicLegacyUnlock();
+
     // reward items and titles if any
     AchievementReward const* reward = sAchievementMgr->GetAchievementReward(achievement);
 

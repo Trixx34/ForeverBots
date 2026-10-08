@@ -1,5 +1,67 @@
 # ![logo](https://community.trinitycore.org/public/style_images/1_trinitycore.png) TrinityCore (master)
 
+## This fork: WoW Classic beta 1.60.1.70245 ("Forever")
+
+Branch `forever` runs TrinityCore master against the **WoW Classic beta client 1.60.1.70245** (`_classic_beta_\WowB.exe`)
+with a vanilla world (converted from VMaNGOS) and the Skyborne / Zephras Isle content.
+
+**Just want to play?** Use the Windows repack from the releases: extract, run `Setup.bat`, start the servers in the
+Forever Launcher, press Play. No MySQL or compiling needed.
+
+### Building from source
+
+Build the core as usual (see [Install](#install)), then:
+
+**1. Databases.** Use TrinityCore's normal auto-setup with `TDB_full_world_1210.26091_2026_09_09.sql` and
+`TDB_full_hotfixes_1210.26091_2026_09_09.sql` in the worldserver folder. worldserver then applies all updates and
+`sql/custom` files itself (`Updates.EnableDatabases = 15`); nothing else is needed. The vanilla world converted from
+VMaNGOS ships as plain SQL (`sql/custom/world/2026_09_27_00_world_forever_baseline_*.sql`, about 65 MB, so the first
+start takes a few minutes). The result is identical to the released database.
+
+Already have a database from an older version (including one built with `vmangos_world`)? Just pull and start
+worldserver: it applies the new files on top, and `vmangos_world` can be dropped afterwards.
+
+**2. Config.** The Classic client needs these (everything else can stay default):
+
+`worldserver.conf`
+```
+RealmID = 70                                  # the Classic client only accepts realm 70 (the auth SQL renames realm 1)
+Expansion = 0
+Network.SkipBuildAuthKeyCheck = 1
+Network.EnterEncryptedModeRegionGroup = 8
+```
+`bnetserver.conf`
+```
+Realm.CfgContentSetID = 137
+LoginREST.ExternalAddress = trinity.actual.battle.net
+LoginREST.LocalAddress = trinity.actual.battle.net
+CertificatesFile = "./<your cert chain>.pem"  # certificate for trinity.actual.battle.net, see below
+PrivateKeyFile = "./<your key>.pem"
+```
+If worldserver stops right after `Realm running as realm ID 1`, `RealmID` is not 70.
+
+**Game data (maps, vmaps, mmaps).** Run the tools built from this branch in the **World of Warcraft** folder (the one that
+holds `.build.info` and `_classic_beta_`). The Forever client is the CASC product **`wow_classic_beta`**; this branch's
+extractors use it by default (TrinityCore's own default `wow` = retail fails with "Error opening casc storage / No locales
+detected"; on older builds of the tools pass `-p wow_classic_beta`):
+```
+mapextractor
+vmap4extractor
+mkdir vmaps
+vmap4assembler Buildings vmaps
+mmaps_generator
+```
+Then move `dbc`, `gt`, `maps`, `vmaps` and `mmaps` into the worldserver's `DataDir`.
+
+**3. Login.** The client logs in to `trinity.actual.battle.net` over TLS, so on the client PC:
+
+- hosts file: `127.0.0.1 trinity.actual.battle.net` (or your server's IP)
+- a certificate for `trinity.actual.battle.net` signed by a root CA that the client PC trusts. Create your **own** CA
+  (restrict it with `nameConstraints = critical,permitted;DNS:actual.battle.net`) and never share its private key.
+  The repack's `setup\Setup.ps1` shows the exact openssl commands.
+- start the client with the [Forever Launcher](https://github.com/advocaite/foreverlauncher-releases), which sets the portal and
+  the server's public key.
+
 [![Average time to resolve an issue](https://isitmaintained.com/badge/resolution/TrinityCore/TrinityCore.svg)](https://isitmaintained.com/project/TrinityCore/TrinityCore "Average time to resolve an issue") [![Percentage of issues still open](https://isitmaintained.com/badge/open/TrinityCore/TrinityCore.svg)](https://isitmaintained.com/project/TrinityCore/TrinityCore "Percentage of issues still open")
 
 --------------

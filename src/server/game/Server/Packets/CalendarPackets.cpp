@@ -102,6 +102,7 @@ ByteBuffer& operator>>(ByteBuffer& buffer, CalendarAddEventInviteInfo& invite)
     buffer >> OptionalInit(invite.BnetAccountID);
     buffer >> OptionalInit(invite.RealmAddress);
     buffer >> OptionalInit(invite.CommunityID);
+    buffer.ResetBitPos();   // Classic 1.60 (writer rva 0x8A8490 in 70058) flushes the bits of each invite
 
     if (invite.BnetAccountID)
         buffer >> *invite.BnetAccountID;

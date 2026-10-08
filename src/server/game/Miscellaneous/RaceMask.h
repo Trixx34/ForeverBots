@@ -83,6 +83,8 @@ enum Races
     //RACE_ROSTRUM_AIRSHIP_SEASON_2   = 90,
     RACE_HARANIR_HORDE                = 91, // TITLE Haranir DESCRIPTION Haranir (Horde) (RaceMask bit 19)
     //RACE_ROSTRUM_AIRSHIP_SEASON_3   = 92,
+    RACE_SKYBORNE_ALLIANCE            = 95, // TITLE Skyborne DESCRIPTION High Order Skyborne (Alliance, Classic 1.60) (RaceMask bit 32)
+    RACE_SKYBORNE_HORDE               = 96, // TITLE Skyborne DESCRIPTION Windshaper Skyborne (Horde, Classic 1.60) (RaceMask bit 33)
 };
 
 namespace Trinity
@@ -140,6 +142,10 @@ struct RaceMask
                 return 19;
             case RACE_HARANIR_ALLIANCE:
                 return 20;
+            case RACE_SKYBORNE_ALLIANCE:        // Classic 1.60.1.70009 ChrRaces::PlayableRaceBit
+                return 32;
+            case RACE_SKYBORNE_HORDE:
+                return 33;
             default:
                 break;
         }
@@ -263,7 +269,9 @@ inline constexpr Trinity::RaceMask<T, N> RACEMASK_ALL_PLAYABLE_v =
     Trinity::RaceMask<T, N>::GetMaskForRace(RACE_EARTHEN_DWARF_HORDE)     |
     Trinity::RaceMask<T, N>::GetMaskForRace(RACE_EARTHEN_DWARF_ALLIANCE)  |
     Trinity::RaceMask<T, N>::GetMaskForRace(RACE_HARANIR_ALLIANCE)        |
-    Trinity::RaceMask<T, N>::GetMaskForRace(RACE_HARANIR_HORDE);
+    Trinity::RaceMask<T, N>::GetMaskForRace(RACE_HARANIR_HORDE)           |
+    Trinity::RaceMask<T, N>::GetMaskForRace(RACE_SKYBORNE_ALLIANCE)       |
+    Trinity::RaceMask<T, N>::GetMaskForRace(RACE_SKYBORNE_HORDE);
 
 template <typename T, size_t N = 1>
 inline constexpr Trinity::RaceMask<T, N> RACEMASK_NEUTRAL_v = Trinity::RaceMask<T, N>::GetMaskForRace(RACE_PANDAREN_NEUTRAL);
@@ -284,7 +292,8 @@ inline constexpr Trinity::RaceMask<T, N> RACEMASK_ALLIANCE_v =
     Trinity::RaceMask<T, N>::GetMaskForRace(RACE_MECHAGNOME)              |
     Trinity::RaceMask<T, N>::GetMaskForRace(RACE_DRACTHYR_ALLIANCE)       |
     Trinity::RaceMask<T, N>::GetMaskForRace(RACE_EARTHEN_DWARF_ALLIANCE)  |
-    Trinity::RaceMask<T, N>::GetMaskForRace(RACE_HARANIR_ALLIANCE);
+    Trinity::RaceMask<T, N>::GetMaskForRace(RACE_HARANIR_ALLIANCE)        |
+    Trinity::RaceMask<T, N>::GetMaskForRace(RACE_SKYBORNE_ALLIANCE);
 
 template <typename T, size_t N = 1>
 inline constexpr Trinity::RaceMask<T, N> RACEMASK_HORDE_v = RACEMASK_ALL_PLAYABLE_v<T, N> & ~(RACEMASK_NEUTRAL_v<T, N> | RACEMASK_ALLIANCE_v<T, N>);

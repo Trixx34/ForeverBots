@@ -757,6 +757,8 @@ enum RBACPermissions
     // IF YOU ADD NEW PERMISSIONS, ADD THEM IN 3.3.5 BRANCH AS WELL!
     //
     // custom permissions 1000+
+    RBAC_PERM_COMMAND_BOT                                    = 1000, // see docs/playerbots/, sql/custom/auth/2026_10_05_00_auth_rbac_bot.sql
+    RBAC_PERM_COMMAND_BOT_ALT                                = 1001, // `.bot alt`, granted to players too: sql/custom/auth/2026_10_06_00_auth_rbac_bot_alt.sql
     RBAC_PERM_MAX
 };
 

@@ -36,10 +36,15 @@ public:
 
     void Start();
 
+    // Sessions read their socket with blocking calls on a network thread, so an open session (e.g. a launcher console)
+    // would keep the shutdown waiting for that thread: shut their sockets down first
+    static void CloseAll();
+
     boost::asio::ip::address GetRemoteIpAddress() const { return _socket.remote_endpoint().address(); }
     uint16 GetRemotePort() const { return _socket.remote_endpoint().port(); }
 
 private:
+    void Run();
     int Send(std::string_view data);
     std::string ReadString();
     bool CheckAccessLevel(const std::string& user);

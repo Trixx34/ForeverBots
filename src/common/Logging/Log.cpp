@@ -26,6 +26,7 @@
 #include "Strand.h"
 #include "StringConvert.h"
 #include "Util.h"
+#include <filesystem>
 
 Log::Log() : AppenderId(0), lowestLogLevel(LOG_LEVEL_FATAL), m_logsTimestamp('_' + GetTimestampStr()), _ioContext(nullptr), _strand(nullptr)
 {
@@ -395,8 +396,14 @@ void Log::LoadFromConfig()
     AppenderId = 0;
     m_logsDir = sConfigMgr->GetStringDefault("LogsDir", "");
     if (!m_logsDir.empty())
+    {
         if ((m_logsDir.at(m_logsDir.length() - 1) != '/') && (m_logsDir.at(m_logsDir.length() - 1) != '\\'))
             m_logsDir.push_back('/');
+
+        // a missing logs folder (e.g. a zip without empty folders) silently disabled every file appender
+        std::error_code ec;
+        std::filesystem::create_directories(m_logsDir, ec);
+    }
 
     ReadAppendersFromConfig();
     ReadLoggersFromConfig();

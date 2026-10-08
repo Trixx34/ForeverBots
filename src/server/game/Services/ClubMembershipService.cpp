@@ -32,8 +32,9 @@ uint32 ClubMembershipService::HandleSubscribe(club_membership::v1::client::Subsc
 {
     Player const* player = _session->GetPlayer();
 
+    TC_LOG_INFO("network.rpc", "{} ClubMembershipService.Subscribe (in world: {})", _session->GetPlayerInfo(), player != nullptr);
     if (!player)
-        return ERROR_INTERNAL;
+        return ERROR_INTERNAL;  // Classic 1.60: answering OK here made every login disconnect (2026-09-30)
 
     Guild const* guild = player->GetGuild();
 
