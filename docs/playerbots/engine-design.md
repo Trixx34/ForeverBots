@@ -201,6 +201,14 @@ With 1, rows whose type is in `Bot.Log.HotTypes` (default decision,state_change,
 LOG_DROPPED. Turn it on only after the console and analyst queries read `bot_event_all`. It is ignored with a warning when the table does not exist. State changes of the engine
 stay queryable for 5 days; deaths, quests, xp, combat summaries stay 14 days.
 
+### Summary rows (`Bot.Log.Summary.Enabled`, default 0)
+High-volume events (types `Bot.Log.Summary.Types`, default cast,aura,trace; reason prefixes `Bot.Log.Summary.Reasons`, default GOTO_, QUEST_WALK_, QUEST_PULL, FOLLOW_) are counted in memory and written as one `bot_event_rollup`
+row per window (`Bot.Log.Summary.WindowSec`, 60) and key (bot, type, reason, severity, spell text for cast/aura, map, zone, quest, target): `n`, `first_ts`, `last_ts`, `level`, and the summary/details of the first
+event as a sample. Rows at or above `Bot.Log.Summary.KeepSeverity` (2) and reasons with a `Bot.Log.Summary.Keep` prefix (DUNGEON_, TRAVEL_, DUMMY_, COMBAT_, BOT_, LOG_, CORPSE_, SPIRIT_, WATCHDOG_, PARTY_, BANK_, MAIL_)
+stay detailed. Counts, per-bot/zone/quest/reason breakdowns and time series stay exact; per-event timing inside a window and per-event details beyond the first sample do not. Count queries use the view
+`bot_event_counts_all` (rollup + detailed rows). Needs `forever-botlog-migrate-2.sql`; ignored with a warning when the table is missing. Rollup rows are kept 30 days (`botlog_rollup_prune_daily`).
+Add the reason prefix of every new rare event to `Bot.Log.Summary.Keep` if its prefix would otherwise match a summarized one.
+
 ### Writer behaviour (BotMgr)
 - `LogEvent`/`LogPosition` are non-blocking (mutex + vector push). The world thread flushes in `Update` every `BotLog.FlushIntervalMs`: one async transaction per flush (positions + events), at most 16 in flight.
 - Buffers are capped (`Bot.Log.BufferMax` 200000 events, `Bot.Log.PosBufferMax` 100000). Over the cap rows are dropped and counted; one error is logged at the first drop and a `log_dropped` event is written when the

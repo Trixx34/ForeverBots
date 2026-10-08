@@ -44,6 +44,7 @@
 #        Values:      whole number 1 or more
 # BotLogDatabase.SynchThreads = 1
 
+
 #
 #    BotLog.MinSeverity
 #        Description: Lowest severity written to the log: 0 trace, 1 info, 2 warn, 3 error. Category floors
@@ -65,6 +66,7 @@ BotLog.FlushIntervalMs = 1000
 #        Default:     500
 #        Values:      whole number 1 or more (events)
 BotLog.MaxBatch = 500
+
 
 ###################################################################################################
 # BOT LOG: WHAT IS LOGGED
@@ -219,10 +221,92 @@ Bot.Log.HotSplit = 0
 #        Values:      comma list of bot_event types, case does not matter
 Bot.Log.HotTypes = "decision,state_change,trace,cast,aura"
 
+
+###################################################################################################
+# BOT LOG: SUMMARY ROWS
+#
+# Faster writing of high-volume events. With the summary on, events such as casts, auras and
+# walking decisions are counted in memory and written as ONE row per bot, event type, reason,
+# severity, spell text (cast and aura), map, zone, quest and target in each time window, into the
+# table bot_event_rollup, instead of one bot_event row per event. The row holds the number of
+# events, the first and last time, the level, and the summary and details of the first event as a
+# sample, so counts per bot, zone, quest, reason and time stay exact. Rare or important events
+# stay detailed: everything at or above Bot.Log.Summary.KeepSeverity and every reason with a
+# prefix in Bot.Log.Summary.Keep. Needs the table from forever-botlog-migrate-2.sql (also in
+# forever-botlog-setup.sql); the view bot_event_counts_all lists summary and detailed rows
+# together for count queries. All settings are read once at startup.
+#
+###################################################################################################
+
+#
+#    Bot.Log.Summary.Enabled
+#        Description: Write the events selected below as summary rows. Ignored with a warning (events stay
+#                     detailed) when the bot_event_rollup table does not exist in the bot log database.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Log.Summary.Enabled = 0
+
+#
+#    Bot.Log.Summary.WindowSec
+#        Description: Length of one summary window. A window is written once it is over (and at shutdown); a
+#                     longer window means fewer rows and a longer wait before the counts are in the database.
+#        Default:     60
+#        Values:      whole number 10 to 3600 (seconds)
+Bot.Log.Summary.WindowSec = 60
+
+#
+#    Bot.Log.Summary.KeepSeverity
+#        Description: Events at or above this severity are never summarized: 0 trace, 1 info, 2 warn, 3 error; 4 =
+#                     no exception by severity.
+#        Default:     2
+#        Values:      whole number 0 to 4 (severity)
+Bot.Log.Summary.KeepSeverity = 2
+
+#
+#    Bot.Log.Summary.Types
+#        Description: Event types that are summarized.
+#        Default:     "cast,aura,trace"
+#        Values:      comma list of event types (bot_event.event_type), case does not matter; empty = none
+Bot.Log.Summary.Types = "cast,aura,trace"
+
+#
+#    Bot.Log.Summary.Reasons
+#        Description: Reason code prefixes that are summarized whatever the event type (for example the walking
+#                     decisions).
+#        Default:     "GOTO_,QUEST_WALK_,QUEST_PULL,FOLLOW_"
+#        Values:      comma list of reason code prefixes (bot_event.reason), case does not matter; empty = none
+Bot.Log.Summary.Reasons = "GOTO_,QUEST_WALK_,QUEST_PULL,FOLLOW_"
+
+#
+#    Bot.Log.Summary.Keep
+#        Description: Reason code prefixes that always stay detailed rows, even when their type or prefix is
+#                     listed above. Add the prefix of every new rare event here.
+#        Default:     "DUNGEON_,TRAVEL_,DUMMY_,COMBAT_,BOT_,LOG_,CORPSE_,SPIRIT_,WATCHDOG_,PARTY_,BANK_,MAIL_"
+#        Values:      comma list of reason code prefixes, case does not matter; empty = none
+Bot.Log.Summary.Keep = "DUNGEON_,TRAVEL_,DUMMY_,COMBAT_,BOT_,LOG_,CORPSE_,SPIRIT_,WATCHDOG_,PARTY_,BANK_,MAIL_"
+
+#
+#    Bot.Log.Summary.KeyBySummary
+#        Description: Event types whose summary text (up to 64 characters) is part of the summary key, so there is
+#                     one row per spell instead of one per type.
+#        Default:     "cast,aura"
+#        Values:      comma list of event types; empty = none
+Bot.Log.Summary.KeyBySummary = "cast,aura"
+
+#
+#    Bot.Log.Summary.MaxKeys
+#        Description: Most summary rows held in memory at once. Over the cap an event is written as a detailed row
+#                     instead of being counted.
+#        Default:     100000
+#        Values:      whole number 1000 to 50000000 (rows)
+Bot.Log.Summary.MaxKeys = 100000
+
+
 ###################################################################################################
 # BOT SUBSYSTEM AND POPULATION
 #
 ###################################################################################################
+
 
 #
 #    Bot.Enabled
@@ -323,6 +407,7 @@ Bot.Population.StartDelaySec = 60
 #        Example:     "40,40,40,40,40,50,60,80,100"
 Bot.Population.HourPct = ""
 
+
 ###################################################################################################
 # BOT AI ENGINE
 #
@@ -392,6 +477,7 @@ Bot.AI.Default.Combat = "combat"
 #        Default:     "recover"
 #        Values:      comma list of strategy names
 Bot.AI.Default.Dead = "recover"
+
 
 ###################################################################################################
 # COMBAT, FLEEING AND AGGRO AVOIDANCE
@@ -626,6 +712,7 @@ Bot.AI.Combat.HealBelowPct = 45
 #        Values:      whole number 30 to 100 (percent)
 Bot.AI.Combat.CasterRangePct = 80
 
+
 ###################################################################################################
 # RESTING, DEATH AND RECOVERY
 #
@@ -712,6 +799,7 @@ Bot.AI.Death.CorpseRunMaxFails = 3
 #        Default:     300
 #        Values:      whole number 0 to 3600 (seconds, 0 = no time cap)
 Bot.AI.Death.GiveUpSec = 300
+
 
 ###################################################################################################
 # QUESTING
@@ -838,6 +926,7 @@ Bot.Quest.DeathLoopBreaker = 0
 #        Values:      0 (off) or 1 (on)
 Bot.Quest.DeferQuest8 = 0
 
+
 ###################################################################################################
 # AUCTION HOUSE
 #
@@ -879,6 +968,7 @@ Bot.AH.UndercutPct = 5
 #        Default:     900
 #        Values:      whole number 0 or more (seconds)
 Bot.AH.VisitCooldownSec = 900
+
 
 ###################################################################################################
 # PETS, CONSUMABLES, WATCHDOG
@@ -1041,6 +1131,7 @@ Bot.AI.Watchdog.MoveYards = 10
 #        Values:      whole number 0 to 120 (recoveries)
 Bot.AI.Watchdog.MaxPerHour = 6
 
+
 ###################################################################################################
 # GROUP LOOT ROLLS
 #
@@ -1062,6 +1153,7 @@ Bot.Loot.Roll.Enabled = 0
 #        Default:     1
 #        Values:      0 (off) or 1 (on)
 Bot.Loot.Roll.GreedOnOther = 1
+
 
 ###################################################################################################
 # NATURAL MOVEMENT
@@ -1147,6 +1239,7 @@ Bot.AI.Move.Natural.Metrics = 1
 #        Default:     60
 #        Values:      whole number 10 to 3600 (seconds)
 Bot.AI.Move.Natural.MetricsSec = 60
+
 
 ###################################################################################################
 # DUNGEON GROUPS
@@ -1328,6 +1421,7 @@ Bot.AI.Dungeon.PackLinkYards = 14
 #        Values:      whole number 2 to 12 (mobs)
 Bot.AI.Dungeon.PackMaxMobs = 6
 
+
 ###################################################################################################
 # AMMO AND TRAVEL
 #
@@ -1446,6 +1540,7 @@ Bot.AI.Travel.LeaveMarginLevels = 0
 #        Values:      whole number 50 to 5000 (yards)
 Bot.AI.Travel.DiscoverRadius = 500
 
+
 ###################################################################################################
 # TALENTS, ROTATIONS AND GROUP ROLES
 #
@@ -1549,6 +1644,7 @@ Bot.AI.Roles.TankHealBelowPct = 90
 #        Values:      whole number 5 to 90 (percent)
 Bot.AI.Roles.EmergencyPct = 35
 
+
 ###################################################################################################
 # TRAINING DUMMY
 #
@@ -1594,6 +1690,7 @@ Bot.AI.Dummy.MaxSec = 600
 #        Default:     1
 #        Values:      0 (off) or 1 (on)
 Bot.AI.Dummy.FullPower = 1
+
 
 ###################################################################################################
 # CHEST LOOT
@@ -1677,6 +1774,7 @@ Bot.AI.Loot.Safety.QuarantineStrikes = 3
 #        Default:     1200
 #        Values:      whole number 60 to 86400 (seconds)
 Bot.AI.Loot.Safety.QuarantineSec = 1200
+
 
 ###################################################################################################
 # CHAT COMMANDS
@@ -1792,6 +1890,7 @@ Bot.Chat.Orders.ReviveHealthPct = 35
 #        Default:     1
 #        Values:      0 (off) or 1 (on)
 Bot.Chat.Orders.ReviveSickness = 1
+
 
 ###################################################################################################
 # ALTS, INVITES AND TRADING
