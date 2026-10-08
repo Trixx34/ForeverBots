@@ -34,6 +34,7 @@
 #include "DB2Stores.h"
 #include "DB2Structure.h"
 #include "DatabaseEnv.h"
+#include "GameObject.h"
 #include "Item.h"
 #include "ItemTemplate.h"
 #include "Log.h"
@@ -139,6 +140,15 @@ struct Hub
     std::vector<StarterRef> Refs;
 };
 
+// a spawned game object (chest-type loot source for quest items)
+struct GoPt
+{
+    Pt P;
+    uint64 SpawnId;
+    uint32 RespawnSec;
+    uint32 Entry;
+};
+
 struct GrindPt
 {
     float X, Y, Z;
@@ -174,7 +184,8 @@ struct Index
     std::unordered_map<uint32, std::vector<Pt>> Spawns;            // creature entry -> spawn points (only quest-relevant entries)
     std::unordered_map<uint32, std::vector<uint32>> CreditSrc;     // kill credit entry -> creature entries that grant it
     std::unordered_map<uint32, std::vector<uint32>> ItemSrc;       // quest item -> creature entries that drop it (QuestRequired rows)
-    std::unordered_set<uint32> ItemGoSrc;                          // quest items dropped by game objects only (unsupported in v1)
+    std::unordered_map<uint32, std::vector<uint32>> ItemGoSrc;     // quest item -> chest game object entries that hold it (QuestRequired rows)
+    std::unordered_map<uint32, std::vector<GoPt>> GoSpawns;        // game object entry -> spawns (only the entries in ItemGoSrc; own id space, never mixed with Spawns)
     std::unordered_map<uint64, std::vector<StarterRef>> Grid;      // (map, cell) -> starters with at least one spawn
     std::unordered_map<uint32, std::vector<uint32>> StartsBy;      // creature entry -> quests it starts
     std::unordered_map<uint32, std::vector<uint32>> EndsBy;        // creature entry -> quests it ends
@@ -187,7 +198,7 @@ struct Index
     std::vector<SvcPt> Vendors;
     std::unordered_map<uint32, std::vector<BagOffer>> VendorBags;   // vendor entry -> plain bags it sells for gold
     uint32 NumTrainers = 0, NumBagVendors = 0, MinBagPrice = 0xFFFFFFFFu;
-    uint32 NumStarterQuests = 0, NumStarterPoints = 0, NumSpawnEntries = 0, NumItemSources = 0;
+    uint32 NumStarterQuests = 0, NumStarterPoints = 0, NumSpawnEntries = 0, NumItemSources = 0, NumGoItems = 0, NumGoSpawns = 0;
 } g;
 
 uint64 CellKey(uint32 map, float x, float y)
@@ -221,6 +232,36 @@ bool HasSpawn(uint32 entry)
 {
     auto it = g.Spawns.find(entry);
     return it != g.Spawns.end() && !it->second.empty();
+}
+
+bool HasGoSpawn(uint32 goEntry)
+{
+    auto it = g.GoSpawns.find(goEntry);
+    return it != g.GoSpawns.end() && !it->second.empty();
+}
+
+// game object entries that hold a quest item and have at least one spawn
+void GoEntriesOf(uint32 item, std::vector<uint32>& out)
+{
+    auto it = g.ItemGoSrc.find(item);
+    if (it == g.ItemGoSrc.end())
+        return;
+    for (uint32 e : it->second)
+        if (HasGoSpawn(e))
+            out.push_back(e);
+}
+
+// the quest hands the item over itself (start item, or the ItemDrop list), at least in the amount the objective needs
+bool QuestSuppliesItem(Quest const* q, QuestObjective const& obj)
+{
+    uint32 const item = uint32(obj.ObjectID);
+    uint32 const need = uint32(std::max<int32>(1, obj.Amount));
+    if (q->GetSrcItemId() == item && std::max<uint32>(1, q->GetSrcItemCount()) >= need)
+        return true;
+    for (uint32 i = 0; i < QUEST_ITEM_DROP_COUNT; ++i)
+        if (q->ItemDrop[i] == item && std::max<uint32>(1, q->ItemDropQuantity[i]) >= need)
+            return true;
+    return false;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -312,16 +353,22 @@ Block Analyze(Quest const* q)
             case QUEST_OBJECTIVE_ITEM:
             {
                 auto it = g.ItemSrc.find(uint32(obj.ObjectID));
-                bool any = false;
+                bool any = QuestSuppliesItem(q, obj);   // delivery / report-to quests: the item comes with the quest
                 if (it != g.ItemSrc.end())
                     for (uint32 e : it->second)
                         any = any || HasSpawn(e);
                 if (!any)
                 {
+                    std::vector<uint32> gos;
+                    GoEntriesOf(uint32(obj.ObjectID), gos);
+                    any = !gos.empty();
+                }
+                if (!any)
+                {
                     b.Entry = uint32(obj.ObjectID);
                     if (g.ItemGoSrc.count(uint32(obj.ObjectID)))
                     {
-                        b.Code = "OBJECTIVE_UNSUPPORTED"; b.Info = "item comes from a game object";
+                        b.Code = "OBJECTIVE_UNSUPPORTED"; b.Info = "item comes from a game object without a spawn";
                     }
                     else if (it != g.ItemSrc.end())
                         b.Code = "NO_TARGET_SPAWN";
@@ -441,7 +488,7 @@ void BuildIndex()
     }
     else
         TC_LOG_ERROR("server.worldserver", "Bot quest index: creature_loot_template query returned nothing (quest items will be MISSING_ITEM_SOURCE)");
-    std::unordered_map<uint32, std::vector<uint32>> goLootItems;
+    std::unordered_map<uint32, std::vector<uint32>> goLootItems;  // chest loot id -> quest items
     if (QueryResult r = WorldDatabase.Query("SELECT Entry, Item FROM gameobject_loot_template WHERE QuestRequired = 1 AND ItemType = 0"))
     {
         do
@@ -449,10 +496,28 @@ void BuildIndex()
             Field* f = r->Fetch();
             uint32 item = f[1].GetUInt32();
             if (neededItems.count(item))
-                g.ItemGoSrc.insert(item);
+                goLootItems[f[0].GetUInt32()].push_back(item);
         } while (r->NextRow());
     }
-    (void)goLootItems;
+    // the loot template Entry is a loot id: resolve it to the chest game objects (type 3) that use it
+    std::unordered_set<uint32> wantedGo;
+    for (auto const& [goEntry, goTmpl] : sObjectMgr->GetGameObjectTemplates())
+    {
+        if (goTmpl.type != GAMEOBJECT_TYPE_CHEST || !goTmpl.GetLootId())
+            continue;
+        auto it = goLootItems.find(goTmpl.GetLootId());
+        if (it == goLootItems.end())
+            continue;
+        for (uint32 item : it->second)
+            g.ItemGoSrc[item].push_back(goEntry);
+        wantedGo.insert(goEntry);
+    }
+    for (auto& [item, entries] : g.ItemGoSrc)
+    {
+        std::sort(entries.begin(), entries.end());
+        entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+    }
+    g.NumGoItems = uint32(g.ItemGoSrc.size());
     for (auto const& [entry, tmpl] : sObjectMgr->GetCreatureTemplates())
     {
         CreatureDifficulty const* diff = tmpl.GetDifficulty(DIFFICULTY_NONE);
@@ -482,6 +547,14 @@ void BuildIndex()
         g.Spawns[data.id].push_back({ data.mapId, data.spawnPoint.GetPositionX(), data.spawnPoint.GetPositionY(), data.spawnPoint.GetPositionZ() });
     }
     g.NumSpawnEntries = uint32(g.Spawns.size());
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllGameObjectData())
+    {
+        if (!wantedGo.count(data.id))
+            continue;
+        g.GoSpawns[data.id].push_back({ { data.mapId, data.spawnPoint.GetPositionX(), data.spawnPoint.GetPositionY(), data.spawnPoint.GetPositionZ() },
+            data.spawnId, uint32(std::max<int32>(30, data.spawntimesecs)), data.id });
+        ++g.NumGoSpawns;
+    }
 
     // 6. starter grid (only starters that exist in the world)
     for (auto const& [creature, quests] : g.StartsBy)
@@ -596,14 +669,14 @@ void BuildIndex()
     }
 
     g.Ready.store(true, std::memory_order_release);
-    TC_LOG_INFO("server.worldserver", "Bot quest index: {} starter quests, {} starter points, {} spawn entries, {} quest items with creature sources, {} hubs, {} grind spawns, {} class trainer spawns, {} vendor spawns ({} bag vendor entries), {} ms",
-        g.NumStarterQuests, g.NumStarterPoints, g.NumSpawnEntries, g.NumItemSources, uint32(g.Hubs.size()), g.NumGrind, g.NumTrainers, uint32(g.Vendors.size()), g.NumBagVendors, GetMSTimeDiffToNow(startMs));
+    TC_LOG_INFO("server.worldserver", "Bot quest index: {} starter quests, {} starter points, {} spawn entries, {} quest items with creature sources, {} quest items in chest objects ({} object spawns), {} hubs, {} grind spawns, {} class trainer spawns, {} vendor spawns ({} bag vendor entries), {} ms",
+        g.NumStarterQuests, g.NumStarterPoints, g.NumSpawnEntries, g.NumItemSources, g.NumGoItems, g.NumGoSpawns, uint32(g.Hubs.size()), g.NumGrind, g.NumTrainers, uint32(g.Vendors.size()), g.NumBagVendors, GetMSTimeDiffToNow(startMs));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
 // 3. Per-bot context
 // ---------------------------------------------------------------------------------------------------------------------
-enum class Kind : uint8 { None, GoGiver, GoEnder, Kill, Talk, Grind, Service };
+enum class Kind : uint8 { None, GoGiver, GoEnder, Kill, Talk, Grind, Service, Loot };
 
 char const* KindName(Kind k)
 {
@@ -615,6 +688,7 @@ char const* KindName(Kind k)
         case Kind::Talk: return "talk";
         case Kind::Grind: return "grind";
         case Kind::Service: return "service";
+        case Kind::Loot: return "loot";
         default: return "none";
     }
 }
@@ -653,6 +727,17 @@ struct Task
     float SvcX = 0, SvcY = 0, SvcZ = 0;
     uint32 SvcTrainerId = 0;
     bool SvcRepair = false, SvcBags = false;
+    // Loot task (quest item inside a chest game object)
+    uint64 GoSpawn = 0;            // claimed spawn (0 = none picked yet)
+    uint64 GoBot = 0;              // claimant key (bot guid counter)
+    uint32 GoEntry = 0;
+    uint32 GoRespawn = 0;          // respawn seconds of the claimed spawn
+    float GoX = 0, GoY = 0, GoZ = 0;
+    uint32 GoAttempts = 0;         // spawns found empty / unusable during this task
+    uint32 GoLooted = 0;
+    uint32 GoWaitMs = 0;           // start of a respawn wait
+    uint32 GoNextMs = 0;           // next scan at the claimed spawn
+    uint32 GoUseTries = 0;
 };
 
 struct Visited
@@ -686,6 +771,62 @@ bool NoteQuestFail(uint32 questId)
     d.Fails = 0;
     d.UntilMs = std::max<uint32>(1, getMSTime() + DEAD_MS);
     return true;
+}
+
+// (b2) chest objects holding quest items: a spawn is claimed by one bot at a time and cools down after it was looted, so the
+// handful of single-spawn objects (one chest, several hundred bots) are not crowded. Keyed by spawn id, clock = getMSTime().
+struct GoGate { uint64 Bot = 0; uint32 ClaimUntil = 0; uint32 CoolUntil = 0; };
+std::mutex g_goMx;
+std::unordered_map<uint64, GoGate> g_goGate;
+constexpr uint32 GO_CLAIM_MS = 150 * 1000;
+
+bool Past(uint32 until) { return !until || int32(until - getMSTime()) <= 0; }
+
+enum class GoState : uint8 { Free, Busy, Cooling };
+
+// state of a spawn as seen by `bot` (a claim by the same bot counts as free); coolLeftMs set for Cooling
+GoState GoGateState(uint64 spawn, uint64 bot, uint32* coolLeftMs = nullptr)
+{
+    std::lock_guard<std::mutex> lk(g_goMx);
+    auto it = g_goGate.find(spawn);
+    if (it == g_goGate.end())
+        return GoState::Free;
+    if (!Past(it->second.CoolUntil))
+    {
+        if (coolLeftMs)
+            *coolLeftMs = uint32(int32(it->second.CoolUntil - getMSTime()));
+        return GoState::Cooling;
+    }
+    if (it->second.Bot != bot && !Past(it->second.ClaimUntil))
+        return GoState::Busy;
+    return GoState::Free;
+}
+
+bool GoTryClaim(uint64 spawn, uint64 bot)
+{
+    std::lock_guard<std::mutex> lk(g_goMx);
+    GoGate& gt = g_goGate[spawn];
+    if (!Past(gt.CoolUntil) || (gt.Bot != bot && !Past(gt.ClaimUntil)))
+        return false;
+    gt.Bot = bot;
+    gt.ClaimUntil = std::max<uint32>(1, getMSTime() + GO_CLAIM_MS);
+    return true;
+}
+
+// release a claim; coolMs > 0 also marks the object as looted / gone for that long
+void GoRelease(uint64 spawn, uint64 bot, uint32 coolMs)
+{
+    std::lock_guard<std::mutex> lk(g_goMx);
+    auto it = g_goGate.find(spawn);
+    if (it == g_goGate.end())
+        return;
+    if (it->second.Bot == bot)
+    {
+        it->second.Bot = 0;
+        it->second.ClaimUntil = 0;
+    }
+    if (coolMs)
+        it->second.CoolUntil = std::max<uint32>(1, getMSTime() + coolMs);
 }
 
 // (c) quest hub cache (R1): a hub that a bot could not reach is skipped by every bot for HubFailGlobalSec; a hub a bot
@@ -807,6 +948,7 @@ public:
     bool VendorNow = false;                         // a reward could not be stored: go to a vendor now
     std::unordered_map<uint64, uint8> Repeats;      // (quest, npc) -> reach failures (quarantine)
     std::unordered_map<uint32, uint32> SvcBlack;    // npc entry -> AI clock until
+    std::unordered_map<uint64, uint32> GoIgnore;    // chest spawn id -> AI clock until (empty / unusable for this bot)
     uint8 NoTrainerLevel = 0, NoMoneyLevel = 0, BagNoMoneyLevel = 0, NoVendorLevel = 0;
     std::string LastNote;
 
@@ -902,6 +1044,30 @@ bool IsRewardDataGap(Quest const* q)
 Creature* FindLiveNpc(Player* bot, uint32 entry, float range)
 {
     return bot->FindNearestCreature(entry, range, true);
+}
+
+// nearest chest spawn of a game object entry on the bot's map (2D distance), or null
+GoPt const* NearestGoSpawn(Player const* bot, uint32 goEntry, float* distOut = nullptr)
+{
+    auto it = g.GoSpawns.find(goEntry);
+    if (it == g.GoSpawns.end())
+        return nullptr;
+    GoPt const* best = nullptr;
+    float bd = 1e9f;
+    for (GoPt const& p : it->second)
+    {
+        if (p.P.Map != bot->GetMapId())
+            continue;
+        float d = Dist2D(p.P.X, p.P.Y, bot->GetPositionX(), bot->GetPositionY());
+        if (d < bd)
+        {
+            bd = d;
+            best = &p;
+        }
+    }
+    if (distOut)
+        *distOut = bd;
+    return best;
 }
 
 // nearest spawn point of an entry on the bot's map, or null
@@ -1056,6 +1222,8 @@ private:
     // ----- task bookkeeping -----
     void Finish(BotQuestCtx& c, uint32 now, bool immediate = true)
     {
+        if (c.T.K == Kind::Loot && c.T.GoSpawn)
+            GoRelease(c.T.GoSpawn, c.T.GoBot, 0);
         c.T = Task();
         c.GoalFails = 0;
         c.ExpectGoal = false;
@@ -1304,8 +1472,8 @@ private:
             return true;
 
         {
-            struct Cand { LogEntry const* E; QuestObjective const* O; float D; uint32 Entry; };
-            Cand best{ nullptr, nullptr, 1e9f, 0 };
+            struct Cand { LogEntry const* E; QuestObjective const* O; float D; uint32 Entry; bool Go; };
+            Cand best{ nullptr, nullptr, 1e9f, 0, false };
             uint32 considered = 0;
             for (LogEntry const& e : log)
             {
@@ -1331,21 +1499,39 @@ private:
                 {
                     float d;
                     if (NearestSpawn(bot, en, &d) && d < best.D)
-                        best = { &e, obj, d, en };
+                        best = { &e, obj, d, en, false };
+                }
+                if (obj->Type == QUEST_OBJECTIVE_ITEM)
+                {
+                    std::vector<uint32> gos;
+                    GoEntriesOf(uint32(obj->ObjectID), gos);
+                    for (uint32 en : gos)
+                    {
+                        float d;
+                        if (NearestGoSpawn(bot, en, &d) && d < best.D)
+                            best = { &e, obj, d, en, true };
+                    }
+                    if (entries.empty() && gos.empty())
+                    {
+                        // nothing in the world gives this item (the quest start item does not cover the open amount)
+                        Blocked(ai, bot, c, e.Quest, "MISSING_ITEM_SOURCE", StringFormat("quest '{}' in the log needs item {} and no source is known", q->GetLogTitle(), obj->ObjectID),
+                            StringFormat(R"({{"item":{},"amount":{}}})", obj->ObjectID, obj->Amount), uint32(obj->ObjectID));
+                        c.Blacklist[e.Quest] = now + 3600 * 1000;
+                    }
                 }
             }
             if (best.E)
             {
                 Quest const* q = sObjectMgr->GetQuestTemplate(best.E->Quest);
                 c.T = Task();
-                c.T.K = best.O->Type == QUEST_OBJECTIVE_TALKTO ? Kind::Talk : Kind::Kill;
+                c.T.K = best.Go ? Kind::Loot : best.O->Type == QUEST_OBJECTIVE_TALKTO ? Kind::Talk : Kind::Kill;
                 c.T.Quest = best.E->Quest;
                 c.T.ObjId = best.O->ID;
                 c.T.NpcEntry = best.O->Type == QUEST_OBJECTIVE_TALKTO ? uint32(best.O->ObjectID) : 0;
                 c.T.SinceMs = c.T.ProgressMs = c.T.TargetBestMs = now;
                 c.GoalFails = 0;
                 Decision(ai, bot, "QUEST_WORK", StringFormat("working '{}' ({} of {} open quests)", q ? q->GetLogTitle() : "?", 1, considered), best.E->Quest, best.Entry,
-                    StringFormat(R"({{"objective_type":{},"object_id":{},"amount":{},"nearest_spawn_dist":{:.0f}}})", uint32(best.O->Type), best.O->ObjectID, best.O->Amount, best.D));
+                    StringFormat(R"({{"objective_type":{},"object_id":{},"amount":{},"nearest_spawn_dist":{:.0f},"game_object":{}}})", uint32(best.O->Type), best.O->ObjectID, best.O->Amount, best.D, best.Go));
                 return true;
             }
         }
@@ -2314,6 +2500,8 @@ private:
                 return RunTalk(ai, bot, c, now, q);
             case Kind::Kill:
                 return RunKill(ai, bot, c, now, q);
+            case Kind::Loot:
+                return RunLoot(ai, bot, c, now, q);
             default:
                 Finish(c, now);
                 return false;
@@ -2555,6 +2743,266 @@ private:
         }
         Travel(ai, bot, c, now, tx, ty, tz, 3.0f, t.NpcEntry);
         return false;
+    }
+
+    // ----- chest object loot -----
+    // Backs a Loot task off: the quest is parked for this bot for `sec` seconds (no quarantine, this is contention, not failure).
+    void GoBackOff(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Quest const* q, char const* code, std::string summary, std::string details, uint32 entry, uint32 sec)
+    {
+        Blocked(ai, bot, c, q->GetQuestId(), code, std::move(summary), std::move(details), entry, true, BOTLOG_INFO);
+        c.Blacklist[q->GetQuestId()] = now + sec * 1000;
+        StopMoving(ai, bot, c);
+        Finish(c, now);
+    }
+
+    // The claimed spawn turned out empty / unusable for this bot: forget it and try the next one.
+    void GoSpawnFailed(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Task& t, char const* why)
+    {
+        BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_SPAWN_EMPTY", StringFormat("object {} at spawn {} not usable ({})", t.GoEntry, t.GoSpawn, why));
+        ev.QuestId = t.Quest;
+        ev.TargetEntry = t.GoEntry;
+        sBotMgr->LogEvent(std::move(ev));
+        uint32 const respawnMs = std::min<uint32>(t.GoRespawn, 600) * 1000;
+        c.GoIgnore[t.GoSpawn] = now + respawnMs;
+        GoRelease(t.GoSpawn, t.GoBot, respawnMs);
+        ++t.GoAttempts;
+        t.GoSpawn = 0;
+        t.GoUseTries = 0;
+        StopMoving(ai, bot, c);
+    }
+
+    // Picks and claims the nearest free spawn of the item's chest objects. 0 = claimed, 1 = all busy (other bots), 2 = all cooling or
+    // ignored (respawn wait), 3 = none on this map.
+    int GoPickSpawn(Player* bot, BotQuestCtx& c, uint32 now, Task& t, std::vector<uint32> const& gos, uint32& minWaitMs)
+    {
+        uint64 const me = bot->GetGUID().GetCounter();
+        GoPt const* best = nullptr;
+        float bd = 1e9f;
+        uint32 busy = 0, cooling = 0;
+        minWaitMs = 0xFFFFFFFFu;
+        for (uint32 en : gos)
+        {
+            auto it = g.GoSpawns.find(en);
+            if (it == g.GoSpawns.end())
+                continue;
+            for (GoPt const& p : it->second)
+            {
+                if (p.P.Map != bot->GetMapId())
+                    continue;
+                auto ign = c.GoIgnore.find(p.SpawnId);
+                if (ign != c.GoIgnore.end() && now < ign->second)
+                {
+                    ++cooling;
+                    minWaitMs = std::min<uint32>(minWaitMs, ign->second - now);
+                    continue;
+                }
+                uint32 left = 0;
+                GoState st = GoGateState(p.SpawnId, me, &left);
+                if (st == GoState::Busy) { ++busy; continue; }
+                if (st == GoState::Cooling) { ++cooling; minWaitMs = std::min<uint32>(minWaitMs, left); continue; }
+                float d = Dist2D(p.P.X, p.P.Y, bot->GetPositionX(), bot->GetPositionY());
+                if (d < bd)
+                {
+                    bd = d;
+                    best = &p;
+                }
+            }
+        }
+        if (best && GoTryClaim(best->SpawnId, me))
+        {
+            t.GoSpawn = best->SpawnId;
+            t.GoBot = me;
+            t.GoEntry = best->Entry;
+            t.GoRespawn = best->RespawnSec;
+            t.GoX = best->P.X; t.GoY = best->P.Y; t.GoZ = best->P.Z;
+            t.GoWaitMs = 0;
+            t.GoUseTries = 0;
+            return 0;
+        }
+        if (best || busy)
+            return 1;
+        return cooling ? 2 : 3;
+    }
+
+    bool RunLoot(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Quest const* q)
+    {
+        Task& t = c.T;
+        if (bot->GetQuestStatus(t.Quest) != QUEST_STATUS_INCOMPLETE)
+        {
+            StopMoving(ai, bot, c);
+            Finish(c, now);
+            return false;
+        }
+        uint16 slot = bot->FindQuestSlot(t.Quest);
+        QuestObjective const* obj = nullptr;
+        for (QuestObjective const& o : q->GetObjectives())
+            if (o.ID == t.ObjId)
+                obj = &o;
+        if (!obj || slot >= MAX_QUEST_LOG_SIZE || bot->IsQuestObjectiveComplete(slot, q, *obj))
+        {
+            StopMoving(ai, bot, c);
+            Finish(c, now);
+            return false;
+        }
+        int32 const count = bot->GetQuestObjectiveData(*obj);
+        if (count != t.LastCount)
+        {
+            t.LastCount = count;
+            t.ProgressMs = now;
+        }
+        // overall caps: respawn waits are longer than the kill stall timer, but a task is never open forever
+        if (now - t.SinceMs > 12 * 60 * 1000)
+        {
+            Drop(ai, bot, c, now, t.Quest, "ITEM_NOT_DROPPING", StringFormat("no progress on '{}' from chest objects in 12 minutes", q->GetLogTitle()),
+                StringFormat(R"({{"item":{},"attempts":{},"looted":{},"count":{},"amount":{}}})", obj->ObjectID, t.GoAttempts, t.GoLooted, count, obj->Amount), uint32(obj->ObjectID), 1800);
+            return true;
+        }
+        if (t.GoAttempts >= 8)
+        {
+            Drop(ai, bot, c, now, t.Quest, "ITEM_NOT_DROPPING", StringFormat("{} chest object spawns for '{}' were empty or unusable", t.GoAttempts, q->GetLogTitle()),
+                StringFormat(R"({{"item":{},"attempts":{},"looted":{},"count":{},"amount":{}}})", obj->ObjectID, t.GoAttempts, t.GoLooted, count, obj->Amount), uint32(obj->ObjectID), 1800);
+            return true;
+        }
+        if (bot->IsInCombat())
+            return false;
+
+        if (!t.GoSpawn)
+        {
+            std::vector<uint32> gos;
+            GoEntriesOf(uint32(obj->ObjectID), gos);
+            uint32 waitMs = 0;
+            int r = GoPickSpawn(bot, c, now, t, gos, waitMs);
+            if (r == 1)
+            {
+                GoBackOff(ai, bot, c, now, q, "GO_BUSY", StringFormat("object spawns for '{}' are in use by other bots, doing other work", q->GetLogTitle()),
+                    StringFormat(R"({{"item":{}}})", obj->ObjectID), uint32(obj->ObjectID), 180);
+                return true;
+            }
+            if (r == 2)
+            {
+                // everything is looted / respawning: wait for the earliest respawn, but not long (the bot does other work meanwhile)
+                if (!t.GoWaitMs)
+                    t.GoWaitMs = now;
+                if (waitMs <= 90 * 1000 && now - t.GoWaitMs < 90 * 1000)
+                    return false;
+                GoBackOff(ai, bot, c, now, q, "GO_RESPAWN_WAIT", StringFormat("all object spawns for '{}' are looted, respawn in {} s", q->GetLogTitle(), waitMs / 1000),
+                    StringFormat(R"({{"item":{},"wait_s":{}}})", obj->ObjectID, waitMs / 1000), uint32(obj->ObjectID), std::clamp<uint32>(waitMs / 1000, 60, 600));
+                return true;
+            }
+            if (r == 3)
+            {
+                Drop(ai, bot, c, now, t.Quest, "NO_TARGET_SPAWN", StringFormat("no chest object spawn for item {} on this map", obj->ObjectID), std::string(), uint32(obj->ObjectID), 3600);
+                return true;
+            }
+            t.TargetBest = Dist2D(t.GoX, t.GoY, bot->GetPositionX(), bot->GetPositionY());
+            t.TargetBestMs = now;
+            BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_GO", StringFormat("going for object {} (spawn {}) for '{}'", t.GoEntry, t.GoSpawn, q->GetLogTitle()));
+            ev.QuestId = t.Quest;
+            ev.TargetEntry = t.GoEntry;
+            ev.Details = StringFormat(R"({{"item":{},"dist":{:.0f},"attempts":{}}})", obj->ObjectID, t.TargetBest, t.GoAttempts);
+            sBotMgr->LogEvent(std::move(ev));
+        }
+
+        float const dSpawn = Dist2D(t.GoX, t.GoY, bot->GetPositionX(), bot->GetPositionY());
+        if (dSpawn > 20.0f)
+        {
+            // far: walk to the spawn point, then switch to the live object; no progress for a while = give this spawn up
+            if (dSpawn < t.TargetBest - 1.0f)
+            {
+                t.TargetBest = dSpawn;
+                t.TargetBestMs = now;
+            }
+            else if (now - t.TargetBestMs > 60000)
+            {
+                GoSpawnFailed(ai, bot, c, now, t, "no approach progress");
+                return false;
+            }
+            Travel(ai, bot, c, now, t.GoX, t.GoY, t.GoZ, 8.0f, t.GoEntry);
+            return false;
+        }
+
+        if (now < t.GoNextMs)
+            return false;
+        t.GoNextMs = now + 400;
+        GameObject* go = bot->FindNearestGameObject(t.GoEntry, 25.0f);
+        if (!go || Dist2D(go->GetPositionX(), go->GetPositionY(), t.GoX, t.GoY) > 8.0f)
+        {
+            // not spawned (looted by someone, respawning) or not loaded: give it a moment on arrival, then next spawn
+            if (!t.GoWaitMs)
+                t.GoWaitMs = now;
+            if (dSpawn > 8.0f)
+            {
+                Travel(ai, bot, c, now, t.GoX, t.GoY, t.GoZ, 5.0f, t.GoEntry);
+                return false;
+            }
+            if (now - t.GoWaitMs < 3000)
+                return false;
+            GoSpawnFailed(ai, bot, c, now, t, "not spawned");
+            return false;
+        }
+        t.GoWaitMs = 0;
+        float const dGo = bot->GetExactDist(go);
+        if (dGo > 3.0f)
+        {
+            Travel(ai, bot, c, now, go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(), 2.0f, t.GoEntry);
+            if (dGo > 5.0f || ++t.GoUseTries < 12)
+                return false;
+        }
+        StopMoving(ai, bot, c);
+        GameObject* usable = bot->GetGameObjectIfCanInteractWith(go->GetGUID());
+        if (!usable || !usable->ActivateToQuest(bot))
+        {
+            if (++t.GoUseTries < 4)
+                return false;
+            GoSpawnFailed(ai, bot, c, now, t, usable ? "not active for this quest" : "cannot interact");
+            return false;
+        }
+        bot->SetFacingToObject(usable);
+        usable->Use(bot);
+        if (LootGameObject(bot, usable))
+        {
+            ++t.GoLooted;
+            uint32 const respawnMs = std::min<uint32>(t.GoRespawn, 600) * 1000;
+            c.GoIgnore[t.GoSpawn] = now + respawnMs;
+            GoRelease(t.GoSpawn, t.GoBot, respawnMs);
+            BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_OBJECT", StringFormat("looted object {} for '{}'", t.GoEntry, q->GetLogTitle()));
+            ev.QuestId = t.Quest;
+            ev.TargetEntry = t.GoEntry;
+            ev.Details = StringFormat(R"({{"item":{},"count_before":{},"amount":{},"looted_total":{}}})", obj->ObjectID, count, obj->Amount, t.GoLooted);
+            sBotMgr->LogEvent(std::move(ev));
+            t.GoSpawn = 0;
+            t.GoUseTries = 0;
+            t.GoAttempts = 0;   // a successful loot resets the failure budget
+            return true;
+        }
+        // Use() produced no loot for us (already emptied, or the quest item is not in it)
+        GoSpawnFailed(ai, bot, c, now, t, "no loot");
+        return false;
+    }
+
+    // Takes every item and the money of a game object's loot window that Use() opened. Returns true when something was taken.
+    bool LootGameObject(Player* bot, GameObject* go)
+    {
+        Loot* loot = go->GetLootForPlayer(bot);
+        if (!loot)
+            return false;
+        bool took = false;
+        for (uint32 i = 0; i < loot->items.size(); ++i)
+            if (LootItem* li = loot->LootItemInSlot(i, bot))
+                if (!li->is_looted)
+                {
+                    bot->StoreLootItem(go->GetGUID(), uint8(i), loot);
+                    took = true;
+                }
+        if (loot->gold)
+        {
+            bot->ModifyMoney(int64(loot->gold));
+            loot->LootMoney();
+            loot->NotifyMoneyRemoved(go->GetMap());
+            took = true;
+        }
+        bot->GetSession()->DoLootRelease(loot);
+        return took;
     }
 
     // ----- kill / loot -----
