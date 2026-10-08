@@ -42,6 +42,7 @@
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "UpdateFields.h"
+#include "UpdateTime.h"
 #include "Util.h"
 #include "World.h"
 #include "WorldSession.h"
