@@ -24,6 +24,7 @@
 
 #include "Bag.h"
 #include "BotQuest.h"
+#include "BotQuestClassifier.h"
 #include "BotAI.h"
 #include "BotBehavior.h"
 #include "BotEngine.h"
@@ -251,19 +252,6 @@ void GoEntriesOf(uint32 item, std::vector<uint32>& out)
             out.push_back(e);
 }
 
-// the quest hands the item over itself (start item, or the ItemDrop list), at least in the amount the objective needs
-bool QuestSuppliesItem(Quest const* q, QuestObjective const& obj)
-{
-    uint32 const item = uint32(obj.ObjectID);
-    uint32 const need = uint32(std::max<int32>(1, obj.Amount));
-    if (q->GetSrcItemId() == item && std::max<uint32>(1, q->GetSrcItemCount()) >= need)
-        return true;
-    for (uint32 i = 0; i < QUEST_ITEM_DROP_COUNT; ++i)
-        if (q->ItemDrop[i] == item && std::max<uint32>(1, q->ItemDropQuantity[i]) >= need)
-            return true;
-    return false;
-}
-
 // ---------------------------------------------------------------------------------------------------------------------
 // 2. Analysis: static blockers
 // ---------------------------------------------------------------------------------------------------------------------
@@ -291,114 +279,64 @@ bool HasEnderRow(uint32 questId)
     return bounds.begin() != bounds.end();
 }
 
+class IndexLookup final : public QuestWorldLookup
+{
+public:
+    bool HasSpawn(uint32 creatureEntry) const override { return BotQuest::HasSpawn(creatureEntry); }
+
+    std::vector<uint32> KillEntries(uint32 creditEntry) const override
+    {
+        std::vector<uint32> out;
+        BotQuest::KillEntries(creditEntry, out);
+        return out;
+    }
+
+    bool ItemCreatureSources(uint32 item, std::vector<uint32>& out) const override
+    {
+        auto it = g.ItemSrc.find(item);
+        if (it == g.ItemSrc.end())
+            return false;
+        out = it->second;
+        return true;
+    }
+
+    bool ItemHasSpawnedGameObject(uint32 item) const override
+    {
+        std::vector<uint32> gos;
+        GoEntriesOf(item, gos);
+        return !gos.empty();
+    }
+
+    bool ItemHasGameObjectSource(uint32 item) const override { return g.ItemGoSrc.count(item) != 0; }
+    bool HasEnderRow(uint32 questId) const override { return BotQuest::HasEnderRow(questId); }
+    bool HasEnderSpawn(uint32 questId) const override { return !EnderEntries(questId).empty(); }
+};
+
 Block Analyze(Quest const* q)
 {
-    Block b;
-    if (q->IsDailyOrWeekly() || q->IsMonthly() || q->IsRepeatable())
-    {
-        b.Code = "REPEATABLE"; b.Silent = true;
-        return b;
-    }
-    if (q->GetSuggestedPlayers() > 1)
-    {
-        b.Code = "NEEDS_GROUP"; b.Info = StringFormat("suggested players {}", q->GetSuggestedPlayers());
-        return b;
-    }
-    if (q->GetLimitTime() > 0)
-    {
-        b.Code = "TIMED_UNSUPPORTED";
-        return b;
-    }
-    if (q->GetRequiredSkill())
-    {
-        b.Code = "SKILL_REQUIRED"; b.Entry = q->GetRequiredSkill();
-        return b;
-    }
-    if (q->GetRequiredMinRepFaction())
-    {
-        b.Code = "REPUTATION_REQUIRED"; b.Entry = q->GetRequiredMinRepFaction();
-        return b;
-    }
-    if (q->HasFlag(QUEST_FLAGS_COMPLETION_EVENT))
-    {
-        b.Code = "NEEDS_EVENT";
-        return b;
-    }
-    if (q->HasFlag(QUEST_FLAGS_COMPLETION_AREA_TRIGGER))
-    {
-        b.Code = "OBJECTIVE_UNSUPPORTED"; b.Info = "area trigger completion";
-        return b;
-    }
-
+    QuestFacts facts;
+    facts.QuestId = q->GetQuestId();
+    facts.Repeatable = q->IsDailyOrWeekly() || q->IsMonthly() || q->IsRepeatable();
+    facts.SuggestedPlayers = q->GetSuggestedPlayers();
+    facts.LimitTime = q->GetLimitTime();
+    facts.RequiredSkill = q->GetRequiredSkill();
+    facts.RequiredMinRepFaction = q->GetRequiredMinRepFaction();
+    facts.CompletionEvent = q->HasFlag(QUEST_FLAGS_COMPLETION_EVENT);
+    facts.CompletionAreaTrigger = q->HasFlag(QUEST_FLAGS_COMPLETION_AREA_TRIGGER);
+    facts.AutoComplete = q->HasFlag(QUEST_FLAGS_AUTO_COMPLETE);
+    facts.SrcItemId = q->GetSrcItemId();
+    facts.SrcItemCount = q->GetSrcItemCount();
+    for (uint32 i = 0; i < QUEST_ITEM_DROP_COUNT; ++i)
+        facts.ItemDrops.emplace_back(q->ItemDrop[i], q->ItemDropQuantity[i]);
     for (QuestObjective const& obj : q->GetObjectives())
-    {
-        if (obj.Flags & QUEST_OBJECTIVE_FLAG_OPTIONAL)
-            continue;
-        switch (obj.Type)
-        {
-            case QUEST_OBJECTIVE_MONSTER:
-            {
-                std::vector<uint32> entries;
-                KillEntries(uint32(obj.ObjectID), entries);
-                bool any = false;
-                for (uint32 e : entries)
-                    any = any || HasSpawn(e);
-                if (!any)
-                {
-                    b.Code = "NO_TARGET_SPAWN"; b.Entry = uint32(obj.ObjectID);
-                    return b;
-                }
-                break;
-            }
-            case QUEST_OBJECTIVE_ITEM:
-            {
-                auto it = g.ItemSrc.find(uint32(obj.ObjectID));
-                bool any = QuestSuppliesItem(q, obj);   // delivery / report-to quests: the item comes with the quest
-                if (it != g.ItemSrc.end())
-                    for (uint32 e : it->second)
-                        any = any || HasSpawn(e);
-                if (!any)
-                {
-                    std::vector<uint32> gos;
-                    GoEntriesOf(uint32(obj.ObjectID), gos);
-                    any = !gos.empty();
-                }
-                if (!any)
-                {
-                    b.Entry = uint32(obj.ObjectID);
-                    if (g.ItemGoSrc.count(uint32(obj.ObjectID)))
-                    {
-                        b.Code = "OBJECTIVE_UNSUPPORTED"; b.Info = "item comes from a game object without a spawn";
-                    }
-                    else if (it != g.ItemSrc.end())
-                        b.Code = "NO_TARGET_SPAWN";
-                    else
-                        b.Code = "MISSING_ITEM_SOURCE";
-                    return b;
-                }
-                break;
-            }
-            case QUEST_OBJECTIVE_TALKTO:
-                if (!HasSpawn(uint32(obj.ObjectID)))
-                {
-                    b.Code = "NO_TARGET_SPAWN"; b.Entry = uint32(obj.ObjectID);
-                    return b;
-                }
-                break;
-            default:
-                b.Code = "OBJECTIVE_UNSUPPORTED"; b.Entry = uint32(obj.ObjectID);
-                b.Info = StringFormat("objective type {}", uint32(obj.Type));
-                return b;
-        }
-    }
+        facts.Objectives.push_back({ int32(obj.Type), obj.ObjectID, obj.Amount, (obj.Flags & QUEST_OBJECTIVE_FLAG_OPTIONAL) != 0 });
 
-    if (!q->HasFlag(QUEST_FLAGS_AUTO_COMPLETE))
-    {
-        if (!HasEnderRow(q->GetQuestId()))
-            b.Code = "NO_ENDER_ROW";
-        else if (EnderEntries(q->GetQuestId()).empty())
-            b.Code = "NO_ENDER_SPAWN";
-    }
+    ClassifierResult res = ClassifyQuest(facts, IndexLookup());
+    Block b;
+    b.Code = res.Code;
+    b.Entry = res.Entry;
+    b.Silent = res.Silent;
+    b.Info = std::move(res.Info);
     return b;
 }
 
