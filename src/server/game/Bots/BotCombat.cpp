@@ -68,6 +68,7 @@ struct CombatConfig
     uint32 CasterRangePct = 80;    // Bot.AI.Combat.CasterRangePct: casters stand at this percent of the spell range
     uint32 FleeMaxAttempts = 3;    // Bot.AI.Combat.Flee.MaxAttempts: flee runs per fight before the bot fights back as a last resort
     uint32 PrePullManaPct = 40;    // Bot.AI.Combat.PrePullManaPct: mana users drink out of combat below this mana percent (before pulling)
+    bool FreeTotems = true;        // Bot.AI.Combat.FreeTotems: a shaman that knows a totem spell gets the totem tool (Earth/Fire/Water Totem) for free, like free repair a placeholder until the economy phase
     bool FreeRepair = true;        // Bot.AI.Combat.FreeRepair: broken equipment is repaired for free (placeholder until the economy phase)
     uint32 LowHpFleePct = 15;      // Bot.AI.Combat.Flee.LowHpPct: flee (flee_reason low_hp) below this health percent, 0 = off
     int32 FleeMode = 0;            // Bot.AI.Flee.Mode: 0 current, 1 aggro avoidance + fight to the end, 2 flee toward nearest friendly guard
@@ -92,6 +93,7 @@ CombatConfig const& Cfg()
         cfg.FleeMaxAttempts = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.MaxAttempts", 3), 1, 10));
         cfg.PrePullManaPct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.PrePullManaPct", 40), 0, 95));
         cfg.FreeRepair = sConfigMgr->GetBoolDefault("Bot.AI.Combat.FreeRepair", true);
+        cfg.FreeTotems = sConfigMgr->GetBoolDefault("Bot.AI.Combat.FreeTotems", true);
         cfg.LowHpFleePct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.LowHpPct", 15), 0, 60));
         cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
         cfg.Rotation = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.Enabled", false);
@@ -594,6 +596,21 @@ bool WeaponOk(Player* bot, SpellInfo const* si)
             return true;
     }
     return false;
+}
+
+// Totem tools: Earth Totem 5175 (Stoneskin), Fire Totem 5176 (Searing), Water Totem 5177 (Healing Stream); the item must be in the bags for the
+// cast. Gives one when it is missing (placeholder until the economy phase); the item must exist in the item template and be called a totem.
+void EnsureTotemTool(Player* bot, uint32 totemSpellRoot)
+{
+    if (!Cfg().FreeTotems)
+        return;
+    uint32 const item = totemSpellRoot == 8071 ? 5175 : totemSpellRoot == 3599 ? 5176 : totemSpellRoot == 5394 ? 5177 : 0;
+    if (!item || bot->HasItemCount(item, 1))
+        return;
+    ItemTemplate const* tpl = sObjectMgr->GetItemTemplate(item);
+    if (!tpl || !tpl->GetName(DEFAULT_LOCALE) || !strstr(tpl->GetName(DEFAULT_LOCALE), "Totem"))
+        return;
+    bot->StoreNewItemInBestSlots(item, 1, ItemContext::NONE);
 }
 
 // Free repair (placeholder until the economy phase): bots never visit a repairer, and a broken weapon makes every weapon
@@ -1253,6 +1270,8 @@ public:
             {
                 if (bot->HasAura(r.Id) || !Ready(bot, r) || !Affordable(bot, r.Info) || BuffRecentlyCast(ai, ctx, r))
                     continue;
+                if (kind == Kind::Totem)
+                    EnsureTotemTool(bot, r.Def->Root);
                 if (TryCast(ai, bot, ctx, r, nullptr))
                 {
                     ctx->LastBuffMs[r.Id] = ai->GetNowMs();
