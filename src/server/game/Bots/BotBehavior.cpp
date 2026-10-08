@@ -174,7 +174,8 @@ class FollowLeaderAction : public Action
 {
 public:
     explicit FollowLeaderAction(BotAI* ai) : Action(ai, "follow_leader", ACTION_FLAG_MOVES | ACTION_FLAG_QUIET_LOG) { }
-    bool IsUseful() override { return !GetAI()->Motion().GetFollow().IsEmpty(); }
+    // not while casting: a mount spell (chat order `mount`) is interrupted by movement
+    bool IsUseful() override { return !GetAI()->Motion().GetFollow().IsEmpty() && !(GetBot() && GetBot()->IsNonMeleeSpellCast(false)); }
     bool Execute() override
     {
         BotAI* ai = GetAI();

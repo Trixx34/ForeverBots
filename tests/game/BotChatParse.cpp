@@ -21,6 +21,8 @@
 #include "SharedDefines.h"
 #include <cmath>
 #include <limits>
+#include <string>
+#include <vector>
 
 using namespace BotChat;
 
@@ -158,4 +160,139 @@ TEST_CASE("BotChat goto arguments", "[BotChat]")
     CHECK(ParseGotoArgs("10 20 nan", g) != nullptr);
     CHECK(ParseGotoArgs("1e30 20", g) != nullptr);
     CHECK(ParseGotoArgs("10 20 1e9", g) != nullptr);
+}
+
+TEST_CASE("BotChat verbs", "[BotChat]")
+{
+    CHECK(ParseVerb("follow", false) == Verb::Follow);
+    CHECK(ParseVerb("FOLLOW", true) == Verb::Follow);
+    CHECK(ParseVerb("release", false) == Verb::Release);
+    CHECK(ParseVerb("hello", true) == Verb::None);
+    CHECK(ParseVerb("", true) == Verb::None);
+
+    // the order verbs exist only with Bot.Chat.Orders.Enabled
+    for (char const* word : { "stop", "aggressive", "passive", "pull", "heal", "mount", "dismount", "summon", "revive" })
+    {
+        INFO(word);
+        CHECK(ParseVerb(word, false) == Verb::None);
+        CHECK(ParseVerb(word, true) != Verb::None);
+    }
+    CHECK(ParseVerb("Pull", true) == Verb::Pull);
+    CHECK(ParseVerb("dismount", true) == Verb::Dismount);
+    CHECK(ParseVerb("mount", true) == Verb::Mount);
+    CHECK(ParseVerb("pulling", true) == Verb::None);
+    CHECK(ParseVerb("aggressiveness", true) == Verb::None);
+}
+
+TEST_CASE("BotChat order arguments", "[BotChat]")
+{
+    for (Verb v : { Verb::Stop, Verb::Aggressive, Verb::Passive, Verb::Pull, Verb::Heal, Verb::Mount, Verb::Dismount, Verb::Summon, Verb::Revive })
+    {
+        CHECK(ValidateOrderArgs(v, "") == nullptr);
+        CHECK(ValidateOrderArgs(v, "   ") == nullptr);
+        CHECK(ValidateOrderArgs(v, "now") != nullptr);
+    }
+    CHECK(ValidateOrderArgs(Verb::Follow, "off") == nullptr);   // the old verbs validate their own arguments
+}
+
+TEST_CASE("BotChat order role gate", "[BotChat]")
+{
+    RoleMasks const roles = Roles();   // tank = warrior, healer = priest
+    CHECK(RoleGate(Verb::Pull, CLASS_WARRIOR, roles) == nullptr);
+    CHECK(std::string(RoleGate(Verb::Pull, CLASS_MAGE, roles)) == "NOT_TANK");
+    CHECK(std::string(RoleGate(Verb::Pull, CLASS_PRIEST, roles)) == "NOT_TANK");
+    CHECK(RoleGate(Verb::Heal, CLASS_PRIEST, roles) == nullptr);
+    CHECK(std::string(RoleGate(Verb::Heal, CLASS_WARRIOR, roles)) == "NOT_HEALER");
+    CHECK(std::string(RoleGate(Verb::Heal, 40, roles)) == "NOT_HEALER");   // class id out of mask range
+    for (Verb v : { Verb::Stop, Verb::Aggressive, Verb::Passive, Verb::Mount, Verb::Dismount, Verb::Summon, Verb::Revive, Verb::Follow })
+        CHECK(RoleGate(v, CLASS_MAGE, roles) == nullptr);
+
+    RoleMasks custom = roles;
+    custom.Tank |= Bit(CLASS_PALADIN);
+    custom.Healer |= Bit(CLASS_PALADIN) | Bit(CLASS_DRUID);
+    CHECK(RoleGate(Verb::Pull, CLASS_PALADIN, custom) == nullptr);
+    CHECK(RoleGate(Verb::Heal, CLASS_DRUID, custom) == nullptr);
+    CHECK(std::string(RoleGate(Verb::Pull, CLASS_DRUID, custom)) == "NOT_TANK");
+}
+
+TEST_CASE("BotChat spread offsets", "[BotChat]")
+{
+    float dx = 1, dy = 1;
+    SpreadOffset(0, dx, dy);
+    CHECK(dx == 0.0f);
+    CHECK(dy == 0.0f);
+
+    // every bot stands at least 1.5 yards from the issuer and no two bots share a spot
+    float px[12], py[12];
+    for (uint32 i = 0; i < 12; ++i)
+    {
+        SpreadOffset(i, px[i], py[i]);
+        if (i)
+            CHECK(std::hypot(px[i], py[i]) >= 1.5f);
+        for (uint32 j = 0; j < i; ++j)
+            CHECK(std::hypot(px[i] - px[j], py[i] - py[j]) > 0.5f);
+    }
+}
+
+TEST_CASE("BotChat summon and revive rules", "[BotChat]")
+{
+    auto code = [](SummonFacts const& f, bool revive) { char const* c = SummonCheck(f, revive); return std::string(c ? c : "OK"); };
+    SummonFacts f;
+    f.Distance = 30.0f;
+    CHECK(code(f, false) == "OK");
+
+    SummonFacts near = f;
+    near.Distance = 2.0f;
+    CHECK(code(near, false) == "ALREADY_HERE");
+    CHECK(code(near, true) == "NOT_DEAD");
+
+    SummonFacts dead = f;
+    dead.BotAlive = false;
+    CHECK(code(dead, false) == "DEAD");
+    CHECK(code(dead, true) == "OK");
+    CHECK(code(f, true) == "NOT_DEAD");
+
+    SummonFacts issuerFighting = f;
+    issuerFighting.IssuerInCombat = true;
+    CHECK(code(issuerFighting, false) == "ISSUER_IN_COMBAT");
+
+    SummonFacts issuerDead = f;
+    issuerDead.IssuerAlive = false;
+    CHECK(code(issuerDead, false) == "ISSUER_DEAD");
+    CHECK(code(issuerDead, true) == "NOT_DEAD");
+
+    SummonFacts botFighting = f;
+    botFighting.BotInCombat = true;
+    CHECK(code(botFighting, false) == "IN_COMBAT");
+
+    // another map is fine, unless an instance is involved
+    SummonFacts otherMap = f;
+    otherMap.SameMap = false;
+    CHECK(code(otherMap, false) == "OK");
+    otherMap.InstancedMapInvolved = true;
+    CHECK(code(otherMap, false) == "INSTANCE");
+    dead.SameMap = false;
+    dead.InstancedMapInvolved = true;
+    CHECK(code(dead, true) == "INSTANCE");
+
+    // inside one instance a bot may be summoned
+    SummonFacts sameInstance = f;
+    sameInstance.InstancedMapInvolved = true;
+    CHECK(code(sameInstance, false) == "OK");
+}
+
+TEST_CASE("BotChat mount choice", "[BotChat]")
+{
+    CHECK(PickMount({}) == -1);
+
+    std::vector<MountOption> options = { { 100, 60, false }, { 90, 100, false }, { 80, 280, true }, { 70, 100, false }, { 0, 400, false } };
+    int32 const pick = PickMount(options);
+    REQUIRE(pick >= 0);
+    CHECK(options[size_t(pick)].SpellId == 70);   // fastest ground mount; the flier and the id 0 entry are skipped, lower id wins the tie
+
+    std::vector<MountOption> flyers = { { 1, 280, true } };
+    CHECK(PickMount(flyers) == -1);
+
+    std::vector<MountOption> unknown = { { 5, 0, false }, { 4, 0, false } };
+    CHECK(unknown[size_t(PickMount(unknown))].SpellId == 4);
 }

@@ -18,17 +18,23 @@
 #include "BotChat.h"
 #include "BotAI.h"
 #include "BotBehavior.h"
+#include "BotCombat.h"
 #include "BotEngine.h"
 #include "BotMgr.h"
 #include "BotSocial.h"
 #include "Chat.h"
+#include "Creature.h"
 #include "Config.h"
 #include "GameTime.h"
 #include "Group.h"
 #include "GroupMgr.h"
 #include "ObjectAccessor.h"
 #include "Optional.h"
+#include "Map.h"
 #include "Player.h"
+#include "SpellAuraDefines.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "Util.h"
@@ -44,8 +50,6 @@ namespace BotChat
 {
 namespace
 {
-enum class Verb : uint8 { None, Follow, Stay, Goto, Rest, Release, Status, Strategy, Verbose, Share };
-
 char const* VerbName(Verb v)
 {
     switch (v)
@@ -59,6 +63,15 @@ char const* VerbName(Verb v)
         case Verb::Strategy: return "strategy";
         case Verb::Verbose: return "verbose";
         case Verb::Share: return "share";
+        case Verb::Stop: return "stop";
+        case Verb::Aggressive: return "aggressive";
+        case Verb::Passive: return "passive";
+        case Verb::Pull: return "pull";
+        case Verb::Heal: return "heal";
+        case Verb::Mount: return "mount";
+        case Verb::Dismount: return "dismount";
+        case Verb::Summon: return "summon";
+        case Verb::Revive: return "revive";
         default: return "?";
     }
 }
@@ -68,6 +81,11 @@ char const* ChannelName(Channel c) { return c == Channel::Party ? "party" : c ==
 struct Cfg
 {
     bool Enabled = true;
+    bool Orders = false;            // Bot.Chat.Orders.Enabled: stop, aggressive, passive, pull, heal, mount, dismount, summon, revive
+    float PullRange = 60.0f;        // Bot.Chat.Orders.PullRangeYards
+    float HealRange = 40.0f;        // Bot.Chat.Orders.HealRangeYards (the heal spell's own range still applies)
+    float ReviveHealthPct = 35.0f;  // Bot.Chat.Orders.ReviveHealthPct
+    bool ReviveSickness = true;     // Bot.Chat.Orders.ReviveSickness
     bool VerboseDefault = false;
     uint32 MaxReplyLines = 4;
     uint32 UnauthLogSec = 30;
@@ -91,6 +109,11 @@ Cfg const& Config()
     {
         Cfg c;
         c.Enabled = sConfigMgr->GetBoolDefault("Bot.Chat.Enabled", true);
+        c.Orders = sConfigMgr->GetBoolDefault("Bot.Chat.Orders.Enabled", false);
+        c.PullRange = std::clamp(sConfigMgr->GetFloatDefault("Bot.Chat.Orders.PullRangeYards", 60.0f), 5.0f, 150.0f);
+        c.HealRange = std::clamp(sConfigMgr->GetFloatDefault("Bot.Chat.Orders.HealRangeYards", 40.0f), 5.0f, 100.0f);
+        c.ReviveHealthPct = std::clamp(sConfigMgr->GetFloatDefault("Bot.Chat.Orders.ReviveHealthPct", 35.0f), 1.0f, 100.0f);
+        c.ReviveSickness = sConfigMgr->GetBoolDefault("Bot.Chat.Orders.ReviveSickness", true);
         c.VerboseDefault = sConfigMgr->GetBoolDefault("Bot.Chat.VerboseDefault", false);
         c.MaxReplyLines = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Chat.MaxReplyLines", 4), 1, 10));
         c.UnauthLogSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Chat.UnauthorizedLogSec", 30), 0, 3600));
@@ -141,18 +164,6 @@ std::string_view NextToken(std::string_view& s)
     std::string_view tok = s.substr(0, n);
     s.remove_prefix(n);
     return tok;
-}
-
-Verb ParseVerb(std::string_view t)
-{
-    if (t.empty() || t.size() > 8)
-        return Verb::None;
-    static constexpr std::pair<char const*, Verb> verbs[] = { { "follow", Verb::Follow }, { "stay", Verb::Stay }, { "goto", Verb::Goto },
-        { "rest", Verb::Rest }, { "release", Verb::Release }, { "status", Verb::Status }, { "strategy", Verb::Strategy }, { "verbose", Verb::Verbose }, { "share", Verb::Share } };
-    for (auto const& [name, v] : verbs)
-        if (EqI(t, name))
-            return v;
-    return Verb::None;
 }
 
 bool ParseSelectorPart(std::string_view p, RoleMasks const& roles, Selector& s, bool allowPlural = true)
@@ -259,6 +270,91 @@ char const* ParseGotoArgs(std::string_view args, GotoArgs& out)
     }
     out = g;
     return nullptr;
+}
+
+Verb ParseVerb(std::string_view t, bool orders)
+{
+    if (t.empty() || t.size() > 10)
+        return Verb::None;
+    static constexpr std::pair<char const*, Verb> verbs[] = { { "follow", Verb::Follow }, { "stay", Verb::Stay }, { "goto", Verb::Goto },
+        { "rest", Verb::Rest }, { "release", Verb::Release }, { "status", Verb::Status }, { "strategy", Verb::Strategy }, { "verbose", Verb::Verbose }, { "share", Verb::Share } };
+    static constexpr std::pair<char const*, Verb> orderVerbs[] = { { "stop", Verb::Stop }, { "aggressive", Verb::Aggressive }, { "passive", Verb::Passive },
+        { "pull", Verb::Pull }, { "heal", Verb::Heal }, { "mount", Verb::Mount }, { "dismount", Verb::Dismount }, { "summon", Verb::Summon }, { "revive", Verb::Revive } };
+    for (auto const& [name, v] : verbs)
+        if (EqI(t, name))
+            return v;
+    if (orders)
+        for (auto const& [name, v] : orderVerbs)
+            if (EqI(t, name))
+                return v;
+    return Verb::None;
+}
+
+char const* ValidateOrderArgs(Verb verb, std::string_view args)
+{
+    switch (verb)
+    {
+        case Verb::Stop: case Verb::Aggressive: case Verb::Passive: case Verb::Pull: case Verb::Heal:
+        case Verb::Mount: case Verb::Dismount: case Verb::Summon: case Verb::Revive:
+            return Trim(args).empty() ? nullptr : "BAD_ARGS";
+        default:
+            return nullptr;
+    }
+}
+
+char const* RoleGate(Verb verb, uint8 classId, RoleMasks const& roles)
+{
+    if (classId >= 32)
+        return verb == Verb::Pull ? "NOT_TANK" : verb == Verb::Heal ? "NOT_HEALER" : nullptr;
+    uint32 const bit = 1u << classId;
+    if (verb == Verb::Pull && !(roles.Tank & bit))
+        return "NOT_TANK";
+    if (verb == Verb::Heal && !(roles.Healer & bit))
+        return "NOT_HEALER";
+    return nullptr;
+}
+
+void SpreadOffset(uint32 index, float& dx, float& dy)
+{
+    float const angle = float(index) * 2.399963f, radius = index ? 1.5f + 0.9f * std::sqrt(float(index)) : 0.0f;
+    dx = radius * std::cos(angle);
+    dy = radius * std::sin(angle);
+}
+
+char const* SummonCheck(SummonFacts const& f, bool revive)
+{
+    if (revive)
+    {
+        if (f.BotAlive)
+            return "NOT_DEAD";
+    }
+    else if (!f.BotAlive)
+        return "DEAD";
+    if (!f.IssuerAlive)
+        return "ISSUER_DEAD";
+    if (f.IssuerInCombat)
+        return "ISSUER_IN_COMBAT";
+    if (f.BotInCombat)
+        return "IN_COMBAT";
+    if (!f.SameMap && f.InstancedMapInvolved)
+        return "INSTANCE";
+    if (!revive && f.SameMap && f.Distance < 5.0f)
+        return "ALREADY_HERE";
+    return nullptr;
+}
+
+int32 PickMount(std::span<MountOption const> options)
+{
+    int32 best = -1;
+    for (size_t i = 0; i < options.size(); ++i)
+    {
+        MountOption const& o = options[i];
+        if (o.Flying || !o.SpellId)
+            continue;
+        if (best < 0 || o.Speed > options[size_t(best)].Speed || (o.Speed == options[size_t(best)].Speed && o.SpellId < options[size_t(best)].SpellId))
+            best = int32(i);
+    }
+    return best;
 }
 
 namespace
@@ -373,6 +469,8 @@ struct Ctx
     bool HasZ = false;
     std::vector<std::pair<bool, std::string>> Strat;  // add?, name
     uint32 QuestId = 0;                               // share
+    RoleMasks Roles;                                  // role gate of pull / heal
+    Unit* Target = nullptr;                           // pull, heal: the issuer's selected target (live during Handle only)
 };
 
 void Preflight(Ctx& c)
@@ -450,6 +548,10 @@ void Preflight(Ctx& c)
             if (!a.empty())
                 c.PreflightError = "BAD_ARGS";
             break;
+        case Verb::Stop: case Verb::Aggressive: case Verb::Passive: case Verb::Pull: case Verb::Heal:
+        case Verb::Mount: case Verb::Dismount: case Verb::Summon: case Verb::Revive:
+            c.PreflightError = ValidateOrderArgs(c.V, a);
+            break;
         default:
             break;
     }
@@ -462,6 +564,8 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
     BotAI* ai = m.AI;
     if (c.PreflightError)
         return c.PreflightError;
+    if (char const* gate = RoleGate(c.V, m.Class, c.Roles))
+        return gate;
 
     bool const alive = bot->IsAlive();
     switch (c.V)
@@ -506,9 +610,10 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
                 if (!issuer->IsInWorld() || issuer->GetMapId() != bot->GetMapId())
                     return "DIFFERENT_MAP";
                 // spread the bots on a spiral around the issuer so they do not all try to stand on one point
-                float const angle = float(index) * 2.399963f, radius = index ? 1.5f + 0.9f * std::sqrt(float(index)) : 0.0f;
-                x = issuer->GetPositionX() + radius * std::cos(angle);
-                y = issuer->GetPositionY() + radius * std::sin(angle);
+                float dx, dy;
+                SpreadOffset(index, dx, dy);
+                x = issuer->GetPositionX() + dx;
+                y = issuer->GetPositionY() + dy;
                 z = issuer->GetPositionZ();
             }
             ai->RemoveStrategy(bot, "stay", "chat");
@@ -545,6 +650,138 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
                 return "ALREADY_GHOST";
             ai->Recover().ReleaseDelayMs = 0;  // one shot: the next death rolls a new delay (ChangeState)
             return "OK";
+        case Verb::Stop:
+            if (!alive)
+                return "DEAD";
+            ai->Motion().SetFollow(ObjectGuid::Empty);
+            ai->Motion().ClearGoal();
+            ai->RemoveStrategy(bot, "goto", "chat");
+            if (ai->GetState() == BotState::NonCombat)
+            {
+                bot->AttackStop();
+                bot->StopMoving();
+            }
+            return "OK";
+        case Verb::Aggressive:
+            ai->SetPassive(false);
+            return "OK";
+        case Verb::Passive:
+            ai->SetPassive(true);
+            return "OK";
+        case Verb::Pull:
+        {
+            if (!alive)
+                return "DEAD";
+            Creature* mob = c.Target ? c.Target->ToCreature() : nullptr;
+            if (!c.Target)
+                return "NO_TARGET";
+            if (!mob || !mob->IsAlive() || !mob->IsInWorld() || !bot->IsValidAttackTarget(mob) || mob->IsFriendlyTo(bot))
+                return "NOT_HOSTILE";
+            if (mob->GetMap() != bot->GetMap())
+                return "DIFFERENT_MAP";
+            if (ai->GetState() == BotState::Combat || bot->IsInCombat())
+                return "IN_COMBAT";
+            if (bot->GetDistance(mob) > Config().PullRange)
+                return "OUT_OF_RANGE";
+            // the same opening as the quest pull (BotQuest.cpp): the Combat engine takes over on the next tick
+            bot->SetFacingToObject(mob);
+            bot->Attack(mob, true);
+            mob->EngageWithTarget(bot);
+            bot->SetInCombatWith(mob);
+            return "OK";
+        }
+        case Verb::Heal:
+        {
+            if (!alive)
+                return "DEAD";
+            if (!c.Target)
+                return "NO_TARGET";
+            if (!c.Target->IsAlive())
+                return "TARGET_DEAD";
+            if (!c.Target->IsInWorld() || c.Target->GetMap() != bot->GetMap())
+                return "DIFFERENT_MAP";
+            if (!bot->IsFriendlyTo(c.Target))
+                return "NOT_FRIENDLY";
+            if (bot->GetDistance(c.Target) > Config().HealRange)
+                return "OUT_OF_RANGE";
+            return BotCombatHealUnit(bot, c.Target);
+        }
+        case Verb::Mount:
+        {
+            if (!alive)
+                return "DEAD";
+            if (bot->IsMounted())
+                return "ALREADY_MOUNTED";
+            if (ai->GetState() == BotState::Combat || bot->IsInCombat())
+                return "IN_COMBAT";
+            std::vector<MountOption> options;
+            for (auto const& [id, spell] : bot->GetSpellMap())
+            {
+                if (spell.state == PLAYERSPELL_REMOVED || !spell.active)
+                    continue;
+                SpellInfo const* si = sSpellMgr->GetSpellInfo(id, DIFFICULTY_NONE);
+                if (!si || !si->HasAura(SPELL_AURA_MOUNTED))
+                    continue;
+                MountOption o;
+                o.SpellId = id;
+                for (SpellEffectInfo const& e : si->GetEffects())
+                {
+                    if (e.ApplyAuraName == SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED)
+                        o.Speed = std::max(o.Speed, e.CalcValueAsInt(bot));
+                    else if (e.ApplyAuraName == SPELL_AURA_MOD_INCREASE_FLIGHT_SPEED || e.ApplyAuraName == SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED)
+                        o.Flying = true;
+                }
+                options.push_back(o);
+            }
+            int32 const pick = PickMount(options);
+            if (pick < 0)
+                return "NO_MOUNT";
+            // stop the follow / goto leg: movement interrupts the cast
+            if (ai->Motion().HasGoal())
+                ai->Motion().ClearGoal();
+            bot->StopMoving();
+            return bot->CastSpell(bot, options[size_t(pick)].SpellId, CastSpellExtraArgs(TRIGGERED_NONE)) == SPELL_CAST_OK ? "OK" : "CANT_MOUNT";
+        }
+        case Verb::Dismount:
+            if (!alive)
+                return "DEAD";
+            if (!bot->IsMounted() && !bot->HasAuraType(SPELL_AURA_MOUNTED))
+                return "NOT_MOUNTED";
+            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+            bot->Dismount();
+            return "OK";
+        case Verb::Summon:
+        case Verb::Revive:
+        {
+            bool const revive = c.V == Verb::Revive;
+            SummonFacts f;
+            f.BotAlive = alive;
+            f.BotInCombat = bot->IsInCombat() || ai->GetState() == BotState::Combat;
+            f.IssuerAlive = issuer->IsAlive();
+            f.IssuerInCombat = issuer->IsInCombat();
+            f.SameMap = issuer->IsInWorld() && bot->IsInWorld() && issuer->GetMap() == bot->GetMap();
+            f.InstancedMapInvolved = issuer->IsInWorld() && ((bot->IsInWorld() && bot->GetMap()->Instanceable()) || issuer->GetMap()->Instanceable());
+            f.Distance = f.SameMap ? bot->GetDistance(issuer) : 0.0f;
+            if (char const* refusal = SummonCheck(f, revive))
+                return refusal;
+            if (!issuer->IsInWorld())
+                return "ISSUER_DEAD";
+            static bool const hardcore = sConfigMgr->GetBoolDefault("Classic.Hardcore", false);
+            if (revive && hardcore)
+                return "HARDCORE";
+            float dx, dy;
+            SpreadOffset(index, dx, dy);
+            if (revive)
+            {
+                // a ghost is brought back to life where it stands, then moved to the issuer like a summon
+                bot->ResurrectPlayer(Config().ReviveHealthPct / 100.0f, Config().ReviveSickness);
+                ai->Recover().Reset();
+            }
+            float const x = issuer->GetPositionX() + dx, y = issuer->GetPositionY() + dy;
+            ai->Motion().ClearGoal();
+            bot->TeleportTo(WorldLocation(issuer->GetMapId(), x, y, issuer->GetPositionZ(), issuer->GetOrientation()));
+            return "OK";
+        }
         case Verb::Strategy:
             for (auto const& [add, name] : c.Strat)
                 if (add)
@@ -649,7 +886,7 @@ bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whis
     RoleMasks const roles{ cfg.TankMask, cfg.HealerMask, cfg.DpsMask };
     bool const hasSel = ParseSelector(tok, roles, sel);
     std::string_view const selText = hasSel ? tok : std::string_view();
-    Verb const verb = ParseVerb(hasSel ? NextToken(rest) : tok);
+    Verb const verb = ParseVerb(hasSel ? NextToken(rest) : tok, cfg.Orders);
     if (verb == Verb::None)
         return false;
     std::string_view const args = Trim(rest);
@@ -748,7 +985,10 @@ bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whis
     Ctx ctx;
     ctx.V = verb;
     ctx.Args = args;
+    ctx.Roles = roles;
     Preflight(ctx);
+    if ((verb == Verb::Pull || verb == Verb::Heal) && !ctx.PreflightError)
+        ctx.Target = ObjectAccessor::GetUnit(*issuer, issuer->GetTarget());
 
     std::vector<char const*> codes;
     codes.reserve(targets.size());
