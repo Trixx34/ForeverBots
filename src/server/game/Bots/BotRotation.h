@@ -40,7 +40,8 @@ namespace BotRotation
         TargetFleeing,     // snares and roots
         Opener,            // the first Param seconds of the fight (Charge, Hunter's Mark, curse)
         TargetStrong,      // the target is an elite or Param or more levels above the bot: use cooldowns and debuffs on it
-        LifeTapSafe        // Life Tap: health above 60 percent and mana below Param percent
+        LifeTapSafe,       // Life Tap: health above 60 percent and mana below Param percent
+        Stealthed          // the bot is stealthed (openers that need it: Cheap Shot)
     };
 
     struct Facts
@@ -54,6 +55,7 @@ namespace BotRotation
         bool TargetElite = false;
         int32 TargetLevelDiff = 0;     // target level minus bot level
         uint32 FightMs = 0;            // time since the fight began
+        bool Stealthed = false;        // the bot carries a stealth aura
         bool Enabled = true;           // Bot.AI.Rotation.Enabled; with it off only Cond::Always rows pass (the old rotation)
     };
 

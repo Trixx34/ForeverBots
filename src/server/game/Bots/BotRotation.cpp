@@ -39,6 +39,7 @@ bool Allowed(Rule const& rule, Facts const& f)
         case Cond::Opener:         return f.FightMs < uint32(std::max(rule.Param, 0)) * 1000u;
         case Cond::TargetStrong:   return f.TargetElite || f.TargetLevelDiff >= std::max(rule.Param, 1);
         case Cond::LifeTapSafe:    return f.SelfHpPct > 60 && f.SelfPowerPct < rule.Param;
+        case Cond::Stealthed:      return f.Stealthed;
         default:                   return true;
     }
 }
@@ -59,6 +60,7 @@ char const* CondName(Cond c)
         case Cond::Opener:         return "opener";
         case Cond::TargetStrong:   return "target_strong";
         case Cond::LifeTapSafe:    return "life_tap_safe";
+        case Cond::Stealthed:      return "stealthed";
     }
     return "?";
 }

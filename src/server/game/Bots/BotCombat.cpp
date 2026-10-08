@@ -75,6 +75,7 @@ struct CombatConfig
     uint32 HoldMs = 3000;          // Bot.AI.Roles.HoldSec: non-tanks wait this long for the tank to gather threat before they open
     BotGroupRoles::Config Roles;   // Bot.AI.Roles.AllyHealBelowPct / TankHealBelowPct / EmergencyPct
     int32 FleeMode = 0;            // Bot.AI.Flee.Mode: 0 current, 1 aggro avoidance + fight to the end, 2 flee toward nearest friendly guard
+    bool Stealth = true;           // Bot.AI.Rotation.Stealth: rogues stealth before a pull (needs Bot.AI.Rotation.Enabled)
     bool Rotation = false;         // Bot.AI.Rotation.Enabled: full class rotations (conditional rows of the spell table); off = the old fixed spells
     int32 FleeAbMode = 1;          // Bot.AI.Flee.AbMode: the mode the experiment arm runs
     int32 FleeAbPct = 0;           // Bot.AI.Flee.AbPct: percent of bots (guid counter % 100 below it) on AbMode, 0 = everyone on Flee.Mode
@@ -102,6 +103,7 @@ CombatConfig const& Cfg()
         cfg.LowHpFleePct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.LowHpPct", 15), 0, 60));
         cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
         cfg.Rotation = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.Enabled", false);
+        cfg.Stealth = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.Stealth", true);
         cfg.GroupRoles = sConfigMgr->GetBoolDefault("Bot.AI.Roles.Enabled", false);
         cfg.HoldMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.HoldSec", 3), 0, 15)) * 1000;
         cfg.Roles.AllyHealBelowPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.AllyHealBelowPct", 80), 10, 99);
@@ -173,6 +175,8 @@ struct SpellDef
 
 using RC = BotRotation::Cond;
 
+constexpr uint32 SPELL_ROGUE_STEALTH = 1784;   // rank 1; the bot casts its highest known rank
+
 constexpr SpellDef SPELLS[] =
 {
     // Rows run in this order, one cast per tick (the first that passes). Rows with a condition (last field) belong to the full rotation
@@ -194,6 +198,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_ROGUE,   1766,  "Kick",                 Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
     { CLASS_ROGUE,   5277,  "Evasion",              Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 50 } },
     { CLASS_ROGUE,   5171,  "Slice and Dice",       Kind::Finisher, 0, 2, { RC::TargetHpAbove, 40 } },
+    { CLASS_ROGUE,   1833,  "Cheap Shot",           Kind::Direct, 0, 0, { RC::Stealthed, 0 } },   // the opener out of the stealth BotCombatPrePull casts
     { CLASS_ROGUE,   2098,  "Eviscerate",           Kind::Finisher, 0, 3 },
     { CLASS_ROGUE,   1752,  "Sinister Strike",      Kind::Direct },
     // Paladin: Divine Protection when hurt, Hammer of Justice on a caster, Consecration against several mobs
@@ -1353,6 +1358,7 @@ BotRotation::Facts RotationFacts(BotAI* ai, Player* bot, BotCombatCtx* ctx, Unit
     if (Creature const* c = target->ToCreature())
         f.TargetElite = c->IsElite();
     f.TargetLevelDiff = int32(target->GetLevel()) - int32(bot->GetLevel());
+    f.Stealthed = bot->HasAuraType(SPELL_AURA_MOD_STEALTH);
     f.FightMs = ai->GetNowMs() - ctx->StartMs;
     return f;
 }
@@ -1642,6 +1648,28 @@ bool BotCombatAvoids(Player const* bot, Creature const* mob)
 int32 BotCombatFleeMode(Player const* bot)
 {
     return bot ? FleeModeOf(bot) : Cfg().FleeMode;
+}
+
+bool BotCombatPrePull(Player* bot, Unit* target, float dist)
+{
+    if (!bot || !target || bot->GetClass() != CLASS_ROGUE || !Cfg().Rotation || !Cfg().Stealth || bot->IsInCombat() || bot->IsMounted())
+        return false;
+    bool const stealthed = bot->HasAuraType(SPELL_AURA_MOD_STEALTH);
+    if (dist > 45.0f)
+    {
+        // the approach was given up or the mob is far: do not keep walking slowed in stealth
+        if (stealthed)
+            bot->RemoveAurasByType(SPELL_AURA_MOD_STEALTH);
+        return false;
+    }
+    if (stealthed || dist > 30.0f || bot->IsNonMeleeSpellCast(false, false, true))
+        return false;
+    uint32 id = 0;
+    for (uint32 next = SPELL_ROGUE_STEALTH; next && bot->HasSpell(next); next = sSpellMgr->GetNextSpellInChain(next))
+        id = next;
+    if (!id || bot->GetSpellHistory()->HasCooldown(id))
+        return false;
+    return bot->CastSpell(bot, id, CastSpellExtraArgs(TRIGGERED_NONE)) == SPELL_CAST_OK;
 }
 
 uint32 BotCombatPrePullManaPct()

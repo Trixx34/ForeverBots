@@ -103,9 +103,17 @@ TEST_CASE("BotRotation: conditions", "[BotRotation]")
         f.SelfPowerPct = 30;
         CHECK_FALSE(Ok(Cond::LifeTapSafe, 30, f));
     }
+    SECTION("Stealthed needs the stealth aura and the rotation")
+    {
+        CHECK_FALSE(Ok(Cond::Stealthed, 0, f));
+        f.Stealthed = true;
+        CHECK(Ok(Cond::Stealthed, 0, f));
+        f.Enabled = false;
+        CHECK_FALSE(Ok(Cond::Stealthed, 0, f));
+    }
     SECTION("every condition has a name")
     {
-        for (uint8 i = 0; i <= uint8(Cond::LifeTapSafe); ++i)
+        for (uint8 i = 0; i <= uint8(Cond::Stealthed); ++i)
             CHECK(std::string(CondName(Cond(i))) != "?");
     }
 }

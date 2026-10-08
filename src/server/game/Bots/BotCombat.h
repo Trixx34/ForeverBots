@@ -33,6 +33,11 @@ class Unit;
 // with an almost empty pool (used by the rest strategy together with Bot.AI.Rest.DrinkBelowPct, the higher one wins).
 TC_GAME_API uint32 BotCombatPrePullManaPct();
 
+// Bot.AI.Rotation.Stealth (needs Bot.AI.Rotation.Enabled): called by the quest layer while a rogue approaches a mob it will pull. Within 30
+// yards the rogue casts Stealth (its highest known rank); farther than 45 yards a stealth left over from an abandoned approach is cancelled.
+// Returns true when Stealth was cast.
+TC_GAME_API bool BotCombatPrePull(Player* bot, Unit* target, float dist);
+
 // Death avoidance (Bot.AI.Avoid.*, docs/playerbots/death-avoidance-20261008.md): true when `mob` is on the configured avoid list and
 // more than Bot.AI.Avoid.MaxLevelGap levels above the bot. Quest/grind target choice skips such mobs, the combat target choice fights
 // them last.

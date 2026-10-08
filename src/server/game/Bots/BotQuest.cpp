@@ -4983,6 +4983,7 @@ private:
             return true;
         }
 
+        BotCombatPrePull(bot, m, d);
         bool const inReach = IsMeleeClass(bot) ? (d <= range || bot->IsWithinMeleeRange(m)) : (d <= range && bot->IsWithinLOSInMap(m));
         if (inReach)
         {
