@@ -3081,11 +3081,13 @@ private:
         }
         bot->SetFacingToObject(usable);
         uint32 const itemBefore = obj->Type == QUEST_OBJECTIVE_ITEM ? bot->GetItemCount(uint32(obj->ObjectID), true) : 0;
+        int32 const objBefore = bot->GetQuestObjectiveData(*obj);
         usable->Use(bot);
         bool const lootTaken = LootGameObject(bot, usable);
-        if (lootTaken && obj->Type == QUEST_OBJECTIVE_ITEM && bot->GetItemCount(uint32(obj->ObjectID), true) <= itemBefore)
+        if (lootTaken && obj->Type == QUEST_OBJECTIVE_ITEM && bot->GetItemCount(uint32(obj->ObjectID), true) <= itemBefore &&
+            bot->GetQuestObjectiveData(*obj) <= objBefore)
         {
-            // M4: the loot window was emptied for us but nothing arrived (bags full, unique item): not a success
+            // M4: the loot window was emptied for us but neither the item count nor the quest objective moved (bags full, unique item): not a success
             ItemPosCountVec dest;
             bool const bagsFull = bot->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, uint32(obj->ObjectID), 1) != EQUIP_ERR_OK;
             if (bagsFull)
