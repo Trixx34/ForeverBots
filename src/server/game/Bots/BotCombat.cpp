@@ -78,6 +78,7 @@ struct CombatConfig
     uint32 HoldMs = 3000;          // Bot.AI.Roles.HoldSec: non-tanks wait this long for the tank to gather threat before they open
     BotGroupRoles::Config Roles;   // Bot.AI.Roles.AllyHealBelowPct / TankHealBelowPct / EmergencyPct
     int32 FleeMode = 0;            // Bot.AI.Flee.Mode: 0 current, 1 aggro avoidance + fight to the end, 2 flee toward nearest friendly guard
+    bool DruidBear = false;        // Bot.AI.Rotation.DruidBear: with DruidForms the druid prefers Bear (Dire Bear) Form to Cat Form (tankier, less damage)
     bool DruidForms = false;       // Bot.AI.Rotation.DruidForms (needs Bot.AI.Rotation.Enabled): druids fight in Bear Form once they know it
     bool Rotation = false;         // Bot.AI.Rotation.Enabled: full class rotations (conditional rows of the spell table); off = the old fixed spells
     int32 FleeAbMode = 1;          // Bot.AI.Flee.AbMode: the mode the experiment arm runs
@@ -117,6 +118,7 @@ CombatConfig const& Cfg()
         cfg.AvoidMaxGap = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Avoid.MaxLevelGap", 1), -1, 10);
         cfg.AvoidEntries = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.AI.Avoid.Entries", "116,822,250927,79"));
         cfg.DruidForms = cfg.Rotation && sConfigMgr->GetBoolDefault("Bot.AI.Rotation.DruidForms", false);
+        cfg.DruidBear = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.DruidBear", false);
     });
     return cfg;
 }
@@ -272,14 +274,17 @@ constexpr SpellDef SPELLS[] =
     // Druid: Cat Form (level 20) or Bear Form (level 10) with Bot.AI.Rotation.DruidForms: Rip / Ferocious Bite / Rake / Claw, or Maul / Swipe / Demoralizing Roar; unshifted: Thorns at the start, Moonfire, Wrath,
     // Healing Touch (a bear that needs a heal leaves its form first). Barkskin works in every form.
     { CLASS_DRUID,   768,   "Cat Form",             Kind::Shift },    // preferred once known (level 20); Bear Form until then
+    { CLASS_DRUID,   9634,  "Dire Bear Form",       Kind::Shift },    // level 40; Bear Form is the fallback below it. Only reached with Bot.AI.Rotation.DruidBear (Cat Form comes first otherwise)
     { CLASS_DRUID,   5487,  "Bear Form",            Kind::Shift },
     { CLASS_DRUID,   22812, "Barkskin",             Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 50 } },
     { CLASS_DRUID,   779,   "Swipe",                Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 }, FORM_BEAR_FORM },
     { CLASS_DRUID,   99,    "Demoralizing Roar",    Kind::Debuff, 0, 0, { RC::EnemiesAtLeast, 2 }, FORM_BEAR_FORM },
     { CLASS_DRUID,   6807,  "Maul",                 Kind::Direct, 0, 0, {}, FORM_BEAR_FORM },
+    { CLASS_DRUID,   5217,  "Tiger's Fury",         Kind::SelfBuff, 0, 0, { RC::TargetStrong, 2 }, FORM_CAT_FORM },
     { CLASS_DRUID,   1079,  "Rip",                  Kind::Finisher, 0, 3, { RC::TargetHpAbove, 50 }, FORM_CAT_FORM },
     { CLASS_DRUID,   22568, "Ferocious Bite",       Kind::Finisher, 0, 4, {}, FORM_CAT_FORM },
     { CLASS_DRUID,   1822,  "Rake",                 Kind::Dot, 0, 0, { RC::TargetHpAbove, 40 }, FORM_CAT_FORM },
+    { CLASS_DRUID,   5221,  "Shred",                Kind::Direct, 0, 0, {}, FORM_CAT_FORM },   // needs a position behind the target: fails with NOT_BEHIND otherwise and the next row runs
     { CLASS_DRUID,   1082,  "Claw",                 Kind::Direct, 0, 0, {}, FORM_CAT_FORM },
     { CLASS_DRUID,   467,   "Thorns",               Kind::SelfBuff, 0, 0, { RC::Opener, 10 }, FORM_NONE },
     { CLASS_DRUID,   770,   "Faerie Fire",          Kind::Debuff, 0, 0, { RC::TargetStrong, 2 }, FORM_NONE },
@@ -1080,7 +1085,7 @@ public:
         }
         // a druid in Bear or Cat Form fights like a melee class
         ShapeshiftForm const shape = bot->GetShapeshiftForm();
-        Role const role = ctx->BotRole == Role::Caster && (shape == FORM_BEAR_FORM || shape == FORM_CAT_FORM) ? Role::Melee : ctx->BotRole;
+        Role const role = ctx->BotRole == Role::Caster && (shape == FORM_BEAR_FORM || shape == FORM_DIRE_BEAR_FORM || shape == FORM_CAT_FORM) ? Role::Melee : ctx->BotRole;
         if (role != Role::Melee && !ctx->MeleeFallback && !ctx->RangedBroken)
         {
             if (Resolved const* primary = RangedPrimary(ctx))
@@ -1433,7 +1438,8 @@ public:
         bool const inMelee = bot->IsWithinMeleeRange(target);
         bool const moving = bot->isMoving();
         bool skippedForPower = false;
-        uint8 const form = uint8(bot->GetShapeshiftForm());
+        uint8 const rawForm = uint8(bot->GetShapeshiftForm());
+        uint8 const form = rawForm == FORM_DIRE_BEAR_FORM ? uint8(FORM_BEAR_FORM) : rawForm;   // Dire Bear Form runs the Bear rows
         BotRotation::Facts const facts = RotationFacts(ai, bot, ctx, target);
 
         for (Resolved const& r : ctx->Spells)
@@ -1444,7 +1450,7 @@ public:
             // the tank warrior of a group (Bot.AI.Roles.*) holds Defensive Stance: the Battle Stance row of the table must not undo it
             if (kind == Kind::SelfBuff && r.Def->Root == 2457 && Cfg().GroupRoles && bot->HasAura(71))
                 continue;
-            if (kind == Kind::Shift ? (!Cfg().DruidForms || form != uint8(FORM_NONE)) : (r.Def->Form != FORM_ANY && r.Def->Form != form))
+            if (kind == Kind::Shift ? (!Cfg().DruidForms || rawForm != uint8(FORM_NONE) || (Cfg().DruidBear && r.Def->Root == 768)) : (r.Def->Form != FORM_ANY && r.Def->Form != form))
                 continue;
             if (r.Id == ctx->BlockSpell && ai->GetNowMs() < ctx->BlockUntilMs)
             {
