@@ -29,6 +29,7 @@
 #include "BotBehavior.h"
 #include "BotEngine.h"
 #include "BotMgr.h"
+#include "BotPet.h"
 #include "Config.h"
 #include "Creature.h"
 #include "CreatureData.h"
@@ -283,6 +284,7 @@ class IndexLookup final : public QuestWorldLookup
 {
 public:
     bool HasSpawn(uint32 creatureEntry) const override { return BotQuest::HasSpawn(creatureEntry); }
+    bool EventQuestSupported(uint32 questId) const override { return BotPet::SupportsEventQuest(questId); }
 
     std::vector<uint32> KillEntries(uint32 creditEntry) const override
     {
@@ -1176,6 +1178,12 @@ public:
         BotQuestCtx& c = *cp;
         uint32 const now = ai->GetNowMs();
         ++c.ExecCalls;
+
+        if (BotPet::Busy(ai)) // a taming run holds the bot
+        {
+            c.Why = "taming";
+            return false;
+        }
 
         if (!bot->IsAlive())
         {
