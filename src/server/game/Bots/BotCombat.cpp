@@ -43,6 +43,7 @@
 #include "StringFormat.h"
 #include "Util.h"
 #include <algorithm>
+#include <unordered_map>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -148,6 +149,8 @@ constexpr SpellDef SPELLS[] =
     // and only run with Bot.AI.Rotation.Enabled (docs/playerbots/feature-bot-class-rotations-20261008.md). Spell ids are rank 1; a row whose
     // id is missing or whose name differs is dropped at startup and logged, and a spell the bot has not learned yet is skipped.
     // Warrior: Charge to open, Battle Shout, Bloodrage when rage-starved, Execute, area and debuff moves, Rend (Battle Stance), Heroic Strike (next melee swing)
+    // Battle Stance first: Charge, Rend and Overpower need it, and the bots use no other stance (a bot that is in another stance switches back)
+    { CLASS_WARRIOR, 2457,  "Battle Stance",        Kind::SelfBuff },
     { CLASS_WARRIOR, 100,   "Charge",               Kind::Direct, 0, 0, { RC::Opener, 8 } },
     { CLASS_WARRIOR, 6673,  "Battle Shout",         Kind::SelfBuff },
     { CLASS_WARRIOR, 2687,  "Bloodrage",            Kind::SelfBuff, 0, 0, { RC::SelfPowerBelow, 20 } },
@@ -349,7 +352,7 @@ struct FightData
     uint32 IgnoredUntilMs = 0;
     uint32 Picked = 0, TargetsDead = 0, Casts = 0, CastFails = 0, Heals = 0;
     uint32 LastHealMs = 0;
-    uint32 LastBuffMs = 0;           // self buffs are not recast within 25 s (the aura id may differ from the spell id)
+    std::unordered_map<uint32, uint32> LastBuffMs;   // spell id -> time of the last cast: a self buff is not recast within 25 s (the aura id may differ from the spell id); per spell, so a stance never starves Battle Shout
     uint32 NoPowerSkips = 0;
     bool NoPowerLogged = false;
     bool NoTargetLogged = false;
@@ -1159,6 +1162,12 @@ uint32 BuffRecastMs(BotCombatCtx* ctx, Resolved const& r)
     return 25000;
 }
 
+bool BuffRecentlyCast(BotAI* ai, BotCombatCtx* ctx, Resolved const& r)
+{
+    auto it = ctx->LastBuffMs.find(r.Id);
+    return it != ctx->LastBuffMs.end() && ai->GetNowMs() - it->second < BuffRecastMs(ctx, r);
+}
+
 // Facts for the rotation conditions (BotRotation.h), read once per cast tick.
 BotRotation::Facts RotationFacts(BotAI* ai, Player* bot, BotCombatCtx* ctx, Unit* target)
 {
@@ -1211,11 +1220,11 @@ public:
             }
             if (kind == Kind::SelfBuff)
             {
-                if (bot->HasAura(r.Id) || !Ready(bot, r) || !Affordable(bot, r.Info) || (ctx->LastBuffMs && ai->GetNowMs() - ctx->LastBuffMs < BuffRecastMs(ctx, r)))
+                if (bot->HasAura(r.Id) || !Ready(bot, r) || !Affordable(bot, r.Info) || BuffRecentlyCast(ai, ctx, r))
                     continue;
                 if (TryCast(ai, bot, ctx, r, nullptr))
                 {
-                    ctx->LastBuffMs = ai->GetNowMs();
+                    ctx->LastBuffMs[r.Id] = ai->GetNowMs();
                     return true;
                 }
                 continue;
