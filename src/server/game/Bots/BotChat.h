@@ -66,7 +66,7 @@ TC_GAME_API bool ParseSelector(std::string_view token, RoleMasks const& roles, S
 
 enum class Verb : uint8
 {
-    None, Follow, Stay, Goto, Rest, Release, Status, Strategy, Verbose, Share,
+    None, Follow, Stay, Goto, Rest, Release, Status, Strategy, Verbose, Share, Dummy,
     Stop, Aggressive, Passive, Pull, Heal, Mount, Dismount, Summon, Revive   // orders (Bot.Chat.Orders.Enabled)
 };
 

@@ -5012,6 +5012,22 @@ Bot.AI.Death.GiveUpSec = 300
 #                     emergency and comes first.
 #        Default:     80 / 90 / 35
 #
+#    Bot.AI.Dummy.Enabled
+#        Description: Training dummy mode: the chat verb "dummy [seconds]" makes a bot summon an immortal, harmless dummy of its own level and
+#                     fight it with its normal combat code; "dummy off" ends the run. The log gets DUMMY_START and DUMMY_SUMMARY (damage per
+#                     spell, dps, time to the first hit, longest gap without a hit). For tuning the class rotations (Bot.AI.Rotation.Enabled)
+#                     without a sim run. Needs sql/custom/world/2026_10_08_04_world_forever_bot_dummy.sql. See
+#                     docs/playerbots/feature-bot-dummy-20261008.md.
+#        Default:     0 - Off
+#
+#    Bot.AI.Dummy.Entry / Bot.AI.Dummy.DefaultSec / Bot.AI.Dummy.MaxSec
+#        Description: Creature entry of the dummy, run length without an argument, longest run a command may ask for (seconds).
+#        Default:     9900001 / 60 / 600
+#
+#    Bot.AI.Dummy.FullPower
+#        Description: Refill mana, energy and health every second during a run, so the numbers show the rotation and not the mana pool.
+#        Default:     1 - On
+#
 #    Bot.AI.Loot.Improved.Enabled
 #        Description: Improved chest loot task of the quest strategy: spawn choice by path cost, skip far spawns and recently deadly areas,
 #                     per-bot spawn blacklist, bag-space check with a planned vendor trip, loot exits never feed the quest quarantine.
@@ -5089,6 +5105,12 @@ Bot.AI.Ammo.LowCount = 60
 Bot.AI.Ammo.BuyTarget = 400
 Bot.AI.Ammo.CooldownSec = 300
 Bot.Talents.Premade.Enabled = 0
+Bot.AI.Dummy.Enabled = 0
+Bot.AI.Dummy.Entry = 9900001
+Bot.AI.Dummy.DefaultSec = 60
+Bot.AI.Dummy.MaxSec = 600
+Bot.AI.Dummy.FullPower = 1
+
 Bot.AI.Loot.Improved.Enabled = 0
 Bot.AI.Loot.Improved.MaxYards = 150
 Bot.AI.Loot.Improved.DeadlyRadius = 40
