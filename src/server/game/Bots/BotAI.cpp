@@ -165,6 +165,8 @@ BotAIConfig const& BotAI::Config()
         _config.AggroLogSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.AggroAvoid.LogIntervalSec", 15), 1, 3600));
         _config.AggroMaxSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.AggroAvoid.MaxSec", 45), 5, 600));
         _config.TickStatsSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.AiTickStatsSec", 60), 0, 3600));
+        _config.PullDetail = sConfigMgr->GetBoolDefault("Bot.Log.PullDetail", true);
+        _config.IdleReasons = sConfigMgr->GetBoolDefault("Bot.Log.IdleReasons", true);
         _enabled.store(_config.Enabled, std::memory_order_relaxed);
         TC_LOG_INFO("server.worldserver", "Bot AI: {}, tick {} ms, test strategy {}", _config.Enabled ? "enabled" : "disabled", _config.TickMs,
             _config.TestStrategy ? "on" : "off");
@@ -1071,6 +1073,24 @@ void BotAI::EmitFightStart(Player* bot)
         if (target)
         {
             d += Trinity::StringFormat(R"(,"mob_pos":{{"x":{:.1f},"y":{:.1f},"z":{:.1f}}})", target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+            if (Config().PullDetail)
+            {
+                // Why the fight started. bot_pull: the bot attacked first. mob_aggro: the mob came for the bot from inside its own aggro
+                // radius. mob_outside_radius: the mob attacked from beyond the radius (social call for help / assist / leash chain).
+                // mob_not_on_bot: the mob is fighting somebody else (the bot joined or was hit by a pack member).
+                float const dist = bot->GetDistance(target);
+                float aggroRange = 0.0f;
+                if (Creature* c = target->ToCreature())
+                    aggroRange = c->GetAttackDistance(bot);
+                char const* cause = "unknown";
+                if (_fight.First == 2)
+                    cause = "bot_pull";
+                else if (target->GetVictim() && target->GetVictim() != bot)
+                    cause = "mob_not_on_bot";
+                else if (aggroRange > 0.0f)
+                    cause = dist <= aggroRange + 1.0f ? "mob_aggro" : "mob_outside_radius";
+                d += Trinity::StringFormat(R"(,"aggro_cause":"{}","aggro_range":{:.1f},"pull_dist":{:.1f})", cause, aggroRange, dist);
+            }
             std::list<Unit*> around;
             Trinity::AnyUnfriendlyUnitInObjectRangeCheck check(target, bot, 20.0f);
             Trinity::UnitListSearcher<Trinity::AnyUnfriendlyUnitInObjectRangeCheck> searcher(target, around, check);
@@ -1714,9 +1734,17 @@ void BotAI::EmitTickStats(Player* bot)
                 double(e.Ns) / double(e.N) / 1e6, double(e.MaxNs) / 1e6);
         e = EngStat();
     }
+    std::string idle;
+    if (Config().IdleReasons)
+        for (uint32 st = 0; st < 3; ++st)
+        {
+            std::string const j = _engines[st]->TakeIdleJson();
+            if (!j.empty())
+                idle += Trinity::StringFormat(R"({}"{}":{})", idle.empty() ? "" : ",", BotStateName(BotState(st)), j);
+        }
     if (!total)
         return;
     BotEvent event = MakeEvent(bot, "ai_stats", BOTLOG_INFO, "AI_TICK_STATS", Trinity::StringFormat("engine tick cost over {} s ({} ticks)", windowS, total));
-    event.Details = Trinity::StringFormat(R"({{"window_s":{},"engines":{{{}}}}})", windowS, engines);
+    event.Details = Trinity::StringFormat(R"({{"window_s":{},"engines":{{{}}},"no_action":{{{}}}}})", windowS, engines, idle);
     Emit(std::move(event));
 }

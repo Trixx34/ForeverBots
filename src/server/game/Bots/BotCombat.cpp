@@ -451,6 +451,13 @@ void BotCombatCtx::End(Player* bot)
                 BotStateName(ai->GetState()));
         // per-spell breakdown (casts, hits, damage, power) and unused spells, appended inside the details object
         summaryJson.pop_back();
+        if (BotAI::Config().PullDetail)
+        {
+            // fight_id joins this row to COMBAT_START / COMBAT_END; outcome is this stay's result; casts_ok totals the successful casts
+            char const* outcome = !bot->IsAlive() ? "bot_died" : (Fleeing || FleeGaveUp) ? "fled" : (Picked && TargetsDead >= Picked) ? "all_targets_dead" :
+                TargetsDead ? "partial_kills" : Picked ? "no_kill" : "no_target";
+            summaryJson += StringFormat(R"(,"fight_id":"{}","outcome":"{}","casts_ok":{})", ai->CurrentFightId(), outcome, Casts);
+        }
         summaryJson += "," + ai->TakeSpellBreakdownJson(bot) + "}";
         ai->EmitEvent(bot, "decision", BOTLOG_INFO, "COMBAT_SUMMARY",
             StringFormat("combat strategy: {} target(s), {} cast(s), {} failed", Picked, Casts, CastFails), std::move(summaryJson));
