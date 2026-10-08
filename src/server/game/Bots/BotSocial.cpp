@@ -18,6 +18,7 @@
 #include "BotSocial.h"
 #include "BotAI.h"
 #include "BotMgr.h"
+#include "BotTradeLink.h"
 #include "Config.h"
 #include "Group.h"
 #include "Log.h"
@@ -186,9 +187,10 @@ void OnTradePlayerAccepted(Player* player, Player* bot)
     if (!mine || !theirs)
         return;
 
-    uint32 n = 0;
+    uint32 n = 0, nMine = 0;
     Offer(theirs, n);
-    if (!n && !theirs->GetMoney())
+    Offer(mine, nMine);   // items the bot put in itself (BotTradeLink)
+    if (!n && !nMine && !theirs->GetMoney())
         return RefuseTrade(player, bot, "TRADE_REFUSED_EMPTY", "empty offer");
 
     // The bot accepts with the state index of the player's side (what a client echoes back); on success the core completes the trade
@@ -219,6 +221,7 @@ void OnTradeExecuting(Player* player, Player* other)
         TradeData* theirs = partner->GetTradeData();
         if (!mine || !theirs)
             continue;
+        BotTradeLink::OnTradeExecuting(partner, bot);
         uint32 nOut = 0, nIn = 0;
         std::string const out = Offer(mine, nOut);
         std::string const in = Offer(theirs, nIn);
@@ -229,6 +232,7 @@ void OnTradeExecuting(Player* player, Player* other)
 
 void Update(uint32 diff)
 {
+    BotTradeLink::Update(diff);
     if (OpenTrades.empty())
         return;
     for (size_t i = 0; i < OpenTrades.size();)

@@ -5030,6 +5030,26 @@ Bot.Chat.Role.Dps = "rogue,mage,warlock,hunter"
 #        Description: Seconds a trade opened towards an alt bot may stay open before the bot cancels it (10-600).
 #        Default:     90
 #
+#    Bot.Trade.Link.Enabled
+#        Description: A party member who links items in party chat gets a trade from the bots of the group: for every linked
+#                     item the nearby bot carrying the most of it (tradable stacks only, never equipped, soulbound or quest
+#                     items) proposes a trade and puts the largest stack in the window. The player opens and confirms the
+#                     window, the bot accepts. Alt bots only trade with their owner account. Needs Bot.Trade.Enabled.
+#        Default:     0 - Disabled
+#
+#    Bot.Trade.Link.MaxItems / Bot.Trade.Link.MaxTrades
+#        Description: Linked items read from one message (1-30) and trade windows opened for one message (1-10, six items
+#                     per window).
+#        Default:     12 / 3
+#
+#    Bot.Trade.Link.MaxYards
+#        Description: A bot farther than this from the player does not respond (1-10.6).
+#        Default:     10
+#
+#    Bot.Trade.Link.TimeoutSeconds
+#        Description: Seconds a proposed item trade may stay open before the bot cancels it (10-600).
+#        Default:     60
+#
 #    Bot.Social.QuestShare.LogEach
 #        Description: Log one quest_share bot_event per receiver of a bot's quest share. Off: one summary row per share
 #                     command (accepted count, refused count per reason); "verbose on" of the issuer also logs each receiver.
@@ -5042,6 +5062,11 @@ Bot.Alt.Default.NonCombat = "rest,follow,goto"
 Bot.Invite.Enabled = 1
 Bot.Trade.Enabled = 1
 Bot.Trade.TimeoutSeconds = 90
+Bot.Trade.Link.Enabled = 0
+Bot.Trade.Link.MaxItems = 12
+Bot.Trade.Link.MaxTrades = 3
+Bot.Trade.Link.MaxYards = 10
+Bot.Trade.Link.TimeoutSeconds = 60
 Bot.Social.QuestShare.LogEach = 0
 #
 ###################################################################################################

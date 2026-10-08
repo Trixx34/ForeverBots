@@ -20,6 +20,7 @@
 #include "Channel.h"
 #include "ChannelMgr.h"
 #include "BotChat.h"
+#include "BotTradeLink.h"
 #include "Chat.h"
 #include "ChatPackets.h"
 #include "Common.h"
@@ -366,6 +367,7 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
             packet.Initialize(ChatMsg(type), lang, sender, nullptr, msg);
             group->BroadcastPacket(packet.Write(), false, group->GetMemberGroup(GetPlayer()->GetGUID()));
             BotChat::Handle(GetPlayer(), BotChat::Channel::Party, msg);
+            BotTradeLink::OnPartyChat(GetPlayer(), msg);
             break;
         }
         case CHAT_MSG_GUILD:
