@@ -66,6 +66,10 @@ namespace BotQuest
         virtual bool ItemHasSpawnedGameObject(uint32 item) const = 0;
         // the item sits in a chest game object, spawned or not
         virtual bool ItemHasGameObjectSource(uint32 item) const = 0;
+        // Bot.Quest.UseObjects: "use this object" objectives are worked. Default: off (such a quest is OBJECTIVE_UNSUPPORTED).
+        virtual bool UseObjectObjectives() const { return false; }
+        // a game object of this entry the quest asks the player to use has a spawn. Default: none.
+        virtual bool GameObjectHasSpawn(uint32 /*goEntry*/) const { return false; }
         virtual bool HasEnderRow(uint32 questId) const = 0;
         virtual bool HasEnderSpawn(uint32 questId) const = 0;
         // a completion-event quest the bots can finish anyway (hunter taming). Default: none.

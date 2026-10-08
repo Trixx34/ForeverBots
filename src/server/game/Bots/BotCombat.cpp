@@ -286,6 +286,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_SHAMAN,  8042,  "Earth Shock",          Kind::Direct },
     { CLASS_SHAMAN,  403,   "Lightning Bolt",       Kind::Direct },
     { CLASS_SHAMAN,  331,   "Healing Wave",         Kind::Heal },
+    { CLASS_SHAMAN,  8004,  "Lesser Healing Wave",  Kind::Heal },
     // Druid: Cat Form (level 20) or Bear Form (level 10) with Bot.AI.Rotation.DruidForms: Rip / Ferocious Bite / Rake / Claw, or Maul / Swipe / Demoralizing Roar; unshifted: Thorns at the start, Moonfire, Wrath,
     // Healing Touch (a bear that needs a heal leaves its form first). Barkskin works in every form.
     { CLASS_DRUID,   768,   "Cat Form",             Kind::Shift },    // preferred once known (level 20); Bear Form until then
@@ -309,6 +310,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_DRUID,   5176,  "Wrath",                Kind::Direct, 0, 0, {}, FORM_NONE },
     { CLASS_DRUID,   774,   "Rejuvenation",         Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 85 }, FORM_NONE },
     { CLASS_DRUID,   5185,  "Healing Touch",        Kind::Heal, 0, 0, {}, FORM_NONE },
+    { CLASS_DRUID,   8936,  "Regrowth",             Kind::Heal, 0, 0, {}, FORM_NONE },
 };
 
 Role RoleOf(uint8 cls)

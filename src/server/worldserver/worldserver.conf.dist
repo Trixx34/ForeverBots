@@ -4814,6 +4814,11 @@ Bot.AI.Default.NonCombat = "rest,goto,follow"
 #        Description: Kill targets more than this many levels above the bot (elites count +Bot.AI.Combat.EliteLevelBonus) are skipped.
 #        Default:     2
 #
+#    Bot.Quest.UseObjects
+#        Description: Quests whose objective is to use a game object (levers, goobers, clickable objects) are worked: the bot walks to a
+#                     spawn of the object and uses it, like a quest chest. Off: such quests stay OBJECTIVE_UNSUPPORTED.
+#        Default:     0 - Off
+#
 #    Bot.Quest.SelectRadius / Bot.Quest.FarRadius
 #        Description: Yards searched for a quest giver (near pass, then far pass).
 #        Default:     350 / 1500
@@ -4867,6 +4872,46 @@ Bot.AH.MaxListingsPerBot = 5
 Bot.AH.MaxListingsTotal = 2000
 Bot.AH.UndercutPct = 5
 Bot.AH.VisitCooldownSec = 900
+#
+#    Bot.Bank.Enabled
+#        Description: Bots with tight bags (see FreeSlotsBelow) walk to a banker and deposit materials, gems and recipes (never quest items,
+#                     gear, consumables or reagents of recipes they craft), and fetch back gear upgrades that sit in the bank. Logged as
+#                     BANK_TRIP, BANK_DEPOSIT, BANK_WITHDREW, BANK_VISIT. Bank and mail calls run on the world thread.
+#        Default:     0 - (Disabled)
+#
+#    Bot.Bank.FreeSlotsBelow / Bot.Bank.FreeSlotsTarget / Bot.Bank.MaxStacksPerVisit
+#        Description: A bank trip is due at this many free bag slots or fewer / a deposit aims for this many free slots / most stacks moved
+#                     in one visit.
+#        Default:     4 / 10 / 12
+#
+#    Bot.Bank.VisitCooldownSec
+#        Description: Seconds between two bank or mailbox visits of one bot.
+#        Default:     600
+#
+#    Bot.Bank.Mail.Enabled
+#        Description: A bot with gold above Bot.Bank.Mail.ReserveGold mails the surplus to Bot.Bank.Mail.Recipient at a mailbox (30 copper
+#                     postage). Needs a recipient. Logged as MAIL_TRIP, MAIL_SENT, MAIL_NO_RECIPIENT.
+#        Default:     0 - (Disabled)
+#
+#    Bot.Bank.Mail.Recipient
+#        Description: Character name that receives the gold. Empty = no mail.
+#        Default:     ""
+#
+#    Bot.Bank.Mail.ReserveGold / Bot.Bank.Mail.MinGold / Bot.Bank.Mail.MaxGold
+#        Description: Gold a bot keeps / surplus above the reserve that makes a mail worth the trip / cap of one mail (0 = no cap).
+#        Default:     50 / 20 / 0
+#
+
+Bot.Bank.Enabled = 0
+Bot.Bank.FreeSlotsBelow = 4
+Bot.Bank.FreeSlotsTarget = 10
+Bot.Bank.MaxStacksPerVisit = 12
+Bot.Bank.VisitCooldownSec = 600
+Bot.Bank.Mail.Enabled = 0
+Bot.Bank.Mail.Recipient = ""
+Bot.Bank.Mail.ReserveGold = 50
+Bot.Bank.Mail.MinGold = 20
+Bot.Bank.Mail.MaxGold = 0
 Bot.Quest.StallSec = 240
 Bot.Quest.MaxMobLevelDiff = 2
 Bot.Quest.SelectRadius = 350
@@ -4919,6 +4964,17 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: Health percent / mana percent below which a potion is drunk in combat.
 #        Default:     35 / 20
 #
+#    Bot.Quest.Reputation.Enabled
+#        Description: Reputation rewards weigh into the quest choice. Quests that raise a faction the bot can still gain with score
+#                     higher (half once Revered, none at Exalted or past the quest's cap rank), quests that lower a faction score lower,
+#                     and a quest that would push a faction to Hostile or worse is never taken. Rewards of the opposing side are ignored.
+#        Default:     0 - Off
+#
+#    Bot.Quest.Reputation.BonusPct / Bot.Quest.Reputation.LossPenaltyPct / Bot.Quest.Reputation.FullPoints
+#        Description: Score bonus for a full reputation gain / score penalty for a full loss (percent), and the number of reputation
+#                     points that count as full (smaller rewards count in proportion).
+#        Default:     25 / 40 / 250
+#
 #    Bot.AI.Watchdog.Enabled
 #        Description: Stall watchdog. A bot that makes no progress (no movement, xp, money or quest-log change; fighting, flying, being
 #                     dead and instance content count as busy) is recovered in steps: clear the goal, use the hearthstone, teleport to
@@ -4948,6 +5004,26 @@ Bot.AI.Death.GiveUpSec = 300
 #    Bot.Loot.Roll.GreedOnOther
 #        Description: Greed on items the bot cannot use or does not need (it sells them later) instead of passing.
 #        Default:     1
+#
+#    Bot.AI.TownIdle.Enabled
+#        Description: Town idling. A bot with nothing to do inside a city or an inn drifts between the places where players gather
+#                     (innkeeper, bank, auction house, flight master, mailbox, vendors), lingers there, looks around, emotes and
+#                     sometimes sits. Adds the strategy "natural_idle" to the NonCombat engine; works with or without
+#                     Bot.AI.Move.Natural.Enabled (outside towns the plain idling still needs that switch). Walks are logged as
+#                     TOWN_IDLE_GO at trace level.
+#        Default:     0 - Off
+#
+#    Bot.AI.TownIdle.SearchYards
+#        Description: Radius around the bot in which gathering places are looked for (rescanned every minute).
+#        Default:     70
+#
+#    Bot.AI.TownIdle.LingerMinSec / Bot.AI.TownIdle.LingerMaxSec
+#        Description: Each bot stays at one place for a fixed time in this range before it moves on.
+#        Default:     15 / 70
+#
+#    Bot.AI.TownIdle.EmotePct / Bot.AI.TownIdle.SitPct
+#        Description: Chance in percent per decision to emote / to sit down (four times as likely when hurt or drained).
+#        Default:     22 / 10
 #
 #    Bot.AI.Move.Natural.Enabled
 #        Description: Natural-looking movement: smoother paths, human pacing, no repeated identical path requests, a step back or
@@ -5018,6 +5094,33 @@ Bot.AI.Death.GiveUpSec = 300
 #    Bot.AI.Dungeon.PackLinkYards / Bot.AI.Dungeon.PackMaxMobs
 #        Description: Spawns closer than this many yards (3D, chained) form one pack / larger packs without a boss are cut up.
 #        Default:     14 / 6
+#
+#    Bot.AI.Dungeon.PlayerLed.Enabled
+#        Description: Dungeon runs led by a player: bots of the player's group that follow the player (chat order `follow`) come into a
+#                     five-man dungeon after the player, join the player when stuck far behind, are raised after a fight and leave with
+#                     the player; the player is told which bots need a rest. Independent of Bot.AI.Dungeon.Enabled (bot-led runs).
+#                     See docs/playerbots/feature-bot-player-led-dungeon-20261008.md.
+#        Default:     0 - Off
+#
+#    Bot.AI.Dungeon.PlayerLed.IntervalSec / Bot.AI.Dungeon.PlayerLed.EnterDelaySec / Bot.AI.Dungeon.PlayerLed.ActCooldownSec
+#        Description: Seconds between checks (1-30) / the player has been on its map this long before bots are brought along (0-60) /
+#                     minimum time between two moves or raises of one bot (1-600).
+#        Default:     2 / 3 / 15
+#
+#    Bot.AI.Dungeon.PlayerLed.CatchUpYards / Bot.AI.Dungeon.PlayerLed.CatchUpSec
+#        Description: Inside a dungeon a bot farther than this from the player (20-300) for this long (5-600), outside of combat, is
+#                     moved next to the player.
+#        Default:     60 / 20
+#
+#    Bot.AI.Dungeon.PlayerLed.RaiseDelaySec
+#        Description: Seconds after which a dead bot is raised next to the player once the fight is over (the stand-in for a healer's
+#                     resurrection and the corpse run); 0 = dead bots stay dead (chat order `revive` still works).
+#        Default:     10
+#
+#    Bot.AI.Dungeon.PlayerLed.Notify / Bot.AI.Dungeon.PlayerLed.NoticeRepeatSec
+#        Description: Tell the player which bots are not ready for the next pull (dead, away, health or mana below the
+#                     Bot.AI.Dungeon.Min*Pct limits), and again when they are ready / seconds before the same notice is repeated (10-3600).
+#        Default:     1 / 60
 #
 #    Bot.AI.Ammo.Enabled
 #        Description: Ranged ammo upkeep of the quest strategy's vendor layer: a bot with a bow, crossbow or gun equipped counts its arrows or
@@ -5218,6 +5321,10 @@ Bot.AI.Pet.TameCooldownSec = 300
 Bot.AI.Consumables.Enabled = 0
 Bot.AI.Consumables.HealthBelowPct = 35
 Bot.AI.Consumables.ManaBelowPct = 20
+Bot.Quest.Reputation.Enabled = 0
+Bot.Quest.Reputation.BonusPct = 25
+Bot.Quest.Reputation.LossPenaltyPct = 40
+Bot.Quest.Reputation.FullPoints = 250
 Bot.AI.Watchdog.Enabled = 0
 Bot.AI.Watchdog.StallSec = 600
 Bot.AI.Watchdog.HearthMul = 2
@@ -5226,6 +5333,12 @@ Bot.AI.Watchdog.Hearth = 1
 Bot.AI.Watchdog.Home = 1
 Bot.AI.Watchdog.MoveYards = 10
 Bot.AI.Watchdog.MaxPerHour = 6
+Bot.AI.TownIdle.Enabled = 0
+Bot.AI.TownIdle.SearchYards = 70
+Bot.AI.TownIdle.LingerMinSec = 15
+Bot.AI.TownIdle.LingerMaxSec = 70
+Bot.AI.TownIdle.EmotePct = 22
+Bot.AI.TownIdle.SitPct = 10
 Bot.AI.Move.Natural.Enabled = 0
 Bot.AI.Move.Natural.Shortcut = 1
 Bot.AI.Move.Natural.RoundCorners = 1

@@ -27,7 +27,9 @@
 #include "BotCombat.h"
 #include "Config.h"
 #include "Corpse.h"
+#include "BotTownIdlePlan.h"
 #include "Creature.h"
+#include "GameObject.h"
 #include "Log.h"
 #include "Map.h"
 #include "MapUtils.h"
@@ -37,6 +39,7 @@
 #include "NPCPackets.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "RestMgr.h"
 #include "PathGenerator.h"
 #include "Player.h"
 #include "Random.h"
@@ -955,6 +958,25 @@ NaturalConfig const& Natural()
 }
 }
 
+namespace BotTownIdle
+{
+Config const& Cfg()
+{
+    static Config cfg;
+    static std::once_flag once;
+    std::call_once(once, []()
+    {
+        cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.TownIdle.Enabled", false);
+        cfg.SearchYards = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.TownIdle.SearchYards", 70), 20, 150));
+        cfg.LingerMinSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.TownIdle.LingerMinSec", 15), 5, 600));
+        cfg.LingerMaxSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.TownIdle.LingerMaxSec", 70), int32(cfg.LingerMinSec), 1800));
+        cfg.EmotePct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.TownIdle.EmotePct", 22), 0, 60));
+        cfg.SitPct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.TownIdle.SitPct", 10), 0, 30));
+    });
+    return cfg;
+}
+}
+
 namespace
 {
 std::atomic<BotDestinationVeto> s_destVeto{ nullptr };
@@ -1603,6 +1625,10 @@ void BotMotion::Tick(BotAI* ai, Player* bot)
 bool BotMotion::IdleStep(BotAI* ai, Player* bot)
 {
     BotMove::NaturalConfig const& nat = BotMove::Natural();
+    if (BotTownIdle::Cfg().Enabled && (bot->GetRestMgr().HasRestFlag(REST_FLAG_IN_CITY) || bot->GetRestMgr().HasRestFlag(REST_FLAG_IN_TAVERN)))
+        return TownIdleStep(ai, bot);
+    if (!nat.Enabled || !nat.Idle)
+        return false; // town idling alone adds the strategy; the plain idling stays off
     uint32 const now = ai->GetNowMs();
     if (!_idleStillSince || bot->GetExactDist2dSq(_idleX, _idleY) > 0.25f)
     {
@@ -1649,6 +1675,135 @@ bool BotMotion::IdleStep(BotAI* ai, Player* bot)
             _idleLastAct = now ? now : 1;
             if (h <= INVALID_HEIGHT || std::fabs(h - bot->GetPositionZ()) > 3.0f || BotDestinationVetoed(bot, x, y, h))
                 return true; // not here; the next try picks another bearing
+            _idleSat = false;
+            SetGoal(bot->GetMapId(), x, y, h, 1.5f, "idle");
+            return true;
+        }
+    }
+    _idleLastAct = now ? now : 1;
+    return true;
+}
+
+// Town idling: in a city or an inn the bot drifts between the places where players gather and lingers there (looks around, emotes,
+// sits). The gathering places are scanned from the nearby creatures and mailboxes and cached for a minute.
+bool BotMotion::TownIdleStep(BotAI* ai, Player* bot)
+{
+    BotTownIdle::Config const& cfg = BotTownIdle::Cfg();
+    uint32 const now = ai->GetNowMs();
+    uint64 const key = bot->GetGUID().GetCounter();
+
+    if (!_townScanMs || now - _townScanMs > (_townSpots.empty() ? 15000u : 60000u))
+    {
+        _townScanMs = now ? now : 1;
+        std::vector<BotTownIdle::Spot> spots;
+        auto add = [&spots](float x, float y, BotTownIdle::SpotKind kind)
+        {
+            for (BotTownIdle::Spot const& s : spots)
+                if ((s.X - x) * (s.X - x) + (s.Y - y) * (s.Y - y) < 64.0f)
+                    return; // one spot per cluster of NPCs
+            if (spots.size() < 24)
+                spots.push_back({ x, y, kind });
+        };
+        std::vector<Creature*> creatures;
+        bot->GetCreatureListWithOptionsInGrid(creatures, cfg.SearchYards, FindCreatureOptions());
+        // one pass per kind in weight order, so the most popular kind owns a cluster
+        struct { NPCFlags Flag; BotTownIdle::SpotKind Kind; } const kinds[] = {
+            { UNIT_NPC_FLAG_INNKEEPER, BotTownIdle::SpotKind::Inn },
+            { UNIT_NPC_FLAG_BANKER, BotTownIdle::SpotKind::Bank },
+            { UNIT_NPC_FLAG_AUCTIONEER, BotTownIdle::SpotKind::Auction },
+            { UNIT_NPC_FLAG_FLIGHTMASTER, BotTownIdle::SpotKind::Flight } };
+        for (auto const& k : kinds)
+            for (Creature* c : creatures)
+                if (c->IsAlive() && !c->IsInCombat() && c->HasNpcFlag(k.Flag))
+                    add(c->GetPositionX(), c->GetPositionY(), k.Kind);
+        std::vector<GameObject*> boxes;
+        FindGameObjectOptions goOptions;
+        goOptions.GameObjectType = GAMEOBJECT_TYPE_MAILBOX;
+        bot->GetGameObjectListWithOptionsInGrid(boxes, cfg.SearchYards, goOptions);
+        for (GameObject* go : boxes)
+            add(go->GetPositionX(), go->GetPositionY(), BotTownIdle::SpotKind::Mail);
+        for (Creature* c : creatures)
+            if (c->IsAlive() && !c->IsInCombat() && c->HasNpcFlag(UNIT_NPC_FLAG_VENDOR_MASK))
+                add(c->GetPositionX(), c->GetPositionY(), BotTownIdle::SpotKind::Vendor);
+        _townSpots = std::move(spots);
+        // keep pointing at the same place across a rescan
+        _townSpot = -1;
+        for (size_t i = 0; i < _townSpots.size(); ++i)
+            if ((_townSpots[i].X - _townSpotX) * (_townSpots[i].X - _townSpotX) + (_townSpots[i].Y - _townSpotY) * (_townSpots[i].Y - _townSpotY) < 64.0f)
+                _townSpot = int32(i);
+    }
+
+    if (!_idleStillSince || bot->GetExactDist2dSq(_idleX, _idleY) > 0.25f)
+    {
+        _idleX = bot->GetPositionX();
+        _idleY = bot->GetPositionY();
+        _idleStillSince = now ? now : 1;
+    }
+    BotAggroHit hit;
+    BotTownIdle::Facts f;
+    f.StillMs = now - _idleStillSince;
+    f.SinceActionMs = _idleLastAct ? now - _idleLastAct : 1000000;
+    f.Sitting = _idleSat && bot->GetStandState() == UNIT_STAND_STATE_SIT;
+    f.SittingMs = f.Sitting ? now - _idleSatMs : 0;
+    f.Threat = bot->IsInCombat() || BotAggroNear(ai, bot, 0, hit);
+    f.HurtOrDrained = bot->GetHealthPct() < 99.0f;
+    if (!f.HurtOrDrained && bot->GetMaxPower(POWER_MANA) > 0)
+        f.HurtOrDrained = bot->GetPower(POWER_MANA) * 100 < bot->GetMaxPower(POWER_MANA) * 99;
+    f.CurrentSpot = _townSpot;
+    f.AtSpot = _townSpot >= 0 && bot->GetExactDist2dSq(_townSpotX, _townSpotY) <= (cfg.StandOffMax + 2.0f) * (cfg.StandOffMax + 2.0f);
+    if (_idleSat && !f.Sitting)
+        _idleSat = false; // something stood the bot up
+
+    BotTownIdle::Plan const p = BotTownIdle::PlanStep(f, cfg, _townSpots, key, now);
+    switch (p.What)
+    {
+        case BotTownIdle::Act::Stay:
+            return false;
+        case BotTownIdle::Act::Look:
+            bot->SetFacingTo(bot->GetOrientation() + p.TurnRad);
+            break;
+        case BotTownIdle::Act::Emote:
+        {
+            static constexpr Emote emotes[BotTownIdle::EMOTE_KINDS] = { EMOTE_ONESHOT_TALK, EMOTE_ONESHOT_WAVE, EMOTE_ONESHOT_LAUGH, EMOTE_ONESHOT_YES, EMOTE_ONESHOT_NO, EMOTE_ONESHOT_DANCE };
+            bot->HandleEmoteCommand(emotes[uint8(p.Emote)]);
+            break;
+        }
+        case BotTownIdle::Act::Sit:
+            bot->SetStandState(UNIT_STAND_STATE_SIT);
+            _idleSat = true;
+            _idleSatMs = now;
+            break;
+        case BotTownIdle::Act::StandUp:
+            bot->SetStandState(UNIT_STAND_STATE_STAND);
+            _idleSat = false;
+            break;
+        case BotTownIdle::Act::GoSpot:
+        case BotTownIdle::Act::Wander:
+        {
+            float x, y;
+            if (p.What == BotTownIdle::Act::GoSpot && p.Spot >= 0 && size_t(p.Spot) < _townSpots.size())
+            {
+                BotTownIdle::Spot const& s = _townSpots[p.Spot];
+                x = s.X + std::cos(p.Bearing) * p.StandOff;
+                y = s.Y + std::sin(p.Bearing) * p.StandOff;
+            }
+            else
+            {
+                x = bot->GetPositionX() + std::cos(p.Bearing) * p.StandOff;
+                y = bot->GetPositionY() + std::sin(p.Bearing) * p.StandOff;
+            }
+            _idleLastAct = now ? now : 1;
+            float const h = bot->GetMap()->GetHeight(bot->GetPhaseShift(), x, y, bot->GetPositionZ() + 3.0f, true, 8.0f);
+            if (h <= INVALID_HEIGHT || std::fabs(h - bot->GetPositionZ()) > 6.0f || BotDestinationVetoed(bot, x, y, h))
+                return true; // not here; the next try picks another bearing or spot
+            if (p.What == BotTownIdle::Act::GoSpot)
+            {
+                _townSpot = p.Spot;
+                _townSpotX = _townSpots[p.Spot].X;
+                _townSpotY = _townSpots[p.Spot].Y;
+                ai->EmitEvent(bot, "decision", BOTLOG_TRACE, "TOWN_IDLE_GO", "walking to a gathering place",
+                    StringFormat(R"({{"spot":{},"kind":{},"spots":{}}})", p.Spot, int(_townSpots[p.Spot].Kind), _townSpots.size()));
+            }
             _idleSat = false;
             SetGoal(bot->GetMapId(), x, y, h, 1.5f, "idle");
             return true;

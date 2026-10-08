@@ -21,6 +21,7 @@
 #include "BotDungeon.h"
 #include "BotDungeonData.h"
 #include "BotMgr.h"
+#include "BotPlayerLed.h"
 #include "Config.h"
 #include "Creature.h"
 #include "CreatureData.h"
@@ -574,6 +575,8 @@ bool Busy(BotAI* ai)
     Player* bot = ai ? ai->GetTickBot() : nullptr;
     if (!bot)
         return false;
+    if (BotPlayerLed::Busy(ai)) // following a player through a dungeon
+        return true;
     std::lock_guard<std::mutex> lock(s_busyLock);
     return s_busy.count(bot->GetGUID().GetCounter()) != 0;
 }

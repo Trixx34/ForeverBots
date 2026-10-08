@@ -27,6 +27,7 @@
 #include <G3D/Vector3.h>
 #include "ObjectGuid.h"
 #include "BotMovePlan.h"
+#include "BotTownIdlePlan.h"
 #include <optional>
 #include <string>
 #include <vector>
@@ -115,6 +116,8 @@ public:
     BotMove::Metrics& Metrics() { return _metrics; }
     // natural idling (strategy "natural_idle", NonCombat): look around, sit, wander a few yards; false when nothing was done
     bool IdleStep(BotAI* ai, Player* bot);
+    // town idling (Bot.AI.TownIdle.*): inside a city or inn, drift between the gathering places; false when the bot is not in a town
+    bool TownIdleStep(BotAI* ai, Player* bot);
 
     BotAggro& Aggro() { return _aggro; }
     uint32 QuestEntry() const { return _questEntry; } // entry of the last quest/grind travel target (not a threat to avoid)
@@ -175,6 +178,11 @@ private:
     float _idleX = 0.0f, _idleY = 0.0f;
     uint32 _idleStillSince = 0, _idleLastAct = 0, _idleSatMs = 0;
     bool _idleSat = false;
+    // town idling
+    std::vector<BotTownIdle::Spot> _townSpots;
+    uint32 _townScanMs = 0;
+    int32 _townSpot = -1;
+    float _townSpotX = 0.0f, _townSpotY = 0.0f;
 };
 
 // Hook for the danger gating of destinations (under-level bots, deadly areas). The movement code itself does not decide what is
