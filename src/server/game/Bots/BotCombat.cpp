@@ -75,6 +75,7 @@ struct CombatConfig
     uint32 HoldMs = 3000;          // Bot.AI.Roles.HoldSec: non-tanks wait this long for the tank to gather threat before they open
     BotGroupRoles::Config Roles;   // Bot.AI.Roles.AllyHealBelowPct / TankHealBelowPct / EmergencyPct
     int32 FleeMode = 0;            // Bot.AI.Flee.Mode: 0 current, 1 aggro avoidance + fight to the end, 2 flee toward nearest friendly guard
+    bool CrowdControl = true;      // Bot.AI.Rotation.CrowdControl: control spells on extra attackers (needs Bot.AI.Rotation.Enabled)
     bool Rotation = false;         // Bot.AI.Rotation.Enabled: full class rotations (conditional rows of the spell table); off = the old fixed spells
     int32 FleeAbMode = 1;          // Bot.AI.Flee.AbMode: the mode the experiment arm runs
     int32 FleeAbPct = 0;           // Bot.AI.Flee.AbPct: percent of bots (guid counter % 100 below it) on AbMode, 0 = everyone on Flee.Mode
@@ -102,6 +103,7 @@ CombatConfig const& Cfg()
         cfg.LowHpFleePct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.LowHpPct", 15), 0, 60));
         cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
         cfg.Rotation = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.Enabled", false);
+        cfg.CrowdControl = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.CrowdControl", true);
         cfg.GroupRoles = sConfigMgr->GetBoolDefault("Bot.AI.Roles.Enabled", false);
         cfg.HoldMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.HoldSec", 3), 0, 15)) * 1000;
         cfg.Roles.AllyHealBelowPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.AllyHealBelowPct", 80), 10, 99);
@@ -157,7 +159,8 @@ enum class Kind : uint8
     AutoShot,   // auto-repeat ranged attack (hunter)
     Wand,       // auto-repeat wand attack (Shoot): filler of a caster that cannot afford its spells (needs a wand equipped)
     Heal,       // self-heal (combat_heal)
-    Debuff      // cast while the target does not carry the spell's aura (Sunder Armor, Hunter's Mark); like Dot but not a damage spell
+    Debuff,     // cast while the target does not carry the spell's aura (Sunder Armor, Hunter's Mark); like Dot but not a damage spell
+    Control     // crowd control on a mob other than the fight target (Polymorph, Shackle Undead, Hibernate, Banish, Scare Beast); see TryControl
 };
 
 struct SpellDef
@@ -207,6 +210,7 @@ constexpr SpellDef SPELLS[] =
     // it a pet would lose happiness (Pet.h HAPPINESS_*) and deal 75% damage once unhappy.
     // Auto Shot first: it is only (re)started when not running, so it never waits behind the shots below
     { CLASS_HUNTER,  75,    "Auto Shot",            Kind::AutoShot },
+    { CLASS_HUNTER,  1513,  "Scare Beast",          Kind::Control, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_HUNTER,  1130,  "Hunter's Mark",        Kind::Debuff, 0, 0, { RC::TargetStrong, 2 } },
     { CLASS_HUNTER,  5116,  "Concussive Shot",      Kind::Direct, 0, 0, { RC::TargetFleeing, 0 } },
     { CLASS_HUNTER,  2974,  "Wing Clip",            Kind::Direct, 0, 0, { RC::TargetFleeing, 0 } },
@@ -215,6 +219,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_HUNTER,  3044,  "Arcane Shot",          Kind::Direct },
     { CLASS_HUNTER,  2973,  "Raptor Strike",        Kind::Direct },   // melee, so only used once a mob is on top of the hunter
     // Mage: Counterspell, Frost Nova and Cone of Cold against several mobs, Mana Shield / Ice Barrier when hurt
+    { CLASS_MAGE,    118,   "Polymorph",            Kind::Control, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_MAGE,    2139,  "Counterspell",         Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
     { CLASS_MAGE,    122,   "Frost Nova",           Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_MAGE,    1463,  "Mana Shield",          Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 40 } },
@@ -225,6 +230,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_MAGE,    133,   "Fireball",             Kind::Direct },
     { CLASS_MAGE,    5019,  "Shoot",                Kind::Wand },
     // Priest: Power Word: Shield when hurt, Inner Fire at the start, Psychic Scream against several mobs, Mind Blast with a mana reserve
+    { CLASS_PRIEST,  9484,  "Shackle Undead",       Kind::Control, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_PRIEST,  17,    "Power Word: Shield",   Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 70 } },
     { CLASS_PRIEST,  588,   "Inner Fire",           Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
     { CLASS_PRIEST,  8122,  "Psychic Scream",       Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 3 } },
@@ -234,6 +240,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_PRIEST,  2050,  "Lesser Heal",          Kind::Heal },
     { CLASS_PRIEST,  5019,  "Shoot",                Kind::Wand },
     // Warlock: Death Coil and Drain Life when hurt, Life Tap when mana is low, Curse of Agony, no damage over time on a dying mob
+    { CLASS_WARLOCK, 710,   "Banish",               Kind::Control, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_WARLOCK, 6789,  "Death Coil",           Kind::Direct, 0, 0, { RC::SelfHpBelow, 40 } },
     { CLASS_WARLOCK, 689,   "Drain Life",           Kind::Direct, 0, 0, { RC::SelfHpBelow, 50 } },
     { CLASS_WARLOCK, 1454,  "Life Tap",             Kind::SelfBuff, 0, 0, { RC::LifeTapSafe, 30 } },
@@ -250,6 +257,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_SHAMAN,  403,   "Lightning Bolt",       Kind::Direct },
     { CLASS_SHAMAN,  331,   "Healing Wave",         Kind::Heal },
     // Druid: Barkskin when hurt, Thorns at the start, Faerie Fire on a strong mob, Entangling Roots on a fleeing one (forms are not used)
+    { CLASS_DRUID,   2637,  "Hibernate",            Kind::Control, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_DRUID,   22812, "Barkskin",             Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 50 } },
     { CLASS_DRUID,   467,   "Thorns",               Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
     { CLASS_DRUID,   770,   "Faerie Fire",          Kind::Debuff, 0, 0, { RC::TargetStrong, 2 } },
@@ -355,6 +363,7 @@ struct Resolved
 // fight scope: reset as a whole when a Combat engine period starts
 struct FightData
 {
+    std::vector<std::pair<ObjectGuid, uint32>> CcTried;   // crowd control attempts of this fight (target, AI ms), bounded
     bool InFight = false;
     uint32 StartMs = 0;
     ObjectGuid Target;
@@ -1357,6 +1366,52 @@ BotRotation::Facts RotationFacts(BotAI* ai, Player* bot, BotCombatCtx* ctx, Unit
     return f;
 }
 
+// Crowd control on one extra attacker: with two or more mobs on the bot and none controlled yet, a control spell goes on the strongest mob
+// that is not the fight target. Each mob is tried once per 20 s (a refused or resisted cast is not repeated every tick).
+bool TryControl(BotAI* ai, Player* bot, BotCombatCtx* ctx, Unit* fightTarget, BotRotation::Facts const& facts)
+{
+    Resolved const* spell = nullptr;
+    for (Resolved const& r : ctx->Spells)
+        if (r.Def->Type == Kind::Control && BotRotation::Allowed(r.Def->When, facts) && Ready(bot, r) && Affordable(bot, r.Info))
+        {
+            spell = &r;
+            break;
+        }
+    if (!spell)
+        return false;
+    uint32 const now = ai->GetNowMs();
+    Unit* pick = nullptr;
+    for (Unit* a : bot->getAttackers())
+    {
+        if (!a || !a->IsAlive() || a->HasBreakableByDamageCrowdControlAura())
+        {
+            if (a && a->IsAlive() && a != fightTarget)
+                return false;   // one controlled mob at a time
+            continue;
+        }
+        if (a == fightTarget || !spell->Info->CheckTargetCreatureType(a) || bot->GetDistance(a) > spell->MaxRange - 1.0f || !bot->IsWithinLOSInMap(a))
+            continue;
+        bool tried = false;
+        for (auto const& t : ctx->CcTried)
+            if (t.first == a->GetGUID() && now - t.second < 20000)
+                tried = true;
+        if (tried)
+            continue;
+        if (!pick || a->GetLevel() > pick->GetLevel())
+            pick = a;
+    }
+    if (!pick)
+        return false;
+    if (ctx->CcTried.size() >= 8)
+        ctx->CcTried.erase(ctx->CcTried.begin());
+    ctx->CcTried.emplace_back(pick->GetGUID(), now);
+    bool const ok = TryCast(ai, bot, ctx, *spell, pick);
+    if (ok)
+        LogDecision(ai, bot, ctx, "CROWD_CONTROL", StringFormat("{} on {} (level {})", SpellNameOf(spell->Info), pick->GetName(), pick->GetLevel()),
+            StringFormat(R"("spell":{},"spell_name":"{}","target":{},"target_level":{},"enemies":{})", spell->Id, Json(SpellNameOf(spell->Info)), pick->GetEntry(), uint32(pick->GetLevel()), facts.EnemiesOnBot));
+    return ok;
+}
+
 class CastAction : public Action
 {
 public:
@@ -1380,11 +1435,13 @@ public:
         bool const moving = bot->isMoving();
         bool skippedForPower = false;
         BotRotation::Facts const facts = RotationFacts(ai, bot, ctx, target);
+        if (Cfg().Rotation && Cfg().CrowdControl && facts.EnemiesOnBot >= 2 && !moving && TryControl(ai, bot, ctx, target, facts))
+            return true;
 
         for (Resolved const& r : ctx->Spells)
         {
             Kind const kind = r.Def->Type;
-            if (kind == Kind::Heal || !BotRotation::Allowed(r.Def->When, facts))
+            if (kind == Kind::Heal || kind == Kind::Control || !BotRotation::Allowed(r.Def->When, facts))
                 continue;
             if (r.Id == ctx->BlockSpell && ai->GetNowMs() < ctx->BlockUntilMs)
             {

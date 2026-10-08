@@ -4994,6 +4994,12 @@ Bot.AI.Death.GiveUpSec = 300
 #                     docs/playerbots/feature-bot-class-rotations-20261008.md.
 #        Default:     0 - Off
 #
+#    Bot.AI.Rotation.CrowdControl
+#        Description: With two or more mobs on the bot and none controlled yet, a control spell goes on the strongest mob that is not the
+#                     fight target: Polymorph (mage), Shackle Undead (priest), Hibernate (druid), Banish (warlock), Scare Beast (hunter).
+#                     Needs Bot.AI.Rotation.Enabled. Logged as CROWD_CONTROL.
+#        Default:     1
+#
 #    Bot.AI.Roles.Enabled
 #        Description: Group play in combat: a bot with a heal spell heals the group member who needs it most (an emergency first, then the
 #                     tank, then the lowest health), and bots other than the tank (the warrior of the group) attack the tank's target.
