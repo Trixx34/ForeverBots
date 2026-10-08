@@ -28,9 +28,6 @@
 #include "BotAI.h"
 #include "BotBehavior.h"
 #include "BotEngine.h"
-#include "BotGear.h"
-#include "BotProfession.h"
-#include "GameTime.h"
 #include "BotLootPlan.h"
 #include "BotMgr.h"
 #include "BotPet.h"
@@ -39,7 +36,6 @@
 #include "CreatureData.h"
 #include "DB2Stores.h"
 #include "DB2Structure.h"
-#include "SpellMgr.h"
 #include "DatabaseEnv.h"
 #include "GameObject.h"
 #include "Item.h"
@@ -219,17 +215,6 @@ struct GoPt
     bool Pooled = false;
 };
 
-// a mining vein or herb node (E2), indexed once from the lock of every chest-type game object
-struct NodePt
-{
-    uint32 Map = 0;
-    float X = 0, Y = 0, Z = 0;
-    uint32 Entry = 0;
-    uint32 Skill = 0;      // BotProfession::SKILL_MINING / SKILL_HERBALISM
-    uint32 Req = 0;        // skill needed to open it
-    uint64 SpawnId = 0;
-};
-
 struct GrindPt
 {
     float X, Y, Z;
@@ -256,9 +241,6 @@ struct BagOffer
     int32 ReqLevel = 0;
 };
 
-constexpr uint32 SPELL_SKINNING = 8613;
-constexpr uint32 SPELL_MINING = 2575;
-constexpr uint32 SPELL_HERB_GATHERING = 2366;
 constexpr float GRID_CELL = 200.0f;
 constexpr uint32 MAX_STARTER_POINTS = 8;
 
@@ -277,12 +259,11 @@ struct Index
     std::unordered_map<uint64, uint32> HubByCell;                  // (map, cell) -> index in Hubs
     std::unordered_map<uint64, std::vector<GrindPt>> GrindGrid;    // (map, cell) -> hostile normal-rank spawns (grind fallback)
     uint32 NumGrind = 0;
-    // trainers by key: class id (1..11), or 0x100 | skill line for the profession trainers of BotProfession (first aid, cooking, gathering)
+    // trainers by key: class id (1..11). Profession trainers would use 0x100 | skill line (not indexed in v1).
     std::unordered_map<uint32, std::vector<SvcPt>> Trainers;
     std::vector<SvcPt> Vendors;
-    std::vector<NodePt> Nodes;
     std::unordered_map<uint32, std::vector<BagOffer>> VendorBags;   // vendor entry -> plain bags it sells for gold
-    uint32 NumTrainers = 0, NumProfTrainers = 0, NumBagVendors = 0, MinBagPrice = 0xFFFFFFFFu;
+    uint32 NumTrainers = 0, NumBagVendors = 0, MinBagPrice = 0xFFFFFFFFu;
     uint32 NumStarterQuests = 0, NumStarterPoints = 0, NumSpawnEntries = 0, NumItemSources = 0, NumGoItems = 0, NumGoSpawns = 0;
 } g;
 
@@ -701,37 +682,7 @@ void BuildIndex()
         ++g.NumGrind;
     }
 
-    // 8b. mining veins and herb nodes (E2): a chest-type game object whose lock asks for the mining or herbalism skill
-    {
-        std::unordered_map<uint32, std::pair<uint32, uint32>> nodeKinds;   // go entry -> (skill, required value)
-        for (auto const& [goEntry, goTmpl] : sObjectMgr->GetGameObjectTemplates())
-        {
-            if (goTmpl.type != GAMEOBJECT_TYPE_CHEST || !goTmpl.GetLockId())
-                continue;
-            LockEntry const* lock = sLockStore.LookupEntry(goTmpl.GetLockId());
-            if (!lock)
-                continue;
-            for (uint32 i = 0; i < MAX_LOCK_CASE; ++i)
-            {
-                if (lock->Type[i] != LOCK_KEY_SKILL)
-                    continue;
-                if (lock->Index[i] == LOCKTYPE_MINING || lock->Index[i] == LOCKTYPE_MINING_2)
-                    nodeKinds[goEntry] = { BotProfession::SKILL_MINING, lock->Skill[i] };
-                else if (lock->Index[i] == LOCKTYPE_HERBALISM)
-                    nodeKinds[goEntry] = { BotProfession::SKILL_HERBALISM, lock->Skill[i] };
-            }
-        }
-        for (auto const& [spawnId, data] : sObjectMgr->GetAllGameObjectData())
-        {
-            auto nk = nodeKinds.find(data.id);
-            if (nk == nodeKinds.end())
-                continue;
-            g.Nodes.push_back({ data.mapId, data.spawnPoint.GetPositionX(), data.spawnPoint.GetPositionY(), data.spawnPoint.GetPositionZ(), data.id, nk->second.first, nk->second.second, spawnId });
-        }
-    }
-
-    // 9. class trainers, profession trainers and vendors (E1/E2/E4)
-    std::unordered_map<uint32, std::vector<uint32>> profSkills;   // trainer id -> planned professions it teaches
+    // 9. class trainers and vendors (E1/E4)
     for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
     {
         CreatureTemplate const* t = sObjectMgr->GetCreatureTemplate(data.id);
@@ -751,35 +702,6 @@ void BuildIndex()
                 pt.TrainerId = tid;
                 g.Trainers[t->trainer_class].push_back(pt);
                 ++g.NumTrainers;
-            }
-        }
-        // profession trainers: any trainer whose spell list teaches a planned profession (spell -> skill line through SkillLineAbility)
-        if (!(t->trainer_class > 0 && t->trainer_class < 32))
-        {
-            uint32 const tid = sObjectMgr->GetCreatureDefaultTrainer(data.id);
-            Trainer::Trainer const* tr = tid ? sObjectMgr->GetTrainer(tid) : nullptr;
-            if (tr)
-            {
-                auto cached = profSkills.find(tid);
-                if (cached == profSkills.end())
-                {
-                    std::vector<uint32> skills;
-                    for (Trainer::Spell const& sp : tr->GetSpells())
-                    {
-                        auto bounds = sSpellMgr->GetSkillLineAbilityMapBounds(sp.SpellId);
-                        for (auto it = bounds.first; it != bounds.second; ++it)
-                            if (BotProfession::Find(it->second->SkillLine) && std::find(skills.begin(), skills.end(), uint32(it->second->SkillLine)) == skills.end())
-                                skills.push_back(it->second->SkillLine);
-                    }
-                    cached = profSkills.emplace(tid, std::move(skills)).first;
-                }
-                for (uint32 skill : cached->second)
-                {
-                    SvcPt ppt = pt;
-                    ppt.TrainerId = tid;
-                    g.Trainers[0x100 | skill].push_back(ppt);
-                    ++g.NumProfTrainers;
-                }
             }
         }
         if (flags & uint64(UNIT_NPC_FLAG_VENDOR))
@@ -869,8 +791,6 @@ struct Task
     uint8 Svc = 0;                 // Service task: 1 = train, 2 = vendor visit
     float SvcX = 0, SvcY = 0, SvcZ = 0;
     uint32 SvcTrainerId = 0;
-    float FishWaterX = 0, FishWaterY = 0;   // Svc 4 (fish): where the bobber should land
-    uint64 NodeSpawn = 0;     // Svc 3 (gather): spawn id of the node
     bool SvcRepair = false, SvcBags = false;
     // Loot task (quest item inside a chest game object)
     uint64 GoSpawn = 0;            // claimed spawn (0 = none picked yet)
@@ -1154,21 +1074,6 @@ public:
     std::unordered_map<uint64, uint8> Repeats;      // (quest, npc) -> reach failures (quarantine)
     std::unordered_map<uint32, uint32> SvcBlack;    // npc entry -> AI clock until
     std::unordered_map<uint64, uint32> GoIgnore;    // chest spawn id -> AI clock until (empty / unusable for this bot)
-    uint32 FishNextMs = 0;                 // next shore check
-    uint32 FishState = 0;                  // 0 walk, 1 cast, 2 wait for the bite
-    uint32 FishCasts = 0, FishCatches = 0, FishCastMs = 0;
-    uint32 GatherNextMs = 0;               // next node check
-    ObjectGuid GatherGuid;                 // node being opened
-    uint32 GatherSinceMs = 0;
-    uint32 CraftNextMs = 0;                // next craft attempt
-    std::unordered_map<uint32, uint32> CraftBackoff;   // skill -> time before which crafting it is not retried (failed cast)
-    ObjectGuid SkinGuid;                   // corpse being skinned
-    uint32 SkinSinceMs = 0;
-    uint32 ProfNextMs = 0;                 // next profession check
-    std::vector<uint32> ProfPlan;          // BotProfession::Plan for this bot, filled on first use
-    std::unordered_set<uint32> ProfWarned; // skills already reported as PROF_NO_TRAINER / PROF_NO_MONEY at this level (cleared per level)
-    uint8 ProfWarnLevel = 0;
-    uint32 NextGearMs = 0;   // next bag sweep for gear upgrades
     BotLoot::SpawnBlacklist LootBlack;              // chest spawns that gave this bot no progress (Bot.AI.Loot.Improved)
     uint8 NoTrainerLevel = 0, NoMoneyLevel = 0, BagNoMoneyLevel = 0, NoVendorLevel = 0;
     std::string LastNote;
@@ -1478,17 +1383,13 @@ private:
         if (c.T.K == Kind::Service)
         {
             // E1/E4: the failure is reported under the service code, the movement code goes into the summary
-            c.SvcBlack[c.T.Svc == 3 ? (0x80000000u | uint32(c.T.NodeSpawn)) : c.T.NpcEntry] = now + 600 * 1000;
+            c.SvcBlack[c.T.NpcEntry] = now + 600 * 1000;
             if (c.T.Svc == 1)
                 c.TrainRetryMs = now + 300 * 1000;
-            else if (c.T.Svc == 3)
-                c.GatherNextMs = now + 60 * 1000;
-            else if (c.T.Svc == 4)
-                c.FishNextMs = now + 300 * 1000;
             else
                 c.NextVendorMs = now + 300 * 1000;
             summary = StringFormat("{} ({})", summary, code);
-            code = c.T.Svc == 1 ? "TRAIN_UNREACHABLE" : c.T.Svc == 3 ? "GATHER_UNREACHABLE" : c.T.Svc == 4 ? "FISH_UNREACHABLE" : "VENDOR_UNREACHABLE";
+            code = c.T.Svc == 1 ? "TRAIN_UNREACHABLE" : "VENDOR_UNREACHABLE";
         }
         Blocked(ai, bot, c, questId, code, std::move(summary), std::move(details), entry);
         // a loot task that ends is not a failure of the quest itself (the chest may simply be elsewhere or gone): it never feeds the quarantine
@@ -2430,374 +2331,6 @@ private:
         c.LastWasGrind = false;
     }
 
-    // Equips at most one upgrade from the bags per call (the bag walk must not run while items move).
-    static void EquipBagUpgrade(BotAI* ai, Player* bot)
-    {
-        Item* best = nullptr;
-        double bestGain = 0.0;
-        bot->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
-        {
-            ItemTemplate const* proto = item->GetTemplate();
-            if (!proto || !(proto->IsArmor() || proto->IsWeapon()) || bot->CanUseItem(item) != EQUIP_ERR_OK)
-                return ItemSearchCallbackResult::Continue;
-            GearChoice gc;
-            if (BestGearSlot(bot, proto, gc) && (!best || gc.Gain() > bestGain))
-            {
-                best = item;
-                bestGain = gc.Gain();
-            }
-            return ItemSearchCallbackResult::Continue;
-        });
-        if (best)
-            EquipIfUpgrade(ai, bot, best, "GEAR_EQUIPPED", 0);
-    }
-
-    // E2: a mining vein or herb node of a skill the bot has, within reach of its skill, close to where it is.
-    bool GatherDue(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
-    {
-        c.GatherNextMs = now + 20000;
-        if (bot->IsInCombat() || bot->GetFreeInventorySlotCount() < 2)
-            return false;
-        bool const mine = bot->HasSkill(BotProfession::SKILL_MINING) && bot->HasSpell(SPELL_MINING);
-        bool const herb = bot->HasSkill(BotProfession::SKILL_HERBALISM) && bot->HasSpell(SPELL_HERB_GATHERING);
-        if (!mine && !herb)
-            return false;
-        uint32 const mv = mine ? bot->GetSkillValue(BotProfession::SKILL_MINING) : 0;
-        uint32 const hv = herb ? bot->GetSkillValue(BotProfession::SKILL_HERBALISM) : 0;
-        NodePt const* best = nullptr;
-        float bd = 80.0f;
-        for (NodePt const& n : g.Nodes)
-        {
-            if (n.Map != bot->GetMapId())
-                continue;
-            if (n.Skill == BotProfession::SKILL_MINING ? (!mine || n.Req > mv) : (!herb || n.Req > hv))
-                continue;
-            float const d = Dist2D(n.X, n.Y, bot->GetPositionX(), bot->GetPositionY());
-            if (d >= bd)
-                continue;
-            auto bl = c.SvcBlack.find(0x80000000u | uint32(n.SpawnId));
-            if (bl != c.SvcBlack.end() && now < bl->second)
-                continue;
-            best = &n;
-            bd = d;
-        }
-        if (!best)
-            return false;
-        SvcPt pt;
-        pt.Map = best->Map; pt.X = best->X; pt.Y = best->Y; pt.Z = best->Z; pt.Entry = best->Entry;
-        StartService(bot, c, now, 3, pt, false, false);
-        c.T.NodeSpawn = best->SpawnId;
-        c.GatherGuid.Clear();
-        Decision(ai, bot, "GATHER_TRIP", StringFormat("walking to {} node {} ({:.0f} yd)", best->Skill == BotProfession::SKILL_MINING ? "mining" : "herb", best->Entry, bd), 0, best->Entry,
-            StringFormat(R"({{"skill":{},"req":{},"dist":{:.0f},"skill_value":{}}})", best->Skill, best->Req, bd, best->Skill == BotProfession::SKILL_MINING ? mv : hv));
-        return true;
-    }
-
-    // Svc 3: walk to the node, cast the gathering spell on it, take the loot.
-    bool RunGather(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
-    {
-        Task& t = c.T;
-        if (now - t.SinceMs > 2 * 60 * 1000)
-        {
-            Drop(ai, bot, c, now, 0, "UNREACHABLE", StringFormat("gave up walking to node {} after 2 min", t.NpcEntry), std::string(), t.NpcEntry, 0);
-            return true;
-        }
-        GameObject* go = bot->FindNearestGameObject(t.NpcEntry, 60.0f);
-        float const dgo = go ? Dist2D(go->GetPositionX(), go->GetPositionY(), bot->GetPositionX(), bot->GetPositionY()) : 1e9f;
-        if (go && dgo <= 3.5f && std::abs(go->GetPositionZ() - bot->GetPositionZ()) < 6.0f)
-        {
-            StopMoving(ai, bot, c);
-            uint32 const spell = IsMiningEntry(t.NpcEntry) ? SPELL_MINING : SPELL_HERB_GATHERING;
-            if (c.GatherGuid == go->GetGUID())
-            {
-                if (bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) && now - c.GatherSinceMs < 8000)
-                    return false;   // still casting
-                bool const took = LootGameObject(bot, go);
-                Decision(ai, bot, took ? "GATHERED" : "GATHER_FAILED", StringFormat("{} node {}", took ? "gathered" : "could not gather", go->GetEntry()), 0, go->GetEntry(),
-                    StringFormat(R"({{"spell":{},"mining":{},"herbalism":{}}})", spell, bot->GetSkillValue(BotProfession::SKILL_MINING), bot->GetSkillValue(BotProfession::SKILL_HERBALISM)));
-                c.GatherGuid.Clear();
-                Finish(c, now);
-                return true;
-            }
-            if (bot->CastSpell(go, spell, CastSpellExtraArgs(TRIGGERED_NONE)) != SPELL_CAST_OK)
-            {
-                Drop(ai, bot, c, now, 0, "GATHER_CAST_FAILED", StringFormat("cannot open node {}", t.NpcEntry), std::string(), t.NpcEntry, 0);
-                return true;
-            }
-            c.GatherGuid = go->GetGUID();
-            c.GatherSinceMs = now;
-            return false;
-        }
-        if (!go && Dist2D(t.SvcX, t.SvcY, bot->GetPositionX(), bot->GetPositionY()) < 8.0f)
-        {
-            Drop(ai, bot, c, now, 0, "NODE_GONE", StringFormat("node {} is not spawned", t.NpcEntry), std::string(), t.NpcEntry, 0);
-            return true;
-        }
-        Travel(ai, bot, c, now, go ? go->GetPositionX() : t.SvcX, go ? go->GetPositionY() : t.SvcY, go ? go->GetPositionZ() : t.SvcZ, 2.5f, t.NpcEntry);
-        return false;
-    }
-
-    static bool IsMiningEntry(uint32 goEntry)
-    {
-        for (NodePt const& n : g.Nodes)
-            if (n.Entry == goEntry)
-                return n.Skill == BotProfession::SKILL_MINING;
-        return false;
-    }
-
-    // ----- fishing (E2): a shore close to the bot, a pole in the bags, then cast, wait for the bite, use the bobber -----
-    static bool FishHasSpell(void* ctx, uint32 spell) { return static_cast<Player*>(ctx)->HasSpell(spell); }
-    struct FishProbe { Player* Bot; };
-    static bool FishWater(void* ctx, float x, float y)
-    {
-        Player* bot = static_cast<FishProbe*>(ctx)->Bot;
-        Map* map = bot->GetMap();
-        float const z = map->GetHeight(bot->GetPhaseShift(), x, y, bot->GetPositionZ() + 4.0f);
-        if (z <= INVALID_HEIGHT)
-            return false;
-        LiquidData ld;
-        ZLiquidStatus const st = map->GetLiquidStatus(bot->GetPhaseShift(), x, y, z, map_liquidHeaderTypeFlags::AllLiquids, &ld);
-        return (st & MAP_LIQUID_STATUS_SWIMMING) != 0 && ld.type_flags.HasFlag(map_liquidHeaderTypeFlags::Water);
-    }
-    static bool FishLand(void* ctx, float x, float y)
-    {
-        Player* bot = static_cast<FishProbe*>(ctx)->Bot;
-        Map* map = bot->GetMap();
-        float const z = map->GetHeight(bot->GetPhaseShift(), x, y, bot->GetPositionZ() + 4.0f);
-        if (z <= INVALID_HEIGHT || std::abs(z - bot->GetPositionZ()) > 5.0f)
-            return false;
-        return map->GetLiquidStatus(bot->GetPhaseShift(), x, y, z) == LIQUID_MAP_NO_WATER;
-    }
-
-    static Item* FindPole(Player* bot)
-    {
-        Item* pole = nullptr;
-        bot->ForEachItem(ItemSearchLocation::Everywhere, [&](Item* item)
-        {
-            ItemTemplate const* proto = item->GetTemplate();
-            if (proto && proto->IsWeapon() && proto->GetSubClass() == ITEM_SUBCLASS_WEAPON_FISHING_POLE && !item->IsBag())
-            {
-                pole = item;
-                return ItemSearchCallbackResult::Stop;
-            }
-            return ItemSearchCallbackResult::Continue;
-        });
-        return pole;
-    }
-
-    bool FishDue(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
-    {
-        c.FishNextMs = now + 60000;
-        if (bot->IsInCombat() || !bot->HasSkill(BotProfession::SKILL_FISHING) || bot->GetFreeInventorySlotCount() < 3 || !FindPole(bot))
-            return false;
-        if (!BotProfession::FishingSpell(FishHasSpell, bot))
-            return false;
-        FishProbe probe{ bot };
-        BotProfession::Shore shore;
-        if (!BotProfession::FindShore(bot->GetPositionX(), bot->GetPositionY(), FishWater, FishLand, &probe, shore))
-            return false;
-        SvcPt pt;
-        pt.Map = bot->GetMapId(); pt.X = shore.StandX; pt.Y = shore.StandY;
-        pt.Z = bot->GetMap()->GetHeight(bot->GetPhaseShift(), shore.StandX, shore.StandY, bot->GetPositionZ() + 4.0f);
-        pt.Entry = 0;
-        StartService(bot, c, now, 4, pt, false, false);
-        c.T.FishWaterX = shore.WaterX;
-        c.T.FishWaterY = shore.WaterY;
-        c.FishState = 0;
-        c.FishCasts = c.FishCatches = 0;
-        Decision(ai, bot, "FISH_TRIP", StringFormat("walking to a shore ({:.0f} yd) to fish", Dist2D(shore.StandX, shore.StandY, bot->GetPositionX(), bot->GetPositionY())), 0, 0,
-            StringFormat(R"({{"skill_value":{},"x":{:.0f},"y":{:.0f}}})", bot->GetSkillValue(BotProfession::SKILL_FISHING), shore.StandX, shore.StandY));
-        return true;
-    }
-
-    bool RunFish(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
-    {
-        Task& t = c.T;
-        if (bot->IsInCombat() || now - t.SinceMs > 3 * 60 * 1000 || c.FishCasts >= 8)
-        {
-            if (c.FishCasts)
-                Decision(ai, bot, "FISH_DONE", StringFormat("fished {} casts, {} catches", c.FishCasts, c.FishCatches), 0, 0,
-                    StringFormat(R"({{"casts":{},"catches":{},"skill_value":{}}})", c.FishCasts, c.FishCatches, bot->GetSkillValue(BotProfession::SKILL_FISHING)));
-            bot->InterruptNonMeleeSpells(false);
-            c.FishNextMs = now + 120000;
-            Finish(c, now);
-            return true;
-        }
-        if (c.FishState == 0)
-        {
-            if (Dist2D(t.SvcX, t.SvcY, bot->GetPositionX(), bot->GetPositionY()) > 1.5f)
-            {
-                Travel(ai, bot, c, now, t.SvcX, t.SvcY, t.SvcZ, 1.0f, 0);
-                return false;
-            }
-            StopMoving(ai, bot, c);
-            bot->SetFacingTo(bot->GetAbsoluteAngle(t.FishWaterX, t.FishWaterY));
-            Item* pole = FindPole(bot);
-            if (!pole)
-            {
-                Drop(ai, bot, c, now, 0, "NO_POLE", "fishing pole is gone", std::string(), 0, 0);
-                return true;
-            }
-            if (!pole->IsEquipped())
-            {
-                uint16 dest = 0;
-                if (bot->CanEquipItem(EQUIPMENT_SLOT_MAINHAND, dest, pole, true) != EQUIP_ERR_OK)
-                {
-                    Drop(ai, bot, c, now, 0, "POLE_NOT_EQUIPPABLE", "cannot wield the fishing pole", std::string(), 0, 0);
-                    return true;
-                }
-                bot->SwapItem(pole->GetPos(), dest);
-                return false;   // cast next tick
-            }
-            c.FishState = 1;
-        }
-        if (c.FishState == 1)
-        {
-            uint32 const spell = BotProfession::FishingSpell(FishHasSpell, bot);
-            if (!spell || bot->CastSpell(bot, spell, CastSpellExtraArgs(TRIGGERED_NONE)) != SPELL_CAST_OK)
-            {
-                Drop(ai, bot, c, now, 0, "FISH_CAST_FAILED", "could not cast fishing", std::string(), 0, 0);
-                return true;
-            }
-            ++c.FishCasts;
-            c.FishCastMs = now;
-            c.FishState = 2;
-            return false;
-        }
-        // waiting for the bite: the bobber is a game object the bot owns, it becomes ready when a fish bites
-        uint32 const spell = BotProfession::FishingSpell(FishHasSpell, bot);
-        GameObject* bobber = spell ? bot->GetGameObject(spell) : nullptr;
-        if (bobber && bobber->getLootState() == GO_READY)
-        {
-            bobber->Use(bot);
-            if (Loot* loot = bobber->GetLootForPlayer(bot))
-                if (!loot->isLooted())
-                {
-                    LootGameObject(bot, bobber);
-                    ++c.FishCatches;
-                }
-            c.FishState = 1;
-            return false;
-        }
-        if (!bobber && !bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) && now - c.FishCastMs > 2000)
-            c.FishState = 1;   // the channel ended without a catch (fish got away): cast again
-        else if (now - c.FishCastMs > 30000)
-            c.FishState = 1;
-        return false;
-    }
-
-    // E2: first aid and cooking level up by crafting what the bot already knows from materials it already carries. One cast per call,
-    // only while standing still and out of combat. A failed cast (no cooking fire nearby, missing tool) backs that skill off for 5 minutes.
-    void CraftForSkill(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
-    {
-        if (bot->IsInCombat() || !bot->IsAlive() || bot->isMoving() || bot->IsNonMeleeSpellCast(false) || bot->GetLevel() < 5)
-            return;
-        for (BotProfession::Info const& info : BotProfession::All())
-        {
-            if (info.Gathering || !bot->HasSkill(info.Skill))
-                continue;
-            auto back = c.CraftBackoff.find(info.Skill);
-            if (back != c.CraftBackoff.end() && now < back->second)
-                continue;
-            int32 const skill = int32(bot->GetSkillValue(info.Skill));
-            if (skill >= int32(bot->GetMaxSkillValue(info.Skill)))
-                continue;
-            std::vector<BotProfession::Recipe> craftable;
-            for (auto const& [spellId, ps] : bot->GetSpellMap())
-            {
-                if (ps.state == PLAYERSPELL_REMOVED || !ps.active || ps.disabled)
-                    continue;
-                auto bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
-                SkillLineAbilityEntry const* ab = nullptr;
-                for (auto it = bounds.first; it != bounds.second; ++it)
-                    if (it->second->SkillLine == info.Skill)
-                        ab = it->second;
-                if (!ab || ab->TrivialSkillLineRankHigh <= 0)
-                    continue;
-                SpellInfo const* si = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE);
-                if (!si)
-                    continue;
-                bool haveAll = true, any = false;
-                for (size_t i = 0; i < si->Reagent.size(); ++i)
-                    if (si->Reagent[i] > 0 && si->ReagentCount[i] > 0)
-                    {
-                        any = true;
-                        haveAll = haveAll && bot->HasItemCount(uint32(si->Reagent[i]), uint32(si->ReagentCount[i]));
-                    }
-                if (!any || !haveAll || bot->GetFreeInventorySlotCount() == 0)
-                    continue;
-                craftable.push_back({ spellId, (ab->TrivialSkillLineRankHigh + ab->TrivialSkillLineRankLow) / 2, ab->TrivialSkillLineRankHigh });
-            }
-            int const pick = BotProfession::PickRecipe(skill, craftable);
-            if (pick < 0)
-                continue;
-            uint32 const spellId = craftable[pick].SpellId;
-            SpellCastResult const res = bot->CastSpell(bot, spellId, CastSpellExtraArgs(TRIGGERED_NONE));
-            if (res == SPELL_CAST_OK)
-            {
-                Decision(ai, bot, "PROF_CRAFT", StringFormat("crafting spell {} for {} (skill {})", spellId, info.Name, skill), 0, 0,
-                    StringFormat(R"({{"skill":{},"spell":{},"skill_value":{}}})", info.Skill, spellId, skill));
-                return;
-            }
-            c.CraftBackoff[info.Skill] = now + 300000;
-            Blocked(ai, bot, c, 0, "PROF_CRAFT_FAIL", StringFormat("cannot craft spell {} for {}: cast result {}", spellId, info.Name, uint32(res)),
-                StringFormat(R"({{"skill":{},"spell":{},"result":{}}})", info.Skill, spellId, uint32(res)), 0, false);
-        }
-    }
-
-    // E2: one profession trainer trip at a time. A planned profession the bot lacks comes first, then ranks of the ones it has.
-    bool ProfessionTrip(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
-    {
-        c.ProfNextMs = now + 60000;
-        uint8 const level = bot->GetLevel();
-        if (c.ProfWarnLevel != level)
-        {
-            c.ProfWarnLevel = level;
-            c.ProfWarned.clear();
-        }
-        if (c.ProfPlan.empty())
-            c.ProfPlan = BotProfession::Plan(bot->GetGUID().GetCounter());
-
-        std::vector<uint32> known;
-        for (uint32 skill : c.ProfPlan)
-            if (bot->HasSkill(skill))
-                known.push_back(skill);
-
-        std::vector<uint32> order;
-        if (uint32 next = BotProfession::NextToLearn(c.ProfPlan, known, level))
-            order.push_back(next);
-        order.insert(order.end(), known.begin(), known.end());
-
-        for (uint32 skill : order)
-        {
-            char const* name = BotProfession::Find(skill)->Name;
-            bool const have = bot->HasSkill(skill);
-            auto tl = g.Trainers.find(0x100 | skill);
-            float d = 0.0f;
-            SvcPt const* tp = tl == g.Trainers.end() ? nullptr : NearestSvc(bot, c, now, tl->second, false, false, 3000.0f, d);
-            Trainer::Trainer const* tr = tp ? sObjectMgr->GetTrainer(tp->TrainerId) : nullptr;
-            if (!tr)
-            {
-                if (!have && c.ProfWarned.insert(skill).second)
-                    Blocked(ai, bot, c, 0, "PROF_NO_TRAINER", StringFormat("no reachable {} trainer on map {} within 3000 yd", name, bot->GetMapId()),
-                        StringFormat(R"({{"skill":{},"map":{},"level":{},"x":{:.0f},"y":{:.0f}}})", skill, bot->GetMapId(), level, bot->GetPositionX(), bot->GetPositionY()), 0, false);
-                continue;
-            }
-            TrainEval ev = EvalTrain(bot, tr);
-            if (ev.Affordable)
-            {
-                StartService(bot, c, now, 1, *tp, false, false);
-                Decision(ai, bot, "PROF_TRIP", StringFormat("walking to {} trainer {} ({:.0f} yd), {} spells", name, tp->Entry, d, ev.Affordable), 0, tp->Entry,
-                    StringFormat(R"({{"skill":{},"have":{},"trainer_id":{},"dist":{:.0f},"affordable":{},"money":{},"skill_value":{}}})", skill, have, tp->TrainerId, d, ev.Affordable, bot->GetMoney(), bot->GetSkillValue(skill)));
-                return true;
-            }
-            if (!have && ev.Avail && c.ProfWarned.insert(skill).second)
-                Blocked(ai, bot, c, 0, "PROF_NO_MONEY", StringFormat("{} costs {} copper, bot has {}", name, ev.Want, bot->GetMoney()),
-                    StringFormat(R"({{"skill":{},"cheapest":{},"money":{},"level":{}}})", skill, ev.Want, bot->GetMoney(), level), tp->Entry, false);
-        }
-        return false;
-    }
-
     // Decides whether a trainer or vendor trip is due and starts it. Throttled, cheap in the common case.
     bool ServiceDue(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
     {
@@ -2805,24 +2338,6 @@ private:
             return false;
         c.NextSvcMs = now + 4000;
         uint8 const level = bot->GetLevel();
-
-        // gear: equip a clear upgrade sitting in the bags (loot, bought, a level-up that made an item usable)
-        if (now >= c.NextGearMs)
-        {
-            c.NextGearMs = now + 30000;
-            EquipBagUpgrade(ai, bot);
-        }
-
-        if (level >= 5 && now >= c.GatherNextMs && GatherDue(ai, bot, c, now))
-            return true;
-        if (level >= 5 && now >= c.FishNextMs && FishDue(ai, bot, c, now))
-            return true;
-
-        if (now >= c.CraftNextMs)
-        {
-            c.CraftNextMs = now + 15000;
-            CraftForSkill(ai, bot, c, now);
-        }
 
         // 1. trainer: new level, or enough money for the cheapest spell we could not afford before. Spells have money priority.
         if (level >= 2 && now >= c.TrainRetryMs && (c.TrainLevel != level || (c.TrainWant && bot->GetMoney() >= c.TrainWant)))
@@ -2882,10 +2397,6 @@ private:
             }
         }
 
-        // 1b. professions: learn the planned ones, then buy the next ranks when skill and money allow
-        if (level >= 5 && now >= c.ProfNextMs && ProfessionTrip(ai, bot, c, now))
-            return true;
-
         // 2. vendor
         uint32 const freeSlots = bot->GetFreeInventorySlotCount();
         bool const forced = c.VendorNow;
@@ -2935,10 +2446,6 @@ private:
             Drop(ai, bot, c, now, 0, "UNREACHABLE", StringFormat("gave up walking to {} npc {} after 10 min", t.Svc == 1 ? "trainer" : "vendor", t.NpcEntry), std::string(), t.NpcEntry, 0);
             return true;
         }
-        if (t.Svc == 3)
-            return RunGather(ai, bot, c, now);
-        if (t.Svc == 4)
-            return RunFish(ai, bot, c, now);
         Creature* npc = FindLiveNpc(bot, t.NpcEntry, 45.0f);
         if (npc && npc->IsAlive() && bot->IsWithinDistInMap(npc, 4.5f))
         {
@@ -2981,11 +2488,7 @@ private:
         uint32 const tid = sObjectMgr->GetCreatureDefaultTrainer(npc->GetEntry());
         Trainer::Trainer const* tr = tid ? sObjectMgr->GetTrainer(tid) : nullptr;
         uint8 const level = bot->GetLevel();
-        // profession trainers must not touch the class-spell bookkeeping (it decides when the next class trainer trip is due)
-        CreatureTemplate const* ct = npc->GetCreatureTemplate();
-        bool const classTrainer = ct && ct->trainer_class > 0 && ct->trainer_class < 32;
-        if (classTrainer)
-            c.TrainLevel = level;
+        c.TrainLevel = level;
         if (!tr)
         {
             Blocked(ai, bot, c, 0, "TRAIN_NO_TRAINER", StringFormat("npc {} has no trainer data", npc->GetEntry()), std::string(), npc->GetEntry(), false);
@@ -3025,8 +2528,7 @@ private:
                 break;
         }
         TrainEval left = EvalTrain(bot, tr);
-        if (classTrainer)
-            c.TrainWant = left.Want;
+        c.TrainWant = left.Want;
         c.TrainedTotal += learned;
         if (learned)
             Decision(ai, bot, "TRAINED", StringFormat("learned {} spells from trainer {} for {} copper", learned, npc->GetEntry(), moneyBefore - bot->GetMoney()), 0, npc->GetEntry(),
@@ -3130,92 +2632,7 @@ private:
                     StringFormat(R"({{"cheapest":{},"money":{},"reserve":{},"level":{}}})", cheapest, money, reserve, level), npc->GetEntry(), false);
             }
         }
-        BuyGearUpgrades(ai, bot, c, now, npc);
-        BuyFishingPole(ai, bot, c, npc);
         c.NextVendorMs = now + (bot->GetFreeInventorySlotCount() <= 1 ? 600 : 120) * 1000;
-    }
-
-    // E2: a bot that has the fishing skill but no pole buys the cheapest one on offer.
-    void BuyFishingPole(BotAI* ai, Player* bot, BotQuestCtx& c, Creature* npc)
-    {
-        if (!bot->HasSkill(BotProfession::SKILL_FISHING) || FindPole(bot))
-            return;
-        VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(npc->GetEntry());
-        if (!items || items->Empty())
-            return;
-        uint32 slot = 0, entry = 0, price = 0xFFFFFFFFu;
-        for (uint32 i = 0; i < items->GetItemCount(); ++i)
-        {
-            VendorItem const* vi = items->GetItem(i);
-            if (!vi || vi->ExtendedCost || vi->maxcount || vi->PlayerConditionId)
-                continue;
-            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(vi->item);
-            if (proto && proto->IsWeapon() && proto->GetSubClass() == ITEM_SUBCLASS_WEAPON_FISHING_POLE && proto->GetBuyPrice() && proto->GetBuyPrice() < price && bot->GetMoney() >= proto->GetBuyPrice())
-            {
-                slot = i; entry = vi->item; price = proto->GetBuyPrice();
-            }
-        }
-        if (!entry)
-            return;
-        uint64 const before = bot->GetMoney();
-        bot->BuyItemFromVendorSlot(npc->GetGUID(), slot, entry, 1, NULL_BAG, NULL_SLOT);
-        if (bot->GetMoney() < before)
-            Decision(ai, bot, "POLE_BOUGHT", StringFormat("bought fishing pole {} for {} copper", entry, before - bot->GetMoney()), 0, npc->GetEntry(),
-                StringFormat(R"({{"item":{},"price":{}}})", entry, before - bot->GetMoney()));
-        else
-            Blocked(ai, bot, c, 0, "POLE_BUY_FAILED", StringFormat("could not buy fishing pole {}", entry), std::string(), npc->GetEntry(), false);
-    }
-
-    // E2/gear: buys armor and weapons from this vendor that are a clear upgrade for the class and equips them. At most 3 per visit,
-    // plain gold price only, and the money the class trainer still wants stays untouched.
-    void BuyGearUpgrades(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Creature* npc)
-    {
-        VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(npc->GetEntry());
-        if (!items || items->Empty() || bot->GetLevel() < 3)
-            return;
-        uint64 const reserve = TrainReserve(bot, c, now);
-        for (int round = 0; round < 3; ++round)
-        {
-            if (bot->GetFreeInventorySlotCount() == 0)
-                return;
-            VendorItem const* pick = nullptr;
-            uint32 pickSlot = 0;
-            double pickGain = 0.0;
-            for (uint32 i = 0; i < items->GetItemCount(); ++i)
-            {
-                VendorItem const* vi = items->GetItem(i);
-                if (!vi || vi->ExtendedCost || vi->maxcount || vi->PlayerConditionId)
-                    continue;
-                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(vi->item);
-                if (!proto || !(proto->IsArmor() || proto->IsWeapon()) || !proto->GetBuyPrice() || bot->GetMoney() < reserve + proto->GetBuyPrice())
-                    continue;
-                if (bot->CanUseItem(proto) != EQUIP_ERR_OK)
-                    continue;
-                GearChoice gc;
-                if (BestGearSlot(bot, proto, gc) && (!pick || gc.Gain() > pickGain))
-                {
-                    pick = vi;
-                    pickSlot = i;
-                    pickGain = gc.Gain();
-                }
-            }
-            if (!pick)
-                return;
-            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(pick->item);
-            uint64 const before = bot->GetMoney();
-            bot->BuyItemFromVendorSlot(npc->GetGUID(), pickSlot, pick->item, 1, NULL_BAG, NULL_SLOT);
-            Item* bought = bot->GetMoney() < before ? bot->GetItemByEntry(pick->item) : nullptr;
-            if (!bought)
-            {
-                Blocked(ai, bot, c, 0, "GEAR_BUY_FAILED", StringFormat("could not buy {} (vendor refused or no space)", pick->item),
-                    StringFormat(R"({{"item":{},"money":{},"free_slots":{}}})", pick->item, bot->GetMoney(), bot->GetFreeInventorySlotCount()), npc->GetEntry(), false);
-                return;
-            }
-            Decision(ai, bot, "GEAR_BOUGHT", StringFormat("bought {} for {} copper", proto->GetName(DEFAULT_LOCALE), before - bot->GetMoney()), 0, npc->GetEntry(),
-                StringFormat(R"({{"item":{},"price":{},"gain":{:.1f},"money_left":{}}})", pick->item, before - bot->GetMoney(), pickGain, bot->GetMoney()));
-            if (!EquipIfUpgrade(ai, bot, bought, "GEAR_EQUIPPED", 0))
-                return;   // could not wear it: do not buy the same thing again
-        }
     }
 
     // ----- running the task -----
@@ -3339,70 +2756,6 @@ private:
         return false; // let move_to_goal run in the same tick
     }
 
-    // ----- gear scoring (BotGear.h): class-role stat weights decide what is an upgrade -----
-    static BotGear::ItemFacts GearFacts(ItemTemplate const* proto)
-    {
-        BotGear::ItemFacts f;
-        f.InvType = uint32(proto->GetInventoryType());
-        f.ItemLevel = proto->GetBaseItemLevel();
-        f.Armor = proto->IsArmor() ? proto->GetArmor(f.ItemLevel) : 0;
-        f.Dps = proto->IsWeapon() ? proto->GetDPS(f.ItemLevel) : 0.0f;
-        f.TwoHand = f.InvType == INVTYPE_2HWEAPON;
-        f.RangedWeapon = proto->IsRangedWeapon();
-        for (uint32 i = 0; i < MAX_ITEM_PROTO_STATS; ++i)
-            if (proto->GetStatPercentEditor(i) > 0)
-                f.Stats.emplace_back(proto->GetStatModifierBonusStat(i), proto->GetStatPercentEditor(i));
-        return f;
-    }
-
-    static double GearScore(Player* bot, ItemTemplate const* proto)
-    {
-        return BotGear::Score(BotGear::RoleForClass(bot->GetClass()), GearFacts(proto));
-    }
-
-    struct GearChoice
-    {
-        uint8 Slot = 0xFF;
-        double Score = 0.0;
-        double Worn = 0.0;
-        uint32 WornEntry = 0;
-        uint32 WornLevel = 0;
-        double Gain() const { return Score - Worn; }
-    };
-
-    // Picks the slot the item would replace with the least loss (an empty slot first) and says whether it is an upgrade there.
-    static bool BestGearSlot(Player* bot, ItemTemplate const* proto, GearChoice& out)
-    {
-        if (!(proto->IsArmor() || proto->IsWeapon()))
-            return false;
-        std::vector<uint8> const slots = BotGear::SlotsForInvType(uint32(proto->GetInventoryType()));
-        if (slots.empty())
-            return false;
-        double const score = GearScore(bot, proto);
-        bool found = false;
-        for (uint8 slot : slots)
-        {
-            Item* worn = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-            double wornScore = worn ? GearScore(bot, worn->GetTemplate()) : 0.0;
-            uint32 wornEntry = worn ? worn->GetEntry() : 0;
-            uint32 wornLevel = worn ? worn->GetTemplate()->GetBaseItemLevel() : 0;
-            // a two-hander also pushes the off hand out, a worn two-hander blocks the off hand
-            if (slot == EQUIPMENT_SLOT_MAINHAND && proto->GetInventoryType() == INVTYPE_2HWEAPON)
-                if (Item* off = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
-                    wornScore += GearScore(bot, off->GetTemplate());
-            if (!found || wornScore < out.Worn)
-            {
-                out.Slot = slot;
-                out.Score = score;
-                out.Worn = wornScore;
-                out.WornEntry = wornEntry;
-                out.WornLevel = wornLevel;
-                found = true;
-            }
-        }
-        return found && BotGear::IsUpgrade(out.Score, out.Worn);
-    }
-
     uint32 ChooseReward(Player* bot, Quest const* q)
     {
         uint32 bestId = 0;
@@ -3417,13 +2770,7 @@ private:
                 continue;
             double s = double(proto->GetSellPrice());
             if (bot->CanUseItem(proto) == EQUIP_ERR_OK)
-            {
-                GearChoice gc;
-                if (BestGearSlot(bot, proto, gc))
-                    s += 1e9 + gc.Gain() * 1000.0;     // a real upgrade for this class beats any vendor value
-                else if (!(proto->IsArmor() || proto->IsWeapon()))
-                    s += 1e6;
-            }
+                s += (proto->IsArmor() || proto->IsWeapon()) ? 1e9 : 1e6;
             if (s > bestScore)
             {
                 bestScore = s;
@@ -3433,34 +2780,36 @@ private:
         return bestId;
     }
 
-    // Equips an item from the bags when it scores clearly higher than what the bot wears in the slot it would take.
-    static bool EquipIfUpgrade(BotAI* ai, Player* bot, Item* item, char const* code, uint32 questId)
-    {
-        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
-        if (!proto || item->IsEquipped() || bot->IsInCombat() || bot->CanUseItem(item) != EQUIP_ERR_OK)
-            return false;
-        GearChoice gc;
-        if (!BestGearSlot(bot, proto, gc))
-            return false;
-        uint16 dest = 0;
-        if (bot->CanEquipItem(gc.Slot, dest, item, true) != EQUIP_ERR_OK)
-            return false;
-        bot->SwapItem(item->GetPos(), dest);
-        Item* now = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, uint8(dest & 255));
-        bool const ok = now && now->GetEntry() == proto->GetId();
-        BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, code,
-            StringFormat("equipped {} ({})", proto->GetName(DEFAULT_LOCALE), ok ? "ok" : "swap failed"));
-        ev.QuestId = questId;
-        ev.TargetEntry = proto->GetId();
-        ev.Details = StringFormat(R"({{"slot":{},"replaced_entry":{},"old_ilvl":{},"new_ilvl":{},"old_score":{:.1f},"new_score":{:.1f}}})",
-            dest & 255, gc.WornEntry, gc.WornLevel, proto->GetBaseItemLevel(), gc.Worn, gc.Score);
-        sBotMgr->LogEvent(std::move(ev));
-        return ok;
-    }
-
+    // Equips a quest reward only when it is a clear upgrade: empty slot, or higher item level than what is worn.
     void TryEquipReward(BotAI* ai, Player* bot, uint32 itemId, uint32 questId)
     {
-        EquipIfUpgrade(ai, bot, bot->GetItemByEntry(itemId), "QUEST_REWARD_EQUIPPED", questId);
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+        if (!proto || !(proto->IsArmor() || proto->IsWeapon()) || bot->IsInCombat())
+            return;
+        Item* item = bot->GetItemByEntry(itemId);
+        if (!item || item->IsEquipped())
+            return;
+        uint16 dest = 0;
+        if (bot->CanEquipItem(NULL_SLOT, dest, item, true) != EQUIP_ERR_OK)
+            return;
+        Item* worn = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, uint8(dest & 255));
+        uint32 wornLevel = 0;
+        if (worn)
+        {
+            ItemTemplate const* wp = worn->GetTemplate();
+            wornLevel = wp->GetBaseItemLevel();
+            if (wp->GetQuality() > proto->GetQuality() || proto->GetBaseItemLevel() <= wornLevel)
+                return;
+        }
+        uint32 wornEntry = worn ? worn->GetEntry() : 0;
+        bot->SwapItem(item->GetPos(), dest);
+        Item* now = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, uint8(dest & 255));
+        BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_REWARD_EQUIPPED",
+            StringFormat("equipped quest reward {} ({})", proto->GetName(DEFAULT_LOCALE), now && now->GetEntry() == itemId ? "ok" : "swap failed"));
+        ev.QuestId = questId;
+        ev.TargetEntry = itemId;
+        ev.Details = StringFormat(R"({{"slot":{},"replaced_entry":{},"old_ilvl":{},"new_ilvl":{}}})", dest & 255, wornEntry, wornLevel, proto->GetBaseItemLevel());
+        sBotMgr->LogEvent(std::move(ev));
     }
 
     bool TurnIn(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Quest const* q, Creature* npc)
@@ -4244,8 +3593,14 @@ private:
     }
 
     // Loots every item and the money of one of our corpses when in range. Returns true when something was done.
-    static void TakeLoot(Player* bot, Creature* m, Loot* loot)
+    bool LootCorpse(BotAI* ai, Player* bot, BotQuestCtx& c, Task& t, Creature* m)
     {
+        (void)ai; (void)c; (void)t;
+        if (!m->IsWithinDistInMap(bot, 3.5f) || !m->isTappedBy(bot))
+            return false;
+        Loot* loot = m->GetLootForPlayer(bot);
+        if (!loot || loot->isLooted())
+            return false;
         bot->SendLoot(*loot);
         for (uint32 i = 0; i < loot->items.size(); ++i)
             if (LootItem* li = loot->LootItemInSlot(i, bot))
@@ -4258,56 +3613,6 @@ private:
             loot->NotifyMoneyRemoved(m->GetMap());
         }
         bot->GetSession()->DoLootRelease(loot);
-    }
-
-    // E2: skins a skinnable corpse the bot is able to skin (planned profession, skill high enough, room in the bags).
-    static bool CanSkin(Player* bot, Creature* m)
-    {
-        if (!m->HasUnitFlag(UNIT_FLAG_SKINNABLE) || m->HasUnitFlag3(UNIT_FLAG3_ALREADY_SKINNED) || !bot->HasSpell(SPELL_SKINNING))
-            return false;
-        if (bot->GetFreeInventorySlotCount() == 0)
-            return false;
-        return BotProfession::SkinReqSkill(m->GetLevel()) <= bot->GetSkillValue(BotProfession::SKILL_SKINNING) + 25;
-    }
-
-    // Loots the corpse; then skins it and loots the skin. Returns true while it did something this tick.
-    bool LootCorpse(BotAI* ai, Player* bot, BotQuestCtx& c, Task& t, Creature* m)
-    {
-        (void)ai; (void)t;
-        if (!m->IsWithinDistInMap(bot, 3.5f) || !m->isTappedBy(bot))
-            return false;
-        uint32 const nowMs = GameTime::GetGameTimeMS();
-        Loot* loot = m->GetLootForPlayer(bot);
-        if (c.SkinGuid == m->GetGUID())
-        {
-            if (bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) && nowMs - c.SkinSinceMs < 6000)
-                return true;   // still casting
-            c.SkinGuid.Clear();
-            if (loot && !loot->isLooted() && m->HasUnitFlag3(UNIT_FLAG3_ALREADY_SKINNED))
-            {
-                TakeLoot(bot, m, loot);
-                Decision(ai, bot, "SKINNED", StringFormat("skinned {} (skill {})", m->GetName(), bot->GetSkillValue(BotProfession::SKILL_SKINNING)), 0, m->GetEntry(),
-                    StringFormat(R"({{"creature_level":{},"skill":{}}})", m->GetLevel(), bot->GetSkillValue(BotProfession::SKILL_SKINNING)));
-                return true;
-            }
-            return false;
-        }
-        if (loot && !loot->isLooted())
-        {
-            TakeLoot(bot, m, loot);
-            return true;
-        }
-        if (CanSkin(bot, m))
-        {
-            bot->GetMotionMaster()->Clear();
-            if (bot->CastSpell(m, SPELL_SKINNING, CastSpellExtraArgs(TRIGGERED_NONE)) == SPELL_CAST_OK)
-            {
-                c.SkinGuid = m->GetGUID();
-                c.SkinSinceMs = nowMs;
-                return true;
-            }
-        }
-        return false;
         PaceAfter(ai, bot, ai->GetNowMs(), BotMove::Pause::Loot);
         return true;
     }
