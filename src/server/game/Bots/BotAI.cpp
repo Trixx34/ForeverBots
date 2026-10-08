@@ -117,6 +117,9 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
         case BotState::Combat: names = SplitNames(BotAI::Config().DefaultCombat); break;
         case BotState::Dead: names = SplitNames(BotAI::Config().DefaultDead); break;
     }
+    if (state == BotState::NonCombat && BotMove::Natural().Enabled && BotMove::Natural().Idle
+        && std::find(names.begin(), names.end(), "natural_idle") == names.end())
+        names.push_back("natural_idle");
     if (BotPet::Cfg().Enabled && bot && bot->GetClass() == CLASS_HUNTER && state != BotState::Dead
         && std::find(names.begin(), names.end(), "pet") == names.end())
         names.push_back("pet");
@@ -266,6 +269,8 @@ void BotAI::Tick(Player* bot)
         _lastMapId = mapId;
     }
 
+    _motion.Tick(this, bot);
+
     char const* cause = "NONE";
     BotState const desired = DesiredState(bot, cause);
     if (!_started)
@@ -361,6 +366,8 @@ void BotAI::ChangeState(Player* bot, BotState to, char const* cause)
         BotMotion::Halt(bot);
         _motion.ClearGoal();
     }
+    if (from == BotState::Combat && to == BotState::NonCombat && BotMove::Natural().Enabled && BotMove::Natural().Pacing)
+        _motion.Pause(_nowMs, BotMove::PauseMs(BotMove::Pause::PostCombat, _guid, _nowMs));
     if (to == BotState::Dead)
     {
         _recover.Reset();

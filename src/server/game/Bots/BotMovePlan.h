@@ -29,6 +29,23 @@
 
 namespace BotMove
 {
+    // Bot.AI.Move.Natural.*: every part is off unless Enabled is set (default off); read once by BotBehavior.cpp.
+    struct NaturalConfig
+    {
+        bool Enabled = false;
+        bool Shortcut = true;        // string pulling of the computed path
+        bool RoundCorners = true;    // chamfered corners and a smooth spline
+        bool SpeedVariation = true;  // slow drift of the walking speed per bot
+        bool Pacing = true;          // start delay, arrival pause, pauses after combat, loot and quest givers
+        bool Spread = true;          // per-bot offset of the approach point
+        bool Idle = true;            // look around, sit, wander while nothing else is to do
+        bool Metrics = true;         // MOVE_METRICS rows
+        uint32 MetricsSec = 60;
+        uint32 IdleMaxStandSec = 25;
+        uint32 MaxShortcutYards = 45;
+    };
+    TC_GAME_API NaturalConfig const& Natural();
+
     struct Vec3
     {
         float x = 0.0f, y = 0.0f, z = 0.0f;

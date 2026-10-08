@@ -1197,11 +1197,16 @@ public:
             return false;
         }
         BotMotion& motion = ai->Motion();
-        if (motion.HasGoal() && std::strcmp(motion.GetTag(), "quest") != 0)
+        if (motion.HasGoal() && std::strcmp(motion.GetTag(), "quest") != 0 && std::strcmp(motion.GetTag(), "idle") != 0)
         { c.Why = "othergoal"; return false; } // flee / goto / follow owns the movement slot
         if (!motion.GetFollow().IsEmpty())
         {
             c.Why = "follow";
+            return false;
+        }
+        if (motion.IsPaused(now)) // natural pacing: a pause after an arrival, a loot, a quest giver or a fight
+        {
+            c.Why = "paused";
             return false;
         }
         c.Why = "run";
