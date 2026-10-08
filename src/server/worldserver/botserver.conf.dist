@@ -77,9 +77,9 @@ BotLog.MaxBatch = 500
 # errors), ai (strategies, engine traces, tick stats), combat (fights, casts, auras, flee, aggro,
 # threat), dummy (training dummy), movement (goto, follow, stuck, path failures, town idling),
 # travel (long distance legs), recovery (death, corpse run, spirit healer, resting, watchdog),
-# quest, progress (xp, levels, talents, spells, reputation), economy (auction, trade, vendors,
-# loot, gear, professions, bank, mail), pets, social (chat orders, alts, invites, bot parties),
-# dungeon, other (a reason no rule matches).
+# quest, progress (xp, levels, talents, spells), economy (auction, trade, vendors, loot, gear,
+# professions, bank, mail), pets, social (chat orders, alts, invites, bot parties), dungeon,
+# other (a reason no rule matches).
 #
 ###################################################################################################
 
@@ -273,9 +273,9 @@ Bot.Log.Summary.Types = "cast,aura,trace"
 #    Bot.Log.Summary.Reasons
 #        Description: Reason code prefixes that are summarized whatever the event type (for example the walking
 #                     decisions).
-#        Default:     "GOTO_,QUEST_WALK_,QUEST_PULL,FOLLOW_"
+#        Default:     "GOTO_,QUEST_WALK_,QUEST_PULL,FOLLOW_,TOWN_IDLE_"
 #        Values:      comma list of reason code prefixes (bot_event.reason), case does not matter; empty = none
-Bot.Log.Summary.Reasons = "GOTO_,QUEST_WALK_,QUEST_PULL,FOLLOW_"
+Bot.Log.Summary.Reasons = "GOTO_,QUEST_WALK_,QUEST_PULL,FOLLOW_,TOWN_IDLE_"
 
 #
 #    Bot.Log.Summary.Keep
@@ -925,6 +925,46 @@ Bot.Quest.DeathLoopBreaker = 0
 #        Default:     0
 #        Values:      0 (off) or 1 (on)
 Bot.Quest.DeferQuest8 = 0
+
+#
+#    Bot.Quest.UseObjects
+#        Description: Quests whose objective is to use a game object (levers, goobers, clickable objects) are
+#                     worked: the bot walks to a spawn of the object and uses it, like a quest chest. Off: such
+#                     quests stay OBJECTIVE_UNSUPPORTED.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.UseObjects = 0
+
+#
+#    Bot.Quest.Reputation.Enabled
+#        Description: Reputation rewards weigh into the quest choice. Quests that raise a faction the bot can
+#                     still gain with score higher (half once Revered, none at Exalted or past the quest cap
+#                     rank), quests that lower a faction score lower, and a quest that would push a faction to
+#                     Hostile or worse is never taken. Rewards of the opposing side are ignored.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.Reputation.Enabled = 0
+
+#
+#    Bot.Quest.Reputation.BonusPct
+#        Description: Score bonus for a full reputation gain.
+#        Default:     25
+#        Values:      whole number 0 to 200 (percent)
+Bot.Quest.Reputation.BonusPct = 25
+
+#
+#    Bot.Quest.Reputation.LossPenaltyPct
+#        Description: Score penalty for a full reputation loss.
+#        Default:     40
+#        Values:      whole number 0 to 100 (percent)
+Bot.Quest.Reputation.LossPenaltyPct = 40
+
+#
+#    Bot.Quest.Reputation.FullPoints
+#        Description: Reputation points that count as a full gain or loss (smaller rewards count in proportion).
+#        Default:     250
+#        Values:      whole number 1 to 10000 (reputation points)
+Bot.Quest.Reputation.FullPoints = 250
 
 
 ###################################################################################################
@@ -1643,6 +1683,337 @@ Bot.AI.Roles.TankHealBelowPct = 90
 #        Default:     35
 #        Values:      whole number 5 to 90 (percent)
 Bot.AI.Roles.EmergencyPct = 35
+
+
+###################################################################################################
+# BANK AND MAIL
+#
+###################################################################################################
+
+#
+#    Bot.Bank.Enabled
+#        Description: Bots with tight bags (see Bot.Bank.FreeSlotsBelow) walk to a banker and deposit materials,
+#                     gems and recipes (never quest items, gear, consumables or reagents of recipes they craft),
+#                     and fetch back gear upgrades that sit in the bank. Logged as BANK_TRIP, BANK_DEPOSIT,
+#                     BANK_WITHDREW, BANK_VISIT. Bank and mail calls run on the world thread.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Bank.Enabled = 0
+
+#
+#    Bot.Bank.FreeSlotsBelow
+#        Description: A bank trip is due at this many free bag slots or fewer.
+#        Default:     4
+#        Values:      whole number 0 to 30 (slots)
+Bot.Bank.FreeSlotsBelow = 4
+
+#
+#    Bot.Bank.FreeSlotsTarget
+#        Description: A deposit aims for this many free slots (at least FreeSlotsBelow + 1).
+#        Default:     10
+#        Values:      whole number 1 to 40 (slots)
+Bot.Bank.FreeSlotsTarget = 10
+
+#
+#    Bot.Bank.MaxStacksPerVisit
+#        Description: Most stacks moved in one visit.
+#        Default:     12
+#        Values:      whole number 1 to 40 (stacks)
+Bot.Bank.MaxStacksPerVisit = 12
+
+#
+#    Bot.Bank.VisitCooldownSec
+#        Description: Seconds between two bank or mailbox visits of one bot.
+#        Default:     600
+#        Values:      whole number 60 to 86400 (seconds)
+Bot.Bank.VisitCooldownSec = 600
+
+#
+#    Bot.Bank.Mail.Enabled
+#        Description: A bot with gold above Bot.Bank.Mail.ReserveGold mails the surplus to Bot.Bank.Mail.Recipient
+#                     at a mailbox (30 copper postage). Needs a recipient. Logged as MAIL_TRIP, MAIL_SENT,
+#                     MAIL_NO_RECIPIENT.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Bank.Mail.Enabled = 0
+
+#
+#    Bot.Bank.Mail.Recipient
+#        Description: Character that receives the gold.
+#        Default:     ""
+#        Values:      a character name; empty = no mail
+Bot.Bank.Mail.Recipient = ""
+
+#
+#    Bot.Bank.Mail.ReserveGold
+#        Description: Gold a bot keeps.
+#        Default:     50
+#        Values:      whole number 0 or more (gold)
+Bot.Bank.Mail.ReserveGold = 50
+
+#
+#    Bot.Bank.Mail.MinGold
+#        Description: Surplus above the reserve that makes a mail worth the trip.
+#        Default:     20
+#        Values:      whole number 1 or more (gold)
+Bot.Bank.Mail.MinGold = 20
+
+#
+#    Bot.Bank.Mail.MaxGold
+#        Description: Cap of one mail.
+#        Default:     0
+#        Values:      whole number 0 or more (gold, 0 = no cap)
+Bot.Bank.Mail.MaxGold = 0
+
+
+###################################################################################################
+# TOWN IDLING
+#
+###################################################################################################
+
+#
+#    Bot.AI.TownIdle.Enabled
+#        Description: Town idling. A bot with nothing to do inside a city or an inn drifts between the places
+#                     where players gather (innkeeper, bank, auction house, flight master, mailbox, vendors),
+#                     lingers there, looks around, emotes and sometimes sits. Adds the strategy "natural_idle" to
+#                     the non-combat engine; works with or without Bot.AI.Move.Natural.Enabled (outside towns the
+#                     plain idling still needs that switch). Walks are logged as TOWN_IDLE_GO at trace level.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.TownIdle.Enabled = 0
+
+#
+#    Bot.AI.TownIdle.SearchYards
+#        Description: Radius around the bot in which gathering places are looked for (rescanned every minute).
+#        Default:     70
+#        Values:      whole number 20 to 150 (yards)
+Bot.AI.TownIdle.SearchYards = 70
+
+#
+#    Bot.AI.TownIdle.LingerMinSec
+#        Description: Shortest time a bot stays at one place before it moves on.
+#        Default:     15
+#        Values:      whole number 5 to 600 (seconds)
+Bot.AI.TownIdle.LingerMinSec = 15
+
+#
+#    Bot.AI.TownIdle.LingerMaxSec
+#        Description: Longest time a bot stays at one place.
+#        Default:     70
+#        Values:      whole number Bot.AI.TownIdle.LingerMinSec to 1800 (seconds)
+Bot.AI.TownIdle.LingerMaxSec = 70
+
+#
+#    Bot.AI.TownIdle.EmotePct
+#        Description: Chance per decision to emote.
+#        Default:     22
+#        Values:      whole number 0 to 60 (percent)
+Bot.AI.TownIdle.EmotePct = 22
+
+#
+#    Bot.AI.TownIdle.SitPct
+#        Description: Chance per decision to sit down (four times as likely when hurt or drained).
+#        Default:     10
+#        Values:      whole number 0 to 30 (percent)
+Bot.AI.TownIdle.SitPct = 10
+
+
+###################################################################################################
+# BOT PARTIES
+#
+# Bots form their own parties out in the world. Free bots that are close to each other, of
+# similar level and carry the same unfinished quest team up in a real group: the highest level
+# bot leads and keeps questing, the others follow it and fight with their normal combat AI, so
+# kills count for everybody. A party ends when its time is up, the leader is lost, or a member
+# finishes the shared quest, dies, strays or outlevels the rest. Bots in a party refuse invites
+# from players (one group per bot). See docs/playerbots/feature-bot-parties-20261008.md.
+#
+###################################################################################################
+
+#
+#    Bot.AI.Party.Enabled
+#        Description: Turns bot parties on. Logged as PARTY_FORMED / PARTY_MEMBER_DROPPED / PARTY_DISBANDED.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Party.Enabled = 0
+
+#
+#    Bot.AI.Party.MinSize
+#        Description: Smallest party (never above MaxSize).
+#        Default:     2
+#        Values:      whole number 2 to 5 (players)
+Bot.AI.Party.MinSize = 2
+
+#
+#    Bot.AI.Party.MaxSize
+#        Description: Largest party.
+#        Default:     3
+#        Values:      whole number 2 to 5 (players)
+Bot.AI.Party.MaxSize = 3
+
+#
+#    Bot.AI.Party.JoinRadius
+#        Description: Distance between the bot that looks for company and a joiner.
+#        Default:     40
+#        Values:      whole number 5 to 200 (yards)
+Bot.AI.Party.JoinRadius = 40
+
+#
+#    Bot.AI.Party.MaxLevelSpread
+#        Description: Highest minus lowest level in a party.
+#        Default:     3
+#        Values:      whole number 0 to 20 (levels)
+Bot.AI.Party.MaxLevelSpread = 3
+
+#
+#    Bot.AI.Party.MinSharedQuests
+#        Description: Unfinished quests two bots must have in common.
+#        Default:     1
+#        Values:      whole number 1 to 10 (quests)
+Bot.AI.Party.MinSharedQuests = 1
+
+#
+#    Bot.AI.Party.MinLevel
+#        Description: Lowest level that takes part.
+#        Default:     5
+#        Values:      whole number 1 to 80 (level)
+Bot.AI.Party.MinLevel = 5
+
+#
+#    Bot.AI.Party.FormChancePct
+#        Description: Chance per check that a free bot looks for company.
+#        Default:     25
+#        Values:      whole number 0 to 100 (percent)
+Bot.AI.Party.FormChancePct = 25
+
+#
+#    Bot.AI.Party.FormEverySec
+#        Description: Seconds between two checks.
+#        Default:     20
+#        Values:      whole number 5 to 3600 (seconds)
+Bot.AI.Party.FormEverySec = 20
+
+#
+#    Bot.AI.Party.MaxParties
+#        Description: Parties at a time.
+#        Default:     10
+#        Values:      whole number 1 to 500 (parties)
+Bot.AI.Party.MaxParties = 10
+
+#
+#    Bot.AI.Party.LifetimeMin
+#        Description: Longest life of a party; each party lives between 50 and 100 percent of it.
+#        Default:     20
+#        Values:      whole number 2 to 240 (minutes)
+Bot.AI.Party.LifetimeMin = 20
+
+#
+#    Bot.AI.Party.LeashYards
+#        Description: A member farther than this from the leader for LeashSec seconds, or on another map, is
+#                     dropped.
+#        Default:     70
+#        Values:      whole number 20 to 500 (yards)
+Bot.AI.Party.LeashYards = 70
+
+#
+#    Bot.AI.Party.LeashSec
+#        Description: How long a member may stay beyond LeashYards before it is dropped.
+#        Default:     45
+#        Values:      whole number 5 to 600 (seconds)
+Bot.AI.Party.LeashSec = 45
+
+#
+#    Bot.AI.Party.LeaderGoneSec
+#        Description: Seconds the leader may be dead or away before the party ends.
+#        Default:     30
+#        Values:      whole number 5 to 600 (seconds)
+Bot.AI.Party.LeaderGoneSec = 30
+
+#
+#    Bot.AI.Party.IntervalSec
+#        Description: Seconds between two upkeep passes over the parties.
+#        Default:     5
+#        Values:      whole number 1 to 60 (seconds)
+Bot.AI.Party.IntervalSec = 5
+
+
+###################################################################################################
+# PLAYER-LED DUNGEON RUNS
+#
+# Dungeon runs led by a player: bots of the player group that follow the player (chat order
+# `follow`) come into a five-man dungeon after the player, join the player when stuck far behind,
+# are raised after a fight and leave with the player; the player is told which bots need a rest.
+# Independent of Bot.AI.Dungeon.Enabled (bot-led runs). See docs/playerbots/feature-bot-player-
+# led-dungeon-20261008.md.
+#
+###################################################################################################
+
+#
+#    Bot.AI.Dungeon.PlayerLed.Enabled
+#        Description: Turns player-led dungeon runs on. Logged as DUNGEON_PL_*.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Dungeon.PlayerLed.Enabled = 0
+
+#
+#    Bot.AI.Dungeon.PlayerLed.IntervalSec
+#        Description: Seconds between checks.
+#        Default:     2
+#        Values:      whole number 1 to 30 (seconds)
+Bot.AI.Dungeon.PlayerLed.IntervalSec = 2
+
+#
+#    Bot.AI.Dungeon.PlayerLed.EnterDelaySec
+#        Description: The player has been on its map this long before bots are brought along.
+#        Default:     3
+#        Values:      whole number 0 to 60 (seconds)
+Bot.AI.Dungeon.PlayerLed.EnterDelaySec = 3
+
+#
+#    Bot.AI.Dungeon.PlayerLed.ActCooldownSec
+#        Description: Minimum time between two moves or raises of one bot.
+#        Default:     15
+#        Values:      whole number 1 to 600 (seconds)
+Bot.AI.Dungeon.PlayerLed.ActCooldownSec = 15
+
+#
+#    Bot.AI.Dungeon.PlayerLed.CatchUpYards
+#        Description: Inside a dungeon a bot farther than this from the player for CatchUpSec, outside of combat,
+#                     is moved next to the player.
+#        Default:     60
+#        Values:      whole number 20 to 300 (yards)
+Bot.AI.Dungeon.PlayerLed.CatchUpYards = 60
+
+#
+#    Bot.AI.Dungeon.PlayerLed.CatchUpSec
+#        Description: How long a bot may stay beyond CatchUpYards before it is moved.
+#        Default:     20
+#        Values:      whole number 5 to 600 (seconds)
+Bot.AI.Dungeon.PlayerLed.CatchUpSec = 20
+
+#
+#    Bot.AI.Dungeon.PlayerLed.RaiseDelaySec
+#        Description: Seconds after which a dead bot is raised next to the player once the fight is over (the
+#                     stand-in for a healer resurrection and the corpse run); 0 = dead bots stay dead (chat order
+#                     `revive` still works).
+#        Default:     10
+#        Values:      whole number 0 to 600 (seconds)
+Bot.AI.Dungeon.PlayerLed.RaiseDelaySec = 10
+
+#
+#    Bot.AI.Dungeon.PlayerLed.Notify
+#        Description: Tell the player which bots are not ready for the next pull (dead, away, health or mana below
+#                     the Bot.AI.Dungeon.Min*Pct limits), and again when they are ready.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Dungeon.PlayerLed.Notify = 1
+
+#
+#    Bot.AI.Dungeon.PlayerLed.NoticeRepeatSec
+#        Description: Seconds before the same notice is repeated.
+#        Default:     60
+#        Values:      whole number 10 to 3600 (seconds)
+Bot.AI.Dungeon.PlayerLed.NoticeRepeatSec = 60
 
 
 ###################################################################################################

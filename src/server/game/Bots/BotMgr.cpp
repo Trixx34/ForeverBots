@@ -21,6 +21,8 @@
 #include "AccountMgr.h"
 #include "BotAI.h"
 #include "BotDungeonRun.h"
+#include "BotParty.h"
+#include "BotPlayerLed.h"
 #include "BotAlts.h"
 #include "BotLogDatabase.h"
 #include "BotPet.h"
@@ -357,6 +359,8 @@ void BotMgr::Update(uint32 diff)
     ProcessLogins();
     ProcessBotTeleports();
     BotDungeonRun::Update(diff);
+    BotParty::Update(diff);
+    BotPlayerLed::Update(diff);
     UpdateProbe(diff);
     BotSocial::Update(diff);
     BotPopulation::Update(diff);
@@ -477,12 +481,12 @@ void BotMgr::SetLogDatabaseAvailable(bool available)
             sp.WindowSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.Summary.WindowSec", 60), 10, 3600));
             sp.KeepSeverity = uint8(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.Summary.KeepSeverity", BOTLOG_WARN), BOTLOG_TRACE, 4));
             sp.Types = BotLogSummary::ParseList(sConfigMgr->GetStringDefault("Bot.Log.Summary.Types", "cast,aura,trace"), BotLogSummary::Lower);
-            sp.ReasonPrefixes = BotLogSummary::ParseList(sConfigMgr->GetStringDefault("Bot.Log.Summary.Reasons", "GOTO_,QUEST_WALK_,QUEST_PULL,FOLLOW_"), BotLogSummary::Upper);
+            sp.ReasonPrefixes = BotLogSummary::ParseList(sConfigMgr->GetStringDefault("Bot.Log.Summary.Reasons", "GOTO_,QUEST_WALK_,QUEST_PULL,FOLLOW_,TOWN_IDLE_"), BotLogSummary::Upper);
             sp.KeepPrefixes = BotLogSummary::ParseList(sConfigMgr->GetStringDefault("Bot.Log.Summary.Keep", "DUNGEON_,TRAVEL_,DUMMY_,COMBAT_,BOT_,LOG_,CORPSE_,SPIRIT_,WATCHDOG_,PARTY_,BANK_,MAIL_"), BotLogSummary::Upper);
             sp.KeyBySummary = BotLogSummary::ParseList(sConfigMgr->GetStringDefault("Bot.Log.Summary.KeyBySummary", "cast,aura"), BotLogSummary::Lower);
             _summaryMaxKeys = size_t(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.Summary.MaxKeys", 100000), 1000, 50000000));
             TC_LOG_INFO("server.worldserver", "Bot log summary rows: {}", sp.Enabled ? Trinity::StringFormat("on, {} s windows, types [{}], reasons [{}]", sp.WindowSec,
-                sConfigMgr->GetStringDefault("Bot.Log.Summary.Types", "cast,aura,trace"), sConfigMgr->GetStringDefault("Bot.Log.Summary.Reasons", "GOTO_,QUEST_WALK_,QUEST_PULL,FOLLOW_")) : std::string("off"));
+                sConfigMgr->GetStringDefault("Bot.Log.Summary.Types", "cast,aura,trace"), sConfigMgr->GetStringDefault("Bot.Log.Summary.Reasons", "GOTO_,QUEST_WALK_,QUEST_PULL,FOLLOW_,TOWN_IDLE_")) : std::string("off"));
         }
         _hotTypes.clear();
         std::string const hotTypesCfg = sConfigMgr->GetStringDefault("Bot.Log.HotTypes", "decision,state_change,trace,cast,aura");

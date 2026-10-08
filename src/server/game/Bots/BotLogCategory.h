@@ -42,7 +42,7 @@ namespace BotLogCat
         Travel,     // long distance travel legs
         Recovery,   // death, corpse run, spirit healer, resting, watchdog
         Quest,      // quest decisions, blocked quests
-        Progress,   // xp, levels, talents, known spells, reputation
+        Progress,   // xp, levels, talents, known spells
         Economy,    // auction, trade, vendors, loot, gear, professions, consumables, bank, mail
         Pets,       // hunter and warlock pets
         Social,     // chat orders, alts, group invites, bot parties
@@ -70,7 +70,7 @@ namespace BotLogCat
         { "IDLE_STEP", Movement }, { "TOWN_", Movement }, { "TRAVEL_", Travel }, { "CORPSE_", Recovery }, { "SPIRIT_", Recovery },
         { "RELEASE_", Recovery }, { "RECLAIM_", Recovery }, { "RECOVER_", Recovery }, { "REST_", Recovery }, { "WATCHDOG_", Recovery },
         { "QUEST_", Quest }, { "POLE_", Quest }, { "XP_", Progress }, { "LEVEL_UP", Progress }, { "TALENTS_", Progress },
-        { "SPELLS_", Progress }, { "REP_", Progress }, { "REPUTATION_", Progress }, { "AH_", Economy }, { "TRADE_", Economy },
+        { "SPELLS_", Progress }, { "AH_", Economy }, { "TRADE_", Economy },
         { "VENDOR_", Economy }, { "SOLD_", Economy }, { "TRAIN_", Economy }, { "BAG_", Economy }, { "GEAR_", Economy },
         { "LOOT_", Economy }, { "PROF_", Economy }, { "GATHER_", Economy }, { "FISH_", Economy }, { "AMMO_", Economy },
         { "POTION_", Economy }, { "EAT_", Economy }, { "DRINK_", Economy }, { "BANK_", Economy }, { "MAIL_", Economy },

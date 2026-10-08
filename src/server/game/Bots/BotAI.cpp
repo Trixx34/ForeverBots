@@ -126,7 +126,7 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
         case BotState::Combat: names = SplitNames(BotAI::Config().DefaultCombat); break;
         case BotState::Dead: names = SplitNames(BotAI::Config().DefaultDead); break;
     }
-    if (state == BotState::NonCombat && BotMove::Natural().Enabled && BotMove::Natural().Idle
+    if (state == BotState::NonCombat && ((BotMove::Natural().Enabled && BotMove::Natural().Idle) || BotTownIdle::Cfg().Enabled)
         && std::find(names.begin(), names.end(), "natural_idle") == names.end())
         names.push_back("natural_idle");
     if (state == BotState::NonCombat && BotCombatRotationEnabled() && std::find(names.begin(), names.end(), "prebuff") == names.end())

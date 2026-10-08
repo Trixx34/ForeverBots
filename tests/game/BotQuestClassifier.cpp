@@ -36,6 +36,7 @@ struct FakeWorld final : QuestWorldLookup
     std::map<uint32, std::vector<uint32>> ItemSrc;       // item -> dropping creatures
     std::set<uint32> ItemGoSrc;                          // items held by a chest object
     std::set<uint32> ItemGoSpawned;                      // ... of which the chest has a spawn
+    std::set<uint32> UseGoSpawned;                       // game objects of use-this-object objectives that have a spawn
     std::set<uint32> EnderRows;                          // quests with an ender row
     std::set<uint32> EnderSpawned;                       // quests whose ender has a spawn
 
@@ -63,6 +64,9 @@ struct FakeWorld final : QuestWorldLookup
 
     bool ItemHasSpawnedGameObject(uint32 item) const override { return ItemGoSpawned.count(item) != 0; }
     bool ItemHasGameObjectSource(uint32 item) const override { return ItemGoSrc.count(item) != 0; }
+    bool UseObjects = true;                              // Bot.Quest.UseObjects
+    bool UseObjectObjectives() const override { return UseObjects; }
+    bool GameObjectHasSpawn(uint32 goEntry) const override { return UseGoSpawned.count(goEntry) != 0; }
     bool HasEnderRow(uint32 questId) const override { return EnderRows.count(questId) != 0; }
     bool HasEnderSpawn(uint32 questId) const override { return EnderSpawned.count(questId) != 0; }
 };
@@ -392,4 +396,37 @@ TEST_CASE("BotQuest classifier: check order", "[BotQuest]")
     CHECK(IsCode(ClassifyQuest(q, world), "NO_TARGET_SPAWN"));
     q.Objectives.clear();
     CHECK(IsCode(ClassifyQuest(q, world), "NO_ENDER_ROW"));
+}
+
+TEST_CASE("BotQuest classifier: use-this-object objectives", "[BotQuest]")
+{
+    FakeWorld world;
+    QuestFacts q = MakeQuest(world);
+    q.Objectives.push_back(Obj(QUEST_OBJECTIVE_GAMEOBJECT, 700));
+
+    SECTION("object with a spawn is plannable")
+    {
+        world.UseGoSpawned.insert(700);
+        CHECK(ClassifyQuest(q, world).Code == nullptr);
+    }
+
+    SECTION("object without a spawn")
+    {
+        ClassifierResult r = ClassifyQuest(q, world);
+        CHECK(IsCode(r, "NO_TARGET_SPAWN"));
+        CHECK(r.Entry == 700);
+    }
+
+    SECTION("switch off: unsupported as before")
+    {
+        world.UseGoSpawned.insert(700);
+        world.UseObjects = false;
+        CHECK(IsCode(ClassifyQuest(q, world), "OBJECTIVE_UNSUPPORTED"));
+    }
+
+    SECTION("an optional object objective is not checked")
+    {
+        q.Objectives.back().Optional = true;
+        CHECK(ClassifyQuest(q, world).Code == nullptr);
+    }
 }
