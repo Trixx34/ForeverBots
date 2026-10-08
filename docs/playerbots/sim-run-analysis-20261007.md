@@ -130,3 +130,12 @@ Full entries (condition, action, evidence, expected effect, risk, confidence, ro
 4. Approve the A/B plan for flee mode 1 and its size.
 5. Approve the extra logging in R-08.
 6. Fix or drop race-7 gnome bots.
+
+## Addendum (2026-10-08): baseline predates two combat changes
+
+The death and flee numbers for the shield classes (warrior, paladin, shaman) in this analysis were measured before merge `3f3bbd53c5`, which
+changed block handling: the critical-block clamp (`Unit.cpp:1494`, `Blocked = min(Blocked, Damage)`, which removes a wraparound that could
+one-shot shield bots) and block applying to weapon-based spells (`Unit.cpp:1266`, `GetClassicShieldBlockValue()`). Both reduce damage taken by
+shield wearers, so their death rates and flee counts here may be too high, and the comparison with the other classes is not like-for-like. The
+shield-class sim needs a re-run on the current build before these figures are used as a baseline or for the flee mode A/B (R-07). Source: the
+merge review, finding 3 (`review-upstream-merge-20261008.md`).
