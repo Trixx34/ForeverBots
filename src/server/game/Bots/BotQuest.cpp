@@ -738,6 +738,8 @@ struct Task
     uint32 GoWaitMs = 0;           // start of a respawn wait
     uint32 GoNextMs = 0;           // next scan at the claimed spawn
     uint32 GoUseTries = 0;
+    uint32 GoRenewMs = 0;          // next claim renewal while GoSpawn is set
+    uint32 GoMap = 0;              // map of the claimed spawn
 };
 
 struct Visited
@@ -779,6 +781,7 @@ struct GoGate { uint64 Bot = 0; uint32 ClaimUntil = 0; uint32 CoolUntil = 0; };
 std::mutex g_goMx;
 std::unordered_map<uint64, GoGate> g_goGate;
 constexpr uint32 GO_CLAIM_MS = 150 * 1000;
+constexpr uint32 GO_RENEW_MS = 30 * 1000;   // an active owner renews about this often
 
 bool Past(uint32 until) { return !until || int32(until - getMSTime()) <= 0; }
 
@@ -802,6 +805,28 @@ GoState GoGateState(uint64 spawn, uint64 bot, uint32* coolLeftMs = nullptr)
     return GoState::Free;
 }
 
+// GoGateState for several spawns under one lock; states[i] / coolLeftMs[i] belong to spawns[i]
+void GoGateStateBatch(std::vector<uint64> const& spawns, uint64 bot, std::vector<GoState>& states, std::vector<uint32>& coolLeftMs)
+{
+    states.assign(spawns.size(), GoState::Free);
+    coolLeftMs.assign(spawns.size(), 0);
+    std::lock_guard<std::mutex> lk(g_goMx);
+    uint32 const nowMs = getMSTime();
+    for (size_t i = 0; i < spawns.size(); ++i)
+    {
+        auto it = g_goGate.find(spawns[i]);
+        if (it == g_goGate.end())
+            continue;
+        if (!Past(it->second.CoolUntil))
+        {
+            states[i] = GoState::Cooling;
+            coolLeftMs[i] = uint32(int32(it->second.CoolUntil - nowMs));
+        }
+        else if (it->second.Bot != bot && !Past(it->second.ClaimUntil))
+            states[i] = GoState::Busy;
+    }
+}
+
 bool GoTryClaim(uint64 spawn, uint64 bot)
 {
     std::lock_guard<std::mutex> lk(g_goMx);
@@ -810,6 +835,17 @@ bool GoTryClaim(uint64 spawn, uint64 bot)
         return false;
     gt.Bot = bot;
     gt.ClaimUntil = std::max<uint32>(1, getMSTime() + GO_CLAIM_MS);
+    return true;
+}
+
+// extend the time limit of a claim the bot still owns; false when the claim expired or belongs to someone else
+bool GoRenew(uint64 spawn, uint64 bot)
+{
+    std::lock_guard<std::mutex> lk(g_goMx);
+    auto it = g_goGate.find(spawn);
+    if (it == g_goGate.end() || it->second.Bot != bot || !Past(it->second.CoolUntil))
+        return false;
+    it->second.ClaimUntil = std::max<uint32>(1, getMSTime() + GO_CLAIM_MS);
     return true;
 }
 
@@ -912,6 +948,26 @@ class BotQuestCtx : public UntypedValue
 {
 public:
     explicit BotQuestCtx(BotAI* ai) : UntypedValue(ai, "quest_ctx", 0) { }
+    ~BotQuestCtx() override { ReleaseLoot(); }
+
+    // A claim must not outlive its owner: logout, strategy removal and AI rebuild end up here through the destructor.
+    void ReleaseLoot()
+    {
+        if (T.K == Kind::Loot && T.GoSpawn)
+            GoRelease(T.GoSpawn, T.GoBot, 0);
+    }
+
+    // A dead bot changes position anyway (corpse run, spirit healer): give the chest back and drop the loot task.
+    void OnStateEnter() override
+    {
+        if (GetAI()->GetState() != BotState::Dead || T.K != Kind::Loot)
+            return;
+        ReleaseLoot();
+        T = Task();
+        GoalFails = 0;
+        ExpectGoal = false;
+        NextChooseMs = 0;
+    }
     uint32 ExecCalls = 0;
     char const* Why = "none";
 
@@ -2756,7 +2812,9 @@ private:
     }
 
     // The claimed spawn turned out empty / unusable for this bot: forget it and try the next one.
-    void GoSpawnFailed(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Task& t, char const* why)
+    // objectCause: the reason describes the object (looted, not spawned, no loot) and cools the spawn for every bot; bot-specific
+    // reasons only ignore it for this bot.
+    void GoSpawnFailed(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Task& t, char const* why, bool objectCause)
     {
         BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_SPAWN_EMPTY", StringFormat("object {} at spawn {} not usable ({})", t.GoEntry, t.GoSpawn, why));
         ev.QuestId = t.Quest;
@@ -2764,8 +2822,17 @@ private:
         sBotMgr->LogEvent(std::move(ev));
         uint32 const respawnMs = std::min<uint32>(t.GoRespawn, 600) * 1000;
         c.GoIgnore[t.GoSpawn] = now + respawnMs;
-        GoRelease(t.GoSpawn, t.GoBot, respawnMs);
+        GoRelease(t.GoSpawn, t.GoBot, objectCause ? respawnMs : 0);
         ++t.GoAttempts;
+        t.GoSpawn = 0;
+        t.GoUseTries = 0;
+        StopMoving(ai, bot, c);
+    }
+
+    // Another bot holds the claimed spawn now (ours expired): give it up without cooling it and pick another.
+    void GoSpawnLost(BotAI* ai, Player* bot, BotQuestCtx& c, Task& t)
+    {
+        GoRelease(t.GoSpawn, t.GoBot, 0);
         t.GoSpawn = 0;
         t.GoUseTries = 0;
         StopMoving(ai, bot, c);
@@ -2780,6 +2847,8 @@ private:
         float bd = 1e9f;
         uint32 busy = 0, cooling = 0;
         minWaitMs = 0xFFFFFFFFu;
+        std::vector<GoPt const*> cand;
+        std::vector<uint64> ids;
         for (uint32 en : gos)
         {
             auto it = g.GoSpawns.find(en);
@@ -2796,16 +2865,23 @@ private:
                     minWaitMs = std::min<uint32>(minWaitMs, ign->second - now);
                     continue;
                 }
-                uint32 left = 0;
-                GoState st = GoGateState(p.SpawnId, me, &left);
-                if (st == GoState::Busy) { ++busy; continue; }
-                if (st == GoState::Cooling) { ++cooling; minWaitMs = std::min<uint32>(minWaitMs, left); continue; }
-                float d = Dist2D(p.P.X, p.P.Y, bot->GetPositionX(), bot->GetPositionY());
-                if (d < bd)
-                {
-                    bd = d;
-                    best = &p;
-                }
+                cand.push_back(&p);
+                ids.push_back(p.SpawnId);
+            }
+        }
+        std::vector<GoState> states;
+        std::vector<uint32> lefts;
+        GoGateStateBatch(ids, me, states, lefts); // one lock for the whole pick
+        for (size_t i = 0; i < cand.size(); ++i)
+        {
+            GoPt const& p = *cand[i];
+            if (states[i] == GoState::Busy) { ++busy; continue; }
+            if (states[i] == GoState::Cooling) { ++cooling; minWaitMs = std::min<uint32>(minWaitMs, lefts[i]); continue; }
+            float d = Dist2D(p.P.X, p.P.Y, bot->GetPositionX(), bot->GetPositionY());
+            if (d < bd)
+            {
+                bd = d;
+                best = &p;
             }
         }
         if (best && GoTryClaim(best->SpawnId, me))
@@ -2815,7 +2891,10 @@ private:
             t.GoEntry = best->Entry;
             t.GoRespawn = best->RespawnSec;
             t.GoX = best->P.X; t.GoY = best->P.Y; t.GoZ = best->P.Z;
+            t.GoMap = best->P.Map;
             t.GoWaitMs = 0;
+            t.GoNextMs = 0;
+            t.GoRenewMs = now + GO_RENEW_MS;
             t.GoUseTries = 0;
             return 0;
         }
@@ -2863,12 +2942,39 @@ private:
                 StringFormat(R"({{"item":{},"attempts":{},"looted":{},"count":{},"amount":{}}})", obj->ObjectID, t.GoAttempts, t.GoLooted, count, obj->Amount), uint32(obj->ObjectID), 1800);
             return true;
         }
+        if (t.GoSpawn)
+        {
+            if (bot->GetMapId() != t.GoMap)
+            {
+                // moved to another map (graveyard, teleport, instance): the spawn is meaningless here
+                StopMoving(ai, bot, c);
+                Finish(c, now);
+                return false;
+            }
+            // the claim is renewed while the owner is active; if it was lost (expired and taken) take it again or let it go
+            if (GoGateState(t.GoSpawn, t.GoBot) != GoState::Free)
+            {
+                GoSpawnLost(ai, bot, c, t);
+                return false;
+            }
+            if (int32(now - t.GoRenewMs) >= 0)
+            {
+                if (!GoRenew(t.GoSpawn, t.GoBot) && !GoTryClaim(t.GoSpawn, t.GoBot))
+                {
+                    GoSpawnLost(ai, bot, c, t);
+                    return false;
+                }
+                t.GoRenewMs = now + GO_RENEW_MS;
+            }
+        }
         if (bot->IsInCombat())
             return false;
 
         if (!t.GoSpawn)
         {
             std::vector<uint32> gos;
+            if (now < t.GoNextMs)
+                return false;   // respawn wait: the next pick is not due yet
             GoEntriesOf(uint32(obj->ObjectID), gos);
             uint32 waitMs = 0;
             int r = GoPickSpawn(bot, c, now, t, gos, waitMs);
@@ -2884,7 +2990,10 @@ private:
                 if (!t.GoWaitMs)
                     t.GoWaitMs = now;
                 if (waitMs <= 90 * 1000 && now - t.GoWaitMs < 90 * 1000)
+                {
+                    t.GoNextMs = now + std::clamp<uint32>(waitMs, 1000, 5000);
                     return false;
+                }
                 GoBackOff(ai, bot, c, now, q, "GO_RESPAWN_WAIT", StringFormat("all object spawns for '{}' are looted, respawn in {} s", q->GetLogTitle(), waitMs / 1000),
                     StringFormat(R"({{"item":{},"wait_s":{}}})", obj->ObjectID, waitMs / 1000), uint32(obj->ObjectID), std::clamp<uint32>(waitMs / 1000, 60, 600));
                 return true;
@@ -2914,7 +3023,7 @@ private:
             }
             else if (now - t.TargetBestMs > 60000)
             {
-                GoSpawnFailed(ai, bot, c, now, t, "no approach progress");
+                GoSpawnFailed(ai, bot, c, now, t, "no approach progress", false);
                 return false;
             }
             Travel(ai, bot, c, now, t.GoX, t.GoY, t.GoZ, 8.0f, t.GoEntry);
@@ -2937,7 +3046,7 @@ private:
             }
             if (now - t.GoWaitMs < 3000)
                 return false;
-            GoSpawnFailed(ai, bot, c, now, t, "not spawned");
+            GoSpawnFailed(ai, bot, c, now, t, "not spawned", true);
             return false;
         }
         t.GoWaitMs = 0;
@@ -2954,7 +3063,7 @@ private:
         {
             if (++t.GoUseTries < 4)
                 return false;
-            GoSpawnFailed(ai, bot, c, now, t, usable ? "not active for this quest" : "cannot interact");
+            GoSpawnFailed(ai, bot, c, now, t, usable ? "not active for this quest" : "cannot interact", false);
             return false;
         }
         bot->SetFacingToObject(usable);
@@ -2976,7 +3085,7 @@ private:
             return true;
         }
         // Use() produced no loot for us (already emptied, or the quest item is not in it)
-        GoSpawnFailed(ai, bot, c, now, t, "no loot");
+        GoSpawnFailed(ai, bot, c, now, t, "no loot", true);
         return false;
     }
 
@@ -3348,6 +3457,15 @@ std::string DescribeTask(BotAI* ai)
     return StringFormat("task {} quest {} npc {} target {} kills {} scans {} raw {} ok {} seenlive {} toostrong {} wait {} chasing {} dist {:.1f} appr {} ign {} expect {} fails {} legs {} accepted {} rewarded {} blacklisted {} nextchoose {} calls {} hubtrips {} grinds {} hub {} why {}",
         KindName(t.K), t.Quest, t.NpcEntry, t.Target.IsEmpty() ? 0 : 1, t.Kills, t.Scans, t.ScanRaw, t.ScanOk, t.SeenLive, t.TooStrongSeen, t.WaitStartMs ? 1 : 0, t.Chasing ? 1 : 0, t.LastDist, t.Approaches, t.Ignored,
         cp->ExpectGoal ? 1 : 0, cp->GoalFails, t.LegIssues, cp->Accepted, cp->Rewarded, cp->Blacklist.size(), cp->NextChooseMs, cp->ExecCalls, cp->HubTrips, cp->Grinds, int64(t.HubId == 0xFFFFFFFFu ? -1 : int64(t.HubId)), cp->Why);
+}
+
+void OnLogout(BotAI* ai)
+{
+    if (BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx")))
+    {
+        cp->ReleaseLoot();
+        cp->T = Task();
+    }
 }
 } // namespace BotQuest
 

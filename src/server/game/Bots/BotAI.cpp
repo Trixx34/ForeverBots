@@ -16,6 +16,7 @@
  */
 
 #include "BotAI.h"
+#include "BotQuest.h"
 #include "CellImpl.h"
 #include "Config.h"
 #include "Creature.h"
@@ -907,6 +908,7 @@ void BotAI::OnLogout(Player* bot, char const* reason)
     if (_fight.Active && _fight.StartLogged)
         EmitFightEnd(bot, reason && !strcmp(reason, "LOGOUT_COMMAND") ? "despawned" : "logout", _nowMs);
     _fight = Fight();
+    BotQuest::OnLogout(this); // releases the loot claim of the quest task
 }
 
 uint32 BotAI::CountHostiles(Player* bot) const
