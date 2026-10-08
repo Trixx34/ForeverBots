@@ -1700,6 +1700,13 @@ public:
         return RunTask(ai, bot, c, now);
     }
 
+    // for BotQuest::IsGearUpgrade (group loot rolls)
+    static bool IsUpgradeFor(Player* bot, ItemTemplate const* proto)
+    {
+        GearChoice gc;
+        return BestGearSlot(bot, proto, gc);
+    }
+
 private:
     // ----- task bookkeeping -----
     void Finish(BotQuestCtx& c, uint32 now, bool immediate = true)
@@ -5188,6 +5195,11 @@ std::string DescribeTask(BotAI* ai)
     return StringFormat("task {} quest {} npc {} target {} kills {} scans {} raw {} ok {} seenlive {} toostrong {} wait {} chasing {} dist {:.1f} appr {} ign {} expect {} fails {} legs {} accepted {} rewarded {} blacklisted {} nextchoose {} calls {} hubtrips {} grinds {} hub {} why {}",
         KindName(t.K), t.Quest, t.NpcEntry, t.Target.IsEmpty() ? 0 : 1, t.Kills, t.Scans, t.ScanRaw, t.ScanOk, t.SeenLive, t.TooStrongSeen, t.WaitStartMs ? 1 : 0, t.Chasing ? 1 : 0, t.LastDist, t.Approaches, t.Ignored,
         cp->ExpectGoal ? 1 : 0, cp->GoalFails, t.LegIssues, cp->Accepted, cp->Rewarded, cp->Blacklist.size(), cp->NextChooseMs, cp->ExecCalls, cp->HubTrips, cp->Grinds, int64(t.HubId == 0xFFFFFFFFu ? -1 : int64(t.HubId)), cp->Why);
+}
+
+bool IsGearUpgrade(Player* bot, ItemTemplate const* item)
+{
+    return bot && item && QuestThinkAction::IsUpgradeFor(bot, item);
 }
 
 bool IsGrinding(BotAI* ai)

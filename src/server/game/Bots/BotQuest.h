@@ -30,6 +30,7 @@
 
 class BotAI;
 class Player;
+struct ItemTemplate;
 
 namespace BotQuest
 {
@@ -46,6 +47,8 @@ namespace BotQuest
     // True while the bot has nothing to quest for and grinds mobs instead (the travel module reads it as "this zone is done").
     TC_GAME_API bool IsGrinding(BotAI* ai);
     // Position of the nearest quest hub in a zone of the bot's map that has quests for the bot's level; false when there is none.
+    // True when `item` would replace worn gear in its best slot by the class-role gear score (BotGear.h). For group loot rolls.
+    TC_GAME_API bool IsGearUpgrade(Player* bot, ItemTemplate const* item);
     TC_GAME_API bool FindHubInZone(Player* bot, uint32 zoneId, float& x, float& y, float& z);
 }
 

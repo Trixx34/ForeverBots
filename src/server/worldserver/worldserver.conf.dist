@@ -4909,6 +4909,16 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: Seconds between attempts to summon or revive a pet / pause after a failed tame attempt.
 #        Default:     8 / 300
 #
+#    Bot.Loot.Roll.Enabled
+#        Description: Bots vote in group loot rolls at once instead of leaving the roll to time out (60 s, which holds up the real
+#                     players): Need on a gear upgrade their class can use (class-role gear score) and on items for an active quest,
+#                     Greed on other items (see GreedOnOther), Pass when the bags are full. Needs no strategy.
+#        Default:     0 - Off
+#
+#    Bot.Loot.Roll.GreedOnOther
+#        Description: Greed on items the bot cannot use or does not need (it sells them later) instead of passing.
+#        Default:     1
+#
 #    Bot.AI.Move.Natural.Enabled
 #        Description: Natural-looking movement: smoother paths, human pacing, no repeated identical path requests, a step back or
 #                     another route when stuck, light idling, and movement metrics. Adds the strategy "natural_idle".
