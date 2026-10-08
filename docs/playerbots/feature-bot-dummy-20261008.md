@@ -29,3 +29,11 @@ Compare rotation on and off with the same class and level, and check the existin
 * New first warrior row `Battle Stance` (2457, self buff): Charge, Rend and Overpower need it, and the bots use no other stance, so a warrior in another stance switches back. Defensive and Berserker are not used yet.
 * The self-buff recast timer was one value for the whole fight (a buff just cast blocked every other buff for 25 s). It is now per spell id, so a stance, Battle Shout and a seal no longer starve each other. The 3 s / 25 s recast times are unchanged.
 * Not run on a server. Check `DUMMY_SUMMARY` of a warrior and the "class spells validated, dropped:" line for `Battle Stance`.
+
+## Also in this branch: druid Bear Form (`Bot.AI.Rotation.DruidForms`, default off)
+
+* Needs `Bot.AI.Rotation.Enabled`. New spell kind `Shift` (Bear Form 5487, first druid row) and a `Form` field on every table row: any form (default, all old rows), not shifted (Thorns, Moonfire, Wrath, Healing Touch, Entangling Roots, Faerie Fire) or Bear Form (Maul 6807, Swipe 779 with 2+ enemies, Demoralizing Roar 99 with 2+ enemies). A row whose form does not match the bot's current form is skipped, so a bear never fails casts it cannot make.
+* A druid in Bear or Cat Form uses the melee chase (no standing at range). A bear that needs a heal leaves the form for Healing Touch (`HealAction`), and Bear Form is cast again after its 25 s recast time.
+* Cat Form is not used yet (needs combo points, stealth and energy rows: Claw, Rake, Rip, Ferocious Bite). Dire Bear Form (level 40) is not in the table.
+* With the switch off nothing changes: Bear Form is skipped and the unshifted rows run as before.
+* Compiles; not run on a server. Spell ids are validated by name at startup like the other rows.

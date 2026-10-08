@@ -76,6 +76,7 @@ struct CombatConfig
     uint32 HoldMs = 3000;          // Bot.AI.Roles.HoldSec: non-tanks wait this long for the tank to gather threat before they open
     BotGroupRoles::Config Roles;   // Bot.AI.Roles.AllyHealBelowPct / TankHealBelowPct / EmergencyPct
     int32 FleeMode = 0;            // Bot.AI.Flee.Mode: 0 current, 1 aggro avoidance + fight to the end, 2 flee toward nearest friendly guard
+    bool DruidForms = false;       // Bot.AI.Rotation.DruidForms (needs Bot.AI.Rotation.Enabled): druids fight in Bear Form once they know it
     bool Rotation = false;         // Bot.AI.Rotation.Enabled: full class rotations (conditional rows of the spell table); off = the old fixed spells
     int32 FleeAbMode = 1;          // Bot.AI.Flee.AbMode: the mode the experiment arm runs
     int32 FleeAbPct = 0;           // Bot.AI.Flee.AbPct: percent of bots (guid counter % 100 below it) on AbMode, 0 = everyone on Flee.Mode
@@ -112,6 +113,7 @@ CombatConfig const& Cfg()
         cfg.FleeAbPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.AbPct", 0), 0, 100);
         cfg.AvoidMaxGap = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Avoid.MaxLevelGap", 1), -1, 10);
         cfg.AvoidEntries = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.AI.Avoid.Entries", "116,822,250927,79"));
+        cfg.DruidForms = cfg.Rotation && sConfigMgr->GetBoolDefault("Bot.AI.Rotation.DruidForms", false);
     });
     return cfg;
 }
@@ -158,8 +160,11 @@ enum class Kind : uint8
     AutoShot,   // auto-repeat ranged attack (hunter)
     Wand,       // auto-repeat wand attack (Shoot): filler of a caster that cannot afford its spells (needs a wand equipped)
     Heal,       // self-heal (combat_heal)
+    Shift,      // changes the shapeshift form (Bear Form): a self buff that only runs with Bot.AI.Rotation.DruidForms
     Debuff      // cast while the target does not carry the spell's aura (Sunder Armor, Hunter's Mark); like Dot but not a damage spell
 };
+
+constexpr uint8 FORM_ANY = 0xFF;
 
 struct SpellDef
 {
@@ -170,9 +175,11 @@ struct SpellDef
     uint32 ReqAura = 0;        // aura (spell id) the bot must carry first (Judgement needs a seal), 0 none
     uint8 MinCombo = 0;        // Finisher: combo points needed
     BotRotation::Rule When;    // condition of the row (BotRotation.h); rows with a condition other than Always only run with Bot.AI.Rotation.Enabled
+    uint8 Form = FORM_ANY;     // shapeshift form the row needs: FORM_ANY (any), FORM_NONE (not shifted), or a ShapeshiftForm value
 };
 
 using RC = BotRotation::Cond;
+
 
 constexpr SpellDef SPELLS[] =
 {
@@ -252,14 +259,19 @@ constexpr SpellDef SPELLS[] =
     { CLASS_SHAMAN,  8042,  "Earth Shock",          Kind::Direct },
     { CLASS_SHAMAN,  403,   "Lightning Bolt",       Kind::Direct },
     { CLASS_SHAMAN,  331,   "Healing Wave",         Kind::Heal },
-    // Druid: Barkskin when hurt, Thorns at the start, Faerie Fire on a strong mob, Entangling Roots on a fleeing one (forms are not used)
+    // Druid: Bear Form (Bot.AI.Rotation.DruidForms, from level 10) with Maul / Swipe / Demoralizing Roar; unshifted: Thorns at the start, Moonfire, Wrath,
+    // Healing Touch (a bear that needs a heal leaves its form first). Barkskin works in every form.
+    { CLASS_DRUID,   5487,  "Bear Form",            Kind::Shift },
     { CLASS_DRUID,   22812, "Barkskin",             Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 50 } },
-    { CLASS_DRUID,   467,   "Thorns",               Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
-    { CLASS_DRUID,   770,   "Faerie Fire",          Kind::Debuff, 0, 0, { RC::TargetStrong, 2 } },
-    { CLASS_DRUID,   339,   "Entangling Roots",     Kind::Direct, 0, 0, { RC::TargetFleeing, 0 } },
-    { CLASS_DRUID,   8921,  "Moonfire",             Kind::Dot },
-    { CLASS_DRUID,   5176,  "Wrath",                Kind::Direct },
-    { CLASS_DRUID,   5185,  "Healing Touch",        Kind::Heal },
+    { CLASS_DRUID,   779,   "Swipe",                Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 }, FORM_BEAR_FORM },
+    { CLASS_DRUID,   99,    "Demoralizing Roar",    Kind::Debuff, 0, 0, { RC::EnemiesAtLeast, 2 }, FORM_BEAR_FORM },
+    { CLASS_DRUID,   6807,  "Maul",                 Kind::Direct, 0, 0, {}, FORM_BEAR_FORM },
+    { CLASS_DRUID,   467,   "Thorns",               Kind::SelfBuff, 0, 0, { RC::Opener, 10 }, FORM_NONE },
+    { CLASS_DRUID,   770,   "Faerie Fire",          Kind::Debuff, 0, 0, { RC::TargetStrong, 2 }, FORM_NONE },
+    { CLASS_DRUID,   339,   "Entangling Roots",     Kind::Direct, 0, 0, { RC::TargetFleeing, 0 }, FORM_NONE },
+    { CLASS_DRUID,   8921,  "Moonfire",             Kind::Dot, 0, 0, {}, FORM_NONE },
+    { CLASS_DRUID,   5176,  "Wrath",                Kind::Direct, 0, 0, {}, FORM_NONE },
+    { CLASS_DRUID,   5185,  "Healing Touch",        Kind::Heal, 0, 0, {}, FORM_NONE },
 };
 
 Role RoleOf(uint8 cls)
@@ -487,7 +499,7 @@ void BotCombatCtx::Resolve(Player* bot)
         // a ranged weapon attack never has a melee range, even when its DBC range entry resolves short
         if ((def.Type == Kind::AutoShot || def.Type == Kind::Wand) && r.MaxRange < 8.0f)
             r.MaxRange = def.Type == Kind::AutoShot ? 35.0f : 30.0f;
-        r.MeleeRange = def.Type != Kind::SelfBuff && def.Type != Kind::Heal && def.Type != Kind::Wand && def.Type != Kind::AutoShot && r.MaxRange <= 6.0f;
+        r.MeleeRange = def.Type != Kind::SelfBuff && def.Type != Kind::Shift && def.Type != Kind::Heal && def.Type != Kind::Wand && def.Type != Kind::AutoShot && r.MaxRange <= 6.0f;
         Spells.push_back(r);
     }
 }
@@ -1036,18 +1048,21 @@ public:
                     StringFormat(R"("power":{},"cost":{},"spell":"{}")", bot->GetPower(bot->GetPowerType()), CostOf(bot, primary->Info), Json(SpellNameOf(primary->Info))));
             }
         }
-        if (ctx->BotRole != Role::Melee && !ctx->MeleeFallback && !ctx->RangedBroken)
+        // a druid in Bear or Cat Form fights like a melee class
+        ShapeshiftForm const shape = bot->GetShapeshiftForm();
+        Role const role = ctx->BotRole == Role::Caster && (shape == FORM_BEAR_FORM || shape == FORM_CAT_FORM) ? Role::Melee : ctx->BotRole;
+        if (role != Role::Melee && !ctx->MeleeFallback && !ctx->RangedBroken)
         {
             if (Resolved const* primary = RangedPrimary(ctx))
             {
-                Resolved const* wand = ctx->BotRole == Role::Caster ? ctx->Find(Kind::Wand) : nullptr;
+                Resolved const* wand = role == Role::Caster ? ctx->Find(Kind::Wand) : nullptr;
                 if (!Affordable(bot, primary->Info) && wand && WeaponOk(bot, wand->Info))
                 {
                     // out of mana with a wand: stay at range and shoot (CastAction), no melee
                     wantRanged = true;
                     range = std::max(8.0f, wand->MaxRange * float(Cfg().CasterRangePct) / 100.0f);
                 }
-                else if (!Affordable(bot, primary->Info) && ctx->BotRole == Role::Caster)
+                else if (!Affordable(bot, primary->Info) && role == Role::Caster)
                 {
                     ctx->MeleeFallback = true;
                     ctx->FallbackClearable = true;
@@ -1060,7 +1075,7 @@ public:
                     range = std::max(8.0f, primary->MaxRange * float(Cfg().CasterRangePct) / 100.0f);
                 }
             }
-            else if (ctx->BotRole == Role::Caster)
+            else if (role == Role::Caster)
                 ctx->MeleeFallback = true; // no ranged spell known at all
         }
 
@@ -1388,6 +1403,7 @@ public:
         bool const inMelee = bot->IsWithinMeleeRange(target);
         bool const moving = bot->isMoving();
         bool skippedForPower = false;
+        uint8 const form = uint8(bot->GetShapeshiftForm());
         BotRotation::Facts const facts = RotationFacts(ai, bot, ctx, target);
 
         for (Resolved const& r : ctx->Spells)
@@ -1398,12 +1414,14 @@ public:
             // the tank warrior of a group (Bot.AI.Roles.*) holds Defensive Stance: the Battle Stance row of the table must not undo it
             if (kind == Kind::SelfBuff && r.Def->Root == 2457 && Cfg().GroupRoles && bot->HasAura(71))
                 continue;
+            if (kind == Kind::Shift ? !Cfg().DruidForms : (r.Def->Form != FORM_ANY && r.Def->Form != form))
+                continue;
             if (r.Id == ctx->BlockSpell && ai->GetNowMs() < ctx->BlockUntilMs)
             {
                 skippedForPower = skippedForPower || ctx->BlockPower;
                 continue;
             }
-            if (kind == Kind::SelfBuff)
+            if (kind == Kind::SelfBuff || kind == Kind::Shift)
             {
                 if (bot->HasAura(r.Id) || !Ready(bot, r) || !Affordable(bot, r.Info) || BuffRecentlyCast(ai, ctx, r))
                     continue;
@@ -1514,6 +1532,8 @@ public:
             else if (bot->GetHealthPct() >= float(Cfg().HealBelowPct))
                 return false;   // somebody needs a heal but cannot be reached, and the bot itself is fine
         }
+        if (heal->Def->Form == FORM_NONE && bot->GetShapeshiftForm() != FORM_NONE)
+            bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);   // a bear or cat cannot cast Healing Touch: leave the form (Bear Form is cast again after its recast time)
         if (!TryCast(ai, bot, ctx, *heal, healTarget))
             return false;
         ctx->LastHealMs = ai->GetNowMs();
