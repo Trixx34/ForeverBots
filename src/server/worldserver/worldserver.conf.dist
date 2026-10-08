@@ -4866,6 +4866,11 @@ Bot.AI.Death.GiveUpSec = 300
 #                     docs/playerbots/feature-bot-class-rotations-20261008.md.
 #        Default:     0 - Off
 #
+#    Bot.AI.Rotation.DruidForms
+#        Description: Needs Bot.AI.Rotation.Enabled. Druids shift into Bear Form once they know it (level 10) and fight with Maul, Swipe and
+#                     Demoralizing Roar; a bear that needs a heal leaves the form for Healing Touch. Off: druids stay unshifted casters.
+#        Default:     0 - Off
+#
 #    Bot.AI.Dummy.Enabled
 #        Description: Training dummy mode: the chat verb "dummy [seconds]" makes a bot summon an immortal, harmless dummy of its own level and
 #                     fight it with its normal combat code; "dummy off" ends the run. The log gets DUMMY_START and DUMMY_SUMMARY (damage per
@@ -4936,6 +4941,7 @@ Bot.AI.Ammo.LowCount = 60
 Bot.AI.Ammo.BuyTarget = 400
 Bot.AI.Ammo.CooldownSec = 300
 Bot.Talents.Premade.Enabled = 0
+Bot.AI.Rotation.DruidForms = 0
 Bot.AI.Dummy.Enabled = 0
 Bot.AI.Dummy.Entry = 9900001
 Bot.AI.Dummy.DefaultSec = 60
