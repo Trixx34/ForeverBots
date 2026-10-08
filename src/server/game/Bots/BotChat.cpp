@@ -18,6 +18,7 @@
 #include "BotChat.h"
 #include "BotAI.h"
 #include "BotBehavior.h"
+#include "BotDummy.h"
 #include "BotEngine.h"
 #include "BotMgr.h"
 #include "BotSocial.h"
@@ -44,7 +45,7 @@ namespace BotChat
 {
 namespace
 {
-enum class Verb : uint8 { None, Follow, Stay, Goto, Rest, Release, Status, Strategy, Verbose, Share };
+enum class Verb : uint8 { None, Follow, Stay, Goto, Rest, Release, Status, Strategy, Verbose, Share, Dummy };
 
 char const* VerbName(Verb v)
 {
@@ -59,6 +60,7 @@ char const* VerbName(Verb v)
         case Verb::Strategy: return "strategy";
         case Verb::Verbose: return "verbose";
         case Verb::Share: return "share";
+        case Verb::Dummy: return "dummy";
         default: return "?";
     }
 }
@@ -148,7 +150,7 @@ Verb ParseVerb(std::string_view t)
     if (t.empty() || t.size() > 8)
         return Verb::None;
     static constexpr std::pair<char const*, Verb> verbs[] = { { "follow", Verb::Follow }, { "stay", Verb::Stay }, { "goto", Verb::Goto },
-        { "rest", Verb::Rest }, { "release", Verb::Release }, { "status", Verb::Status }, { "strategy", Verb::Strategy }, { "verbose", Verb::Verbose }, { "share", Verb::Share } };
+        { "rest", Verb::Rest }, { "release", Verb::Release }, { "status", Verb::Status }, { "strategy", Verb::Strategy }, { "verbose", Verb::Verbose }, { "share", Verb::Share }, { "dummy", Verb::Dummy } };
     for (auto const& [name, v] : verbs)
         if (EqI(t, name))
             return v;
@@ -373,6 +375,7 @@ struct Ctx
     bool HasZ = false;
     std::vector<std::pair<bool, std::string>> Strat;  // add?, name
     uint32 QuestId = 0;                               // share
+    uint32 DummySec = 0;                              // dummy: run length, 0 = default
 };
 
 void Preflight(Ctx& c)
@@ -443,6 +446,23 @@ void Preflight(Ctx& c)
                 c.PreflightError = "BAD_ARGS";
             else
                 c.QuestId = *q;
+            break;
+        }
+        case Verb::Dummy:
+        {
+            // dummy [seconds] | dummy off: the bot fights a training dummy and logs DUMMY_SUMMARY
+            if (a.empty())
+                break;
+            if (EqI(a, "off"))
+            {
+                c.Off = true;
+                break;
+            }
+            Optional<uint32> sec = Trinity::StringTo<uint32>(NextToken(a));
+            if (!sec || !*sec || !NextToken(a).empty())
+                c.PreflightError = "BAD_ARGS";
+            else
+                c.DummySec = *sec;
             break;
         }
         case Verb::Release:
@@ -538,6 +558,8 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
             if (!alive)
                 return "DEAD";
             return BotSocial::ShareQuest(bot, c.QuestId, IsVerbose(issuer));
+        case Verb::Dummy:
+            return c.Off ? BotDummy::Stop(ai, bot) : BotDummy::Start(ai, bot, c.DummySec);
         case Verb::Release:
             if (alive)
                 return "NOT_DEAD";

@@ -16,6 +16,7 @@
  */
 
 #include "BotAI.h"
+#include "BotDummy.h"
 #include "BotPet.h"
 #include "BotQuest.h"
 #include "CellImpl.h"
@@ -930,6 +931,7 @@ void BotAI::OnLogout(Player* bot, char const* reason)
         EmitFightEnd(bot, reason && !strcmp(reason, "LOGOUT_COMMAND") ? "despawned" : "logout", _nowMs);
     _fight = Fight();
     BotPet::OnLogout(this, bot); // dismisses the pet, drops a taming run
+    BotDummy::OnLogout(this, bot); // despawns the training dummy
     BotQuest::OnLogout(this); // releases the loot claim of the quest task
 }
 
