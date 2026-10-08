@@ -39,6 +39,8 @@ namespace BotQuest
     TC_GAME_API bool IsReady();
     // One-line summary of the bot's current quest task (console / diagnostics). Map thread or a quiet world thread.
     TC_GAME_API std::string DescribeTask(BotAI* ai);
+    // BotAI::OnLogout: gives back the resource claims the bot's quest task holds. Map thread.
+    TC_GAME_API void OnLogout(BotAI* ai);
 }
 
 #endif

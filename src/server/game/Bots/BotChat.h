@@ -44,6 +44,9 @@ using ReplySink = std::function<void(std::string const&)>;
 // Returns true when the text was command-shaped (a command attempt: accepted, refused or ignored as unauthorized).
 TC_GAME_API bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whisperTarget = nullptr, ReplySink const* sink = nullptr);
 
+// Any player logs out (WorldSession::LogoutPlayer, world thread): forgets the per-issuer verbose setting and unauthorized-command record.
+TC_GAME_API void OnPlayerLogout(uint64 guidCounter);
+
 // `bot say <issuer> <party|raid|whisper> <text>` (for whisper the text starts with the bot's name); replies are printed to the handler.
 TC_GAME_API bool TestSay(ChatHandler* handler, std::string const& issuerName, std::string const& channelName, std::string_view text);
 
