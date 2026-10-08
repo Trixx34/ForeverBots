@@ -26,6 +26,8 @@
 // See docs/playerbots/feature-bot-travel-20261008.md.
 
 #include "Define.h"
+#include <functional>
+#include <utility>
 #include <vector>
 
 namespace BotTravel
@@ -36,6 +38,7 @@ namespace BotTravel
         bool Enabled = false;
         bool Zones = true;          // pick the next leveling zone by level and faction when the local zone is done
         bool Taxi = true;           // discover and use flight paths
+        bool Transport = true;      // boats and zeppelins (simulated ride between two docks)
         bool Hearth = true;         // hearthstone and inn binding
         uint32 CheckSec = 10;       // seconds between two checks "does the current zone still fit"
         uint32 MaxRouteSteps = 8;   // longest route that is planned
@@ -88,7 +91,9 @@ namespace BotTravel
     };
     // Cheapest route (Dijkstra on seconds) from one zone to another over StaticEdges() plus `extra` (known flight paths), using only
     // the modes in `modes` and edges open to `team`. At most maxSteps edges. From == To is a found route with no steps.
-    TC_GAME_API Route PlanRoute(uint32 from, uint32 to, Team team, uint32 modes, std::vector<Edge> const& extra = {}, uint32 maxSteps = 8);
+    // `banned` lists (from, to) zone pairs that must not be used (a ride or flight that failed for this bot).
+    using Banned = std::vector<std::pair<uint32, uint32>>;
+    TC_GAME_API Route PlanRoute(uint32 from, uint32 to, Team team, uint32 modes, std::vector<Edge> const& extra = {}, uint32 maxSteps = 8, Banned const& banned = {});
 
     enum class Why : uint8
     {
@@ -114,6 +119,7 @@ namespace BotTravel
         std::vector<Edge> Extra;     // known flight paths
         uint32 MaxSteps = 8;
         uint32 LeaveMargin = 0;
+        Banned Avoid;                // edges not to use
     };
 
     struct Choice
@@ -154,6 +160,28 @@ namespace BotTravel
     };
     // True when binding here shortens the way back to the next leveling zone by more than MinSavingSec (or when there is no bind at all).
     TC_GAME_API bool ShouldRebind(RebindQuery const& q);
+
+    // --- transports (boats and zeppelins) ---
+    // One pause of a transport on its cycle, as the core's transport template gives it. TimeMs is inside [0, cycle).
+    struct Stop
+    {
+        uint32 TimeMs = 0;
+        uint32 Map = 0;
+        float X = 0.0f, Y = 0.0f, Z = 0.0f;
+    };
+    // First stop after stops[from], walking the cycle forward and wrapping at cycleMs, for which pred is true. Returns its index (never
+    // `from` itself) or -1. rideMs gets the time from stops[from] to it.
+    TC_GAME_API int NextStop(std::vector<Stop> const& stops, uint32 cycleMs, size_t from, std::function<bool(Stop const&)> const& pred, uint32* rideMs = nullptr);
+
+    // A walkable place near a dock (a flight master's position): where a bot waits for a ship and where it steps off.
+    struct Anchor
+    {
+        uint32 Id = 0;
+        uint32 Map = 0;
+        float X = 0.0f, Y = 0.0f, Z = 0.0f;
+    };
+    // Nearest anchor on the map within maxYards (2D) of the point, or -1.
+    TC_GAME_API int NearestAnchor(std::vector<Anchor> const& anchors, uint32 map, float x, float y, float maxYards);
 
     // --- flight masters ---
     // Cost in seconds of a flight of `yards` (taxi mounts fly at about 32 yd/s plus take-off); used for the extra edges.

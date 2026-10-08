@@ -32,6 +32,8 @@
 #include "Config.h"
 #include "Creature.h"
 #include "DB2Stores.h"
+#include "GameObject.h"
+#include "GameObjectData.h"
 #include "Item.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
@@ -40,6 +42,7 @@
 #include "SpellHistory.h"
 #include "StringFormat.h"
 #include "TaxiPathGraph.h"
+#include "TransportMgr.h"
 #include "WorldSession.h"
 #include <algorithm>
 #include <cmath>
@@ -111,6 +114,50 @@ float NodeDist(TaxiNodesEntry const* a, TaxiNodesEntry const* b)
 {
     float const dx = a->Pos.X - b->Pos.X, dy = a->Pos.Y - b->Pos.Y;
     return std::sqrt(dx * dx + dy * dy);
+}
+
+// --- boats and zeppelins ---
+// Dock stops of every transport, computed once from the core's transport templates (the pause waypoints of the path), and the walkable
+// anchors (flight master positions) near them. The ride itself is simulated: the bot waits at the anchor for the real transport to stand at
+// its stop, then, after the ride time of the template, is placed at the anchor of the destination stop.
+struct TransportInfo
+{
+    uint32 Entry = 0;
+    uint32 CycleMs = 0;
+    std::vector<Stop> Stops;
+};
+std::vector<TransportInfo> s_transports;
+std::vector<Anchor> s_anchors;
+std::once_flag s_transportOnce;
+
+void BuildTransportIndex()
+{
+    for (auto const& [entry, tmpl] : sObjectMgr->GetGameObjectTemplates())
+    {
+        if (tmpl.type != GAMEOBJECT_TYPE_MAP_OBJ_TRANSPORT)
+            continue;
+        TransportTemplate const* tt = sTransportMgr->GetTransportTemplate(entry);
+        if (!tt || !tt->TotalPathTime)
+            continue;
+        TransportInfo info;
+        info.Entry = entry;
+        info.CycleMs = tt->TotalPathTime;
+        for (TransportPathLeg const& leg : tt->PathLegs)
+            for (TransportPathSegment const& seg : leg.Segments)
+            {
+                if (!seg.Delay)
+                    continue;
+                Optional<Position> pos = tt->ComputePosition(seg.SegmentEndArrivalTimestamp + 1, nullptr, nullptr);
+                if (pos)
+                    info.Stops.push_back({ seg.SegmentEndArrivalTimestamp % info.CycleMs, leg.MapId, pos->GetPositionX(), pos->GetPositionY(), pos->GetPositionZ() });
+            }
+        std::sort(info.Stops.begin(), info.Stops.end(), [](Stop const& a, Stop const& b) { return a.TimeMs < b.TimeMs; });
+        if (info.Stops.size() >= 2)
+            s_transports.push_back(std::move(info));
+    }
+    for (TaxiNodesEntry const* n : sTaxiNodesStore)
+        if (n && n->IsPartOfTaxiNetwork())
+            s_anchors.push_back({ n->ID, n->ContinentID, n->Pos.X, n->Pos.Y, n->Pos.Z });
 }
 
 // Flight edges between zones from the nodes the bot knows on its map. Pairs are checked with the real route search of the core, so
@@ -207,6 +254,8 @@ public:
     uint32 TaxiBlockedUntilMs = 0;    // after a flight failed (money, ...): walk only for a while
     uint32 HearthCoolUntilMs = 0;
     uint32 NextDiscoverMs = 0;
+    uint32 BanClearMs = 0;
+    Banned Avoid;                     // zone pairs whose ride or flight failed lately; cleared every 20 minutes
     std::vector<uint32> Recent;       // zones left or failed lately, oldest first
     std::vector<uint32> Tried;        // flight nodes visited or given up on
 
@@ -221,6 +270,12 @@ public:
         bool Hearthing = false;
         uint32 Node = 0;              // discover: node to visit
         uint32 FromZone = 0;
+        // boat or zeppelin leg
+        uint8 Ride = 0;               // 0 not started, 1 walking to the dock, 2 waiting for the transport, 3 riding
+        uint32 RideEntry = 0, RideMs = 0, RideEndMs = 0, RideWaitMs = 0;
+        Stop Dock, Landing;           // stops of the transport (dock, destination)
+        Anchor DockAnchor, LandAnchor; // walkable places next to them
+        bool Rode = false, Tail = false;
     } T;
 
     void Reset() { T = Trip(); }
@@ -298,6 +353,8 @@ private:
         uint32 m = MODE_WALK;
         if (s_cfg.Taxi && int32(c.TaxiBlockedUntilMs - now) <= 0)
             m |= MODE_TAXI;
+        if (s_cfg.Transport)
+            m |= MODE_BOAT | MODE_ZEPPELIN;
         return m;
     }
 
@@ -323,6 +380,12 @@ private:
                 q.Attempt = c.Attempt;
                 q.Modes = Modes(c, now);
                 q.Recent = c.Recent;
+                if (int32(c.BanClearMs - now) <= 0)
+                {
+                    c.Avoid.clear();
+                    c.BanClearMs = now + 20 * 60 * 1000;
+                }
+                q.Avoid = c.Avoid;
                 q.MaxSteps = s_cfg.MaxRouteSteps;
                 q.LeaveMargin = s_cfg.LeaveMarginLevels;
                 if (s_cfg.Taxi && (q.Modes & MODE_TAXI))
@@ -564,6 +627,14 @@ private:
                 t.Flying = false;
                 break;
             }
+        if (zone != t.C.Area && t.Idx >= t.C.R.Steps.size() && t.Rode && !t.Tail)
+        {
+            // stepped off a transport in a city or at a dock outside the zone table: walk on to the target zone
+            t.Tail = true;
+            t.C.R.Steps.push_back({ zone, t.C.Area, MODE_WALK, 300.0f, 3 });
+            t.StepMs = now;
+            t.Tries = 0;
+        }
         if (zone == t.C.Area || t.Idx >= t.C.R.Steps.size())
         {
             if (zone == t.C.Area)
@@ -579,6 +650,13 @@ private:
         Edge const& e = t.C.R.Steps[t.Idx];
         if (e.M == MODE_TAXI)
             return RunTaxi(ai, bot, c, now, e);
+        if (e.M == MODE_BOAT || e.M == MODE_ZEPPELIN)
+            return RunRide(ai, bot, c, now, e);
+        if (e.M != MODE_WALK)
+        {
+            End(ai, bot, c, "unsupported_mode", false, t.C.Area);
+            return false;
+        }
         // walking: head for the quest hub of the farthest zone ahead on the route that has one
         for (size_t k = t.C.R.Steps.size(); k-- > t.Idx;)
         {
@@ -593,6 +671,116 @@ private:
         }
         End(ai, bot, c, "no_hub_in_zone", false, e.To);
         return false;
+    }
+
+    // ---- boat or zeppelin leg ----
+    uint32 ZoneAt(Player* bot, Stop const& s) const
+    {
+        return bot->GetMap() ? ResolveZone(bot->GetMap()->GetZoneId(bot->GetPhaseShift(), s.X, s.Y, s.Z)) : 0;
+    }
+
+    // Picks the transport, its dock stop in the zone the bot stands in, and the stop that comes next on the destination continent.
+    bool ResolveRide(Player* bot, TravelCtx::Trip& t, Edge const& e)
+    {
+        std::call_once(s_transportOnce, BuildTransportIndex);
+        Zone const* to = FindZone(e.To);
+        if (!to)
+            return false;
+        uint32 bestMs = 0xFFFFFFFFu;
+        bool found = false;
+        for (TransportInfo const& info : s_transports)
+            for (size_t i = 0; i < info.Stops.size(); ++i)
+            {
+                Stop const& from = info.Stops[i];
+                if (from.Map != bot->GetMapId() || ZoneAt(bot, from) != e.From)
+                    continue;
+                uint32 ride = 0;
+                int const j = NextStop(info.Stops, info.CycleMs, i, [&](Stop const& s)
+                {
+                    return s.Map == to->Map && (s.Map != bot->GetMapId() || ZoneAt(bot, s) == e.To);
+                }, &ride);
+                if (j < 0 || ride >= bestMs)
+                    continue;
+                int const a = NearestAnchor(s_anchors, from.Map, from.X, from.Y, 250.0f);
+                int const b = NearestAnchor(s_anchors, info.Stops[j].Map, info.Stops[j].X, info.Stops[j].Y, 250.0f);
+                if (a < 0 || b < 0)
+                    continue;
+                bestMs = ride;
+                found = true;
+                t.RideEntry = info.Entry;
+                t.RideMs = ride;
+                t.Dock = from;
+                t.Landing = info.Stops[size_t(j)];
+                t.DockAnchor = s_anchors[size_t(a)];
+                t.LandAnchor = s_anchors[size_t(b)];
+            }
+        return found;
+    }
+
+    bool RunRide(BotAI* ai, Player* bot, TravelCtx& c, uint32 now, Edge const& e)
+    {
+        TravelCtx::Trip& t = c.T;
+        if (!t.Ride)
+        {
+            if (!ResolveRide(bot, t, e))
+            {
+                c.Avoid.push_back({ e.From, e.To });
+                End(ai, bot, c, "no_transport_stop", false);
+                return false;
+            }
+            t.Ride = 1;
+            t.StepMs = now;
+            t.Tries = 0;
+            Emit(ai, bot, "TRAVEL_RIDE_PLAN", StringFormat("taking transport {} from zone {} to zone {} ({} s ride)", t.RideEntry, e.From, e.To, t.RideMs / 1000),
+                StringFormat(R"({{"transport":{},"from":{},"to":{},"ride_s":{},"dock_node":{},"landing_node":{}}})", t.RideEntry, e.From, e.To, t.RideMs / 1000, t.DockAnchor.Id, t.LandAnchor.Id));
+        }
+        if (t.Ride == 1)
+        {
+            float const dx = bot->GetPositionX() - t.DockAnchor.X, dy = bot->GetPositionY() - t.DockAnchor.Y;
+            if (dx * dx + dy * dy <= 25.0f * 25.0f)
+            {
+                BotMotion& m = ai->Motion();
+                if (m.HasGoal() && !std::strcmp(m.GetTag(), "travel_dock"))
+                    m.ClearGoal();
+                t.Ride = 2;
+                t.RideWaitMs = now;
+                return false;
+            }
+            return Walk(ai, bot, c, now, t.DockAnchor.X, t.DockAnchor.Y, t.DockAnchor.Z, 12.0f, "travel_dock");
+        }
+        if (t.Ride == 2)
+        {
+            GameObject* ship = bot->FindNearestGameObject(t.RideEntry, 300.0f);
+            bool const docked = ship && ship->GetExactDist2d(t.Dock.X, t.Dock.Y) <= 60.0f;
+            if (docked)
+            {
+                BotMotion::Halt(bot);
+                t.Ride = 3;
+                t.RideEndMs = now + std::min<uint32>(t.RideMs, 600000u);
+                t.Rode = true;
+                Emit(ai, bot, "TRAVEL_RIDE_START", StringFormat("boarding transport {}, arrives in {} s", t.RideEntry, t.RideMs / 1000),
+                    StringFormat(R"({{"transport":{},"ride_s":{},"waited_s":{}}})", t.RideEntry, t.RideMs / 1000, (now - t.RideWaitMs) / 1000));
+                return true;
+            }
+            // no transport object around at all after 90 s: it is not spawned in this world; otherwise wait one full cycle
+            if (now - t.RideWaitMs > (ship ? 7u * 60u * 1000u : 90u * 1000u))
+            {
+                c.Avoid.push_back({ e.From, e.To });
+                End(ai, bot, c, ship ? "transport_never_docked" : "transport_not_spawned", false);
+            }
+            return false;
+        }
+        // riding: hold the bot, then put it at the landing
+        if (int32(t.RideEndMs - now) > 0)
+            return true;
+        t.Ride = 0;
+        t.Idx++;
+        t.StepMs = now;
+        t.Tries = 0;
+        bot->TeleportTo(t.LandAnchor.Map, t.LandAnchor.X, t.LandAnchor.Y, t.LandAnchor.Z, bot->GetOrientation());
+        Emit(ai, bot, "TRAVEL_RIDE_END", StringFormat("left transport {} at node {}", t.RideEntry, t.LandAnchor.Id),
+            StringFormat(R"({{"transport":{},"node":{},"map":{}}})", t.RideEntry, t.LandAnchor.Id, t.LandAnchor.Map));
+        return true;
     }
 
     bool RunTaxi(BotAI* ai, Player* bot, TravelCtx& c, uint32 now, Edge const& e)
@@ -638,6 +826,7 @@ private:
         if (best.empty() || !bot->ActivateTaxiPathTo(best, fm))
         {
             c.TaxiBlockedUntilMs = now + 15 * 60 * 1000;   // money, a closed path ...: walk for a while
+            c.Avoid.push_back({ e.From, e.To });
             End(ai, bot, c, best.empty() ? "no_flight_route" : "flight_refused", false);
             return false;
         }
@@ -678,6 +867,7 @@ Config const& Cfg()
         s_cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Travel.Enabled", false);
         s_cfg.Zones = sConfigMgr->GetBoolDefault("Bot.AI.Travel.Zones", true);
         s_cfg.Taxi = sConfigMgr->GetBoolDefault("Bot.AI.Travel.Taxi", true);
+        s_cfg.Transport = sConfigMgr->GetBoolDefault("Bot.AI.Travel.Transport", true);
         s_cfg.Hearth = sConfigMgr->GetBoolDefault("Bot.AI.Travel.Hearth", true);
         s_cfg.CheckSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Travel.CheckSec", 10), 2, 600));
         s_cfg.MaxRouteSteps = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Travel.MaxRouteSteps", 8), 1, 20));

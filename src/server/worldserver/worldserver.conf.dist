@@ -4877,13 +4877,14 @@ Bot.AI.Death.GiveUpSec = 300
 #                     leveling zone for its level and faction, walks or flies there, and the quest strategy continues in the new zone.
 #                     Flight masters close by are learned once and used for long trips; the hearthstone is used when the way from home is
 #                     clearly shorter, and bots bind at inns they pass when that shortens the way back. Adds the strategy "travel".
-#                     Boats, zeppelins and trams are planned but not yet walked by the bots (see docs/playerbots/feature-bot-travel-20261008.md).
+#                     Boats and zeppelins are ridden as a simulated trip between two docks (the Deeprun Tram is not used).
 #        Default:     0 - (Disabled)
 #                     1 - (Enabled)
 #
-#    Bot.AI.Travel.Zones / Bot.AI.Travel.Taxi / Bot.AI.Travel.Hearth
-#        Description: Zone progression / flight paths (learn and use) / hearthstone and inn binding. Each part can be switched off alone.
-#        Default:     1 / 1 / 1
+#    Bot.AI.Travel.Zones / Bot.AI.Travel.Taxi / Bot.AI.Travel.Transport / Bot.AI.Travel.Hearth
+#        Description: Zone progression / flight paths (learn and use) / boats and zeppelins / hearthstone and inn binding. Each part can be
+#                     switched off alone.
+#        Default:     1 / 1 / 1 / 1
 #
 #    Bot.AI.Travel.CheckSec / Bot.AI.Travel.TripMinutes
 #        Description: Seconds between two "does the zone still fit" checks (2-600) / longest time of one trip before it is abandoned (2-240).
@@ -4968,6 +4969,7 @@ Bot.AI.Move.Natural.MetricsSec = 60
 Bot.AI.Travel.Enabled = 0
 Bot.AI.Travel.Zones = 1
 Bot.AI.Travel.Taxi = 1
+Bot.AI.Travel.Transport = 1
 Bot.AI.Travel.Hearth = 1
 Bot.AI.Travel.CheckSec = 10
 Bot.AI.Travel.TripMinutes = 25

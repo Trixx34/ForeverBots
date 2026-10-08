@@ -195,7 +195,7 @@ std::vector<Edge> const& StaticEdges()
     return edges;
 }
 
-Route PlanRoute(uint32 from, uint32 to, Team team, uint32 modes, std::vector<Edge> const& extra, uint32 maxSteps)
+Route PlanRoute(uint32 from, uint32 to, Team team, uint32 modes, std::vector<Edge> const& extra, uint32 maxSteps, Banned const& banned)
 {
     Route r;
     if (from == to)
@@ -208,7 +208,8 @@ Route PlanRoute(uint32 from, uint32 to, Team team, uint32 modes, std::vector<Edg
     auto add = [&](std::vector<Edge> const& list)
     {
         for (Edge const& e : list)
-            if ((modes & e.M) && (e.Teams & teamBit))
+            if ((modes & e.M) && (e.Teams & teamBit)
+                && std::find(banned.begin(), banned.end(), std::make_pair(e.From, e.To)) == banned.end())
                 adj[e.From].push_back(&e);
     };
     add(StaticEdges());
@@ -258,6 +259,45 @@ Route PlanRoute(uint32 from, uint32 to, Team team, uint32 modes, std::vector<Edg
     return r;
 }
 
+int NextStop(std::vector<Stop> const& stops, uint32 cycleMs, size_t from, std::function<bool(Stop const&)> const& pred, uint32* rideMs)
+{
+    size_t const n = stops.size();
+    if (from >= n || !cycleMs)
+        return -1;
+    for (size_t k = 1; k < n; ++k)
+    {
+        size_t const i = (from + k) % n;
+        if (pred && !pred(stops[i]))
+            continue;
+        if (rideMs)
+        {
+            uint32 const a = stops[from].TimeMs % cycleMs, b = stops[i].TimeMs % cycleMs;
+            *rideMs = b >= a ? b - a : b + cycleMs - a;
+        }
+        return int(i);
+    }
+    return -1;
+}
+
+int NearestAnchor(std::vector<Anchor> const& anchors, uint32 map, float x, float y, float maxYards)
+{
+    int best = -1;
+    float bd = maxYards * maxYards;
+    for (size_t i = 0; i < anchors.size(); ++i)
+    {
+        if (anchors[i].Map != map)
+            continue;
+        float const dx = anchors[i].X - x, dy = anchors[i].Y - y;
+        float const d = dx * dx + dy * dy;
+        if (d <= bd)
+        {
+            bd = d;
+            best = int(i);
+        }
+    }
+    return best;
+}
+
 float TaxiSeconds(float yards)
 {
     return 45.0f + std::max(0.0f, yards) / 32.0f;
@@ -305,7 +345,7 @@ Choice PickZone(Query const& q)
                 continue;   // unknown position (a city): only zones on the same continent
             if (lvl < int32(z.MinLevel) - slack || lvl > int32(z.MaxLevel) + slack)
                 continue;
-            Route r = PlanRoute(q.CurrentArea, z.Area, q.BotTeam, q.Modes, q.Extra, q.MaxSteps);
+            Route r = PlanRoute(q.CurrentArea, z.Area, q.BotTeam, q.Modes, q.Extra, q.MaxSteps, q.Avoid);
             if (!r.Found && q.CurrentArea == 0)
             {
                 // unknown position (a city or a zone outside the table): assume a typical trip of one walking leg

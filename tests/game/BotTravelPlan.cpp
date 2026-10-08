@@ -346,3 +346,60 @@ TEST_CASE("Names", "[BotTravel]")
     CHECK(Zones().size() > 30);
     (void)WETLANDS; (void)ASHENVALE; (void)BARRENS; (void)TIRISFAL;
 }
+
+TEST_CASE("NextStop: cyclic order, predicate, ride time", "[BotTravel]")
+{
+    // a zeppelin: Orgrimmar at 0 s, Undercity at 100 s, Grom'gol at 250 s, cycle 400 s
+    std::vector<Stop> stops = { { 0, 1, 1.0f, 0.0f, 0.0f }, { 100000, 0, 2.0f, 0.0f, 0.0f }, { 250000, 0, 3.0f, 0.0f, 0.0f } };
+    uint32 ride = 0;
+    SECTION("next stop")
+    {
+        CHECK(NextStop(stops, 400000, 0, {}, &ride) == 1);
+        CHECK(ride == 100000);
+    }
+    SECTION("predicate skips stops")
+    {
+        CHECK(NextStop(stops, 400000, 0, [](Stop const& s) { return s.X == 3.0f; }, &ride) == 2);
+        CHECK(ride == 250000);
+    }
+    SECTION("wraps around the end of the cycle")
+    {
+        CHECK(NextStop(stops, 400000, 2, [](Stop const& s) { return s.Map == 1; }, &ride) == 0);
+        CHECK(ride == 150000);
+        CHECK(NextStop(stops, 400000, 2, {}, &ride) == 0);
+    }
+    SECTION("never returns the start stop; no match is -1")
+    {
+        CHECK(NextStop(stops, 400000, 1, [](Stop const& s) { return s.X == 2.0f; }) == -1);
+        CHECK(NextStop(stops, 400000, 5, {}) == -1);
+        CHECK(NextStop({}, 400000, 0, {}) == -1);
+        CHECK(NextStop(stops, 0, 0, {}) == -1);
+    }
+    SECTION("a single-stop transport has no ride")
+    {
+        std::vector<Stop> one = { { 0, 0, 0.0f, 0.0f, 0.0f } };
+        CHECK(NextStop(one, 1000, 0, {}) == -1);
+    }
+}
+
+TEST_CASE("NearestAnchor: same map, within range, nearest wins", "[BotTravel]")
+{
+    std::vector<Anchor> a = { { 10, 0, 100.0f, 0.0f, 0.0f }, { 11, 0, 30.0f, 0.0f, 0.0f }, { 12, 1, 5.0f, 0.0f, 0.0f } };
+    CHECK(NearestAnchor(a, 0, 0.0f, 0.0f, 200.0f) == 1);
+    CHECK(NearestAnchor(a, 1, 0.0f, 0.0f, 200.0f) == 2);
+    CHECK(NearestAnchor(a, 0, 0.0f, 0.0f, 20.0f) == -1);
+    CHECK(NearestAnchor(a, 2, 0.0f, 0.0f, 1000.0f) == -1);
+    CHECK(NearestAnchor({}, 0, 0.0f, 0.0f, 1000.0f) == -1);
+}
+
+TEST_CASE("PlanRoute: banned edges are avoided", "[BotTravel]")
+{
+    Route open = PlanRoute(ELWYNN, WESTFALL, Team::Alliance, MODE_ALL);
+    REQUIRE(open.Found);
+    CHECK(open.Steps.size() == 1);
+    Route banned = PlanRoute(ELWYNN, WESTFALL, Team::Alliance, MODE_ALL, {}, 8, { { ELWYNN, WESTFALL } });
+    REQUIRE(banned.Found);
+    CHECK(banned.Steps.size() > 1);     // around, through Duskwood
+    Route none = PlanRoute(TELDRASSIL, DARKSHORE, Team::Alliance, MODE_ALL, {}, 8, { { TELDRASSIL, DARKSHORE }, { DARKSHORE, TELDRASSIL } });
+    CHECK_FALSE(none.Found);
+}
