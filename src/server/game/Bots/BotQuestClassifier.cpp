@@ -120,6 +120,19 @@ ClassifierResult ClassifyQuest(QuestFacts const& q, QuestWorldLookup const& worl
                 }
                 break;
             }
+            case QUEST_OBJECTIVE_GAMEOBJECT:
+                if (!world.UseObjectObjectives())
+                {
+                    b.Code = "OBJECTIVE_UNSUPPORTED"; b.Entry = uint32(obj.ObjectID);
+                    b.Info = StringFormat("objective type {}", uint32(obj.Type));
+                    return b;
+                }
+                if (!world.GameObjectHasSpawn(uint32(obj.ObjectID)))
+                {
+                    b.Code = "NO_TARGET_SPAWN"; b.Entry = uint32(obj.ObjectID);
+                    return b;
+                }
+                break;
             case QUEST_OBJECTIVE_TALKTO:
                 if (!world.HasSpawn(uint32(obj.ObjectID)))
                 {

@@ -87,6 +87,7 @@ struct QuestCfg
 {
     uint32 MaxActive = 12;
     uint32 StallSec = 240;
+    bool UseObjects = false;       // Bot.Quest.UseObjects: work "use this object" objectives (QUEST_OBJECTIVE_GAMEOBJECT)
     int32 MaxMobLevelDiff = 2;     // kill targets more than this many levels above the bot (elite counts +EliteBonus) are skipped
     int32 EliteBonus = 3;
     float SelectRadius = 350.0f;
@@ -120,6 +121,7 @@ QuestCfg const& Cfg()
         cfg.MaxActive = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Quest.MaxActive", 12)));
         cfg.StallSec = uint32(std::max<int32>(30, sConfigMgr->GetIntDefault("Bot.Quest.StallSec", 240)));
         cfg.MaxMobLevelDiff = sConfigMgr->GetIntDefault("Bot.Quest.MaxMobLevelDiff", 2);
+        cfg.UseObjects = sConfigMgr->GetBoolDefault("Bot.Quest.UseObjects", false);
         cfg.EliteBonus = sConfigMgr->GetIntDefault("Bot.AI.Combat.EliteLevelBonus", 3);
         cfg.SelectRadius = float(sConfigMgr->GetIntDefault("Bot.Quest.SelectRadius", 350));
         cfg.FarRadius = float(sConfigMgr->GetIntDefault("Bot.Quest.FarRadius", 1500));
@@ -420,6 +422,19 @@ void GoEntriesOf(uint32 item, std::vector<uint32>& out)
             out.push_back(e);
 }
 
+// game objects a bot works for an objective: the chests that hold an item objective's item, or the object itself for a
+// "use this object" objective (QUEST_OBJECTIVE_GAMEOBJECT), each with at least one spawn
+void ObjectiveGoEntries(QuestObjective const& obj, std::vector<uint32>& out)
+{
+    if (obj.Type == QUEST_OBJECTIVE_GAMEOBJECT)
+    {
+        if (obj.ObjectID > 0 && HasGoSpawn(uint32(obj.ObjectID)))
+            out.push_back(uint32(obj.ObjectID));
+        return;
+    }
+    GoEntriesOf(uint32(obj.ObjectID), out);
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // 2. Analysis: static blockers
 // ---------------------------------------------------------------------------------------------------------------------
@@ -477,6 +492,8 @@ public:
     }
 
     bool ItemHasGameObjectSource(uint32 item) const override { return g.ItemGoSrc.count(item) != 0; }
+    bool UseObjectObjectives() const override { return Cfg().UseObjects; }
+    bool GameObjectHasSpawn(uint32 goEntry) const override { return BotQuest::HasGoSpawn(goEntry); }
     bool HasEnderRow(uint32 questId) const override { return BotQuest::HasEnderRow(questId); }
     bool HasEnderSpawn(uint32 questId) const override { return !EnderEntries(questId).empty(); }
 };
@@ -581,6 +598,7 @@ void BuildIndex()
     std::unordered_set<uint32> wanted;      // creature entries whose spawns we keep
     std::unordered_set<uint32> neededItems; // objective items of the planned quests
     std::unordered_set<uint32> starterQuests;
+    std::unordered_set<uint32> useGo;       // game objects of "use this object" objectives (spawns kept like the chests)
     {
         QuestRelations const* rel = sObjectMgr->GetCreatureQuestRelationMapHACK();
         for (auto const& [creature, quest] : *rel)
@@ -627,6 +645,9 @@ void BuildIndex()
                     break;
                 case QUEST_OBJECTIVE_TALKTO:
                     wanted.insert(uint32(obj.ObjectID));
+                    break;
+                case QUEST_OBJECTIVE_GAMEOBJECT:
+                    useGo.insert(uint32(obj.ObjectID));
                     break;
                 default:
                     break;
@@ -677,6 +698,7 @@ void BuildIndex()
         std::sort(entries.begin(), entries.end());
         entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
     }
+    wantedGo.insert(useGo.begin(), useGo.end());
     g.NumGoItems = uint32(g.ItemGoSrc.size());
     for (auto const& [entry, tmpl] : sObjectMgr->GetCreatureTemplates())
     {
@@ -2013,19 +2035,19 @@ private:
                     if (NearestSpawn(bot, en, &d) && d < best.D)
                         best = { &e, obj, d, en, false };
                 }
-                if (obj->Type == QUEST_OBJECTIVE_ITEM)
+                if (obj->Type == QUEST_OBJECTIVE_ITEM || obj->Type == QUEST_OBJECTIVE_GAMEOBJECT)
                 {
                     std::vector<uint32> gos;
-                    GoEntriesOf(uint32(obj->ObjectID), gos);
+                    ObjectiveGoEntries(*obj, gos);
                     for (uint32 en : gos)
                     {
                         float d;
                         if (NearestGoSpawn(bot, en, &d) && d < best.D && !LegGated(ai, bot, c, now, q, d, "loot", true))
                             best = { &e, obj, d, en, true };
                     }
-                    if (entries.empty() && gos.empty() && SupplyQuestItems(bot, q))
+                    if (obj->Type == QUEST_OBJECTIVE_ITEM && entries.empty() && gos.empty() && SupplyQuestItems(bot, q))
                         continue;   // M3: the quest hands the item over itself; it was given now, the objective updates
-                    if (entries.empty() && gos.empty())
+                    if (obj->Type == QUEST_OBJECTIVE_ITEM && entries.empty() && gos.empty())
                     {
                         // nothing in the world gives this item (the quest start item does not cover the open amount)
                         Blocked(ai, bot, c, e.Quest, "MISSING_ITEM_SOURCE", StringFormat("quest '{}' in the log needs item {} and no source is known", q->GetLogTitle(), obj->ObjectID),
@@ -4597,7 +4619,7 @@ private:
                         return true;
                 }
             }
-            GoEntriesOf(uint32(obj->ObjectID), gos);
+            ObjectiveGoEntries(*obj, gos);
             uint32 waitMs = 0;
             int r = GoPickSpawn(ai, bot, c, now, t, gos, waitMs);
             if (r == 1)
@@ -4730,7 +4752,9 @@ private:
         uint32 const itemBefore = obj->Type == QUEST_OBJECTIVE_ITEM ? bot->GetItemCount(uint32(obj->ObjectID), true) : 0;
         int32 const objBefore = bot->GetQuestObjectiveData(*obj);
         usable->Use(bot);
-        bool const lootTaken = LootGameObject(bot, usable);
+        // a "use this object" objective is credited by the use itself; there may be no loot window at all
+        bool const credited = obj->Type == QUEST_OBJECTIVE_GAMEOBJECT && bot->GetQuestObjectiveData(*obj) > objBefore;
+        bool const lootTaken = LootGameObject(bot, usable) || credited;
         if (lootTaken && obj->Type == QUEST_OBJECTIVE_ITEM && bot->GetItemCount(uint32(obj->ObjectID), true) <= itemBefore &&
             bot->GetQuestObjectiveData(*obj) <= objBefore)
         {

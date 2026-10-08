@@ -4814,6 +4814,11 @@ Bot.AI.Default.NonCombat = "rest,goto,follow"
 #        Description: Kill targets more than this many levels above the bot (elites count +Bot.AI.Combat.EliteLevelBonus) are skipped.
 #        Default:     2
 #
+#    Bot.Quest.UseObjects
+#        Description: Quests whose objective is to use a game object (levers, goobers, clickable objects) are worked: the bot walks to a
+#                     spawn of the object and uses it, like a quest chest. Off: such quests stay OBJECTIVE_UNSUPPORTED.
+#        Default:     0 - Off
+#
 #    Bot.Quest.SelectRadius / Bot.Quest.FarRadius
 #        Description: Yards searched for a quest giver (near pass, then far pass).
 #        Default:     350 / 1500
