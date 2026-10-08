@@ -16,6 +16,7 @@
  */
 
 #include "BotAI.h"
+#include "BotPet.h"
 #include "BotQuest.h"
 #include "CellImpl.h"
 #include "Config.h"
@@ -116,6 +117,12 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
         case BotState::Combat: names = SplitNames(BotAI::Config().DefaultCombat); break;
         case BotState::Dead: names = SplitNames(BotAI::Config().DefaultDead); break;
     }
+    if (state == BotState::NonCombat && BotMove::Natural().Enabled && BotMove::Natural().Idle
+        && std::find(names.begin(), names.end(), "natural_idle") == names.end())
+        names.push_back("natural_idle");
+    if (BotPet::Cfg().Enabled && bot && bot->GetClass() == CLASS_HUNTER && state != BotState::Dead
+        && std::find(names.begin(), names.end(), "pet") == names.end())
+        names.push_back("pet");
     if (BotAI::Config().TestStrategy)
     {
         switch (state)
@@ -257,8 +264,12 @@ void BotAI::Tick(Player* bot)
         if (_lastMapId != 0xFFFF)
             for (auto& entry : _values) // cached values may refer to the old map
                 entry.second->Invalidate();
+        else
+            BotPet::OnMapChange(this, bot);
         _lastMapId = mapId;
     }
+
+    _motion.Tick(this, bot);
 
     char const* cause = "NONE";
     BotState const desired = DesiredState(bot, cause);
@@ -355,6 +366,8 @@ void BotAI::ChangeState(Player* bot, BotState to, char const* cause)
         BotMotion::Halt(bot);
         _motion.ClearGoal();
     }
+    if (from == BotState::Combat && to == BotState::NonCombat && BotMove::Natural().Enabled && BotMove::Natural().Pacing)
+        _motion.Pause(_nowMs, BotMove::PauseMs(BotMove::Pause::PostCombat, _guid, _nowMs));
     if (to == BotState::Dead)
     {
         _recover.Reset();
@@ -897,6 +910,7 @@ void BotAI::OnDying(Player* bot, Unit* attacker)
 {
     uint64 const t0 = NowNs();
     SnapshotDeath(bot, attacker);
+    BotQuest::NoteDeath(bot);
     uint64 const elapsed = NowNs() - t0;
     _stats.Deaths.fetch_add(1, std::memory_order_relaxed);
     _stats.DeathNs.fetch_add(elapsed, std::memory_order_relaxed);
@@ -909,6 +923,7 @@ void BotAI::OnLogout(Player* bot, char const* reason)
     if (_fight.Active && _fight.StartLogged)
         EmitFightEnd(bot, reason && !strcmp(reason, "LOGOUT_COMMAND") ? "despawned" : "logout", _nowMs);
     _fight = Fight();
+    BotPet::OnLogout(this, bot); // dismisses the pet, drops a taming run
     BotQuest::OnLogout(this); // releases the loot claim of the quest task
 }
 

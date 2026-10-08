@@ -26,6 +26,7 @@
 #include "Define.h"
 #include <G3D/Vector3.h>
 #include "ObjectGuid.h"
+#include "BotMovePlan.h"
 #include <optional>
 #include <string>
 #include <vector>
@@ -106,6 +107,15 @@ public:
     static BotPathInfo QueryPath(Player* bot, float x, float y, float z);
     static void EnsureGrids(Player* bot, float x, float y);
 
+    // Natural movement (Bot.AI.Move.Natural.*): a pause stops walking and quest work until it ends (arrival, loot, quest giver, after combat).
+    void Pause(uint32 nowMs, uint32 ms) { if (ms) _pauseUntil = nowMs + ms; }
+    bool IsPaused(uint32 nowMs) const { return _pauseUntil && int32(_pauseUntil - nowMs) > 0; }
+    // map thread, once per AI tick: samples the movement metrics and writes MOVE_METRICS rows
+    void Tick(BotAI* ai, Player* bot);
+    BotMove::Metrics& Metrics() { return _metrics; }
+    // natural idling (strategy "natural_idle", NonCombat): look around, sit, wander a few yards; false when nothing was done
+    bool IdleStep(BotAI* ai, Player* bot);
+
     BotAggro& Aggro() { return _aggro; }
     uint32 QuestEntry() const { return _questEntry; } // entry of the last quest/grind travel target (not a threat to avoid)
 
@@ -113,7 +123,12 @@ private:
     // Aggro steering of goto/quest goals (detour, back off, wait outside the aggro radius); nullopt = walk on normally.
     std::optional<Result> Steer(BotAI* ai, Player* bot, uint32 now);
     Result Fail(BotAI* ai, Player* bot, char const* type, char const* reason, std::string const& summary, std::string const& extra);
-    void Issue(Player* bot, uint32 now);
+    enum class Launch : uint8 { Skipped, NoPath, Launched };
+    Launch Issue(Player* bot, uint32 now);
+    // natural movement helpers
+    std::optional<Result> NaturalReissue(BotAI* ai, Player* bot, uint32 now, bool moving);
+    bool NaturalStuck(BotAI* ai, Player* bot, uint32 now);
+    void StartSideRoute(Player* bot, uint32 now, float yards);
 
     bool _active = false;
     bool _fresh = false;
@@ -140,7 +155,33 @@ private:
     bool _detour = false;       // walking to a detour point instead of the goal
     float _dx = 0.0f, _dy = 0.0f, _dz = 0.0f;
     uint32 _detourMs = 0;
+
+    // natural movement state (all untouched while the option is off)
+    float _ox = 0.0f, _oy = 0.0f;       // approach offset added to the goal for the path target
+    uint32 _pauseUntil = 0;
+    uint32 _lastEndMs = 0;              // when the previous goal ended (a start delay only follows a real stop)
+    uint32 _waitUntilMs = 0;            // back-off after a failed or repeated leg
+    uint32 _legFails = 0;               // consecutive failed or repeated legs of this goal
+    bool _sideOn = false;
+    float _sx = 0.0f, _sy = 0.0f, _sz = 0.0f;
+    uint32 _sideMs = 0;
+    uint32 _trailMs = 0;
+    BotMove::Vec3 _trail[4];            // positions sampled every 2 s while walking (step back goes along these)
+    uint32 _trailN = 0;
+    BotMove::FailTable _fails{12};
+    BotMove::LegTracker _legs;
+    BotMove::Metrics _metrics;
+    // natural idling
+    float _idleX = 0.0f, _idleY = 0.0f;
+    uint32 _idleStillSince = 0, _idleLastAct = 0, _idleSatMs = 0;
+    bool _idleSat = false;
 };
+
+// Hook for the danger gating of destinations (under-level bots, deadly areas). The movement code itself does not decide what is
+// dangerous: a module that does installs a function here; idle wandering and the loot spawn choice ask it. Default: nothing is vetoed.
+using BotDestinationVeto = bool (*)(Player* bot, uint32 mapId, float x, float y, float z);
+void BotSetDestinationVeto(BotDestinationVeto fn);
+bool BotDestinationVetoed(Player* bot, float x, float y, float z);
 
 // Eat/drink session of a bot (rest strategy).
 struct BotRest

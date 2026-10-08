@@ -68,7 +68,7 @@ ClassifierResult ClassifyQuest(QuestFacts const& q, QuestWorldLookup const& worl
         b.Code = "REPUTATION_REQUIRED"; b.Entry = q.RequiredMinRepFaction;
         return b;
     }
-    if (q.CompletionEvent)
+    if (q.CompletionEvent && !world.EventQuestSupported(q.QuestId))
     {
         b.Code = "NEEDS_EVENT";
         return b;

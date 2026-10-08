@@ -182,4 +182,5 @@ void RegisterBuiltinBotObjects(BotRegistry& r)
     RegisterPhase3BotObjects(r);
     RegisterCombatBotObjects(r);
     RegisterQuestBotObjects(r);
+    RegisterPetBotObjects(r);
 }
