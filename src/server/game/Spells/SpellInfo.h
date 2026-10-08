@@ -328,6 +328,7 @@ TC_GAME_API uint32 GetClassicSealJudgement(uint32 sealSpellId);
 class TC_GAME_API SpellInfo
 {
     friend class SpellMgr;
+    friend class UnitTestDataLoader;
 
     public:
         uint32 const Id = 0;

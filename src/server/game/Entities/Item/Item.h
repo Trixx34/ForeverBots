@@ -183,6 +183,7 @@ Item* NewItemOrBag(ItemTemplate const* proto);
 
 class TC_GAME_API Item : public Object
 {
+    friend class UnitTestDataLoader;
     friend void AddItemToUpdateQueueOf(Item* item, Player* player);
     friend void RemoveItemFromUpdateQueueOf(Item* item, Player* player);
 
@@ -467,6 +468,7 @@ class TC_GAME_API Item : public Object
         BonusData _bonusData;
 
     private:
+        uint16 ResolveVisibleItemVisual(uint32 visibleEnchantmentId) const;
         std::string m_text;
         uint8 m_slot;
         Bag* m_container;

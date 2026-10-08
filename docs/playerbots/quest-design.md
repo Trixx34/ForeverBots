@@ -755,7 +755,7 @@ Formerly reserved; all now emitted. `blk` = `quest_blocked` row (WARN unless not
 | `TRAIN_TRIP` | dec | walking to the class trainer |
 | `TRAINED` | dec | learned spells (trainer entry, copper spent) |
 | `TRAIN_NO_MONEY` | blk | spells available, none affordable (or nothing learned at the trainer) |
-| `TRAIN_NO_TRAINER` | blk | no reachable class trainer within 4000 yd, or the NPC has no trainer data |
+| `TRAIN_NO_TRAINER` | blk | no reachable friendly class trainer on the map within 15000 yd (retried at 4000 yd first), or the NPC has no trainer data; details `why` classifies the gap |
 | `TRAIN_UNREACHABLE` | blk | trainer known but the walk failed (quarantine path, Svc=1) |
 | `VENDOR_TRIP` | dec | walking to a vendor (free slots, repair cost, bag upgrade) |
 | `SOLD_ITEMS` | dec | sold grey/unusable stacks |
@@ -769,7 +769,9 @@ Formerly reserved; all now emitted. `blk` = `quest_blocked` row (WARN unless not
 | `QUEST_QUARANTINED` | blk | quest failed N times for this bot (UNREACHABLE/TARGET_UNREACHABLE etc.), skipped 6 h |
 | `QUEST_QUARANTINED_GLOBAL` | blk | quest failed across bots (DEAD_FAILS drops), skipped by all bots 1 h |
 | `CORPSE_RUN_GAVE_UP` | dec WARN | corpse run failed repeatedly, falls back to the spirit healer |
-| `SPIRIT_HEAL_GAVE_UP` | dec WARN | no reachable spirit healer, resurrects in place |
+| `SPIRIT_HEAL_GAVE_UP` | dec WARN | no reachable spirit healer, respawns at the closest graveyard |
+| `CORPSE_RUN_TIMEOUT` | dec WARN | ghost over `Bot.AI.Death.GiveUpSec` on the corpse run, respawned at the closest graveyard |
+| `SPIRIT_HEAL_TIMEOUT` | dec WARN | ghost over `Bot.AI.Death.GiveUpSec` on the spirit healer plan, respawned at the closest graveyard |
 | `QUEST_WALK_START` | dec | quest travel leg started (quest_id, goal, path_length, path_us); at most one per bot per 10 s |
 | `QUEST_WALK_ARRIVE` | dec | quest travel leg arrived (only after a logged start) |
 | `QUEST_WALK_ABORT` | dec | quest travel leg failed in BotMotion (`abort_reason` = the path_fail/stuck code, quest_id); a stop requested by BotQuest is not logged |

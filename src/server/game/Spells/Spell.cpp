@@ -2826,6 +2826,36 @@ void Spell::TargetInfo::DoTargetSpellHit(Spell* spell, SpellEffectInfo const& sp
     Healing = spell->m_healing;
 }
 
+bool Spell::ApplyShadowburnDeathAura(Unit& target, SpellInfo const& spell, Aura* hitAura, uint32 hitMask)
+{
+    if (!hitAura || hitAura->IsRemoved() || !(hitMask & 1)
+        || !spell.HasAttribute(SPELL_ATTR15_UNK13) || spell.SpellFamilyName != SPELLFAMILY_WARLOCK
+        || hitAura->GetSpellInfo()->Id != spell.Id)
+        return false;
+
+    switch (spell.Id)
+    {
+        case 17877: case 18867: case 18868: case 18869: case 18870: case 18871:
+            break;
+        default:
+            return false;
+    }
+
+    SpellEffectInfo const& deathItem = spell.GetEffect(EFFECT_0);
+    if (!deathItem.IsAura(SPELL_AURA_CHANNEL_DEATH_ITEM) || deathItem.ItemType != 6265)
+        return false;
+
+    AuraApplication* application = hitAura->GetApplicationOfTarget(target.GetGUID());
+    if (!application || application->GetRemoveMode() != AURA_REMOVE_NONE
+        || !(application->GetEffectsToApply() & 1) || application->HasEffect(EFFECT_0))
+        return false;
+
+    // Generic death-item removal retains its XP/honor, tap and inventory checks.
+    // Arm only this native effect before damage so a killing blow can remove it.
+    target._ApplyAura(application, 1);
+    return true;
+}
+
 void Spell::TargetInfo::DoDamageAndTriggers(Spell* spell)
 {
     Unit* unit = spell->m_caster->GetGUID() == TargetGUID ? spell->m_caster->ToUnit() : ObjectAccessor::GetUnit(*spell->m_caster, TargetGUID);
@@ -2846,6 +2876,9 @@ void Spell::TargetInfo::DoDamageAndTriggers(Spell* spell)
     Unit* caster = spell->m_originalCaster ? spell->m_originalCaster : spell->m_caster->ToUnit();
     if (caster)
     {
+        if (_spellHitTarget && caster->IsPlayer())
+            Spell::ApplyShadowburnDeathAura(*_spellHitTarget, *spell->m_spellInfo, HitAura, EffectMask);
+
         // Fill base trigger info
         ProcFlagsInit procAttacker = spell->m_procAttacker;
         ProcFlagsInit procVictim = spell->m_procVictim;
@@ -7011,7 +7044,13 @@ SpellCastResult Spell::CheckPetCast(Unit* target)
 
 SpellCastResult Spell::CheckCasterAuras(int32* param1) const
 {
-    Unit* unitCaster = (m_originalCaster ? m_originalCaster : m_caster->ToUnit());
+    return CheckCasterAuras(m_originalCaster ? m_originalCaster : m_caster->ToUnit(),
+        m_spellInfo, m_fromClient, m_spellSchoolMask, param1);
+}
+
+SpellCastResult Spell::CheckCasterAuras(Unit* unitCaster, SpellInfo const* spellInfo,
+    bool fromClient, SpellSchoolMask schoolMask, int32* param1)
+{
     if (!unitCaster)
         return SPELL_CAST_OK;
 
@@ -7019,13 +7058,13 @@ SpellCastResult Spell::CheckCasterAuras(int32* param1) const
     // still they need to be checked against certain mechanics
 
     // SPELL_ATTR5_USABLE_WHILE_STUNNED by default only MECHANIC_STUN (ie no sleep, knockout, freeze, etc.)
-    bool usableWhileStunned = m_spellInfo->HasAttribute(SPELL_ATTR5_ALLOW_WHILE_STUNNED);
+    bool usableWhileStunned = spellInfo->HasAttribute(SPELL_ATTR5_ALLOW_WHILE_STUNNED);
 
     // SPELL_ATTR5_USABLE_WHILE_FEARED by default only fear (ie no horror)
-    bool usableWhileFeared = m_spellInfo->HasAttribute(SPELL_ATTR5_ALLOW_WHILE_FLEEING);
+    bool usableWhileFeared = spellInfo->HasAttribute(SPELL_ATTR5_ALLOW_WHILE_FLEEING);
 
     // SPELL_ATTR5_USABLE_WHILE_CONFUSED by default only disorient (ie no polymorph)
-    bool usableWhileConfused = m_spellInfo->HasAttribute(SPELL_ATTR5_ALLOW_WHILE_CONFUSED);
+    bool usableWhileConfused = spellInfo->HasAttribute(SPELL_ATTR5_ALLOW_WHILE_CONFUSED);
 
     // Check whether the cast should be prevented by any state you might have.
     SpellCastResult result = SPELL_CAST_OK;
@@ -7033,7 +7072,15 @@ SpellCastResult Spell::CheckCasterAuras(int32* param1) const
     // Get unit state
     uint32 const unitflag = unitCaster->m_unitData->Flags;
 
-    if (m_fromClient && unitCaster->IsCharmed() && unitCaster->IsPlayer() && !CheckSpellCancelsCharm(param1))
+    auto cancelsAuras = [&](std::initializer_list<AuraType> types)
+    {
+        for (AuraType type : types)
+            if (!CheckSpellCancelsAuraEffect(unitCaster, spellInfo, type, param1))
+                return false;
+        return true;
+    };
+
+    if (fromClient && unitCaster->IsCharmed() && unitCaster->IsPlayer() && !cancelsAuras({ SPELL_AURA_MOD_CHARM, SPELL_AURA_AOE_CHARM, SPELL_AURA_MOD_POSSESS }))
         result = SPELL_FAILED_CHARMED;
 
     // spell has attribute usable while having a cc state, check if caster has allowed mechanic auras, another mechanic types must prevent cast spell
@@ -7044,7 +7091,7 @@ SpellCastResult Spell::CheckCasterAuras(int32* param1) const
         for (AuraEffect const* aurEff : auras)
         {
             uint64 const mechanicMask = aurEff->GetSpellInfo()->GetAllEffectsMechanicMask();
-            if (mechanicMask && !(mechanicMask & GetSpellInfo()->GetAllowedMechanicMask()))
+            if (mechanicMask && !(mechanicMask & spellInfo->GetAllowedMechanicMask()))
             {
                 foundNotMechanic = true;
 
@@ -7080,7 +7127,7 @@ SpellCastResult Spell::CheckCasterAuras(int32* param1) const
         return SPELL_CAST_OK;
     };
 
-    if (unitflag & UNIT_FLAG_STUNNED)
+    if (result == SPELL_CAST_OK && (unitflag & UNIT_FLAG_STUNNED))
     {
         if (usableWhileStunned)
         {
@@ -7094,14 +7141,15 @@ SpellCastResult Spell::CheckCasterAuras(int32* param1) const
                     result = mechanicResult;
             }
         }
-        else if (!CheckSpellCancelsStun(param1))
+        else if (!cancelsAuras({ SPELL_AURA_MOD_STUN, SPELL_AURA_MOD_STUN_DISABLE_GRAVITY }))
             result = SPELL_FAILED_STUNNED;
     }
-    else if (unitCaster->IsSilenced(m_spellSchoolMask) && m_spellInfo->PreventionType & SPELL_PREVENTION_TYPE_SILENCE && !CheckSpellCancelsSilence(param1))
+    if (result == SPELL_CAST_OK && unitCaster->IsSilenced(schoolMask) && spellInfo->PreventionType & SPELL_PREVENTION_TYPE_SILENCE && !cancelsAuras({ SPELL_AURA_MOD_SILENCE, SPELL_AURA_MOD_PACIFY_SILENCE }))
         result = SPELL_FAILED_SILENCED;
-    else if (unitflag & UNIT_FLAG_PACIFIED && m_spellInfo->PreventionType & SPELL_PREVENTION_TYPE_PACIFY && !CheckSpellCancelsPacify(param1))
+    if (result == SPELL_CAST_OK && (unitflag & UNIT_FLAG_PACIFIED) && spellInfo->PreventionType & SPELL_PREVENTION_TYPE_PACIFY && !cancelsAuras({ SPELL_AURA_MOD_PACIFY, SPELL_AURA_MOD_PACIFY_SILENCE }))
         result = SPELL_FAILED_PACIFIED;
-    else if (unitflag & UNIT_FLAG_FLEEING)
+    // A stun can suppress the movement flag without removing the other control aura.
+    if (result == SPELL_CAST_OK && ((unitflag & UNIT_FLAG_FLEEING) || unitCaster->HasUnitState(UNIT_STATE_FLEEING)))
     {
         if (usableWhileFeared)
         {
@@ -7109,10 +7157,10 @@ SpellCastResult Spell::CheckCasterAuras(int32* param1) const
             if (mechanicResult != SPELL_CAST_OK)
                 result = mechanicResult;
         }
-        else if (!CheckSpellCancelsFear(param1))
+        else if (!cancelsAuras({ SPELL_AURA_MOD_FEAR }))
             result = SPELL_FAILED_FLEEING;
     }
-    else if (unitflag & UNIT_FLAG_CONFUSED)
+    if (result == SPELL_CAST_OK && ((unitflag & UNIT_FLAG_CONFUSED) || unitCaster->HasUnitState(UNIT_STATE_CONFUSED)))
     {
         if (usableWhileConfused)
         {
@@ -7120,10 +7168,10 @@ SpellCastResult Spell::CheckCasterAuras(int32* param1) const
             if (mechanicResult != SPELL_CAST_OK)
                 result = mechanicResult;
         }
-        else if (!CheckSpellCancelsConfuse(param1))
+        else if (!cancelsAuras({ SPELL_AURA_MOD_CONFUSE }))
             result = SPELL_FAILED_CONFUSED;
     }
-    else if (unitCaster->HasUnitFlag2(UNIT_FLAG2_NO_ACTIONS) && m_spellInfo->PreventionType & SPELL_PREVENTION_TYPE_NO_ACTIONS && !CheckSpellCancelsNoActions(param1))
+    if (result == SPELL_CAST_OK && unitCaster->HasUnitFlag2(UNIT_FLAG2_NO_ACTIONS) && spellInfo->PreventionType & SPELL_PREVENTION_TYPE_NO_ACTIONS && !cancelsAuras({ SPELL_AURA_MOD_NO_ACTIONS }))
         result = SPELL_FAILED_NO_ACTIONS;
 
     // Attr must make flag drop spell totally immune from all effects
@@ -7135,7 +7183,12 @@ SpellCastResult Spell::CheckCasterAuras(int32* param1) const
 
 bool Spell::CheckSpellCancelsAuraEffect(AuraType auraType, int32* param1) const
 {
-    Unit* unitCaster = (m_originalCaster ? m_originalCaster : m_caster->ToUnit());
+    return CheckSpellCancelsAuraEffect(m_originalCaster ? m_originalCaster : m_caster->ToUnit(),
+        m_spellInfo, auraType, param1);
+}
+
+bool Spell::CheckSpellCancelsAuraEffect(Unit* unitCaster, SpellInfo const* spellInfo, AuraType auraType, int32* param1)
+{
     if (!unitCaster)
         return false;
 
@@ -7146,7 +7199,7 @@ bool Spell::CheckSpellCancelsAuraEffect(AuraType auraType, int32* param1) const
 
     for (AuraEffect const* aurEff : auraEffects)
     {
-        if (m_spellInfo->SpellCancelsAuraEffect(aurEff))
+        if (spellInfo->SpellCancelsAuraEffect(aurEff))
             continue;
 
         if (param1)

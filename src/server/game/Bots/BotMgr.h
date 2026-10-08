@@ -303,6 +303,7 @@ private:
         uint64 Session = 0;
         std::unordered_map<std::string, uint32> Counts;            // events let through per key this session
         std::unordered_map<std::string, LogRepeat> Pending;        // suppressed since the last flush row
+        uint32 SuppressedLogin = 0;                                // suppressed rows this session, reported as login_total
     };
     std::unordered_map<uint64, BotLogState> _botLogState;
     uint32 _repeatCap = 3;                                          // Bot.Log.RepeatCap, 0 = no cap

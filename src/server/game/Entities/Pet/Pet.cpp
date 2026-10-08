@@ -16,6 +16,7 @@
  */
 
 #include "Pet.h"
+#include "PetScaling.h"
 #include "CharmInfo.h"
 #include "Common.h"
 #include "DatabaseEnv.h"
@@ -25,6 +26,7 @@
 #include "Log.h"
 #include "Map.h"
 #include "ObjectMgr.h"
+#include "PetFollowPosition.h"
 #include "PetPackets.h"
 #include "PhasingHandler.h"
 #include "Player.h"
@@ -1864,21 +1866,16 @@ Player* Pet::GetOwner() const
     return Minion::GetOwner()->ToPlayer();
 }
 
+float Pet::GetFollowAngle() const
+{
+    return PetFollowPosition::FollowAngle(getPetType(), Guardian::GetFollowAngle());
+}
+
 float Pet::GetNativeObjectScale() const
 {
     CreatureFamilyEntry const* creatureFamily = sCreatureFamilyStore.LookupEntry(GetCreatureTemplate()->family);
     if (creatureFamily && creatureFamily->MinScale > 0.0f && getPetType() == HUNTER_PET)
-    {
-        float scale;
-        if (GetLevel() >= creatureFamily->MaxScaleLevel)
-            scale = creatureFamily->MaxScale;
-        else if (GetLevel() <= creatureFamily->MinScaleLevel)
-            scale = creatureFamily->MinScale;
-        else
-            scale = creatureFamily->MinScale + float(GetLevel() - creatureFamily->MinScaleLevel) / creatureFamily->MaxScaleLevel * (creatureFamily->MaxScale - creatureFamily->MinScale);
-
-        return scale;
-    }
+        return PetScaling::FamilyScale(*creatureFamily, GetLevel());
 
     return Guardian::GetNativeObjectScale();
 }

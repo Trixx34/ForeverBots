@@ -62,6 +62,7 @@
 #include "OutdoorPvPMgr.h"
 #include "PathGenerator.h"
 #include "Pet.h"
+#include "PetFollowPosition.h"
 #include "PhasingHandler.h"
 #include "Player.h"
 #include "QuestMgr.h"
@@ -2696,7 +2697,8 @@ void Spell::EffectSummonPet()
             //OldSummon->GetMap()->Remove(OldSummon->ToCreature(), false);
 
             float px, py, pz;
-            owner->GetClosePoint(px, py, pz, OldSummon->GetCombatReach());
+            auto offset = PetFollowPosition::RecallOffset(OldSummon->getPetType(), OldSummon->GetFollowAngle());
+            owner->GetClosePoint(px, py, pz, OldSummon->GetCombatReach(), offset.Distance, offset.Angle);
 
             OldSummon->NearTeleportTo(px, py, pz, OldSummon->GetOrientation());
             //OldSummon->Relocate(px, py, pz, OldSummon->GetOrientation());

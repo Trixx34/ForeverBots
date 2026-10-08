@@ -43,6 +43,10 @@ namespace BotQuest
     TC_GAME_API void OnLogout(BotAI* ai);
     // BotAI::OnDying: remembers where a bot died, so the improved loot task (Bot.AI.Loot.Improved.*) keeps away from that area for a while.
     TC_GAME_API void NoteDeath(Player* bot);
+    // True while the bot has nothing to quest for and grinds mobs instead (the travel module reads it as "this zone is done").
+    TC_GAME_API bool IsGrinding(BotAI* ai);
+    // Position of the nearest quest hub in a zone of the bot's map that has quests for the bot's level; false when there is none.
+    TC_GAME_API bool FindHubInZone(Player* bot, uint32 zoneId, float& x, float& y, float& z);
 }
 
 #endif
