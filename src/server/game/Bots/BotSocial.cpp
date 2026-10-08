@@ -18,6 +18,7 @@
 #include "BotSocial.h"
 #include "BotAI.h"
 #include "BotMgr.h"
+#include "BotTradeLink.h"
 #include "Config.h"
 #include "Group.h"
 #include "Log.h"
@@ -164,9 +165,11 @@ void OnTradeInitiated(Player* initiator, Player* bot)
 
     if (!sConfigMgr->GetBoolDefault("Bot.Trade.Enabled", true))
         return RefuseTrade(initiator, bot, "TRADE_REFUSED_DISABLED", "bot trading is disabled");
-    if (!bot->GetSession()->IsAltBot())
+    // world bots of the player's own group may trade when item trading by whisper is on (BotTradeLink)
+    bool const linkTrade = BotTradeLink::Enabled() && bot->GetGroup() && bot->GetGroup() == initiator->GetGroup();
+    if (!bot->GetSession()->IsAltBot() && !linkTrade)
         return RefuseTrade(initiator, bot, "TRADE_REFUSED_WORLD_BOT", "world bots do not trade");
-    if (!IsOwner(initiator, bot))
+    if (bot->GetSession()->IsAltBot() && !IsOwner(initiator, bot))
         return RefuseTrade(initiator, bot, "TRADE_REFUSED_NOT_OWNER", "not the owner account of this alt");
     if (bot->IsInCombat())
         return RefuseTrade(initiator, bot, "TRADE_REFUSED_BUSY", "bot is in combat");
@@ -175,6 +178,7 @@ void OnTradeInitiated(Player* initiator, Player* bot)
     WorldPackets::Trade::BeginTrade begin{WorldPacket(CMSG_BEGIN_TRADE)};
     bot->GetSession()->HandleBeginTradeOpcode(begin);
     OpenTrades.push_back({ bot->GetGUID(), TradeTimeoutMs() });
+    BotTradeLink::OnTradeOpened(initiator, bot);
 }
 
 void OnTradePlayerAccepted(Player* player, Player* bot)
@@ -186,9 +190,10 @@ void OnTradePlayerAccepted(Player* player, Player* bot)
     if (!mine || !theirs)
         return;
 
-    uint32 n = 0;
+    uint32 n = 0, nMine = 0;
     Offer(theirs, n);
-    if (!n && !theirs->GetMoney())
+    Offer(mine, nMine);   // items the bot put in itself (BotTradeLink)
+    if (!n && !nMine && !theirs->GetMoney())
         return RefuseTrade(player, bot, "TRADE_REFUSED_EMPTY", "empty offer");
 
     // The bot accepts with the state index of the player's side (what a client echoes back); on success the core completes the trade

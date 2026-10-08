@@ -1061,6 +1061,8 @@ private:
                 continue;
             if (mob->GetGUID() == ctx->Ignored && now < ctx->IgnoredUntilMs)
                 continue;
+            if (ai->IsPassive() && mob->GetVictim() != bot)
+                continue;   // `passive` (Bot.Chat.Orders.*): only self defense
             cands.push_back({ mob, Assess(bot, mob), bot->GetDistance(mob) });
             if (cands.size() >= 12)
                 break;
@@ -1573,6 +1575,30 @@ int32 BotCombatFleeMode(Player const* bot)
 uint32 BotCombatPrePullManaPct()
 {
     return Cfg().PrePullManaPct;
+}
+
+char const* BotCombatHealUnit(Player* bot, Unit* target)
+{
+    if (!bot || !target || !target->IsAlive())
+        return "CAST_FAILED";
+    BotCombatCtx probe(nullptr);
+    probe.Resolve(bot);
+    Resolved const* heal = probe.Find(Kind::Heal);
+    if (!heal)
+        return "NO_HEAL_SPELL";
+    if (CastingNow(bot) || bot->isMoving())
+        return "BUSY";
+    if (!Ready(bot, *heal))
+        return "COOLDOWN";
+    if (!Affordable(bot, heal->Info))
+        return "NO_POWER";
+    if (bot->GetDistance(target) > heal->MaxRange)
+        return "OUT_OF_RANGE";
+    if (!bot->IsWithinLOSInMap(target))
+        return "NO_LOS";
+    if (target != bot && !bot->HasInArc(float(M_PI), target))
+        bot->SetInFront(target);
+    return bot->CastSpell(target, heal->Id, CastSpellExtraArgs(TRIGGERED_NONE)) == SPELL_CAST_OK ? "OK" : "CAST_FAILED";
 }
 
 std::vector<std::string> BotCombatDescribeSpells(Player* bot)
