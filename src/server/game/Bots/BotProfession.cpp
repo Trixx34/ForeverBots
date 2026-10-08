@@ -17,6 +17,7 @@
 
 #include "BotProfession.h"
 #include <algorithm>
+#include <cmath>
 
 namespace BotProfession
 {
@@ -29,6 +30,7 @@ std::vector<Info> const& All()
         { SKILL_MINING,    "Mining",     true,  5 },
         { SKILL_HERBALISM, "Herbalism",  true,  5 },
         { SKILL_SKINNING,  "Skinning",   true,  5 },
+        { SKILL_FISHING,   "Fishing",    true,  5 },
     };
     return table;
 }
@@ -45,7 +47,7 @@ std::vector<uint32> Plan(uint64 seed)
 {
     static uint32 const pairs[3][2] = { { SKILL_MINING, SKILL_SKINNING }, { SKILL_HERBALISM, SKILL_SKINNING }, { SKILL_MINING, SKILL_HERBALISM } };
     auto const& p = pairs[seed % 3];
-    return { SKILL_FIRST_AID, SKILL_COOKING, p[0], p[1] };
+    return { SKILL_FIRST_AID, SKILL_COOKING, p[0], p[1], SKILL_FISHING };
 }
 
 uint32 NextToLearn(std::vector<uint32> const& plan, std::vector<uint32> const& known, uint8 level)
@@ -59,6 +61,36 @@ uint32 NextToLearn(std::vector<uint32> const& plan, std::vector<uint32> const& k
             return skill;
     }
     return 0;
+}
+
+uint32 FishingSpell(bool (*hasSpell)(void*, uint32), void* ctx)
+{
+    for (uint32 spell : { 18248u, 7732u, 7731u, 7620u })
+        if (hasSpell(ctx, spell))
+            return spell;
+    return 0;
+}
+
+bool FindShore(float x, float y, bool (*isWater)(void*, float, float), bool (*isLand)(void*, float, float), void* ctx, Shore& out)
+{
+    constexpr int DIRS = 16;
+    constexpr float PI2 = 6.2831853f;
+    for (float standDist = 0.0f; standDist <= 24.0f; standDist += 4.0f)
+        for (int i = 0; i < DIRS; ++i)
+        {
+            float const a = PI2 * float(i) / DIRS;
+            float const dx = std::cos(a), dy = std::sin(a);
+            float const sx = x + dx * standDist, sy = y + dy * standDist;
+            if (!isLand(ctx, sx, sy))
+                continue;
+            for (float w = 4.0f; w <= 10.0f; w += 3.0f)
+                if (isWater(ctx, sx + dx * w, sy + dy * w))
+                {
+                    out = { sx, sy, sx + dx * w, sy + dy * w };
+                    return true;
+                }
+        }
+    return false;
 }
 
 int PickRecipe(int32 skillValue, std::vector<Recipe> const& craftable)

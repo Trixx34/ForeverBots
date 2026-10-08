@@ -27,7 +27,8 @@ TEST_CASE("BotProfession plan covers first aid, cooking and two distinct gatheri
     for (uint64 seed = 0; seed < 9; ++seed)
     {
         std::vector<uint32> plan = Plan(seed);
-        REQUIRE(plan.size() == 4);
+        REQUIRE(plan.size() == 5);
+        CHECK(plan[4] == SKILL_FISHING);
         CHECK(plan[0] == SKILL_FIRST_AID);
         CHECK(plan[1] == SKILL_COOKING);
         CHECK(plan[2] != plan[3]);
@@ -81,4 +82,33 @@ TEST_CASE("BotProfession recipe pick prefers certain skill-ups and skips grey", 
     CHECK(PickRecipe(45, r) == 1);    // recipe 2 certain beats recipe 1 chance
     CHECK(PickRecipe(130, r) == -1);  // everything grey
     CHECK(PickRecipe(5, {}) == -1);
+}
+
+namespace
+{
+struct Lake { float X0, X1, Y0, Y1; };   // axis aligned pond, everything else is land
+bool InLake(void* c, float x, float y) { Lake const& l = *static_cast<Lake*>(c); return x >= l.X0 && x <= l.X1 && y >= l.Y0 && y <= l.Y1; }
+bool OnLand(void* c, float x, float y) { return !InLake(c, x, y); }
+bool Knows(void* c, uint32 spell) { return *static_cast<uint32*>(c) == spell; }
+}
+
+TEST_CASE("BotProfession finds a shore next to water", "[BotProfession]")
+{
+    Lake lake{ 10.0f, 30.0f, -10.0f, 10.0f };
+    Shore s;
+    CHECK(FindShore(0.0f, 0.0f, InLake, OnLand, &lake, s));
+    CHECK(OnLand(&lake, s.StandX, s.StandY));
+    CHECK(InLake(&lake, s.WaterX, s.WaterY));
+    Lake far{ 500.0f, 520.0f, 500.0f, 520.0f };
+    CHECK_FALSE(FindShore(0.0f, 0.0f, InLake, OnLand, &far, s));
+}
+
+TEST_CASE("BotProfession picks the best known fishing rank", "[BotProfession]")
+{
+    uint32 known = 7731;
+    CHECK(FishingSpell(Knows, &known) == 7731);
+    known = 18248;
+    CHECK(FishingSpell(Knows, &known) == 18248);
+    known = 1;
+    CHECK(FishingSpell(Knows, &known) == 0);
 }

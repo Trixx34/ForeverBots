@@ -33,6 +33,7 @@ namespace BotProfession
         SKILL_HERBALISM = 182,
         SKILL_COOKING = 185,
         SKILL_MINING = 186,
+        SKILL_FISHING = 356,
         SKILL_SKINNING = 393
     };
 
@@ -48,7 +49,7 @@ namespace BotProfession
     TC_GAME_API Info const* Find(uint32 skill);
 
     // The professions a bot wants, in the order it learns them. Deterministic per bot (seed = guid counter): first aid and cooking
-    // for everyone, and two of the three gathering skills (mining+skinning, herbalism+skinning, mining+herbalism).
+    // for everyone, and two of the three gathering skills (mining+skinning, herbalism+skinning, mining+herbalism), then fishing.
     TC_GAME_API std::vector<uint32> Plan(uint64 seed);
 
     // First planned skill the bot does not have yet and may go to a trainer for at this level; 0 when there is none.
@@ -64,6 +65,18 @@ namespace BotProfession
     // Best craftable recipe for a skill-up at this skill value: certain skill-ups first, then chance-based ones, lowest grey
     // threshold first (cheapest materials usually); recipes already grey are skipped. Returns the index, -1 when none.
     TC_GAME_API int PickRecipe(int32 skillValue, std::vector<Recipe> const& craftable);
+
+    // Fishing: the highest fishing spell the bot knows, 0 when it has none. Spell ids are the four ranks of "Fishing" (classic).
+    TC_GAME_API uint32 FishingSpell(bool (*hasSpell)(void*, uint32), void* ctx);
+
+    struct Shore
+    {
+        float StandX = 0, StandY = 0, WaterX = 0, WaterY = 0;
+    };
+
+    // Looks for a place to fish: rings of probe points around (x, y); `isWater` says whether a point is open water, `isLand` whether it can be
+    // walked on. A shore is a land point with water 4..10 yd further out in the same direction. Nearest first; false when none.
+    TC_GAME_API bool FindShore(float x, float y, bool (*isWater)(void*, float, float), bool (*isLand)(void*, float, float), void* ctx, Shore& out);
 
     // Skinning skill needed to skin a creature of this level (core formula, EffectSkinning): lets the bot skip corpses it cannot skin yet.
     TC_GAME_API uint32 SkinReqSkill(uint32 creatureLevel);

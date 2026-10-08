@@ -742,6 +742,7 @@ struct Task
     uint8 Svc = 0;                 // Service task: 1 = train, 2 = vendor visit
     float SvcX = 0, SvcY = 0, SvcZ = 0;
     uint32 SvcTrainerId = 0;
+    float FishWaterX = 0, FishWaterY = 0;   // Svc 4 (fish): where the bobber should land
     uint64 NodeSpawn = 0;     // Svc 3 (gather): spawn id of the node
     bool SvcRepair = false, SvcBags = false;
     // Loot task (quest item inside a chest game object)
@@ -1024,6 +1025,9 @@ public:
     std::unordered_map<uint64, uint8> Repeats;      // (quest, npc) -> reach failures (quarantine)
     std::unordered_map<uint32, uint32> SvcBlack;    // npc entry -> AI clock until
     std::unordered_map<uint64, uint32> GoIgnore;    // chest spawn id -> AI clock until (empty / unusable for this bot)
+    uint32 FishNextMs = 0;                 // next shore check
+    uint32 FishState = 0;                  // 0 walk, 1 cast, 2 wait for the bite
+    uint32 FishCasts = 0, FishCatches = 0, FishCastMs = 0;
     uint32 GatherNextMs = 0;               // next node check
     ObjectGuid GatherGuid;                 // node being opened
     uint32 GatherSinceMs = 0;
@@ -1338,10 +1342,12 @@ private:
                 c.TrainRetryMs = now + 300 * 1000;
             else if (c.T.Svc == 3)
                 c.GatherNextMs = now + 60 * 1000;
+            else if (c.T.Svc == 4)
+                c.FishNextMs = now + 300 * 1000;
             else
                 c.NextVendorMs = now + 300 * 1000;
             summary = StringFormat("{} ({})", summary, code);
-            code = c.T.Svc == 1 ? "TRAIN_UNREACHABLE" : c.T.Svc == 3 ? "GATHER_UNREACHABLE" : "VENDOR_UNREACHABLE";
+            code = c.T.Svc == 1 ? "TRAIN_UNREACHABLE" : c.T.Svc == 3 ? "GATHER_UNREACHABLE" : c.T.Svc == 4 ? "FISH_UNREACHABLE" : "VENDOR_UNREACHABLE";
         }
         Blocked(ai, bot, c, questId, code, std::move(summary), std::move(details), entry);
         if (questId && IsReachCode(code))
@@ -2392,6 +2398,147 @@ private:
         return false;
     }
 
+    // ----- fishing (E2): a shore close to the bot, a pole in the bags, then cast, wait for the bite, use the bobber -----
+    static bool FishHasSpell(void* ctx, uint32 spell) { return static_cast<Player*>(ctx)->HasSpell(spell); }
+    struct FishProbe { Player* Bot; };
+    static bool FishWater(void* ctx, float x, float y)
+    {
+        Player* bot = static_cast<FishProbe*>(ctx)->Bot;
+        Map* map = bot->GetMap();
+        float const z = map->GetHeight(bot->GetPhaseShift(), x, y, bot->GetPositionZ() + 4.0f);
+        if (z <= INVALID_HEIGHT)
+            return false;
+        LiquidData ld;
+        ZLiquidStatus const st = map->GetLiquidStatus(bot->GetPhaseShift(), x, y, z, map_liquidHeaderTypeFlags::AllLiquids, &ld);
+        return (st & MAP_LIQUID_STATUS_SWIMMING) != 0 && ld.type_flags.HasFlag(map_liquidHeaderTypeFlags::Water);
+    }
+    static bool FishLand(void* ctx, float x, float y)
+    {
+        Player* bot = static_cast<FishProbe*>(ctx)->Bot;
+        Map* map = bot->GetMap();
+        float const z = map->GetHeight(bot->GetPhaseShift(), x, y, bot->GetPositionZ() + 4.0f);
+        if (z <= INVALID_HEIGHT || std::abs(z - bot->GetPositionZ()) > 5.0f)
+            return false;
+        return map->GetLiquidStatus(bot->GetPhaseShift(), x, y, z) == LIQUID_MAP_NO_WATER;
+    }
+
+    static Item* FindPole(Player* bot)
+    {
+        Item* pole = nullptr;
+        bot->ForEachItem(ItemSearchLocation::Everywhere, [&](Item* item)
+        {
+            ItemTemplate const* proto = item->GetTemplate();
+            if (proto && proto->IsWeapon() && proto->GetSubClass() == ITEM_SUBCLASS_WEAPON_FISHING_POLE && !item->IsBag())
+            {
+                pole = item;
+                return ItemSearchCallbackResult::Stop;
+            }
+            return ItemSearchCallbackResult::Continue;
+        });
+        return pole;
+    }
+
+    bool FishDue(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        c.FishNextMs = now + 60000;
+        if (bot->IsInCombat() || !bot->HasSkill(BotProfession::SKILL_FISHING) || bot->GetFreeInventorySlotCount() < 3 || !FindPole(bot))
+            return false;
+        if (!BotProfession::FishingSpell(FishHasSpell, bot))
+            return false;
+        FishProbe probe{ bot };
+        BotProfession::Shore shore;
+        if (!BotProfession::FindShore(bot->GetPositionX(), bot->GetPositionY(), FishWater, FishLand, &probe, shore))
+            return false;
+        SvcPt pt;
+        pt.Map = bot->GetMapId(); pt.X = shore.StandX; pt.Y = shore.StandY;
+        pt.Z = bot->GetMap()->GetHeight(bot->GetPhaseShift(), shore.StandX, shore.StandY, bot->GetPositionZ() + 4.0f);
+        pt.Entry = 0;
+        StartService(bot, c, now, 4, pt, false, false);
+        c.T.FishWaterX = shore.WaterX;
+        c.T.FishWaterY = shore.WaterY;
+        c.FishState = 0;
+        c.FishCasts = c.FishCatches = 0;
+        Decision(ai, bot, "FISH_TRIP", StringFormat("walking to a shore ({:.0f} yd) to fish", Dist2D(shore.StandX, shore.StandY, bot->GetPositionX(), bot->GetPositionY())), 0, 0,
+            StringFormat(R"({{"skill_value":{},"x":{:.0f},"y":{:.0f}}})", bot->GetSkillValue(BotProfession::SKILL_FISHING), shore.StandX, shore.StandY));
+        return true;
+    }
+
+    bool RunFish(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        Task& t = c.T;
+        if (bot->IsInCombat() || now - t.SinceMs > 3 * 60 * 1000 || c.FishCasts >= 8)
+        {
+            if (c.FishCasts)
+                Decision(ai, bot, "FISH_DONE", StringFormat("fished {} casts, {} catches", c.FishCasts, c.FishCatches), 0, 0,
+                    StringFormat(R"({{"casts":{},"catches":{},"skill_value":{}}})", c.FishCasts, c.FishCatches, bot->GetSkillValue(BotProfession::SKILL_FISHING)));
+            bot->InterruptNonMeleeSpells(false);
+            c.FishNextMs = now + 120000;
+            Finish(c, now);
+            return true;
+        }
+        if (c.FishState == 0)
+        {
+            if (Dist2D(t.SvcX, t.SvcY, bot->GetPositionX(), bot->GetPositionY()) > 1.5f)
+            {
+                Travel(ai, bot, c, now, t.SvcX, t.SvcY, t.SvcZ, 1.0f, 0);
+                return false;
+            }
+            StopMoving(ai, bot, c);
+            bot->SetFacingTo(bot->GetAbsoluteAngle(t.FishWaterX, t.FishWaterY));
+            Item* pole = FindPole(bot);
+            if (!pole)
+            {
+                Drop(ai, bot, c, now, 0, "NO_POLE", "fishing pole is gone", std::string(), 0, 0);
+                return true;
+            }
+            if (!pole->IsEquipped())
+            {
+                uint16 dest = 0;
+                if (bot->CanEquipItem(EQUIPMENT_SLOT_MAINHAND, dest, pole, true) != EQUIP_ERR_OK)
+                {
+                    Drop(ai, bot, c, now, 0, "POLE_NOT_EQUIPPABLE", "cannot wield the fishing pole", std::string(), 0, 0);
+                    return true;
+                }
+                bot->SwapItem(pole->GetPos(), dest);
+                return false;   // cast next tick
+            }
+            c.FishState = 1;
+        }
+        if (c.FishState == 1)
+        {
+            uint32 const spell = BotProfession::FishingSpell(FishHasSpell, bot);
+            if (!spell || bot->CastSpell(bot, spell, CastSpellExtraArgs(TRIGGERED_NONE)) != SPELL_CAST_OK)
+            {
+                Drop(ai, bot, c, now, 0, "FISH_CAST_FAILED", "could not cast fishing", std::string(), 0, 0);
+                return true;
+            }
+            ++c.FishCasts;
+            c.FishCastMs = now;
+            c.FishState = 2;
+            return false;
+        }
+        // waiting for the bite: the bobber is a game object the bot owns, it becomes ready when a fish bites
+        uint32 const spell = BotProfession::FishingSpell(FishHasSpell, bot);
+        GameObject* bobber = spell ? bot->GetGameObject(spell) : nullptr;
+        if (bobber && bobber->getLootState() == GO_READY)
+        {
+            bobber->Use(bot);
+            if (Loot* loot = bobber->GetLootForPlayer(bot))
+                if (!loot->isLooted())
+                {
+                    LootGameObject(bot, bobber);
+                    ++c.FishCatches;
+                }
+            c.FishState = 1;
+            return false;
+        }
+        if (!bobber && !bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) && now - c.FishCastMs > 2000)
+            c.FishState = 1;   // the channel ended without a catch (fish got away): cast again
+        else if (now - c.FishCastMs > 30000)
+            c.FishState = 1;
+        return false;
+    }
+
     // E2: first aid and cooking level up by crafting what the bot already knows from materials it already carries. One cast per call,
     // only while standing still and out of combat. A failed cast (no cooking fire nearby, missing tool) backs that skill off for 5 minutes.
     void CraftForSkill(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
@@ -2521,6 +2668,8 @@ private:
 
         if (level >= 5 && now >= c.GatherNextMs && GatherDue(ai, bot, c, now))
             return true;
+        if (level >= 5 && now >= c.FishNextMs && FishDue(ai, bot, c, now))
+            return true;
 
         if (now >= c.CraftNextMs)
         {
@@ -2641,6 +2790,8 @@ private:
         }
         if (t.Svc == 3)
             return RunGather(ai, bot, c, now);
+        if (t.Svc == 4)
+            return RunFish(ai, bot, c, now);
         Creature* npc = FindLiveNpc(bot, t.NpcEntry, 45.0f);
         if (npc && npc->IsAlive() && bot->IsWithinDistInMap(npc, 4.5f))
         {
@@ -2833,7 +2984,39 @@ private:
             }
         }
         BuyGearUpgrades(ai, bot, c, now, npc);
+        BuyFishingPole(ai, bot, c, npc);
         c.NextVendorMs = now + (bot->GetFreeInventorySlotCount() <= 1 ? 600 : 120) * 1000;
+    }
+
+    // E2: a bot that has the fishing skill but no pole buys the cheapest one on offer.
+    void BuyFishingPole(BotAI* ai, Player* bot, BotQuestCtx& c, Creature* npc)
+    {
+        if (!bot->HasSkill(BotProfession::SKILL_FISHING) || FindPole(bot))
+            return;
+        VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(npc->GetEntry());
+        if (!items || items->Empty())
+            return;
+        uint32 slot = 0, entry = 0, price = 0xFFFFFFFFu;
+        for (uint32 i = 0; i < items->GetItemCount(); ++i)
+        {
+            VendorItem const* vi = items->GetItem(i);
+            if (!vi || vi->ExtendedCost || vi->maxcount || vi->PlayerConditionId)
+                continue;
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(vi->item);
+            if (proto && proto->IsWeapon() && proto->GetSubClass() == ITEM_SUBCLASS_WEAPON_FISHING_POLE && proto->GetBuyPrice() && proto->GetBuyPrice() < price && bot->GetMoney() >= proto->GetBuyPrice())
+            {
+                slot = i; entry = vi->item; price = proto->GetBuyPrice();
+            }
+        }
+        if (!entry)
+            return;
+        uint64 const before = bot->GetMoney();
+        bot->BuyItemFromVendorSlot(npc->GetGUID(), slot, entry, 1, NULL_BAG, NULL_SLOT);
+        if (bot->GetMoney() < before)
+            Decision(ai, bot, "POLE_BOUGHT", StringFormat("bought fishing pole {} for {} copper", entry, before - bot->GetMoney()), 0, npc->GetEntry(),
+                StringFormat(R"({{"item":{},"price":{}}})", entry, before - bot->GetMoney()));
+        else
+            Blocked(ai, bot, c, 0, "POLE_BUY_FAILED", StringFormat("could not buy fishing pole {}", entry), std::string(), npc->GetEntry(), false);
     }
 
     // E2/gear: buys armor and weapons from this vendor that are a clear upgrade for the class and equips them. At most 3 per visit,
