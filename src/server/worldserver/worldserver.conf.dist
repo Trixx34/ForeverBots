@@ -5031,24 +5031,16 @@ Bot.Chat.Role.Dps = "rogue,mage,warlock,hunter"
 #        Default:     90
 #
 #    Bot.Trade.Link.Enabled
-#        Description: A party member who links items in party chat gets a trade from the bots of the group: for every linked
-#                     item the nearby bot carrying the most of it (tradable stacks only, never equipped, soulbound or quest
-#                     items) proposes a trade and puts the largest stack in the window. The player opens and confirms the
-#                     window, the bot accepts. Alt bots only trade with their owner account. Needs Bot.Trade.Enabled.
+#        Description: Trading items with the bots of your group by whisper. After a trade window opens, the bot whispers
+#                     the items it can give (tradable stacks of its bags: never equipped, soulbound or quest items) as
+#                     item links. Whisper it the links of the ones you want and it puts the largest stack of each in the
+#                     window; confirm and the bot accepts. World bots of your own group may trade this way too (otherwise
+#                     they refuse every trade); alt bots stay limited to their owner account. Needs Bot.Trade.Enabled.
 #        Default:     0 - Disabled
 #
-#    Bot.Trade.Link.MaxItems / Bot.Trade.Link.MaxTrades
-#        Description: Linked items read from one message (1-30) and trade windows opened for one message (1-10, six items
-#                     per window).
-#        Default:     12 / 3
-#
-#    Bot.Trade.Link.MaxYards
-#        Description: A bot farther than this from the player does not respond (1-10.6).
-#        Default:     10
-#
-#    Bot.Trade.Link.TimeoutSeconds
-#        Description: Seconds a proposed item trade may stay open before the bot cancels it (10-600).
-#        Default:     60
+#    Bot.Trade.Link.MaxListed
+#        Description: Items in the bot's whispered list (1-40); the best quality and the largest stacks come first.
+#        Default:     15
 #
 #    Bot.Social.QuestShare.LogEach
 #        Description: Log one quest_share bot_event per receiver of a bot's quest share. Off: one summary row per share
@@ -5063,10 +5055,7 @@ Bot.Invite.Enabled = 1
 Bot.Trade.Enabled = 1
 Bot.Trade.TimeoutSeconds = 90
 Bot.Trade.Link.Enabled = 0
-Bot.Trade.Link.MaxItems = 12
-Bot.Trade.Link.MaxTrades = 3
-Bot.Trade.Link.MaxYards = 10
-Bot.Trade.Link.TimeoutSeconds = 60
+Bot.Trade.Link.MaxListed = 15
 Bot.Social.QuestShare.LogEach = 0
 #
 ###################################################################################################

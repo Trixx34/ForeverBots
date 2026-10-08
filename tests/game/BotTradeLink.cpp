@@ -22,18 +22,6 @@
 
 using namespace BotTradeLink;
 
-namespace
-{
-BotStock Stock(uint64 bot, std::vector<Holding> items, bool inRange = true)
-{
-    BotStock s;
-    s.Bot = bot;
-    s.InRange = inRange;
-    s.Items = std::move(items);
-    return s;
-}
-}
-
 TEST_CASE("ParseItemLinks reads entries in order, once each", "[bot][tradelink]")
 {
     std::string const text = "need |cff1eff00|Hitem:2589:0:0:0:0:0:0:0:60|h[Linen Cloth]|h|r and |cffffffff|Hitem:2592:0|h[Wool Cloth]|h|r "
@@ -60,69 +48,53 @@ TEST_CASE("ParseItemLinks stops at the limit", "[bot][tradelink]")
     CHECK(ParseItemLinks(text, 3) == std::vector<uint32>{ 1, 2, 3 });
 }
 
-TEST_CASE("PlanTrades picks the bot with the most of an item", "[bot][tradelink]")
+TEST_CASE("SortForListing orders by quality, count, entry", "[bot][tradelink]")
 {
-    std::vector<BotStock> bots = { Stock(1, { { 100, 5 } }), Stock(2, { { 100, 20 } }), Stock(3, { { 100, 20 } }) };
-    std::vector<uint32> wanted = { 100 };
-    Plan p = PlanTrades(wanted, bots, 6, 3);
-    REQUIRE(p.Trades.size() == 1);
-    CHECK(p.Trades[0].Bot == 2);   // tie goes to the first bot
-    CHECK(p.Trades[0].Items == std::vector<uint32>{ 100 });
-    CHECK(p.Skipped.empty());
+    std::vector<Holding> h = { { 5, 10, 1 }, { 3, 2, 3 }, { 4, 10, 1 }, { 9, 50, 1 }, { 1, 2, 3 } };
+    SortForListing(h);
+    std::vector<uint32> order;
+    for (Holding const& x : h)
+        order.push_back(x.Entry);
+    CHECK(order == std::vector<uint32>{ 1, 3, 9, 4, 5 });
 }
 
-TEST_CASE("PlanTrades ignores bots out of range", "[bot][tradelink]")
+TEST_CASE("PackLines joins pieces up to the line length", "[bot][tradelink]")
 {
-    std::vector<BotStock> bots = { Stock(1, { { 100, 50 } }, false), Stock(2, { { 100, 1 } }) };
-    std::vector<uint32> wanted = { 100 };
-    Plan p = PlanTrades(wanted, bots, 6, 3);
-    REQUIRE(p.Trades.size() == 1);
-    CHECK(p.Trades[0].Bot == 2);
+    std::vector<std::string> pieces = { "aaaa", "bbbb", "cccc", "dddd" };
+    CHECK(PackLines(pieces, 100) == std::vector<std::string>{ "aaaa, bbbb, cccc, dddd" });
+    CHECK(PackLines(pieces, 10) == std::vector<std::string>{ "aaaa, bbbb", "cccc, dddd" });
+    CHECK(PackLines(pieces, 3) == std::vector<std::string>{ "aaaa", "bbbb", "cccc", "dddd" });   // oversized pieces stay whole
+    CHECK(PackLines({}, 10).empty());
 }
 
-TEST_CASE("PlanTrades groups items per bot and skips items nobody has", "[bot][tradelink]")
+TEST_CASE("PlanOffer adds held items in order", "[bot][tradelink]")
 {
-    std::vector<BotStock> bots = { Stock(1, { { 100, 3 }, { 300, 9 } }), Stock(2, { { 200, 4 } }) };
-    std::vector<uint32> wanted = { 100, 200, 999, 300 };
-    Plan p = PlanTrades(wanted, bots, 6, 3);
-    REQUIRE(p.Trades.size() == 2);
-    CHECK(p.Trades[0].Bot == 1);
-    CHECK(p.Trades[0].Items == std::vector<uint32>{ 100, 300 });
-    CHECK(p.Trades[1].Bot == 2);
-    REQUIRE(p.Skipped.size() == 1);
-    CHECK(p.Skipped[0].Entry == 999);
-    CHECK(p.Skipped[0].Why == Skip::NoneHave);
+    std::vector<Holding> held = { { 100, 5, 1 }, { 200, 1, 2 } };
+    std::vector<uint32> wanted = { 200, 100 };
+    OfferPlan p = PlanOffer(wanted, held, {}, 6);
+    CHECK(p.Add == std::vector<uint32>{ 200, 100 });
+    CHECK(p.Missing.empty());
+    CHECK(p.NoRoom.empty());
 }
 
-TEST_CASE("PlanTrades splits at the slot count and caps the trades", "[bot][tradelink]")
+TEST_CASE("PlanOffer reports missing items and skips ones already in the window", "[bot][tradelink]")
 {
-    std::vector<Holding> held;
-    std::vector<uint32> wanted;
-    for (uint32 i = 1; i <= 5; ++i)
-    {
-        held.push_back({ i, 1 });
-        wanted.push_back(i);
-    }
-    std::vector<BotStock> bots = { Stock(1, held) };
-
-    Plan p = PlanTrades(wanted, bots, 2, 3);
-    REQUIRE(p.Trades.size() == 3);
-    CHECK(p.Trades[0].Items == std::vector<uint32>{ 1, 2 });
-    CHECK(p.Trades[2].Items == std::vector<uint32>{ 5 });
-    CHECK(p.Skipped.empty());
-
-    p = PlanTrades(wanted, bots, 2, 2);
-    REQUIRE(p.Trades.size() == 2);
-    REQUIRE(p.Skipped.size() == 1);
-    CHECK(p.Skipped[0].Entry == 5);
-    CHECK(p.Skipped[0].Why == Skip::TooMany);
+    std::vector<Holding> held = { { 100, 5, 1 }, { 300, 0, 1 } };
+    std::vector<uint32> wanted = { 100, 999, 300, 100 };
+    std::vector<uint32> in = { 100 };
+    OfferPlan p = PlanOffer(wanted, held, in, 6);
+    CHECK(p.Add.empty());
+    CHECK(p.Missing == std::vector<uint32>{ 999, 300 });
 }
 
-TEST_CASE("PlanTrades with no bots plans nothing", "[bot][tradelink]")
+TEST_CASE("PlanOffer stops at the free slot count", "[bot][tradelink]")
 {
-    std::vector<uint32> wanted = { 1, 2 };
-    Plan p = PlanTrades(wanted, {}, 6, 3);
-    CHECK(p.Trades.empty());
-    CHECK(p.Skipped.size() == 2);
-    CHECK(PlanTrades({}, {}, 6, 3).Trades.empty());
+    std::vector<Holding> held = { { 1, 1, 1 }, { 2, 1, 1 }, { 3, 1, 1 } };
+    std::vector<uint32> wanted = { 1, 2, 3 };
+    OfferPlan p = PlanOffer(wanted, held, {}, 2);
+    CHECK(p.Add == std::vector<uint32>{ 1, 2 });
+    CHECK(p.NoRoom == std::vector<uint32>{ 3 });
+    p = PlanOffer(wanted, held, {}, 0);
+    CHECK(p.Add.empty());
+    CHECK(p.NoRoom.size() == 3);
 }

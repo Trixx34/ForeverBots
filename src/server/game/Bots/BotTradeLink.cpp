@@ -16,17 +16,11 @@
  */
 
 #include "BotTradeLink.h"
-#include "BotAI.h"
-#include "BotMgr.h"
-#include "Chat.h"
 #include "Config.h"
-#include "Group.h"
-#include "GroupReference.h"
 #include "Item.h"
-#include "ObjectAccessor.h"
-#include "ObjectDefines.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "SharedDefines.h"
 #include "StringFormat.h"
 #include "TradeData.h"
 #include "TradePackets.h"
@@ -46,9 +40,8 @@ std::vector<uint32> ParseItemLinks(std::string_view text, uint32 maxItems)
     {
         pos += tag.size();
         uint32 entry = 0;
-        char const* begin = text.data() + pos;
         char const* end = text.data() + text.size();
-        auto [ptr, ec] = std::from_chars(begin, end, entry);
+        auto [ptr, ec] = std::from_chars(text.data() + pos, end, entry);
         if (ec != std::errc() || !entry || ptr == end || (*ptr != ':' && *ptr != '|'))
             continue;
         if (std::find(out.begin(), out.end(), entry) == out.end())
@@ -57,104 +50,78 @@ std::vector<uint32> ParseItemLinks(std::string_view text, uint32 maxItems)
     return out;
 }
 
-Plan PlanTrades(std::span<uint32 const> wanted, std::span<BotStock const> bots, uint32 maxSlots, uint32 maxTrades)
+void SortForListing(std::vector<Holding>& holdings)
 {
-    Plan plan;
-    maxSlots = std::max<uint32>(maxSlots, 1);
+    std::sort(holdings.begin(), holdings.end(), [](Holding const& a, Holding const& b)
+    {
+        if (a.Quality != b.Quality)
+            return a.Quality > b.Quality;
+        if (a.Count != b.Count)
+            return a.Count > b.Count;
+        return a.Entry < b.Entry;
+    });
+}
 
-    std::vector<uint64> order;                       // bots in order of their first item
-    std::map<uint64, std::vector<uint32>> perBot;
+std::vector<std::string> PackLines(std::span<std::string const> pieces, size_t maxLen)
+{
+    std::vector<std::string> lines;
+    for (std::string const& p : pieces)
+    {
+        if (!lines.empty() && lines.back().size() + 2 + p.size() <= maxLen)
+            lines.back() += ", " + p;
+        else
+            lines.push_back(p);
+    }
+    return lines;
+}
+
+OfferPlan PlanOffer(std::span<uint32 const> wanted, std::span<Holding const> held, std::span<uint32 const> alreadyIn, uint32 freeSlots)
+{
+    OfferPlan plan;
     for (uint32 entry : wanted)
     {
-        BotStock const* best = nullptr;
-        uint32 bestCount = 0;
-        for (BotStock const& b : bots)
-        {
-            if (!b.InRange)
-                continue;
-            for (Holding const& h : b.Items)
-                if (h.Entry == entry && h.Count > bestCount)
-                {
-                    best = &b;
-                    bestCount = h.Count;
-                }
-        }
-        if (!best)
-        {
-            plan.Skipped.push_back({ entry, Skip::NoneHave });
+        if (std::find(alreadyIn.begin(), alreadyIn.end(), entry) != alreadyIn.end())
             continue;
-        }
-        if (perBot.find(best->Bot) == perBot.end())
-            order.push_back(best->Bot);
-        perBot[best->Bot].push_back(entry);
-    }
-
-    for (uint64 bot : order)
-    {
-        std::vector<uint32> const& items = perBot[bot];
-        for (size_t i = 0; i < items.size(); i += maxSlots)
-        {
-            size_t const n = std::min<size_t>(maxSlots, items.size() - i);
-            if (plan.Trades.size() >= maxTrades)
-            {
-                for (size_t k = 0; k < n; ++k)
-                    plan.Skipped.push_back({ items[i + k], Skip::TooMany });
-                continue;
-            }
-            plan.Trades.push_back({ bot, std::vector<uint32>(items.begin() + i, items.begin() + i + n) });
-        }
+        if (std::none_of(held.begin(), held.end(), [entry](Holding const& h) { return h.Entry == entry && h.Count > 0; }))
+            plan.Missing.push_back(entry);
+        else if (plan.Add.size() >= freeSlots)
+            plan.NoRoom.push_back(entry);
+        else
+            plan.Add.push_back(entry);
     }
     return plan;
 }
 
 namespace
 {
-struct Session
-{
-    std::vector<Trade> Queue;       // front = current
-    ObjectGuid ActiveBot;           // bot whose proposal is open (empty = none open)
-    uint32 LeftMs = 0;
-    bool Completed = false;         // the open trade went through
-};
-std::map<ObjectGuid, Session> Sessions;   // by requesting player
-
-bool Enabled()
-{
-    return sWorld->getBoolConfig(CONFIG_BOT_ENABLED) && sConfigMgr->GetBoolDefault("Bot.Trade.Link.Enabled", false);
-}
-
-uint32 TimeoutMs()
-{
-    return uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Trade.Link.TimeoutSeconds", 60), 10, 600)) * 1000;
-}
-
-void Log(Player* bot, bool accepted, char const* reason, std::string summary)
-{
-    BotAI* ai = bot && bot->GetSession() ? bot->GetSession()->GetBotAI() : nullptr;
-    if (!ai)
-        return;
-    BotEvent e = ai->MakeEvent(bot, "trade", accepted ? BOTLOG_INFO : BOTLOG_WARN, reason, std::move(summary));
-    e.Details = Trinity::StringFormat("{{\"outcome\":\"{}\"}}", accepted ? "accepted" : "refused");
-    sBotMgr->LogEvent(std::move(e));
-}
-
-// A bot may give to this player: alt bots only to their owner account (as for every alt bot trade), world bots to their group.
-bool MayTrade(Player* player, Player* bot)
-{
-    if (!bot->GetSession()->IsBot() || player->GetSession()->IsBot() || !bot->IsAlive() || bot->IsInCombat() || bot->GetTradeData())
-        return false;
-    if (bot->GetSession()->IsAltBot() && bot->GetSession()->GetAccountId() != player->GetSession()->GetAccountId())
-        return false;
-    return true;
-}
-
 bool Tradable(Item* item, Player* player)
 {
-    return item->CanBeTraded(false, true) && !item->IsBindedNotWith(player) && !item->GetTemplate()->HasFlag(ITEM_FLAG_HAS_LOOT)
-        && item->GetTemplate()->GetClass() != ITEM_CLASS_QUEST && !item->GetTemplate()->GetStartQuest();
+    ItemTemplate const* proto = item->GetTemplate();
+    return item->CanBeTraded(false, true) && !item->IsBindedNotWith(player) && !proto->HasFlag(ITEM_FLAG_HAS_LOOT)
+        && proto->GetClass() != ITEM_CLASS_QUEST && !proto->GetStartQuest();
 }
 
-// The largest tradable stack of `entry` the bot carries (equipped items are never given away).
+// Tradable stacks of the bot's bags (equipped items are never given away), summed per entry.
+std::vector<Holding> Holdings(Player* bot, Player* player)
+{
+    std::map<uint32, Holding> byEntry;
+    bot->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
+    {
+        if (Tradable(item, player))
+        {
+            Holding& h = byEntry[item->GetEntry()];
+            h.Entry = item->GetEntry();
+            h.Quality = item->GetTemplate()->GetQuality();
+            h.Count += item->GetCount();
+        }
+        return ItemSearchCallbackResult::Continue;
+    });
+    std::vector<Holding> out;
+    for (auto const& [entry, h] : byEntry)
+        out.push_back(h);
+    return out;
+}
+
 Item* BestStack(Player* bot, Player* player, uint32 entry)
 {
     Item* best = nullptr;
@@ -167,180 +134,112 @@ Item* BestStack(Player* bot, Player* player, uint32 entry)
     return best;
 }
 
-uint32 TradableCount(Player* bot, Player* player, uint32 entry)
+std::string Link(uint32 entry)
 {
-    uint32 n = 0;
-    bot->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
-    {
-        if (item->GetEntry() == entry && Tradable(item, player))
-            n += item->GetCount();
-        return ItemSearchCallbackResult::Continue;
-    });
-    return n;
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
+    if (!proto)
+        return std::to_string(entry);
+    uint32 const q = std::min<uint32>(proto->GetQuality(), MAX_ITEM_QUALITY - 1);
+    return Trinity::StringFormat("|c{:08x}|Hitem:{}:0:0:0:0:0:0:0:0:0|h[{}]|h|r", ItemQualityColors[q], entry, proto->GetName(LOCALE_enUS));
 }
 
-void Tell(Player* player, std::string const& line)
+void WhisperLines(Player* bot, Player* player, std::vector<std::string> const& lines)
 {
-    if (player->GetSession() && !player->GetSession()->IsBot())
-        ChatHandler(player->GetSession()).SendSysMessage(line);
+    for (std::string const& l : lines)
+        bot->Whisper(l, LANG_UNIVERSAL, player);
 }
 
-// Plans and queues the trades; separate from the chat hook so the scan runs once per message.
-void Request(Player* player, std::vector<uint32> const& wanted)
+// the bot is in an open trade with this player
+bool InTradeWith(Player* player, Player* bot)
 {
-    Group* group = player->GetGroup();
-    if (!group)
+    return bot->GetSession()->IsBot() && bot->GetTradeData() && bot->GetTradeData()->GetTrader() == player && player->GetTradeData();
+}
+}
+
+bool Enabled()
+{
+    return sWorld->getBoolConfig(CONFIG_BOT_ENABLED) && sConfigMgr->GetBoolDefault("Bot.Trade.Link.Enabled", false);
+}
+
+void OnTradeOpened(Player* player, Player* bot)
+{
+    if (!Enabled() || !InTradeWith(player, bot))
         return;
-    float const yards = std::clamp(sConfigMgr->GetFloatDefault("Bot.Trade.Link.MaxYards", 10.0f), 1.0f, TRADE_DISTANCE - 0.5f);
 
-    std::vector<BotStock> stock;
-    for (GroupReference const& ref : group->GetMembers())
+    std::vector<Holding> held = Holdings(bot, player);
+    if (held.empty())
     {
-        Player* bot = ref.GetSource();
-        if (!bot || bot == player || !MayTrade(player, bot))
-            continue;
-        BotStock s;
-        s.Bot = bot->GetGUID().GetCounter();
-        s.InRange = bot->IsWithinDistInMap(player, yards, false);
-        for (uint32 entry : wanted)
-            if (uint32 n = TradableCount(bot, player, entry))
-                s.Items.push_back({ entry, n });
-        stock.push_back(std::move(s));
+        WhisperLines(bot, player, { "I have nothing I can trade." });
+        return;
+    }
+    SortForListing(held);
+    uint32 const maxListed = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Trade.Link.MaxListed", 15), 1, 40));
+    size_t const total = held.size();
+    if (held.size() > maxListed)
+        held.resize(maxListed);
+
+    std::vector<std::string> pieces;
+    for (Holding const& h : held)
+        pieces.push_back(h.Count > 1 ? Trinity::StringFormat("{} x{}", Link(h.Entry), h.Count) : Link(h.Entry));
+    std::vector<std::string> lines = PackLines(pieces, 200);
+    lines.front() = "I can trade: " + lines.front();
+    if (total > held.size())
+        lines.push_back(Trinity::StringFormat("... and {} more. Whisper me the links of what you want.", total - held.size()));
+    else
+        lines.push_back("Whisper me the links of what you want.");
+    WhisperLines(bot, player, lines);
+}
+
+void OnWhisper(Player* player, Player* receiver, std::string_view text)
+{
+    if (!Enabled() || !receiver || player->GetSession()->IsBot() || text.find("|Hitem:") == std::string_view::npos || !InTradeWith(player, receiver))
+        return;
+    Player* bot = receiver;
+
+    TradeData* mine = bot->GetTradeData();
+    std::vector<uint32> inWindow;
+    uint8 firstFree = 0;
+    uint32 freeSlots = 0;
+    for (uint8 i = 0; i < TRADE_SLOT_TRADED_COUNT; ++i)
+    {
+        if (Item* item = mine->GetItem(TradeSlots(i)))
+            inWindow.push_back(item->GetEntry());
+        else if (!freeSlots++)
+            firstFree = i;
     }
 
-    uint32 const maxItems = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Trade.Link.MaxTrades", 3), 1, 10));
-    Plan plan = PlanTrades(wanted, stock, TRADE_SLOT_TRADED_COUNT, maxItems);
+    std::vector<uint32> const wanted = ParseItemLinks(text, TRADE_SLOT_TRADED_COUNT);
+    std::vector<Holding> const held = Holdings(bot, player);
+    OfferPlan plan = PlanOffer(wanted, held, inWindow, freeSlots);
 
-    for (SkippedItem const& s : plan.Skipped)
-    {
-        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(s.Entry);
-        Tell(player, Trinity::StringFormat("Bots: no item {}: {}", proto ? proto->GetName(LOCALE_enUS) : std::to_string(s.Entry),
-            s.Why == Skip::TooMany ? "too many trades for one request" : "no bot of your party near you carries it (tradable)"));
-    }
-    if (plan.Trades.empty())
-        return;
-    Session& session = Sessions[player->GetGUID()];
-    session.Queue = std::move(plan.Trades);
-    session.ActiveBot = ObjectGuid::Empty;
-    session.Completed = false;
-}
-
-// Opens the proposal of the front trade; false when it cannot be opened (the trade is dropped).
-bool StartFront(Player* player, Session& session)
-{
-    Trade const& t = session.Queue.front();
-    Player* bot = nullptr;
-    if (Group* group = player->GetGroup())
-        for (GroupReference const& ref : group->GetMembers())
-            if (ref.GetSource() && ref.GetSource()->GetGUID().GetCounter() == t.Bot)
-                bot = ref.GetSource();
-    if (!bot || player->GetTradeData() || !MayTrade(player, bot) || !bot->IsWithinDistInMap(player, TRADE_DISTANCE - 0.5f, false))
-        return false;
-
-    WorldPackets::Trade::InitiateTrade init{WorldPacket(CMSG_INITIATE_TRADE)};
-    init.Guid = player->GetGUID();
-    bot->GetSession()->HandleInitiateTradeOpcode(init);
-    if (!bot->GetTradeData())
-        return false;
-    session.ActiveBot = bot->GetGUID();
-    session.LeftMs = TimeoutMs();
-    session.Completed = false;
-    return true;
-}
-}
-
-void OnPartyChat(Player* issuer, std::string_view text)
-{
-    if (!Enabled() || !issuer || issuer->GetSession()->IsBot() || text.find("|Hitem:") == std::string_view::npos)
-        return;
-    std::vector<uint32> const wanted = ParseItemLinks(text, uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Trade.Link.MaxItems", 12), 1, 30)));
-    if (!wanted.empty())
-        Request(issuer, wanted);
-}
-
-void OnTradeBegun(Player* player, Player* bot)
-{
-    auto it = Sessions.find(player->GetGUID());
-    if (it == Sessions.end() || it->second.ActiveBot != bot->GetGUID() || it->second.Queue.empty() || !bot->GetTradeData())
-        return;
-
-    uint8 slot = 0;
-    for (uint32 entry : it->second.Queue.front().Items)
+    // free slots are not necessarily contiguous: walk the window again for each item
+    for (uint32 entry : plan.Add)
     {
         Item* item = BestStack(bot, player, entry);
+        uint8 slot = TRADE_SLOT_TRADED_COUNT;
+        for (uint8 i = firstFree; i < TRADE_SLOT_TRADED_COUNT; ++i)
+            if (!mine->GetItem(TradeSlots(i)))
+            {
+                slot = i;
+                break;
+            }
         if (!item || slot >= TRADE_SLOT_TRADED_COUNT)
+        {
+            plan.NoRoom.push_back(entry);
             continue;
+        }
         WorldPackets::Trade::SetTradeItem set{WorldPacket(CMSG_SET_TRADE_ITEM)};
-        set.TradeSlot = slot++;
+        set.TradeSlot = slot;
         set.PackSlot = item->GetBagSlot();
         set.ItemSlotInPack = item->GetSlot();
         bot->GetSession()->HandleSetTradeItemOpcode(set);
     }
-    if (!slot)
-        bot->TradeCancel(true, TRADE_STATUS_CANCELLED);
-}
 
-void OnTradeExecuting(Player* player, Player* bot)
-{
-    auto it = Sessions.find(player->GetGUID());
-    if (it != Sessions.end() && it->second.ActiveBot == bot->GetGUID())
-        it->second.Completed = true;
-}
-
-void Update(uint32 diff)
-{
-    for (auto it = Sessions.begin(); it != Sessions.end();)
-    {
-        Session& s = it->second;
-        Player* player = ObjectAccessor::FindPlayer(it->first);
-        if (!player || s.Queue.empty() || !Enabled())
-        {
-            it = Sessions.erase(it);
-            continue;
-        }
-
-        if (!s.ActiveBot.IsEmpty())
-        {
-            Player* bot = ObjectAccessor::FindPlayer(s.ActiveBot);
-            if (bot && bot->GetTradeData())
-            {
-                if (s.LeftMs > diff)
-                    s.LeftMs -= diff;
-                else
-                {
-                    Log(bot, false, "TRADE_LINK_TIMEOUT", Trinity::StringFormat("item trade with {} left open, cancelled", player->GetName()));
-                    bot->TradeCancel(true, TRADE_STATUS_CANCELLED);
-                    s.Queue.clear();
-                }
-                ++it;
-                continue;
-            }
-            // the window is gone: a completed trade moves on to the next one, a cancelled one ends the request
-            if (!s.Completed)
-                s.Queue.clear();
-            else
-                s.Queue.erase(s.Queue.begin());
-            s.ActiveBot = ObjectGuid::Empty;
-            if (s.Queue.empty())
-            {
-                it = Sessions.erase(it);
-                continue;
-            }
-        }
-
-        if (!StartFront(player, s))
-        {
-            Tell(player, "Bots: could not open the next item trade (bot too far away or busy).");
-            it = Sessions.erase(it);
-            continue;
-        }
-        ++it;
-    }
-}
-
-void OnPlayerLogout(uint64 guidCounter)
-{
-    for (auto it = Sessions.begin(); it != Sessions.end();)
-        it = it->first.GetCounter() == guidCounter ? Sessions.erase(it) : std::next(it);
+    std::vector<std::string> notes;
+    for (uint32 entry : plan.Missing)
+        notes.push_back(Trinity::StringFormat("I have no {} to give.", Link(entry)));
+    for (uint32 entry : plan.NoRoom)
+        notes.push_back(Trinity::StringFormat("No room left in the window for {}.", Link(entry)));
+    WhisperLines(bot, player, notes);
 }
 }

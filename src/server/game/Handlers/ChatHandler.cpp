@@ -346,6 +346,7 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
 
             GetPlayer()->Whisper(msg, lang, receiver);
             BotChat::Handle(GetPlayer(), BotChat::Channel::Whisper, msg, receiver);
+            BotTradeLink::OnWhisper(GetPlayer(), receiver, msg);
             break;
         }
         case CHAT_MSG_PARTY:
@@ -367,7 +368,6 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
             packet.Initialize(ChatMsg(type), lang, sender, nullptr, msg);
             group->BroadcastPacket(packet.Write(), false, group->GetMemberGroup(GetPlayer()->GetGUID()));
             BotChat::Handle(GetPlayer(), BotChat::Channel::Party, msg);
-            BotTradeLink::OnPartyChat(GetPlayer(), msg);
             break;
         }
         case CHAT_MSG_GUILD:

@@ -18,14 +18,15 @@
 #ifndef TRINITY_BOT_TRADE_LINK_H
 #define TRINITY_BOT_TRADE_LINK_H
 
-// Item links in party chat start trades with bots (Bot.Trade.Link.*, default off). A party member links one or more items; for every
-// linked item the bot of the group holding the most of it (tradable stacks only) opens a trade with that player and puts the item in
-// the window. The player confirms the trade and the bot accepts through BotSocial::OnTradePlayerAccepted as for any trade.
-// Pure parsing and planning here, the game side (group scan, trade packets, queue) in BotTradeLink.cpp.
+// Trading items with bots by whisper (Bot.Trade.Link.*, default off). The player opens a trade with a bot of their group; the bot
+// whispers the items it can give (tradable stacks only, as item links) and the player whispers back the links of the ones they
+// want. The bot puts each into the window. The player confirms, the bot accepts through BotSocial::OnTradePlayerAccepted.
+// Pure parsing and planning here, the game side (inventory scan, whispers, trade packets) in BotTradeLink.cpp.
 // See docs/playerbots/feature-bot-trade-links-20261008.md.
 
 #include "Define.h"
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -36,45 +37,31 @@ namespace BotTradeLink
     // Distinct item entries of the |Hitem:<entry>:...|h[name]|h links in `text`, in order of appearance, at most `maxItems`.
     TC_GAME_API std::vector<uint32> ParseItemLinks(std::string_view text, uint32 maxItems);
 
-    struct Holding { uint32 Entry = 0; uint32 Count = 0; };   // tradable items of that entry the bot carries
+    struct Holding { uint32 Entry = 0; uint32 Count = 0; uint32 Quality = 0; };   // tradable items of that entry the bot carries
 
-    struct BotStock
+    // Listing order: better quality first, then larger count, then lower entry.
+    TC_GAME_API void SortForListing(std::vector<Holding>& holdings);
+
+    // Packs the pieces into lines of at most `maxLen` characters, separated by ", ". A piece longer than maxLen gets a line of its own.
+    TC_GAME_API std::vector<std::string> PackLines(std::span<std::string const> pieces, size_t maxLen);
+
+    struct OfferPlan
     {
-        uint64 Bot = 0;                   // opaque id (guid counter)
-        bool InRange = true;              // close enough to open a trade window
-        std::vector<Holding> Items;
+        std::vector<uint32> Add;          // entries to put in the window, in order
+        std::vector<uint32> Missing;      // wanted but not held
+        std::vector<uint32> NoRoom;       // wanted but the window has no free slot left
     };
 
-    struct Trade { uint64 Bot = 0; std::vector<uint32> Items; };   // one trade window: the entries the bot puts in
+    // `alreadyIn` are the entries already in the bot's side of the window (ignored when wanted again).
+    TC_GAME_API OfferPlan PlanOffer(std::span<uint32 const> wanted, std::span<Holding const> held, std::span<uint32 const> alreadyIn, uint32 freeSlots);
 
-    enum class Skip : uint8 { NoneHave, TooMany };
-    struct SkippedItem { uint32 Entry = 0; Skip Why = Skip::NoneHave; };
+    TC_GAME_API bool Enabled();
 
-    struct Plan
-    {
-        std::vector<Trade> Trades;
-        std::vector<SkippedItem> Skipped;
-    };
+    // BotSocial::OnTradeInitiated, after the window opened towards `bot`: the bot whispers what it can give.
+    TC_GAME_API void OnTradeOpened(Player* player, Player* bot);
 
-    // Each linked item goes to the in-range bot with the highest count (ties: the first bot of the span). The items of one bot are
-    // grouped in the order they were linked and split into windows of at most `maxSlots` items; more than `maxTrades` windows in total
-    // drop the later ones (TooMany). Items nobody holds are skipped (NoneHave).
-    TC_GAME_API Plan PlanTrades(std::span<uint32 const> wanted, std::span<BotStock const> bots, uint32 maxSlots, uint32 maxTrades);
-
-    // ChatHandler.cpp, CHAT_MSG_PARTY: `issuer` said `text` in party chat. Queues trades when it contains item links. World thread.
-    TC_GAME_API void OnPartyChat(Player* issuer, std::string_view text);
-
-    // TradeHandler.cpp, HandleBeginTradeOpcode: `player` opened the window of a trade `bot` proposed; the bot puts its items in.
-    TC_GAME_API void OnTradeBegun(Player* player, Player* bot);
-
-    // BotSocial::OnTradeExecuting: the trade between `player` and `bot` is about to complete.
-    TC_GAME_API void OnTradeExecuting(Player* player, Player* bot);
-
-    // World thread, BotSocial::Update: starts the queued trades one at a time and drops the ones left open.
-    TC_GAME_API void Update(uint32 diff);
-
-    // A player logs out: forgets their queue.
-    TC_GAME_API void OnPlayerLogout(uint64 guidCounter);
+    // ChatHandler.cpp, CHAT_MSG_WHISPER: `player` whispered `text` to `receiver`; when that is a bot in a trade with them, linked items go into the window.
+    TC_GAME_API void OnWhisper(Player* player, Player* receiver, std::string_view text);
 }
 
 #endif

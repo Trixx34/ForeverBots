@@ -165,9 +165,11 @@ void OnTradeInitiated(Player* initiator, Player* bot)
 
     if (!sConfigMgr->GetBoolDefault("Bot.Trade.Enabled", true))
         return RefuseTrade(initiator, bot, "TRADE_REFUSED_DISABLED", "bot trading is disabled");
-    if (!bot->GetSession()->IsAltBot())
+    // world bots of the player's own group may trade when item trading by whisper is on (BotTradeLink)
+    bool const linkTrade = BotTradeLink::Enabled() && bot->GetGroup() && bot->GetGroup() == initiator->GetGroup();
+    if (!bot->GetSession()->IsAltBot() && !linkTrade)
         return RefuseTrade(initiator, bot, "TRADE_REFUSED_WORLD_BOT", "world bots do not trade");
-    if (!IsOwner(initiator, bot))
+    if (bot->GetSession()->IsAltBot() && !IsOwner(initiator, bot))
         return RefuseTrade(initiator, bot, "TRADE_REFUSED_NOT_OWNER", "not the owner account of this alt");
     if (bot->IsInCombat())
         return RefuseTrade(initiator, bot, "TRADE_REFUSED_BUSY", "bot is in combat");
@@ -176,6 +178,7 @@ void OnTradeInitiated(Player* initiator, Player* bot)
     WorldPackets::Trade::BeginTrade begin{WorldPacket(CMSG_BEGIN_TRADE)};
     bot->GetSession()->HandleBeginTradeOpcode(begin);
     OpenTrades.push_back({ bot->GetGUID(), TradeTimeoutMs() });
+    BotTradeLink::OnTradeOpened(initiator, bot);
 }
 
 void OnTradePlayerAccepted(Player* player, Player* bot)
@@ -221,7 +224,6 @@ void OnTradeExecuting(Player* player, Player* other)
         TradeData* theirs = partner->GetTradeData();
         if (!mine || !theirs)
             continue;
-        BotTradeLink::OnTradeExecuting(partner, bot);
         uint32 nOut = 0, nIn = 0;
         std::string const out = Offer(mine, nOut);
         std::string const in = Offer(theirs, nIn);
@@ -232,7 +234,6 @@ void OnTradeExecuting(Player* player, Player* other)
 
 void Update(uint32 diff)
 {
-    BotTradeLink::Update(diff);
     if (OpenTrades.empty())
         return;
     for (size_t i = 0; i < OpenTrades.size();)

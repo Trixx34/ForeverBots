@@ -33,7 +33,6 @@
 #include "TradePackets.h"
 #include "World.h"
 #include "BotSocial.h"
-#include "BotTradeLink.h"
 
 void WorldSession::SendTradeStatus(WorldPackets::Trade::TradeStatus& info)
 {
@@ -592,13 +591,8 @@ void WorldSession::HandleBeginTradeOpcode(WorldPackets::Trade::BeginTrade& /*beg
 
     WorldPackets::Trade::TradeStatus info;
     info.Status = TRADE_STATUS_INITIATED;
-    Player* trader = my_trade->GetTrader();
-    trader->GetSession()->SendTradeStatus(info);
+    my_trade->GetTrader()->GetSession()->SendTradeStatus(info);
     SendTradeStatus(info);
-
-    // the player opened the window of a trade a bot proposed (item links in party chat)
-    if (trader->GetSession()->IsBot())
-        BotTradeLink::OnTradeBegun(_player, trader);
 }
 
 void WorldSession::SendCancelTrade(TradeStatus status)

@@ -17,7 +17,6 @@
 
 #include "WorldSession.h"
 #include "BotChat.h"
-#include "BotTradeLink.h"
 #include "BotQuestLog.h"
 #include "Account.h"
 #include "AccountMgr.h"
@@ -601,7 +600,6 @@ void WorldSession::LogoutPlayer(bool save)
     if (_player)
     {
         BotChat::OnPlayerLogout(_player->GetGUID().GetCounter());
-        BotTradeLink::OnPlayerLogout(_player->GetGUID().GetCounter());
         if (!_player->GetLootGUID().IsEmpty())
             DoLootReleaseAll();
 
