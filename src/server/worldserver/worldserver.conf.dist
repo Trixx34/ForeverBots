@@ -4686,6 +4686,11 @@ Classic.GuildFinder = 0
 #                     Bot.AI.Rest.DrinkBelowPct applies).
 #        Default:     40
 #
+#    Bot.AI.Combat.FreeTotems
+#        Description: With Bot.AI.Rotation.Enabled a shaman that casts a totem (Stoneskin, Searing, Healing Stream) gets the totem tool
+#                     (Earth, Fire, Water Totem) for free when the bags lack it. Placeholder until the economy phase.
+#        Default:     1 - On
+#
 #    Bot.AI.Combat.FreeRepair
 #        Description: A bot with a broken (0 durability) equipped item repairs everything for free (REPAIR_FREE) so
 #                     weapon spells (Heroic Strike, Raptor Strike, Auto Shot) do not fail with EQUIPPED_ITEM_CLASS.
@@ -5112,6 +5117,7 @@ Bot.AI.Ammo.BuyTarget = 400
 Bot.AI.Ammo.CooldownSec = 300
 Bot.Talents.Premade.Enabled = 0
 Bot.AI.Rotation.DruidForms = 0
+Bot.AI.Combat.FreeTotems = 1
 Bot.AI.Dummy.Enabled = 0
 Bot.AI.Dummy.Entry = 9900001
 Bot.AI.Dummy.DefaultSec = 60
