@@ -4821,6 +4821,33 @@ Bot.AI.Death.CorpseRunMaxFails = 3
 #        Description: One decision row MOVE_METRICS per bot per window (turn rate, repeated legs, idle ratio, stuck count) / window length (10-3600).
 #        Default:     1 / 60
 #
+#    Bot.AI.Dungeon.Enabled
+#        Description: Dungeon groups of bots: composition (tank, healer, damage), readiness (rest, repair), pull choice, wipe
+#                     recovery and run timeouts. See docs/playerbots/feature-bot-dungeon-groups-20261008.md.
+#        Default:     0 - Off
+#
+#    Bot.AI.Dungeon.GroupSize / Bot.AI.Dungeon.Tanks / Bot.AI.Dungeon.Healers
+#        Description: Places in the group (2-5) / how many go to tanks (0-2) / to healers (0-2); the rest are damage dealers.
+#        Default:     5 / 1 / 1
+#
+#    Bot.AI.Dungeon.MaxLevelSpread / Bot.AI.Dungeon.MinLevel
+#        Description: Highest minus lowest level allowed in one group, anchored on the leader / lowest level that is called at all.
+#        Default:     4 / 15
+#
+#    Bot.AI.Dungeon.MinHealthPct / Bot.AI.Dungeon.MinManaPct / Bot.AI.Dungeon.MinHealerManaPct / Bot.AI.Dungeon.MinDurabilityPct
+#        Description: The group rests before a pull until everybody has this much health, mana (healers: their own value), and
+#                     goes to repair when somebody's durability is below the last value.
+#        Default:     85 / 70 / 85 / 20
+#
+#    Bot.AI.Dungeon.MaxMobsPerPull / Bot.AI.Dungeon.MaxLevelOverGroup / Bot.AI.Dungeon.SkipPatrols
+#        Description: Largest pack that is pulled (bosses excepted) / highest mob level above the group's average that is pulled /
+#                     wait for a patrol to leave instead of pulling it.
+#        Default:     4 / 2 / 1
+#
+#    Bot.AI.Dungeon.MaxWipes / Bot.AI.Dungeon.RunTimeoutMin
+#        Description: Wipes after which the run is given up / minutes after which a bot-led run is given up.
+#        Default:     3 / 90
+#
 #    Bot.AI.Loot.Improved.Enabled
 #        Description: Improved chest loot task of the quest strategy: spawn choice by path cost, skip far spawns and recently deadly areas,
 #                     per-bot spawn blacklist, bag-space check with a planned vendor trip, loot exits never feed the quest quarantine.
