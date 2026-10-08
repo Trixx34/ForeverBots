@@ -28,6 +28,7 @@
 #include "BotAI.h"
 #include "BotBehavior.h"
 #include "BotEngine.h"
+#include "BotGear.h"
 #include "BotMgr.h"
 #include "Config.h"
 #include "Creature.h"
@@ -945,6 +946,7 @@ public:
     std::unordered_map<uint64, uint8> Repeats;      // (quest, npc) -> reach failures (quarantine)
     std::unordered_map<uint32, uint32> SvcBlack;    // npc entry -> AI clock until
     std::unordered_map<uint64, uint32> GoIgnore;    // chest spawn id -> AI clock until (empty / unusable for this bot)
+    uint32 NextGearMs = 0;   // next bag sweep for gear upgrades
     uint8 NoTrainerLevel = 0, NoMoneyLevel = 0, BagNoMoneyLevel = 0, NoVendorLevel = 0;
     std::string LastNote;
 
@@ -2184,6 +2186,28 @@ private:
         c.LastWasGrind = false;
     }
 
+    // Equips at most one upgrade from the bags per call (the bag walk must not run while items move).
+    static void EquipBagUpgrade(BotAI* ai, Player* bot)
+    {
+        Item* best = nullptr;
+        double bestGain = 0.0;
+        bot->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
+        {
+            ItemTemplate const* proto = item->GetTemplate();
+            if (!proto || !(proto->IsArmor() || proto->IsWeapon()) || bot->CanUseItem(item) != EQUIP_ERR_OK)
+                return ItemSearchCallbackResult::Continue;
+            GearChoice gc;
+            if (BestGearSlot(bot, proto, gc) && (!best || gc.Gain() > bestGain))
+            {
+                best = item;
+                bestGain = gc.Gain();
+            }
+            return ItemSearchCallbackResult::Continue;
+        });
+        if (best)
+            EquipIfUpgrade(ai, bot, best, "GEAR_EQUIPPED", 0);
+    }
+
     // Decides whether a trainer or vendor trip is due and starts it. Throttled, cheap in the common case.
     bool ServiceDue(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
     {
@@ -2191,6 +2215,13 @@ private:
             return false;
         c.NextSvcMs = now + 4000;
         uint8 const level = bot->GetLevel();
+
+        // gear: equip a clear upgrade sitting in the bags (loot, bought, a level-up that made an item usable)
+        if (now >= c.NextGearMs)
+        {
+            c.NextGearMs = now + 30000;
+            EquipBagUpgrade(ai, bot);
+        }
 
         // 1. trainer: new level, or enough money for the cheapest spell we could not afford before. Spells have money priority.
         if (level >= 2 && now >= c.TrainRetryMs && (c.TrainLevel != level || (c.TrainWant && bot->GetMoney() >= c.TrainWant)))
@@ -2607,6 +2638,70 @@ private:
         return false; // let move_to_goal run in the same tick
     }
 
+    // ----- gear scoring (BotGear.h): class-role stat weights decide what is an upgrade -----
+    static BotGear::ItemFacts GearFacts(ItemTemplate const* proto)
+    {
+        BotGear::ItemFacts f;
+        f.InvType = uint32(proto->GetInventoryType());
+        f.ItemLevel = proto->GetBaseItemLevel();
+        f.Armor = proto->IsArmor() ? proto->GetArmor(f.ItemLevel) : 0;
+        f.Dps = proto->IsWeapon() ? proto->GetDPS(f.ItemLevel) : 0.0f;
+        f.TwoHand = f.InvType == INVTYPE_2HWEAPON;
+        f.RangedWeapon = proto->IsRangedWeapon();
+        for (uint32 i = 0; i < MAX_ITEM_PROTO_STATS; ++i)
+            if (proto->GetStatPercentEditor(i) > 0)
+                f.Stats.emplace_back(proto->GetStatModifierBonusStat(i), proto->GetStatPercentEditor(i));
+        return f;
+    }
+
+    static double GearScore(Player* bot, ItemTemplate const* proto)
+    {
+        return BotGear::Score(BotGear::RoleForClass(bot->GetClass()), GearFacts(proto));
+    }
+
+    struct GearChoice
+    {
+        uint8 Slot = 0xFF;
+        double Score = 0.0;
+        double Worn = 0.0;
+        uint32 WornEntry = 0;
+        uint32 WornLevel = 0;
+        double Gain() const { return Score - Worn; }
+    };
+
+    // Picks the slot the item would replace with the least loss (an empty slot first) and says whether it is an upgrade there.
+    static bool BestGearSlot(Player* bot, ItemTemplate const* proto, GearChoice& out)
+    {
+        if (!(proto->IsArmor() || proto->IsWeapon()))
+            return false;
+        std::vector<uint8> const slots = BotGear::SlotsForInvType(uint32(proto->GetInventoryType()));
+        if (slots.empty())
+            return false;
+        double const score = GearScore(bot, proto);
+        bool found = false;
+        for (uint8 slot : slots)
+        {
+            Item* worn = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            double wornScore = worn ? GearScore(bot, worn->GetTemplate()) : 0.0;
+            uint32 wornEntry = worn ? worn->GetEntry() : 0;
+            uint32 wornLevel = worn ? worn->GetTemplate()->GetBaseItemLevel() : 0;
+            // a two-hander also pushes the off hand out, a worn two-hander blocks the off hand
+            if (slot == EQUIPMENT_SLOT_MAINHAND && proto->GetInventoryType() == INVTYPE_2HWEAPON)
+                if (Item* off = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
+                    wornScore += GearScore(bot, off->GetTemplate());
+            if (!found || wornScore < out.Worn)
+            {
+                out.Slot = slot;
+                out.Score = score;
+                out.Worn = wornScore;
+                out.WornEntry = wornEntry;
+                out.WornLevel = wornLevel;
+                found = true;
+            }
+        }
+        return found && BotGear::IsUpgrade(out.Score, out.Worn);
+    }
+
     uint32 ChooseReward(Player* bot, Quest const* q)
     {
         uint32 bestId = 0;
@@ -2621,7 +2716,13 @@ private:
                 continue;
             double s = double(proto->GetSellPrice());
             if (bot->CanUseItem(proto) == EQUIP_ERR_OK)
-                s += (proto->IsArmor() || proto->IsWeapon()) ? 1e9 : 1e6;
+            {
+                GearChoice gc;
+                if (BestGearSlot(bot, proto, gc))
+                    s += 1e9 + gc.Gain() * 1000.0;     // a real upgrade for this class beats any vendor value
+                else if (!(proto->IsArmor() || proto->IsWeapon()))
+                    s += 1e6;
+            }
             if (s > bestScore)
             {
                 bestScore = s;
@@ -2631,36 +2732,34 @@ private:
         return bestId;
     }
 
-    // Equips a quest reward only when it is a clear upgrade: empty slot, or higher item level than what is worn.
-    void TryEquipReward(BotAI* ai, Player* bot, uint32 itemId, uint32 questId)
+    // Equips an item from the bags when it scores clearly higher than what the bot wears in the slot it would take.
+    static bool EquipIfUpgrade(BotAI* ai, Player* bot, Item* item, char const* code, uint32 questId)
     {
-        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
-        if (!proto || !(proto->IsArmor() || proto->IsWeapon()) || bot->IsInCombat())
-            return;
-        Item* item = bot->GetItemByEntry(itemId);
-        if (!item || item->IsEquipped())
-            return;
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto || item->IsEquipped() || bot->IsInCombat() || bot->CanUseItem(item) != EQUIP_ERR_OK)
+            return false;
+        GearChoice gc;
+        if (!BestGearSlot(bot, proto, gc))
+            return false;
         uint16 dest = 0;
-        if (bot->CanEquipItem(NULL_SLOT, dest, item, true) != EQUIP_ERR_OK)
-            return;
-        Item* worn = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, uint8(dest & 255));
-        uint32 wornLevel = 0;
-        if (worn)
-        {
-            ItemTemplate const* wp = worn->GetTemplate();
-            wornLevel = wp->GetBaseItemLevel();
-            if (wp->GetQuality() > proto->GetQuality() || proto->GetBaseItemLevel() <= wornLevel)
-                return;
-        }
-        uint32 wornEntry = worn ? worn->GetEntry() : 0;
+        if (bot->CanEquipItem(gc.Slot, dest, item, true) != EQUIP_ERR_OK)
+            return false;
         bot->SwapItem(item->GetPos(), dest);
         Item* now = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, uint8(dest & 255));
-        BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_REWARD_EQUIPPED",
-            StringFormat("equipped quest reward {} ({})", proto->GetName(DEFAULT_LOCALE), now && now->GetEntry() == itemId ? "ok" : "swap failed"));
+        bool const ok = now && now->GetEntry() == proto->GetId();
+        BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, code,
+            StringFormat("equipped {} ({})", proto->GetName(DEFAULT_LOCALE), ok ? "ok" : "swap failed"));
         ev.QuestId = questId;
-        ev.TargetEntry = itemId;
-        ev.Details = StringFormat(R"({{"slot":{},"replaced_entry":{},"old_ilvl":{},"new_ilvl":{}}})", dest & 255, wornEntry, wornLevel, proto->GetBaseItemLevel());
+        ev.TargetEntry = proto->GetId();
+        ev.Details = StringFormat(R"({{"slot":{},"replaced_entry":{},"old_ilvl":{},"new_ilvl":{},"old_score":{:.1f},"new_score":{:.1f}}})",
+            dest & 255, gc.WornEntry, gc.WornLevel, proto->GetBaseItemLevel(), gc.Worn, gc.Score);
         sBotMgr->LogEvent(std::move(ev));
+        return ok;
+    }
+
+    void TryEquipReward(BotAI* ai, Player* bot, uint32 itemId, uint32 questId)
+    {
+        EquipIfUpgrade(ai, bot, bot->GetItemByEntry(itemId), "QUEST_REWARD_EQUIPPED", questId);
     }
 
     bool TurnIn(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Quest const* q, Creature* npc)
