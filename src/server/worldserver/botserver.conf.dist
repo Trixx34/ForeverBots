@@ -2353,3 +2353,69 @@ Bot.Trade.Link.MaxListed = 15
 #        Values:      0 (off) or 1 (on)
 Bot.Social.QuestShare.LogEach = 0
 
+
+
+###################################################################################################
+# BOT MOUNTS
+#
+# Bots that follow a player ride with them. A bot follows a mounted leader onto a ground mount it
+# knows, a bot that fell far behind a leader on foot rides to catch up, and a bot gets off again
+# once the leader is on foot and close, and always when a fight starts. A ride a player ordered in
+# chat (the order `mount`, see Bot.Chat.Orders.Enabled) stays until the player orders `dismount` or
+# a fight starts. Flying mounts are not used. Log tags: MOUNT_UP, MOUNT_DOWN, MOUNT_REFUSED.
+# See docs/playerbots/feature-bot-mounts-20261008.md.
+#
+###################################################################################################
+
+#
+#    Bot.AI.Mount.Enabled
+#        Description: Automatic mounting and dismounting of bots that follow a leader. Adds the strategy
+#                     "mount" to the non-combat and combat engines.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Mount.Enabled = 0
+
+#
+#    Bot.AI.Mount.MountDelaySec
+#        Description: The leader must have been mounted this long before the bot mounts (a quick hop on and
+#                     off does not make the bots flicker).
+#        Default:     2
+#        Values:      whole number 0 to 60 (seconds)
+Bot.AI.Mount.MountDelaySec = 2
+
+#
+#    Bot.AI.Mount.DismountDelaySec
+#        Description: The leader must have been on foot this long before the bot gets off.
+#        Default:     3
+#        Values:      whole number 0 to 60 (seconds)
+Bot.AI.Mount.DismountDelaySec = 3
+
+#
+#    Bot.AI.Mount.DismountYards
+#        Description: A bot only gets off once it is within this distance of a leader on foot. A bot that is
+#                     farther away keeps riding until it has caught up.
+#        Default:     15
+#        Values:      whole number 3 to 100 (yards)
+Bot.AI.Mount.DismountYards = 15
+
+#
+#    Bot.AI.Mount.CatchUpYards
+#        Description: A bot farther than this from a leader on foot counts as left behind.
+#        Default:     60
+#        Values:      whole number 20 to 500 (yards)
+Bot.AI.Mount.CatchUpYards = 60
+
+#
+#    Bot.AI.Mount.CatchUpSec
+#        Description: ... for this long, then it mounts to catch up. 0 mounts at once.
+#        Default:     8
+#        Values:      whole number 0 to 300 (seconds)
+Bot.AI.Mount.CatchUpSec = 8
+
+#
+#    Bot.AI.Mount.RetrySec
+#        Description: After a refused mount (indoors, a zone without mounts, a shapeshift form) the bot waits
+#                     this long before it tries again.
+#        Default:     30
+#        Values:      whole number 5 to 600 (seconds)
+Bot.AI.Mount.RetrySec = 30

@@ -249,6 +249,8 @@ void RegisterTravelBotObjects(BotRegistry& registry);
 void RegisterConsumableBotObjects(BotRegistry& registry);
 // Defined in BotWatchdog.cpp: stall recovery (strategy "watchdog").
 void RegisterWatchdogBotObjects(BotRegistry& registry);
+// Defined in BotMount.cpp: mounting and dismounting with the leader (strategy "mount").
+void RegisterMountBotObjects(BotRegistry& registry);
 // Defined in BotDummy.cpp: training dummy runs (strategy "dummy").
 void RegisterDummyBotObjects(BotRegistry& registry);
 

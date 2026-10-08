@@ -67,7 +67,7 @@ namespace BotLogCat
         { "THREAT_", Combat }, { "TARGET_PICKED", Combat }, { "REPAIR_", Economy }, { "DUMMY_", Dummy }, { "TEST_", Dummy },
         { "GOTO_", Movement }, { "FOLLOW_", Movement }, { "MOVE_", Movement }, { "NO_PATH", Movement }, { "NO_PROGRESS", Movement },
         { "PATH_", Movement }, { "ROUTE_", Movement }, { "STAY_", Movement }, { "MMAP_", Movement }, { "UNREACHABLE_", Movement },
-        { "IDLE_STEP", Movement }, { "TOWN_", Movement }, { "TRAVEL_", Travel }, { "CORPSE_", Recovery }, { "SPIRIT_", Recovery },
+        { "IDLE_STEP", Movement }, { "TOWN_", Movement }, { "MOUNT_", Movement }, { "TRAVEL_", Travel }, { "CORPSE_", Recovery }, { "SPIRIT_", Recovery },
         { "RELEASE_", Recovery }, { "RECLAIM_", Recovery }, { "RECOVER_", Recovery }, { "REST_", Recovery }, { "WATCHDOG_", Recovery },
         { "QUEST_", Quest }, { "POLE_", Quest }, { "XP_", Progress }, { "LEVEL_UP", Progress }, { "TALENTS_", Progress },
         { "SPELLS_", Progress }, { "AH_", Economy }, { "TRADE_", Economy },

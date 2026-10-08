@@ -22,6 +22,7 @@
 #include "BotConsumables.h"
 #include "BotTravel.h"
 #include "BotTravelPlan.h"
+#include "BotMount.h"
 #include "BotWatchdog.h"
 #include "BotQuest.h"
 #include "CellImpl.h"
@@ -138,6 +139,8 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
         names.push_back("consumables");
     if (BotWatchdog::Enabled() && bot && state == BotState::NonCombat && std::find(names.begin(), names.end(), "watchdog") == names.end())
         names.push_back("watchdog");
+    if (BotMount::Enabled() && bot && state != BotState::Dead && std::find(names.begin(), names.end(), "mount") == names.end())
+        names.push_back("mount");   // mount with the leader, dismount for a fight
     if (BotTravel::Cfg().Enabled && bot && state == BotState::NonCombat && !(bot->GetSession() && bot->GetSession()->IsAltBot())
         && std::find(names.begin(), names.end(), "travel") == names.end())
         names.push_back("travel");
