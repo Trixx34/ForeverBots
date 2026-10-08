@@ -4964,6 +4964,17 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: Health percent / mana percent below which a potion is drunk in combat.
 #        Default:     35 / 20
 #
+#    Bot.Quest.Reputation.Enabled
+#        Description: Reputation rewards weigh into the quest choice. Quests that raise a faction the bot can still gain with score
+#                     higher (half once Revered, none at Exalted or past the quest's cap rank), quests that lower a faction score lower,
+#                     and a quest that would push a faction to Hostile or worse is never taken. Rewards of the opposing side are ignored.
+#        Default:     0 - Off
+#
+#    Bot.Quest.Reputation.BonusPct / Bot.Quest.Reputation.LossPenaltyPct / Bot.Quest.Reputation.FullPoints
+#        Description: Score bonus for a full reputation gain / score penalty for a full loss (percent), and the number of reputation
+#                     points that count as full (smaller rewards count in proportion).
+#        Default:     25 / 40 / 250
+#
 #    Bot.AI.Watchdog.Enabled
 #        Description: Stall watchdog. A bot that makes no progress (no movement, xp, money or quest-log change; fighting, flying, being
 #                     dead and instance content count as busy) is recovered in steps: clear the goal, use the hearthstone, teleport to
@@ -5275,6 +5286,10 @@ Bot.AI.Pet.TameCooldownSec = 300
 Bot.AI.Consumables.Enabled = 0
 Bot.AI.Consumables.HealthBelowPct = 35
 Bot.AI.Consumables.ManaBelowPct = 20
+Bot.Quest.Reputation.Enabled = 0
+Bot.Quest.Reputation.BonusPct = 25
+Bot.Quest.Reputation.LossPenaltyPct = 40
+Bot.Quest.Reputation.FullPoints = 250
 Bot.AI.Watchdog.Enabled = 0
 Bot.AI.Watchdog.StallSec = 600
 Bot.AI.Watchdog.HearthMul = 2
