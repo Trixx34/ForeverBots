@@ -155,24 +155,7 @@ Verb ParseVerb(std::string_view t)
     return Verb::None;
 }
 
-struct Selector
-{
-    bool All = false;
-    uint8 SubMask = 0;     // bit n = raid subgroup n+1
-    uint32 ClassMask = 0;  // bit classId
-    // Subgroup parts are a union among themselves, role/class parts a union among themselves,
-    // and when both kinds are present they intersect (g1,tank = tanks inside subgroup 1).
-    bool Matches(uint8 slotGroup, uint8 classId) const
-    {
-        if (All)
-            return true;
-        if (!SubMask && !ClassMask)
-            return false;
-        return (!SubMask || (SubMask & (1u << slotGroup))) && (!ClassMask || (ClassMask & (1u << classId)));
-    }
-};
-
-bool ParseSelectorPart(std::string_view p, Selector& s)
+bool ParseSelectorPart(std::string_view p, RoleMasks const& roles, Selector& s, bool allowPlural = true)
 {
     if (p.empty())
         return false;
@@ -202,23 +185,30 @@ bool ParseSelectorPart(std::string_view p, Selector& s)
             s.SubMask |= uint8(1u << (g - 1));
         return true;
     }
-    Cfg const& cfg = Config();
-    if (EqI(p, "tank")) { s.ClassMask |= cfg.TankMask; return true; }
-    if (EqI(p, "healer") || EqI(p, "heal")) { s.ClassMask |= cfg.HealerMask; return true; }
-    if (EqI(p, "dps")) { s.ClassMask |= cfg.DpsMask; return true; }
+    if (EqI(p, "tank")) { s.HasClass = true; s.ClassMask |= roles.Tank; return true; }
+    if (EqI(p, "healer") || EqI(p, "heal")) { s.HasClass = true; s.ClassMask |= roles.Healer; return true; }
+    if (EqI(p, "dps")) { s.HasClass = true; s.ClassMask |= roles.Dps; return true; }
     for (uint8 classId = 1; classId <= 11; ++classId)
     {
         char const* name = BotMgr::ClassName(classId);
         if (name[0] != '?' && EqI(p, name))
         {
+            s.HasClass = true;
             s.ClassMask |= 1u << classId;
             return true;
         }
     }
+    // plural forms from the design (healers rest, warriors attack, tanks follow)
+    if (allowPlural && p.size() > 2 && (p.back() == 's' || p.back() == 'S'))
+    {
+        p.remove_suffix(1);
+        return ParseSelectorPart(p, roles, s, false);
+    }
     return false;
 }
+}
 
-bool ParseSelector(std::string_view tok, Selector& out)
+bool ParseSelector(std::string_view tok, RoleMasks const& roles, Selector& out)
 {
     if (tok.empty() || tok.size() > 40)
         return false;
@@ -229,7 +219,7 @@ bool ParseSelector(std::string_view tok, Selector& out)
         size_t end = tok.find(',', pos);
         if (end == std::string_view::npos)
             end = tok.size();
-        if (!ParseSelectorPart(tok.substr(pos, end - pos), s))
+        if (!ParseSelectorPart(tok.substr(pos, end - pos), roles, s))
             return false;
         if (end == tok.size())
             break;
@@ -239,6 +229,40 @@ bool ParseSelector(std::string_view tok, Selector& out)
     return true;
 }
 
+char const* ParseGotoArgs(std::string_view args, GotoArgs& out)
+{
+    std::string_view a = Trim(args);
+    GotoArgs g;
+    if (EqI(a, "here"))
+    {
+        g.Here = true;
+        out = g;
+        return nullptr;
+    }
+    std::string_view t1 = NextToken(a), t2 = NextToken(a), t3 = NextToken(a);
+    Optional<float> x = Trinity::StringTo<float>(t1), y = Trinity::StringTo<float>(t2);
+    if (!x || !y || !NextToken(a).empty())
+        return "BAD_ARGS";
+    // StringTo<float> accepts "nan" and "inf"; world coordinates stay within +-17066 (half a map)
+    constexpr float maxXY = 17100.0f, maxZ = 5000.0f;
+    if (!std::isfinite(*x) || !std::isfinite(*y) || std::fabs(*x) > maxXY || std::fabs(*y) > maxXY)
+        return "BAD_ARGS";
+    g.X = *x;
+    g.Y = *y;
+    if (!t3.empty())
+    {
+        Optional<float> z = Trinity::StringTo<float>(t3);
+        if (!z || !std::isfinite(*z) || std::fabs(*z) > maxZ)
+            return "BAD_ARGS";
+        g.Z = *z;
+        g.HasZ = true;
+    }
+    out = g;
+    return nullptr;
+}
+
+namespace
+{
 // ---- helpers ----
 bool IsBotPlayer(Player* p) { return p && p->GetSession() && p->GetSession()->IsBot() && p->GetSession()->GetBotAI(); }
 
@@ -368,31 +392,17 @@ void Preflight(Ctx& c)
             break;
         case Verb::Goto:
         {
-            if (EqI(a, "here"))
+            GotoArgs g;
+            if (char const* err = ParseGotoArgs(a, g))
             {
-                c.GotoHere = true;
+                c.PreflightError = err;
                 break;
             }
-            std::string_view t1 = NextToken(a), t2 = NextToken(a), t3 = NextToken(a);
-            Optional<float> x = Trinity::StringTo<float>(t1), y = Trinity::StringTo<float>(t2);
-            if (!x || !y || !NextToken(a).empty())
-            {
-                c.PreflightError = "BAD_ARGS";
-                break;
-            }
-            c.Gx = *x;
-            c.Gy = *y;
-            if (!t3.empty())
-            {
-                Optional<float> z = Trinity::StringTo<float>(t3);
-                if (!z)
-                {
-                    c.PreflightError = "BAD_ARGS";
-                    break;
-                }
-                c.Gz = *z;
-                c.HasZ = true;
-            }
+            c.GotoHere = g.Here;
+            c.Gx = g.X;
+            c.Gy = g.Y;
+            c.Gz = g.Z;
+            c.HasZ = g.HasZ;
             break;
         }
         case Verb::Strategy:
@@ -636,7 +646,8 @@ bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whis
     if (tok.empty() || tok.size() > 40)
         return false;
     Selector sel;
-    bool const hasSel = ParseSelector(tok, sel);
+    RoleMasks const roles{ cfg.TankMask, cfg.HealerMask, cfg.DpsMask };
+    bool const hasSel = ParseSelector(tok, roles, sel);
     std::string_view const selText = hasSel ? tok : std::string_view();
     Verb const verb = ParseVerb(hasSel ? NextToken(rest) : tok);
     if (verb == Verb::None)

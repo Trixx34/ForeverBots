@@ -37,6 +37,36 @@ namespace BotChat
 {
 enum class Channel : uint8 { Party, Raid, Whisper };
 
+// Target selector of a chat command. Subgroup parts are a union among themselves, role/class parts a union among themselves, and when both
+// kinds are present they intersect (g1,tank = tanks inside subgroup 1). A role/class part whose class mask is empty matches nothing.
+struct Selector
+{
+    bool All = false;
+    uint8 SubMask = 0;     // bit n = raid subgroup n+1
+    bool HasClass = false; // a role/class part was given (even when its mask is empty)
+    uint32 ClassMask = 0;  // bit classId
+
+    bool Matches(uint8 slotGroup, uint8 classId) const
+    {
+        if (All)
+            return true;
+        if (!SubMask && !HasClass)
+            return false;
+        return (!SubMask || (SubMask & (1u << slotGroup))) && (!HasClass || (ClassMask & (1u << classId)));
+    }
+};
+
+struct RoleMasks { uint32 Tank = 0, Healer = 0, Dps = 0; };   // class masks behind the tank / healer / dps selectors (Bot.Chat.Role.*)
+
+// Pure parser (no config, no world state): all | g1 | g3-g4 | g1,g3 | tank | healer | dps | <class>, each also in the plural (healers, warriors).
+TC_GAME_API bool ParseSelector(std::string_view token, RoleMasks const& roles, Selector& out);
+
+struct GotoArgs { bool Here = false; bool HasZ = false; float X = 0, Y = 0, Z = 0; };
+
+// Pure parser for the goto arguments: "here" or "<x> <y> [z]". Returns nullptr when valid, else the refusal code (BAD_ARGS).
+// Non finite or out of range coordinates are refused.
+TC_GAME_API char const* ParseGotoArgs(std::string_view args, GotoArgs& out);
+
 // Receives the reply lines instead of the issuer's client (test path).
 using ReplySink = std::function<void(std::string const&)>;
 
