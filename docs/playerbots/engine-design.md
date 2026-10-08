@@ -109,7 +109,7 @@ template's reward ids, not the final standing change. The accept time is kept in
 `bot quest add|complete|reward|abandon|fail <bot> <questId> [choiceItemId]` (test aids using the normal Player quest APIs).
 Use the existing `revive <name>` to revive a bot.
 
-## Config (worldserver.conf.dist, PLAYER BOTS block)
+## Config (botserver.conf.dist, PLAYER BOTS block)
 `Bot.AI.Enabled`, `Bot.AI.TickMs`, `Bot.AI.TestStrategy`, `Bot.AI.Test.IdleSec`, `Bot.AI.Test.CombatSec`. Read once at first
 use (not reloadable); `bot ai on|off` pauses ticking at runtime.
 
@@ -155,7 +155,7 @@ Defaults come from config: NonCombat `rest,goto,follow`, Combat empty, Dead `rec
 - Test commands: `bot goto <name> x y z [arrive]`, `bot follow <name> <leader|off>`, `bot stay <name|all> on|off`, `bot hurt <name> hp% [mana%]`,
   `bot root <name> on|off`, `bot level <name> lvl`, `bot tele <name> map x y z [force]` (refused inside the start zone of the other faction without force, logged as TELE_REFUSED_FACTION), `bot state <name>`, `bot path <name> x y z`.
 - Config: `Bot.AI.Default.NonCombat/Combat/Dead`, `Bot.AI.Rest.EatBelowPct/DrinkBelowPct/DonePct/FreeFood`, `Bot.AI.Release.MinSec/MaxSec`,
-  `Bot.AI.Recover.MaxCorpseRunYards`, `Bot.AI.Move.StuckSec/StuckRepaths` (see worldserver.conf.dist).
+  `Bot.AI.Recover.MaxCorpseRunYards`, `Bot.AI.Move.StuckSec/StuckRepaths` (see botserver.conf.dist).
 
 ## Death and combat telemetry
 BotAI keeps ring buffers of damage taken, damage dealt and 1 Hz vitals; `Unit::Kill` calls `OnDying` before `setDeathState` strips auras/power, and `SnapshotDeath` builds the death details JSON. Fights are tracked by `UpdateFight` (fight_id, 2 s coalescing). See progress.md, "Death post-mortem and combat events".

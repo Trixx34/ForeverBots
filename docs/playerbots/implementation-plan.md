@@ -123,7 +123,7 @@ of the risky session/login work in Phase 1:
 - Hooked into `World::Update` in `src/server/game/World/World.cpp`, right
   after the existing `sAuctionBot->Update()` call, gated by a `Bot.Enabled`
   config option (`CONFIG_BOT_ENABLED` in `World.h`/`World.cpp`, documented in
-  `worldserver.conf.dist`) — defaults to enabled, set to `0` to disable the
+  `botserver.conf.dist`) — defaults to enabled, set to `0` to disable the
   subsystem entirely without recompiling.
 - New `Bots/` subdirectory under `src/server/game` needs **no CMakeLists.txt
   edit** — `src/server/game/CMakeLists.txt` uses `CollectAndAddSourceFiles`
