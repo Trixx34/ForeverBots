@@ -47,3 +47,22 @@ Check: `check_spawn_delta.py` (read-only, run `python3 -I docs/playerbots/check_
   objectives); quests whose rows live only in the base world database are not tagged.
 - The 0 -> N entries could turn earlier `NO_TARGET_SPAWN` blockers into plannable quests; only the blocker counts from a running server
   (against `quest-coverage-20261007.md`) confirm that.
+
+## 3. Quest levels (finding 7)
+
+Check: `check_quest_levels.py` (read-only, `python3 -I docs/playerbots/check_quest_levels.py`), output in `quest-level-delta-20261008.txt`. It replays the
+`quest_template_classic_level` and `quest_classic_level` statements in `sql/custom/world` in file name order at `fc54d291` and `3f3bbd53` and
+compares the effective rows.
+
+- 46 quests changed, all of them new rows (no existing row changed value): 79007, 79358, 79361, 86576, 86776, 91294, 91316, 92422, 92596, 92597,
+  92699, 92701, 92706, 92709, 92727, 92741, 92840, 92849, 92850, 92911, 93461, 93739, 94413, 96057, 96102, 96604, 96874, 96899, 97003, 97242,
+  97246, 97250, 97326, 97925, 97932, 97937, 97950, 97953, 97955, 97956, 97961, 97973, 98427, 99048, 99052, 99144. Per-quest level, minimum
+  level and the first bot level that may take it are in the output file. (The 182 added lines of the diff are mostly moved identical rows.)
+- Before, none of the 46 had a row in the repo SQL, so `GetQuestLevel` / `GetQuestMinLevel` fell back to ContentTuning (not in the repo, so
+  the old value is not known here). Now every one has a minimum level and a quest level, so each can cross both bot gates:
+  - `SatisfyQuestLevel` at `BotQuest.cpp:1604` blocks with `QUEST_LEVEL` while the bot level is below the minimum level;
+  - `BotQuest.cpp:1611` and `:2022` skip the quest while its level is more than 2 above the bot (`GetQuestLevel > bot level + 2`).
+  - The first bot level that may take each quest is `max(MinLevel, QuestLevel - 2)`: it ranges from 2 to 38 over the 46 quests, 17 of them
+    at level 5 or below (for example 92597, first level 2, and 92596 and 94413, first level 4).
+- The expected effect is a higher `QUEST_LEVEL` count for low bots and no change for bots at or above the thresholds. Confirm by comparing the
+  blocker counts of the next run with `quest-coverage-20261007.md` (needs a running server).
