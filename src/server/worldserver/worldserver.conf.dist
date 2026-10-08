@@ -4909,6 +4909,16 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: Seconds between attempts to summon or revive a pet / pause after a failed tame attempt.
 #        Default:     8 / 300
 #
+#    Bot.AI.Consumables.Enabled
+#        Description: Bots drink healing and mana potions from their bags in a fight when health or mana is low and the class heal
+#                     cannot help (instant potions the bot can use; food and drink stay with the rest strategy). Adds the strategy
+#                     "consumables" to the Combat engine. Logged as POTION_HEALTH / POTION_MANA. Bots do not buy potions yet.
+#        Default:     0 - Off
+#
+#    Bot.AI.Consumables.HealthBelowPct / Bot.AI.Consumables.ManaBelowPct
+#        Description: Health percent / mana percent below which a potion is drunk in combat.
+#        Default:     35 / 20
+#
 #    Bot.AI.Watchdog.Enabled
 #        Description: Stall watchdog. A bot that makes no progress (no movement, xp, money or quest-log change; fighting, flying, being
 #                     dead and instance content count as busy) is recovered in steps: clear the goal, use the hearthstone, teleport to
@@ -5157,6 +5167,9 @@ Bot.AI.Pet.FeedBelowPct = 66
 Bot.AI.Pet.MendBelowPct = 60
 Bot.AI.Pet.RetrySec = 8
 Bot.AI.Pet.TameCooldownSec = 300
+Bot.AI.Consumables.Enabled = 0
+Bot.AI.Consumables.HealthBelowPct = 35
+Bot.AI.Consumables.ManaBelowPct = 20
 Bot.AI.Watchdog.Enabled = 0
 Bot.AI.Watchdog.StallSec = 600
 Bot.AI.Watchdog.HearthMul = 2
