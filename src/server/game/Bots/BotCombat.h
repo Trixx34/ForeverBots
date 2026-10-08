@@ -40,6 +40,10 @@ TC_GAME_API bool BotCombatAvoids(Player const* bot, Creature const* mob);
 // Flee mode of this bot: Bot.AI.Flee.Mode, or Bot.AI.Flee.AbMode for the share of bots picked by Bot.AI.Flee.AbPct (A/B runs).
 TC_GAME_API int32 BotCombatFleeMode(Player const* bot);
 
+// Bot.AI.Roles.*: true when a group member within 45 yards is fighting a mob this bot could attack and the bot is not in combat itself yet.
+// BotAI::DesiredState puts such a bot into the Combat engine so a healer or damage dealer joins the fight of the group.
+TC_GAME_API bool BotCombatGroupEngaged(Player* bot);
+
 // Bot.Chat.Orders (`heal`): the bot casts its best known heal of the combat spell table at `target` right now (no fight context needed).
 // Returns "OK" or a refusal code: NO_HEAL_SPELL, OUT_OF_RANGE, NO_LOS, NO_POWER, COOLDOWN, BUSY (casting or moving), CAST_FAILED.
 TC_GAME_API char const* BotCombatHealUnit(Player* bot, Unit* target);

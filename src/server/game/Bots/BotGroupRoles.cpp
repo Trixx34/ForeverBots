@@ -142,4 +142,52 @@ int32 PickAssistTarget(std::span<Foe const> foes, uint64 tankTarget)
         return peel;
     return onTank >= 0 ? onTank : lowest;
 }
+
+int32 PickTauntTarget(std::span<Foe const> foes)
+{
+    int best = -1;
+    for (size_t i = 0; i < foes.size(); ++i)
+    {
+        Foe const& f = foes[i];
+        if (f.OnTank || !f.OnHealer || f.Taunted || !f.InRange)
+            continue;
+        if (best < 0)
+        {
+            best = int(i);
+            continue;
+        }
+        Foe const& b = foes[size_t(best)];
+        // healer first, then the victim with the lowest health, then the mob with the most health, then the lower guid
+        if (f.VictimIsHealer != b.VictimIsHealer)
+        {
+            if (f.VictimIsHealer)
+                best = int(i);
+        }
+        else if (f.VictimHealthPct != b.VictimHealthPct)
+        {
+            if (f.VictimHealthPct < b.VictimHealthPct)
+                best = int(i);
+        }
+        else if (f.HealthPct != b.HealthPct)
+        {
+            if (f.HealthPct > b.HealthPct)
+                best = int(i);
+        }
+        else if (f.Guid < b.Guid)
+            best = int(i);
+    }
+    return best;
+}
+
+bool HoldFire(HoldFacts const& f, uint32 holdMs, uint32 afterTurnMs)
+{
+    if (f.IsTank || !f.TankKnown || !f.TankEngaged || f.MobOnMe)
+        return false;
+    if (f.SinceMs >= holdMs)
+        return false;
+    // the mob has turned to the tank: a short extra wait so the tank has built a lead, counted from the pick
+    if (f.MobOnTank && f.SinceMs >= afterTurnMs)
+        return false;
+    return true;
+}
 }

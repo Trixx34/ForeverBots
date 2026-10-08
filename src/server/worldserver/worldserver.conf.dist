@@ -4939,6 +4939,13 @@ Bot.AI.Death.GiveUpSec = 300
 #                     Only for bots that are in combat themselves. See docs/playerbots/feature-bot-group-roles-20261008.md.
 #        Default:     0 - Off
 #
+#    Bot.AI.Roles.HoldSec
+#        Description: A bot that is not the tank waits up to this many seconds for the tank to gather threat on a mob before it opens
+#                     (shorter when the mob has turned to the tank, never when the mob attacks the bot). 0 = no waiting.
+#                     Also in effect with Bot.AI.Roles.Enabled: bots join the fight of a group member within 45 yards, the warrior of
+#                     the group holds Defensive Stance, taunts mobs that attack other members and applies Sunder Armor.
+#        Default:     3
+#
 #    Bot.AI.Roles.AllyHealBelowPct / Bot.AI.Roles.TankHealBelowPct / Bot.AI.Roles.EmergencyPct
 #        Description: Heal a group member below this health percent / the tank below this percent / below this percent a member is an
 #                     emergency and comes first.
