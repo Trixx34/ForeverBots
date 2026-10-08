@@ -4871,6 +4871,26 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: Seconds between attempts to summon or revive a pet / pause after a failed tame attempt.
 #        Default:     8 / 300
 #
+#    Bot.AI.Watchdog.Enabled
+#        Description: Stall watchdog. A bot that makes no progress (no movement, xp, money or quest-log change; fighting, flying, being
+#                     dead and instance content count as busy) is recovered in steps: clear the goal, use the hearthstone, teleport to
+#                     the home bind. Adds the strategy "watchdog" to the NonCombat engine. Every step is logged (WATCHDOG_*).
+#        Default:     0 - Off
+#
+#    Bot.AI.Watchdog.StallSec / Bot.AI.Watchdog.HearthMul / Bot.AI.Watchdog.HomeMul
+#        Description: Seconds without progress before the goal is cleared / multiples of StallSec for the hearthstone and for the
+#                     home teleport.
+#        Default:     600 / 2 / 4
+#
+#    Bot.AI.Watchdog.Hearth / Bot.AI.Watchdog.Home
+#        Description: Allow the hearthstone step / the home teleport step (off: only logged).
+#        Default:     1 / 1
+#
+#    Bot.AI.Watchdog.MoveYards / Bot.AI.Watchdog.MaxPerHour
+#        Description: Yards moved that count as progress / hearthstone and home recoveries per bot and hour (beyond it only
+#                     WATCHDOG_EXHAUSTED is logged).
+#        Default:     10 / 6
+#
 #    Bot.AI.Move.Natural.Enabled
 #        Description: Natural-looking movement: smoother paths, human pacing, no repeated identical path requests, a step back or
 #                     another route when stuck, light idling, and movement metrics. Adds the strategy "natural_idle".
@@ -5050,6 +5070,14 @@ Bot.AI.Pet.FeedBelowPct = 66
 Bot.AI.Pet.MendBelowPct = 60
 Bot.AI.Pet.RetrySec = 8
 Bot.AI.Pet.TameCooldownSec = 300
+Bot.AI.Watchdog.Enabled = 0
+Bot.AI.Watchdog.StallSec = 600
+Bot.AI.Watchdog.HearthMul = 2
+Bot.AI.Watchdog.HomeMul = 4
+Bot.AI.Watchdog.Hearth = 1
+Bot.AI.Watchdog.Home = 1
+Bot.AI.Watchdog.MoveYards = 10
+Bot.AI.Watchdog.MaxPerHour = 6
 Bot.AI.Move.Natural.Enabled = 0
 Bot.AI.Move.Natural.Shortcut = 1
 Bot.AI.Move.Natural.RoundCorners = 1
