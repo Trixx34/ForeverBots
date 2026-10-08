@@ -27,6 +27,7 @@
 #include "StringFormat.h"
 #include "WorldSession.h"
 #include <chrono>
+#include <limits>
 #include <map>
 #include <mutex>
 
@@ -252,4 +253,10 @@ void BotQuestLog::OnFailed(Player* bot, Quest const* quest)
     Send(Make(bot, quest, "QUEST_FAILED", "failed", BOTLOG_WARN), Trinity::StringFormat(
         R"({{{},"cause":"{}","time_limit_s":{},"alive":{},"engine":"{}"}})", Common(bot, quest), cause, quest->GetLimitTime(),
         bot->IsAlive() ? "true" : "false", ai ? BotStateName(ai->GetState()) : "none"));
+}
+
+void BotQuestLog::OnLogout(uint64 botGuid)
+{
+    std::lock_guard<std::mutex> lock(_acceptMutex);
+    _acceptTimes.erase(_acceptTimes.lower_bound({ botGuid, 0 }), _acceptTimes.upper_bound({ botGuid, std::numeric_limits<uint32>::max() }));
 }

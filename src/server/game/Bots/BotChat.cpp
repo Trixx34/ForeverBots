@@ -270,7 +270,14 @@ std::string JsonEscape(std::string_view s, size_t maxLen = 120)
     return out;
 }
 
+constexpr size_t ISSUER_MAP_CAP = 4096; // per-issuer maps: normally bounded by the players online (erased on logout)
 std::unordered_map<uint64, bool> s_verbose;
+void SetVerbose(Player* p, bool on)
+{
+    if (s_verbose.size() >= ISSUER_MAP_CAP && !s_verbose.contains(p->GetGUID().GetCounter()))
+        s_verbose.erase(s_verbose.begin());
+    s_verbose[p->GetGUID().GetCounter()] = on;
+}
 bool IsVerbose(Player* p)
 {
     auto it = s_verbose.find(p->GetGUID().GetCounter());
@@ -609,6 +616,12 @@ std::string Aggregate(std::vector<char const*> const& codes)
 }
 } // namespace
 
+void OnPlayerLogout(uint64 guidCounter)
+{
+    s_verbose.erase(guidCounter);
+    s_unauth.erase(guidCounter);
+}
+
 bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whisperTarget /*= nullptr*/, ReplySink const* sink /*= nullptr*/)
 {
     Cfg const& cfg = Config();
@@ -641,6 +654,8 @@ bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whis
     if (!group || !group->IsLeader(issuer->GetGUID()))
     {
         char const* reason = group ? "UNAUTHORIZED" : "NOT_IN_GROUP";
+        if (s_unauth.size() >= ISSUER_MAP_CAP && !s_unauth.contains(issuer->GetGUID().GetCounter()))
+            s_unauth.erase(s_unauth.begin()); // entries are also erased on logout; the cap only guards against a flood
         UnauthRec& rec = s_unauth[issuer->GetGUID().GetCounter()];
         uint32 const now = GameTime::GetGameTimeMS();
         if (rec.Seen && now - rec.LastMs < cfg.UnauthLogSec * 1000)
@@ -663,9 +678,9 @@ bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whis
     {
         bool known = true;
         if (EqI(args, "on"))
-            s_verbose[issuer->GetGUID().GetCounter()] = true;
+            SetVerbose(issuer, true);
         else if (EqI(args, "off"))
-            s_verbose[issuer->GetGUID().GetCounter()] = false;
+            SetVerbose(issuer, false);
         else
             known = false;
         LogCommand(logMember, issuer, channel, verb, args, "-", known ? "OK" : "BAD_ARGS", known, BOTLOG_INFO);

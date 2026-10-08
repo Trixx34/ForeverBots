@@ -202,6 +202,7 @@ public:
     // Flushes the suppressed-repeat counters of a bot as one LOG_SUPPRESSED row (see Bot.Log.RepeatCap). Thread-safe, called by
     // LogoutBot; other code never needs it (LogEvent flushes on the next different event).
     void FlushSuppressed(uint64 botGuid);
+    void EraseLogState(uint64 botGuid); // drops the per-bot repeat-cap state once the bot's last row of a session was written
 
     // Registers or refreshes a bot in the `bot` table (one row per bot, events carry only the guid).
     void LogBotRegistration(uint64 guid, std::string const& name, uint8 classId, uint8 raceId, bool horde);

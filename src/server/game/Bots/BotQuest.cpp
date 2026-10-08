@@ -24,6 +24,7 @@
 
 #include "Bag.h"
 #include "BotQuest.h"
+#include "BotQuestClassifier.h"
 #include "BotAI.h"
 #include "BotBehavior.h"
 #include "BotEngine.h"
@@ -251,19 +252,6 @@ void GoEntriesOf(uint32 item, std::vector<uint32>& out)
             out.push_back(e);
 }
 
-// the quest hands the item over itself (start item, or the ItemDrop list), at least in the amount the objective needs
-bool QuestSuppliesItem(Quest const* q, QuestObjective const& obj)
-{
-    uint32 const item = uint32(obj.ObjectID);
-    uint32 const need = uint32(std::max<int32>(1, obj.Amount));
-    if (q->GetSrcItemId() == item && std::max<uint32>(1, q->GetSrcItemCount()) >= need)
-        return true;
-    for (uint32 i = 0; i < QUEST_ITEM_DROP_COUNT; ++i)
-        if (q->ItemDrop[i] == item && std::max<uint32>(1, q->ItemDropQuantity[i]) >= need)
-            return true;
-    return false;
-}
-
 // ---------------------------------------------------------------------------------------------------------------------
 // 2. Analysis: static blockers
 // ---------------------------------------------------------------------------------------------------------------------
@@ -291,114 +279,64 @@ bool HasEnderRow(uint32 questId)
     return bounds.begin() != bounds.end();
 }
 
+class IndexLookup final : public QuestWorldLookup
+{
+public:
+    bool HasSpawn(uint32 creatureEntry) const override { return BotQuest::HasSpawn(creatureEntry); }
+
+    std::vector<uint32> KillEntries(uint32 creditEntry) const override
+    {
+        std::vector<uint32> out;
+        BotQuest::KillEntries(creditEntry, out);
+        return out;
+    }
+
+    bool ItemCreatureSources(uint32 item, std::vector<uint32>& out) const override
+    {
+        auto it = g.ItemSrc.find(item);
+        if (it == g.ItemSrc.end())
+            return false;
+        out = it->second;
+        return true;
+    }
+
+    bool ItemHasSpawnedGameObject(uint32 item) const override
+    {
+        std::vector<uint32> gos;
+        GoEntriesOf(item, gos);
+        return !gos.empty();
+    }
+
+    bool ItemHasGameObjectSource(uint32 item) const override { return g.ItemGoSrc.count(item) != 0; }
+    bool HasEnderRow(uint32 questId) const override { return BotQuest::HasEnderRow(questId); }
+    bool HasEnderSpawn(uint32 questId) const override { return !EnderEntries(questId).empty(); }
+};
+
 Block Analyze(Quest const* q)
 {
-    Block b;
-    if (q->IsDailyOrWeekly() || q->IsMonthly() || q->IsRepeatable())
-    {
-        b.Code = "REPEATABLE"; b.Silent = true;
-        return b;
-    }
-    if (q->GetSuggestedPlayers() > 1)
-    {
-        b.Code = "NEEDS_GROUP"; b.Info = StringFormat("suggested players {}", q->GetSuggestedPlayers());
-        return b;
-    }
-    if (q->GetLimitTime() > 0)
-    {
-        b.Code = "TIMED_UNSUPPORTED";
-        return b;
-    }
-    if (q->GetRequiredSkill())
-    {
-        b.Code = "SKILL_REQUIRED"; b.Entry = q->GetRequiredSkill();
-        return b;
-    }
-    if (q->GetRequiredMinRepFaction())
-    {
-        b.Code = "REPUTATION_REQUIRED"; b.Entry = q->GetRequiredMinRepFaction();
-        return b;
-    }
-    if (q->HasFlag(QUEST_FLAGS_COMPLETION_EVENT))
-    {
-        b.Code = "NEEDS_EVENT";
-        return b;
-    }
-    if (q->HasFlag(QUEST_FLAGS_COMPLETION_AREA_TRIGGER))
-    {
-        b.Code = "OBJECTIVE_UNSUPPORTED"; b.Info = "area trigger completion";
-        return b;
-    }
-
+    QuestFacts facts;
+    facts.QuestId = q->GetQuestId();
+    facts.Repeatable = q->IsDailyOrWeekly() || q->IsMonthly() || q->IsRepeatable();
+    facts.SuggestedPlayers = q->GetSuggestedPlayers();
+    facts.LimitTime = q->GetLimitTime();
+    facts.RequiredSkill = q->GetRequiredSkill();
+    facts.RequiredMinRepFaction = q->GetRequiredMinRepFaction();
+    facts.CompletionEvent = q->HasFlag(QUEST_FLAGS_COMPLETION_EVENT);
+    facts.CompletionAreaTrigger = q->HasFlag(QUEST_FLAGS_COMPLETION_AREA_TRIGGER);
+    facts.AutoComplete = q->HasFlag(QUEST_FLAGS_AUTO_COMPLETE);
+    facts.SrcItemId = q->GetSrcItemId();
+    facts.SrcItemCount = q->GetSrcItemCount();
+    for (uint32 i = 0; i < QUEST_ITEM_DROP_COUNT; ++i)
+        facts.ItemDrops.emplace_back(q->ItemDrop[i], q->ItemDropQuantity[i]);
     for (QuestObjective const& obj : q->GetObjectives())
-    {
-        if (obj.Flags & QUEST_OBJECTIVE_FLAG_OPTIONAL)
-            continue;
-        switch (obj.Type)
-        {
-            case QUEST_OBJECTIVE_MONSTER:
-            {
-                std::vector<uint32> entries;
-                KillEntries(uint32(obj.ObjectID), entries);
-                bool any = false;
-                for (uint32 e : entries)
-                    any = any || HasSpawn(e);
-                if (!any)
-                {
-                    b.Code = "NO_TARGET_SPAWN"; b.Entry = uint32(obj.ObjectID);
-                    return b;
-                }
-                break;
-            }
-            case QUEST_OBJECTIVE_ITEM:
-            {
-                auto it = g.ItemSrc.find(uint32(obj.ObjectID));
-                bool any = QuestSuppliesItem(q, obj);   // delivery / report-to quests: the item comes with the quest
-                if (it != g.ItemSrc.end())
-                    for (uint32 e : it->second)
-                        any = any || HasSpawn(e);
-                if (!any)
-                {
-                    std::vector<uint32> gos;
-                    GoEntriesOf(uint32(obj.ObjectID), gos);
-                    any = !gos.empty();
-                }
-                if (!any)
-                {
-                    b.Entry = uint32(obj.ObjectID);
-                    if (g.ItemGoSrc.count(uint32(obj.ObjectID)))
-                    {
-                        b.Code = "OBJECTIVE_UNSUPPORTED"; b.Info = "item comes from a game object without a spawn";
-                    }
-                    else if (it != g.ItemSrc.end())
-                        b.Code = "NO_TARGET_SPAWN";
-                    else
-                        b.Code = "MISSING_ITEM_SOURCE";
-                    return b;
-                }
-                break;
-            }
-            case QUEST_OBJECTIVE_TALKTO:
-                if (!HasSpawn(uint32(obj.ObjectID)))
-                {
-                    b.Code = "NO_TARGET_SPAWN"; b.Entry = uint32(obj.ObjectID);
-                    return b;
-                }
-                break;
-            default:
-                b.Code = "OBJECTIVE_UNSUPPORTED"; b.Entry = uint32(obj.ObjectID);
-                b.Info = StringFormat("objective type {}", uint32(obj.Type));
-                return b;
-        }
-    }
+        facts.Objectives.push_back({ int32(obj.Type), obj.ObjectID, obj.Amount, (obj.Flags & QUEST_OBJECTIVE_FLAG_OPTIONAL) != 0 });
 
-    if (!q->HasFlag(QUEST_FLAGS_AUTO_COMPLETE))
-    {
-        if (!HasEnderRow(q->GetQuestId()))
-            b.Code = "NO_ENDER_ROW";
-        else if (EnderEntries(q->GetQuestId()).empty())
-            b.Code = "NO_ENDER_SPAWN";
-    }
+    ClassifierResult res = ClassifyQuest(facts, IndexLookup());
+    Block b;
+    b.Code = res.Code;
+    b.Entry = res.Entry;
+    b.Silent = res.Silent;
+    b.Info = std::move(res.Info);
     return b;
 }
 
@@ -742,6 +680,8 @@ struct Task
     float GoBestGo = 0.0f;         // best 3D distance to the live object so far (0 = not measured yet)
     uint32 GoBestGoMs = 0;
     uint32 GoDangerMs = 0;         // next danger scan near the claimed spawn
+    uint32 GoRenewMs = 0;          // next claim renewal while GoSpawn is set
+    uint32 GoMap = 0;              // map of the claimed spawn
 };
 
 struct Visited
@@ -783,6 +723,7 @@ struct GoGate { uint64 Bot = 0; uint32 ClaimUntil = 0; uint32 CoolUntil = 0; };
 std::mutex g_goMx;
 std::unordered_map<uint64, GoGate> g_goGate;
 constexpr uint32 GO_CLAIM_MS = 150 * 1000;
+constexpr uint32 GO_RENEW_MS = 30 * 1000;   // an active owner renews about this often
 
 bool Past(uint32 until) { return !until || int32(until - getMSTime()) <= 0; }
 
@@ -806,6 +747,28 @@ GoState GoGateState(uint64 spawn, uint64 bot, uint32* coolLeftMs = nullptr)
     return GoState::Free;
 }
 
+// GoGateState for several spawns under one lock; states[i] / coolLeftMs[i] belong to spawns[i]
+void GoGateStateBatch(std::vector<uint64> const& spawns, uint64 bot, std::vector<GoState>& states, std::vector<uint32>& coolLeftMs)
+{
+    states.assign(spawns.size(), GoState::Free);
+    coolLeftMs.assign(spawns.size(), 0);
+    std::lock_guard<std::mutex> lk(g_goMx);
+    uint32 const nowMs = getMSTime();
+    for (size_t i = 0; i < spawns.size(); ++i)
+    {
+        auto it = g_goGate.find(spawns[i]);
+        if (it == g_goGate.end())
+            continue;
+        if (!Past(it->second.CoolUntil))
+        {
+            states[i] = GoState::Cooling;
+            coolLeftMs[i] = uint32(int32(it->second.CoolUntil - nowMs));
+        }
+        else if (it->second.Bot != bot && !Past(it->second.ClaimUntil))
+            states[i] = GoState::Busy;
+    }
+}
+
 bool GoTryClaim(uint64 spawn, uint64 bot)
 {
     std::lock_guard<std::mutex> lk(g_goMx);
@@ -814,6 +777,17 @@ bool GoTryClaim(uint64 spawn, uint64 bot)
         return false;
     gt.Bot = bot;
     gt.ClaimUntil = std::max<uint32>(1, getMSTime() + GO_CLAIM_MS);
+    return true;
+}
+
+// extend the time limit of a claim the bot still owns; false when the claim expired or belongs to someone else
+bool GoRenew(uint64 spawn, uint64 bot)
+{
+    std::lock_guard<std::mutex> lk(g_goMx);
+    auto it = g_goGate.find(spawn);
+    if (it == g_goGate.end() || it->second.Bot != bot || !Past(it->second.CoolUntil))
+        return false;
+    it->second.ClaimUntil = std::max<uint32>(1, getMSTime() + GO_CLAIM_MS);
     return true;
 }
 
@@ -916,6 +890,26 @@ class BotQuestCtx : public UntypedValue
 {
 public:
     explicit BotQuestCtx(BotAI* ai) : UntypedValue(ai, "quest_ctx", 0) { }
+    ~BotQuestCtx() override { ReleaseLoot(); }
+
+    // A claim must not outlive its owner: logout, strategy removal and AI rebuild end up here through the destructor.
+    void ReleaseLoot()
+    {
+        if (T.K == Kind::Loot && T.GoSpawn)
+            GoRelease(T.GoSpawn, T.GoBot, 0);
+    }
+
+    // A dead bot changes position anyway (corpse run, spirit healer): give the chest back and drop the loot task.
+    void OnStateEnter() override
+    {
+        if (GetAI()->GetState() != BotState::Dead || T.K != Kind::Loot)
+            return;
+        ReleaseLoot();
+        T = Task();
+        GoalFails = 0;
+        ExpectGoal = false;
+        NextChooseMs = 0;
+    }
     uint32 ExecCalls = 0;
     char const* Why = "none";
 
@@ -929,6 +923,8 @@ public:
     std::unordered_set<uint64> Logged;              // (quest, code) pairs already written
     std::unordered_map<uint64, uint32> Ignore;      // mob guid (counter) -> AI clock until
     std::vector<Visited> Seen;                      // recently searched spawn points
+    uint32 NextPruneMs = 0;                         // next sweep of expired Ignore entries
+    uint32 LastMapId = 0xFFFFFFFFu;                 // map seen on the previous tick
     uint32 SelBlocks = 0;
     uint8 IdleLoggedLevel = 0;
     uint32 IdleLogMs = 0;          // R5: IDLE_WAIT_SPAWN rows at most one per 60 s
@@ -1211,6 +1207,17 @@ public:
         }
         c.Why = "run";
 
+        if (bot->GetMapId() != c.LastMapId)
+        {
+            // spawn points and mob guids are per map: forget what was learned on the previous one
+            if (c.LastMapId != 0xFFFFFFFFu)
+            {
+                c.Ignore.clear();
+                c.Seen.clear();
+            }
+            c.LastMapId = bot->GetMapId();
+        }
+
         CheckGoalOutcome(ai, bot, c, now);
 
         if (c.T.K == Kind::None)
@@ -1430,6 +1437,11 @@ private:
     // ----- choosing -----
     bool Choose(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
     {
+        if (int32(now - c.NextPruneMs) >= 0)
+        {
+            c.NextPruneMs = now + 5000;
+            std::erase_if(c.Ignore, [now](auto const& e) { return now >= e.second; });
+        }
         if (ServiceDue(ai, bot, c, now))
             return true;
 
@@ -2827,6 +2839,15 @@ private:
         bot->GetCreatureListWithOptionsInGrid(list, 90.0f, opt);
     }
 
+    // Another bot holds the claimed spawn now (ours expired): give it up without cooling it and pick another.
+    void GoSpawnLost(BotAI* ai, Player* bot, BotQuestCtx& c, Task& t)
+    {
+        GoRelease(t.GoSpawn, t.GoBot, 0);
+        t.GoSpawn = 0;
+        t.GoUseTries = 0;
+        StopMoving(ai, bot, c);
+    }
+
     // Picks and claims the nearest free spawn of the item's chest objects. 0 = claimed, 1 = all busy (other bots), 2 = all cooling or
     // ignored (respawn wait), 3 = none on this map.
     int GoPickSpawn(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Task& t, std::vector<uint32> const& gos, uint32& minWaitMs)
@@ -2838,6 +2859,8 @@ private:
         minWaitMs = 0xFFFFFFFFu;
         std::vector<Creature*> list;
         bool listed = false;
+        std::vector<GoPt const*> cand;
+        std::vector<uint64> ids;
         for (uint32 en : gos)
         {
             auto it = g.GoSpawns.find(en);
@@ -2854,49 +2877,56 @@ private:
                     minWaitMs = std::min<uint32>(minWaitMs, ign->second - now);
                     continue;
                 }
-                uint32 left = 0;
-                GoState st = GoGateState(p.SpawnId, me, &left);
-                if (st == GoState::Busy) { ++busy; continue; }
-                if (st == GoState::Cooling) { ++cooling; minWaitMs = std::min<uint32>(minWaitMs, left); continue; }
-                float d = Dist2D(p.P.X, p.P.Y, bot->GetPositionX(), bot->GetPositionY());
-                if (d < bd)
+                cand.push_back(&p);
+                ids.push_back(p.SpawnId);
+            }
+        }
+        std::vector<GoState> states;
+        std::vector<uint32> lefts;
+        GoGateStateBatch(ids, me, states, lefts); // one lock for the whole pick
+        for (size_t i = 0; i < cand.size(); ++i)
+        {
+            GoPt const& p = *cand[i];
+            if (states[i] == GoState::Busy) { ++busy; continue; }
+            if (states[i] == GoState::Cooling) { ++cooling; minWaitMs = std::min<uint32>(minWaitMs, lefts[i]); continue; }
+            float d = Dist2D(p.P.X, p.P.Y, bot->GetPositionX(), bot->GetPositionY());
+            if (d < bd)
+            {
+                // sanity before this becomes the candidate: another floor / ledge needs a real path, and a camp of mobs near the
+                // spawn point (when it is in scan range) rules the spawn out for this bot
+                bool bad = false;
+                char const* badWhy = "";
+                if (std::fabs(p.P.Z - bot->GetPositionZ()) > 15.0f && d < 150.0f)
                 {
-                    // sanity before this becomes the candidate: another floor / ledge needs a real path, and a camp of mobs near the
-                    // spawn point (when it is in scan range) rules the spawn out for this bot
-                    bool bad = false;
-                    char const* badWhy = "";
-                    if (std::fabs(p.P.Z - bot->GetPositionZ()) > 15.0f && d < 150.0f)
-                    {
-                        BotPathInfo info = BotMotion::QueryPath(bot, p.P.X, p.P.Y, p.P.Z);
-                        if (info.NoPath || (info.Partial && info.EndGap3D > 25.0f) || (info.Valid && info.GoalOffMesh && info.EndGap3D > 25.0f))
-                        { bad = true; badWhy = "pick: no path to another level"; }
-                    }
-                    if (!bad && d < 80.0f)
-                    {
-                        if (!listed)
-                        {
-                            GoScanList(bot, list);
-                            listed = true;
-                        }
-                        uint32 dEntry = 0, dCount = 0;
-                        if (GoDangerAt(bot, list, p.P.X, p.P.Y, dEntry, dCount))
-                        { bad = true; badWhy = "pick: danger"; }
-                    }
-                    if (bad)
-                    {
-                        c.GoIgnore[p.SpawnId] = now + 300 * 1000;
-                        ++cooling;
-                        minWaitMs = std::min<uint32>(minWaitMs, 300 * 1000);
-                        BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_SPAWN_EMPTY", StringFormat("object {} at spawn {} skipped ({})", p.Entry, p.SpawnId, badWhy));
-                        ev.QuestId = t.Quest;
-                        ev.TargetEntry = p.Entry;
-                        ev.Details = StringFormat(R"({{"cause":"{}","global":false,"spawn_dist":{:.0f},"bot":[{:.0f},{:.0f},{:.0f}]}})", badWhy, d, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-                        sBotMgr->LogEvent(std::move(ev));
-                        continue;
-                    }
-                    bd = d;
-                    best = &p;
+                    BotPathInfo info = BotMotion::QueryPath(bot, p.P.X, p.P.Y, p.P.Z);
+                    if (info.NoPath || (info.Partial && info.EndGap3D > 25.0f) || (info.Valid && info.GoalOffMesh && info.EndGap3D > 25.0f))
+                    { bad = true; badWhy = "pick: no path to another level"; }
                 }
+                if (!bad && d < 80.0f)
+                {
+                    if (!listed)
+                    {
+                        GoScanList(bot, list);
+                        listed = true;
+                    }
+                    uint32 dEntry = 0, dCount = 0;
+                    if (GoDangerAt(bot, list, p.P.X, p.P.Y, dEntry, dCount))
+                    { bad = true; badWhy = "pick: danger"; }
+                }
+                if (bad)
+                {
+                    c.GoIgnore[p.SpawnId] = now + 300 * 1000;
+                    ++cooling;
+                    minWaitMs = std::min<uint32>(minWaitMs, 300 * 1000);
+                    BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_SPAWN_EMPTY", StringFormat("object {} at spawn {} skipped ({})", p.Entry, p.SpawnId, badWhy));
+                    ev.QuestId = t.Quest;
+                    ev.TargetEntry = p.Entry;
+                    ev.Details = StringFormat(R"({{"cause":"{}","global":false,"spawn_dist":{:.0f},"bot":[{:.0f},{:.0f},{:.0f}]}})", badWhy, d, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+                    sBotMgr->LogEvent(std::move(ev));
+                    continue;
+                }
+                bd = d;
+                best = &p;
             }
         }
         if (best && GoTryClaim(best->SpawnId, me))
@@ -2906,7 +2936,10 @@ private:
             t.GoEntry = best->Entry;
             t.GoRespawn = best->RespawnSec;
             t.GoX = best->P.X; t.GoY = best->P.Y; t.GoZ = best->P.Z;
+            t.GoMap = best->P.Map;
             t.GoWaitMs = 0;
+            t.GoNextMs = 0;
+            t.GoRenewMs = now + GO_RENEW_MS;
             t.GoUseTries = 0;
             t.GoApproachTries = 0;
             t.GoBestGo = 0.0f;
@@ -2957,12 +2990,39 @@ private:
                 StringFormat(R"({{"item":{},"attempts":{},"looted":{},"count":{},"amount":{}}})", obj->ObjectID, t.GoAttempts, t.GoLooted, count, obj->Amount), uint32(obj->ObjectID), 1800);
             return true;
         }
+        if (t.GoSpawn)
+        {
+            if (bot->GetMapId() != t.GoMap)
+            {
+                // moved to another map (graveyard, teleport, instance): the spawn is meaningless here
+                StopMoving(ai, bot, c);
+                Finish(c, now);
+                return false;
+            }
+            // the claim is renewed while the owner is active; if it was lost (expired and taken) take it again or let it go
+            if (GoGateState(t.GoSpawn, t.GoBot) != GoState::Free)
+            {
+                GoSpawnLost(ai, bot, c, t);
+                return false;
+            }
+            if (int32(now - t.GoRenewMs) >= 0)
+            {
+                if (!GoRenew(t.GoSpawn, t.GoBot) && !GoTryClaim(t.GoSpawn, t.GoBot))
+                {
+                    GoSpawnLost(ai, bot, c, t);
+                    return false;
+                }
+                t.GoRenewMs = now + GO_RENEW_MS;
+            }
+        }
         if (bot->IsInCombat())
             return false;
 
         if (!t.GoSpawn)
         {
             std::vector<uint32> gos;
+            if (now < t.GoNextMs)
+                return false;   // respawn wait: the next pick is not due yet
             GoEntriesOf(uint32(obj->ObjectID), gos);
             uint32 waitMs = 0;
             int r = GoPickSpawn(ai, bot, c, now, t, gos, waitMs);
@@ -3017,7 +3077,7 @@ private:
             }
             else if (now - t.TargetBestMs > 60000)
             {
-                GoSpawnFailed(ai, bot, c, now, t, "no approach progress");
+                GoSpawnFailed(ai, bot, c, now, t, "no approach progress", false);
                 return false;
             }
             Travel(ai, bot, c, now, t.GoX, t.GoY, t.GoZ, 8.0f, t.GoEntry);
@@ -3076,7 +3136,7 @@ private:
         {
             if (++t.GoUseTries < 4)
                 return false;
-            GoSpawnFailed(ai, bot, c, now, t, usable ? "not active for this quest" : "cannot interact");
+            GoSpawnFailed(ai, bot, c, now, t, usable ? "not active for this quest" : "cannot interact", false);
             return false;
         }
         bot->SetFacingToObject(usable);
@@ -3114,7 +3174,7 @@ private:
             return true;
         }
         // Use() produced no loot for us (already emptied, or the quest item is not in it)
-        GoSpawnFailed(ai, bot, c, now, t, "no loot");
+        GoSpawnFailed(ai, bot, c, now, t, "no loot", true);
         return false;
     }
 
@@ -3486,6 +3546,15 @@ std::string DescribeTask(BotAI* ai)
     return StringFormat("task {} quest {} npc {} target {} kills {} scans {} raw {} ok {} seenlive {} toostrong {} wait {} chasing {} dist {:.1f} appr {} ign {} expect {} fails {} legs {} accepted {} rewarded {} blacklisted {} nextchoose {} calls {} hubtrips {} grinds {} hub {} why {}",
         KindName(t.K), t.Quest, t.NpcEntry, t.Target.IsEmpty() ? 0 : 1, t.Kills, t.Scans, t.ScanRaw, t.ScanOk, t.SeenLive, t.TooStrongSeen, t.WaitStartMs ? 1 : 0, t.Chasing ? 1 : 0, t.LastDist, t.Approaches, t.Ignored,
         cp->ExpectGoal ? 1 : 0, cp->GoalFails, t.LegIssues, cp->Accepted, cp->Rewarded, cp->Blacklist.size(), cp->NextChooseMs, cp->ExecCalls, cp->HubTrips, cp->Grinds, int64(t.HubId == 0xFFFFFFFFu ? -1 : int64(t.HubId)), cp->Why);
+}
+
+void OnLogout(BotAI* ai)
+{
+    if (BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx")))
+    {
+        cp->ReleaseLoot();
+        cp->T = Task();
+    }
 }
 } // namespace BotQuest
 

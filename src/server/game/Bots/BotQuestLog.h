@@ -52,6 +52,8 @@ namespace BotQuestLog
     TC_GAME_API void OnRewarded(Player* bot, Quest const* quest, LootItemType rewardType, uint32 rewardId, Object* giver, uint32 xp, int32 money);
     TC_GAME_API void OnAbandoned(Player* bot, Quest const* quest);
     TC_GAME_API void OnFailed(Player* bot, Quest const* quest);
+    // The bot logs out: forgets its remembered accept times (quests that left the log another way never erased theirs).
+    TC_GAME_API void OnLogout(uint64 botGuid);
 }
 
 #endif

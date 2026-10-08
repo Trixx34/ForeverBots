@@ -16,6 +16,7 @@
  */
 
 #include "BotAI.h"
+#include "BotQuest.h"
 #include "CellImpl.h"
 #include "Config.h"
 #include "Creature.h"
@@ -771,6 +772,7 @@ char const* FirstName(uint8 first)
 
 // process-lifetime death counters: per bot, and per (killer entry, zone); a per-AI member would reset on every respawn
 std::mutex _repeatLock;
+constexpr size_t DEATH_MAP_CAP = 50000;
 std::unordered_map<uint64, uint32> _botDeaths;
 std::map<std::pair<uint32, uint32>, uint32> _killerZoneDeaths;
 
@@ -907,6 +909,7 @@ void BotAI::OnLogout(Player* bot, char const* reason)
     if (_fight.Active && _fight.StartLogged)
         EmitFightEnd(bot, reason && !strcmp(reason, "LOGOUT_COMMAND") ? "despawned" : "logout", _nowMs);
     _fight = Fight();
+    BotQuest::OnLogout(this); // releases the loot claim of the quest task
 }
 
 uint32 BotAI::CountHostiles(Player* bot) const
@@ -1390,9 +1393,15 @@ void BotAI::SnapshotDeath(Player* bot, Unit* attacker)
         uint32 const zone = bot->GetZoneId();
         {
             std::lock_guard lock(_repeatLock);
+            if (_botDeaths.size() >= DEATH_MAP_CAP && !_botDeaths.contains(_guid))
+                _botDeaths.clear(); // counters restart; the cap only guards against unbounded growth
             botDeaths = ++_botDeaths[_guid];
             if (_deathKillerEntry)
+            {
+                if (_killerZoneDeaths.size() >= DEATH_MAP_CAP && !_killerZoneDeaths.contains({ _deathKillerEntry, zone }))
+                    _killerZoneDeaths.clear();
                 killerZone = ++_killerZoneDeaths[{ _deathKillerEntry, zone }];
+            }
         }
         j += Trinity::StringFormat(R"(,"repeat":{{"bot":{})", botDeaths);
         if (killerZone)
