@@ -50,3 +50,9 @@ Compare rotation on and off with the same class and level, and check the existin
 * Cat rows now also have Tiger's Fury (self buff, strong target) and Shred (before Claw; needs a position behind the target and fails with `NOT_BEHIND` otherwise, then Claw runs). Pounce is not used (needs Prowl).
 * Dire Bear Form (9634, level 40) is a shift row above Bear Form; a bot in Dire Bear Form runs the Bear rows.
 * `Bot.AI.Rotation.DruidBear` (default off) makes the druid prefer Bear / Dire Bear Form to Cat Form (tankier, less damage). Needs `Bot.AI.Rotation.DruidForms`.
+
+## Healing additions: Flash Heal, Flash of Light, Renew, Rejuvenation
+
+* With `Bot.AI.Rotation.Enabled`, the self-heal is the last known heal row in table order: priest Flash Heal (level 20) after Lesser Heal, paladin Flash of Light (level 20) after Holy Light. Rotation off: the first row only, as before.
+* Renew (priest) and Rejuvenation (druid, unshifted) are self buffs cast when health is under 85% (the aura check keeps them from being recast while they run).
+* The group heal logic of `Bot.AI.Roles.*` picks its target as before and uses the same heal row.
