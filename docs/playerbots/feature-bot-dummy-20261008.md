@@ -44,3 +44,9 @@ Compare rotation on and off with the same class and level, and check the existin
 * **Pre-pull buffs** (strategy `prebuff`, NonCombat, added to every bot while `Bot.AI.Rotation.Enabled` is on; action `combat_prebuff`): out of combat, standing, not shifted, with mana above `Bot.AI.Combat.PrePullManaPct`, a bot keeps up its own long buffs: Power Word: Fortitude, Inner Fire, Arcane Intellect, Frost Armor, Mark of the Wild, Blessing of Might, Demon Skin, Aspect of the Hawk, Lightning Shield. One cast per 30 s per buff, highest known rank; the root id must match the spell name or the entry is ignored. Buffs on other players are not done.
 * **Rogue**: Cheap Shot and Ambush as the first rogue rows, only when the rogue carries Stealth (aura 1784). Nothing makes a rogue stealth yet (stealthed travel is slow and would change the quest walking), so these rows only fire when the rogue is stealthed by other means. Ambush needs a dagger and a position behind the target and will often fail with `NOT_BEHIND`.
 * Compiles (BotCombat.cpp, BotAI.cpp); not run on a server.
+
+## Druid additions: Shred, Tiger's Fury, Dire Bear Form, `Bot.AI.Rotation.DruidBear`
+
+* Cat rows now also have Tiger's Fury (self buff, strong target) and Shred (before Claw; needs a position behind the target and fails with `NOT_BEHIND` otherwise, then Claw runs). Pounce is not used (needs Prowl).
+* Dire Bear Form (9634, level 40) is a shift row above Bear Form; a bot in Dire Bear Form runs the Bear rows.
+* `Bot.AI.Rotation.DruidBear` (default off) makes the druid prefer Bear / Dire Bear Form to Cat Form (tankier, less damage). Needs `Bot.AI.Rotation.DruidForms`.
