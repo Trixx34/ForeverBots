@@ -738,6 +738,10 @@ struct Task
     uint32 GoWaitMs = 0;           // start of a respawn wait
     uint32 GoNextMs = 0;           // next scan at the claimed spawn
     uint32 GoUseTries = 0;
+    uint32 GoApproachTries = 0;    // passes spent walking up to the live object (counted every pass)
+    float GoBestGo = 0.0f;         // best 3D distance to the live object so far (0 = not measured yet)
+    uint32 GoBestGoMs = 0;
+    uint32 GoDangerMs = 0;         // next danger scan near the claimed spawn
 };
 
 struct Visited
@@ -1183,6 +1187,11 @@ public:
 
         if (!bot->IsAlive())
         {
+            if (c.T.K == Kind::Loot && c.T.GoSpawn)
+            {
+                GoRelease(c.T.GoSpawn, c.T.GoBot, 0);   // L2: a dead bot does not keep the chest claimed
+                c.T.GoSpawn = 0;
+            }
             c.ExpectGoal = false;
             c.Why = "dead";
             return false;
@@ -1380,6 +1389,12 @@ private:
                 c.ExpectGoal = true;
                 c.ExpectX = hx; c.ExpectY = hy;
                 return true;
+            }
+            if (t.K == Kind::Loot && t.GoSpawn)
+            {
+                // a chest spawn this bot cannot path to is a per-bot problem: try the next spawn, no quarantine
+                GoSpawnFailed(ai, bot, c, now, t, info.NoPath ? "no path" : "path partial far");
+                return false;
             }
             std::string det = StringFormat(R"({{"task":"{}","dest":[{:.0f},{:.0f},{:.0f}],"no_path":{},"partial":{},"gap3d":{:.0f},"goal_off_mesh":{},"length":{:.0f},"hops":{},"path_us":{},"hop_us":{}}})",
                 KindName(t.K), x, y, z, info.NoPath, info.Partial, info.EndGap3D, info.GoalOffMesh, info.Length, t.Hops, pathUs, hopUs);
@@ -2756,30 +2771,73 @@ private:
     }
 
     // The claimed spawn turned out empty / unusable for this bot: forget it and try the next one.
-    void GoSpawnFailed(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Task& t, char const* why)
+    // `global` is only true for a fact about the object (confirmed not spawned with the grid loaded): then every bot cools the spawn
+    // for a short while. Everything else (no path, danger, cannot interact, store failed) is this bot's problem: per-bot ignore only.
+    void GoSpawnFailed(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Task& t, char const* why, bool global = false, std::string extra = std::string())
     {
         BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_SPAWN_EMPTY", StringFormat("object {} at spawn {} not usable ({})", t.GoEntry, t.GoSpawn, why));
         ev.QuestId = t.Quest;
         ev.TargetEntry = t.GoEntry;
+        ev.Details = StringFormat(R"({{"cause":"{}","global":{},"spawn_dist":{:.0f},"bot":[{:.0f},{:.0f},{:.0f}]{}}})", why, global,
+            Dist2D(t.GoX, t.GoY, bot->GetPositionX(), bot->GetPositionY()), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), extra);
         sBotMgr->LogEvent(std::move(ev));
         uint32 const respawnMs = std::min<uint32>(t.GoRespawn, 600) * 1000;
-        c.GoIgnore[t.GoSpawn] = now + respawnMs;
-        GoRelease(t.GoSpawn, t.GoBot, respawnMs);
+        c.GoIgnore[t.GoSpawn] = now + (global ? respawnMs : 300 * 1000);
+        GoRelease(t.GoSpawn, t.GoBot, global ? std::min<uint32>(respawnMs, 120 * 1000) : 0);
         ++t.GoAttempts;
         t.GoSpawn = 0;
         t.GoUseTries = 0;
+        t.GoApproachTries = 0;
+        t.GoBestGo = 0.0f;
+        t.GoWaitMs = 0;
         StopMoving(ai, bot, c);
+    }
+
+    // H3: hostile units around a point that would kill a low level bot: an elite or a mob 2+ levels above (EffectiveDiff >= 2), or a
+    // camp of 3 or more hostile mobs within 25 yards. `list` is the bot's own grid scan (the point must be inside its range).
+    // Returns true on danger; entry/count describe the worst mob and the number of hostiles.
+    bool GoDangerAt(Player* bot, std::vector<Creature*> const& list, float x, float y, uint32& entry, uint32& count)
+    {
+        entry = 0;
+        count = 0;
+        bool danger = false;
+        for (Creature* m : list)
+        {
+            if (!m->IsAlive() || m->IsCritter() || m->IsPet() || m->IsTotem() || m->IsCivilian() || m->GetCreatureTemplate()->npcflag)
+                continue;
+            if (Dist2D(m->GetPositionX(), m->GetPositionY(), x, y) > 25.0f || !bot->IsValidAttackTarget(m))
+                continue;
+            ++count;
+            if (m->isWorldBoss() || EffectiveDiff(bot, m) >= 2)
+            {
+                if (!danger)
+                    entry = m->GetEntry();
+                danger = true;
+            }
+            else if (!entry)
+                entry = m->GetEntry();
+        }
+        return danger || count >= 3;
+    }
+
+    void GoScanList(Player* bot, std::vector<Creature*>& list)
+    {
+        FindCreatureOptions opt;
+        opt.IsAlive = FindCreatureAliveState::Alive;
+        bot->GetCreatureListWithOptionsInGrid(list, 90.0f, opt);
     }
 
     // Picks and claims the nearest free spawn of the item's chest objects. 0 = claimed, 1 = all busy (other bots), 2 = all cooling or
     // ignored (respawn wait), 3 = none on this map.
-    int GoPickSpawn(Player* bot, BotQuestCtx& c, uint32 now, Task& t, std::vector<uint32> const& gos, uint32& minWaitMs)
+    int GoPickSpawn(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Task& t, std::vector<uint32> const& gos, uint32& minWaitMs)
     {
         uint64 const me = bot->GetGUID().GetCounter();
         GoPt const* best = nullptr;
         float bd = 1e9f;
         uint32 busy = 0, cooling = 0;
         minWaitMs = 0xFFFFFFFFu;
+        std::vector<Creature*> list;
+        bool listed = false;
         for (uint32 en : gos)
         {
             auto it = g.GoSpawns.find(en);
@@ -2803,6 +2861,39 @@ private:
                 float d = Dist2D(p.P.X, p.P.Y, bot->GetPositionX(), bot->GetPositionY());
                 if (d < bd)
                 {
+                    // sanity before this becomes the candidate: another floor / ledge needs a real path, and a camp of mobs near the
+                    // spawn point (when it is in scan range) rules the spawn out for this bot
+                    bool bad = false;
+                    char const* badWhy = "";
+                    if (std::fabs(p.P.Z - bot->GetPositionZ()) > 15.0f && d < 150.0f)
+                    {
+                        BotPathInfo info = BotMotion::QueryPath(bot, p.P.X, p.P.Y, p.P.Z);
+                        if (info.NoPath || (info.Partial && info.EndGap3D > 25.0f) || (info.Valid && info.GoalOffMesh && info.EndGap3D > 25.0f))
+                        { bad = true; badWhy = "pick: no path to another level"; }
+                    }
+                    if (!bad && d < 80.0f)
+                    {
+                        if (!listed)
+                        {
+                            GoScanList(bot, list);
+                            listed = true;
+                        }
+                        uint32 dEntry = 0, dCount = 0;
+                        if (GoDangerAt(bot, list, p.P.X, p.P.Y, dEntry, dCount))
+                        { bad = true; badWhy = "pick: danger"; }
+                    }
+                    if (bad)
+                    {
+                        c.GoIgnore[p.SpawnId] = now + 300 * 1000;
+                        ++cooling;
+                        minWaitMs = std::min<uint32>(minWaitMs, 300 * 1000);
+                        BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_SPAWN_EMPTY", StringFormat("object {} at spawn {} skipped ({})", p.Entry, p.SpawnId, badWhy));
+                        ev.QuestId = t.Quest;
+                        ev.TargetEntry = p.Entry;
+                        ev.Details = StringFormat(R"({{"cause":"{}","global":false,"spawn_dist":{:.0f},"bot":[{:.0f},{:.0f},{:.0f}]}})", badWhy, d, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+                        sBotMgr->LogEvent(std::move(ev));
+                        continue;
+                    }
                     bd = d;
                     best = &p;
                 }
@@ -2817,6 +2908,9 @@ private:
             t.GoX = best->P.X; t.GoY = best->P.Y; t.GoZ = best->P.Z;
             t.GoWaitMs = 0;
             t.GoUseTries = 0;
+            t.GoApproachTries = 0;
+            t.GoBestGo = 0.0f;
+            t.GoDangerMs = 0;
             return 0;
         }
         if (best || busy)
@@ -2853,13 +2947,13 @@ private:
         // overall caps: respawn waits are longer than the kill stall timer, but a task is never open forever
         if (now - t.SinceMs > 12 * 60 * 1000)
         {
-            Drop(ai, bot, c, now, t.Quest, "ITEM_NOT_DROPPING", StringFormat("no progress on '{}' from chest objects in 12 minutes", q->GetLogTitle()),
+            Drop(ai, bot, c, now, t.Quest, "LOOT_EXHAUSTED", StringFormat("no progress on '{}' from chest objects in 12 minutes", q->GetLogTitle()),
                 StringFormat(R"({{"item":{},"attempts":{},"looted":{},"count":{},"amount":{}}})", obj->ObjectID, t.GoAttempts, t.GoLooted, count, obj->Amount), uint32(obj->ObjectID), 1800);
             return true;
         }
         if (t.GoAttempts >= 8)
         {
-            Drop(ai, bot, c, now, t.Quest, "ITEM_NOT_DROPPING", StringFormat("{} chest object spawns for '{}' were empty or unusable", t.GoAttempts, q->GetLogTitle()),
+            Drop(ai, bot, c, now, t.Quest, "LOOT_EXHAUSTED", StringFormat("{} chest object spawns for '{}' were empty or unusable", t.GoAttempts, q->GetLogTitle()),
                 StringFormat(R"({{"item":{},"attempts":{},"looted":{},"count":{},"amount":{}}})", obj->ObjectID, t.GoAttempts, t.GoLooted, count, obj->Amount), uint32(obj->ObjectID), 1800);
             return true;
         }
@@ -2871,7 +2965,7 @@ private:
             std::vector<uint32> gos;
             GoEntriesOf(uint32(obj->ObjectID), gos);
             uint32 waitMs = 0;
-            int r = GoPickSpawn(bot, c, now, t, gos, waitMs);
+            int r = GoPickSpawn(ai, bot, c, now, t, gos, waitMs);
             if (r == 1)
             {
                 GoBackOff(ai, bot, c, now, q, "GO_BUSY", StringFormat("object spawns for '{}' are in use by other bots, doing other work", q->GetLogTitle()),
@@ -2880,11 +2974,7 @@ private:
             }
             if (r == 2)
             {
-                // everything is looted / respawning: wait for the earliest respawn, but not long (the bot does other work meanwhile)
-                if (!t.GoWaitMs)
-                    t.GoWaitMs = now;
-                if (waitMs <= 90 * 1000 && now - t.GoWaitMs < 90 * 1000)
-                    return false;
+                // everything is looted / respawning / ruled out: do other work meanwhile, never stand around in the open waiting
                 GoBackOff(ai, bot, c, now, q, "GO_RESPAWN_WAIT", StringFormat("all object spawns for '{}' are looted, respawn in {} s", q->GetLogTitle(), waitMs / 1000),
                     StringFormat(R"({{"item":{},"wait_s":{}}})", obj->ObjectID, waitMs / 1000), uint32(obj->ObjectID), std::clamp<uint32>(waitMs / 1000, 60, 600));
                 return true;
@@ -2904,6 +2994,19 @@ private:
         }
 
         float const dSpawn = Dist2D(t.GoX, t.GoY, bot->GetPositionX(), bot->GetPositionY());
+        if (dSpawn < 60.0f && now >= t.GoDangerMs)
+        {
+            // H3: re-check the camp around the spawn point while approaching (the first pick often happens out of scan range)
+            t.GoDangerMs = now + 1500;
+            std::vector<Creature*> list;
+            GoScanList(bot, list);
+            uint32 dEntry = 0, dCount = 0;
+            if (GoDangerAt(bot, list, t.GoX, t.GoY, dEntry, dCount))
+            {
+                GoSpawnFailed(ai, bot, c, now, t, "danger", false, StringFormat(R"(,"hostile_entry":{},"hostiles":{})", dEntry, dCount));
+                return false;
+            }
+        }
         if (dSpawn > 20.0f)
         {
             // far: walk to the spawn point, then switch to the live object; no progress for a while = give this spawn up
@@ -2932,20 +3035,39 @@ private:
                 t.GoWaitMs = now;
             if (dSpawn > 8.0f)
             {
+                if (now - t.GoWaitMs > 20000)
+                {
+                    GoSpawnFailed(ai, bot, c, now, t, "cannot get near the spawn point");
+                    return false;
+                }
                 Travel(ai, bot, c, now, t.GoX, t.GoY, t.GoZ, 5.0f, t.GoEntry);
                 return false;
             }
             if (now - t.GoWaitMs < 3000)
                 return false;
-            GoSpawnFailed(ai, bot, c, now, t, "not spawned");
+            GoSpawnFailed(ai, bot, c, now, t, "not spawned", true);
             return false;
         }
         t.GoWaitMs = 0;
         float const dGo = bot->GetExactDist(go);
         if (dGo > 3.0f)
         {
+            // H1: every pass counts, and the approach has its own stall timer (best distance must improve within 20 s)
+            ++t.GoApproachTries;
+            if (t.GoBestGo <= 0.0f || dGo < t.GoBestGo - 0.5f)
+            {
+                t.GoBestGo = dGo;
+                t.GoBestGoMs = now;
+            }
+            if (now - t.GoBestGoMs > 20000 || t.GoApproachTries >= 40)
+            {
+                GoSpawnFailed(ai, bot, c, now, t, "cannot reach object", false, StringFormat(R"(,"object_dist":{:.1f},"tries":{})", dGo, t.GoApproachTries));
+                return false;
+            }
             Travel(ai, bot, c, now, go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(), 2.0f, t.GoEntry);
-            if (dGo > 5.0f || ++t.GoUseTries < 12)
+            if (!t.GoSpawn)
+                return false;   // the walk could not start and the spawn was given up
+            if (dGo > 5.0f || t.GoApproachTries < 12)
                 return false;
         }
         StopMoving(ai, bot, c);
@@ -2958,8 +3080,20 @@ private:
             return false;
         }
         bot->SetFacingToObject(usable);
+        uint32 const itemBefore = obj->Type == QUEST_OBJECTIVE_ITEM ? bot->GetItemCount(uint32(obj->ObjectID), true) : 0;
         usable->Use(bot);
-        if (LootGameObject(bot, usable))
+        bool const lootTaken = LootGameObject(bot, usable);
+        if (lootTaken && obj->Type == QUEST_OBJECTIVE_ITEM && bot->GetItemCount(uint32(obj->ObjectID), true) <= itemBefore)
+        {
+            // M4: the loot window was emptied for us but nothing arrived (bags full, unique item): not a success
+            ItemPosCountVec dest;
+            bool const bagsFull = bot->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, uint32(obj->ObjectID), 1) != EQUIP_ERR_OK;
+            if (bagsFull)
+                c.VendorNow = true;
+            GoSpawnFailed(ai, bot, c, now, t, bagsFull ? "store failed: bags full" : "store failed");
+            return false;
+        }
+        if (lootTaken)
         {
             ++t.GoLooted;
             uint32 const respawnMs = std::min<uint32>(t.GoRespawn, 600) * 1000;
@@ -2972,6 +3106,8 @@ private:
             sBotMgr->LogEvent(std::move(ev));
             t.GoSpawn = 0;
             t.GoUseTries = 0;
+            t.GoApproachTries = 0;
+            t.GoBestGo = 0.0f;
             t.GoAttempts = 0;   // a successful loot resets the failure budget
             return true;
         }
