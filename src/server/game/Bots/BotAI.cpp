@@ -910,6 +910,7 @@ void BotAI::OnDying(Player* bot, Unit* attacker)
 {
     uint64 const t0 = NowNs();
     SnapshotDeath(bot, attacker);
+    BotQuest::NoteDeath(bot);
     uint64 const elapsed = NowNs() - t0;
     _stats.Deaths.fetch_add(1, std::memory_order_relaxed);
     _stats.DeathNs.fetch_add(elapsed, std::memory_order_relaxed);
