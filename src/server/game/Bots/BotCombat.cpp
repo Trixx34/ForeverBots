@@ -74,6 +74,8 @@ struct CombatConfig
     bool FreeTotems = true;        // Bot.AI.Combat.FreeTotems: a shaman that knows a totem spell gets the totem tool (Earth/Fire/Water Totem) for free, like free repair a placeholder until the economy phase
     bool FreeRepair = true;        // Bot.AI.Combat.FreeRepair: broken equipment is repaired for free (placeholder until the economy phase)
     uint32 LowHpFleePct = 15;      // Bot.AI.Combat.Flee.LowHpPct: flee (flee_reason low_hp) below this health percent, 0 = off
+    bool Control = false;          // Bot.Chat.Control.Enabled: the leader's focus target and role overrides (BotControl.h) apply
+    float FocusRange = 40.0f;      // Bot.Chat.Control.FocusRangeYards
     bool GroupRoles = false;       // Bot.AI.Roles.Enabled: healers heal group members, damage dealers assist the tank's target (needs a group)
     uint32 HoldMs = 3000;          // Bot.AI.Roles.HoldSec: non-tanks wait this long for the tank to gather threat before they open
     BotGroupRoles::Config Roles;   // Bot.AI.Roles.AllyHealBelowPct / TankHealBelowPct / EmergencyPct
@@ -111,6 +113,8 @@ CombatConfig const& Cfg()
         cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
         cfg.Rotation = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.Enabled", false);
         cfg.CrowdControl = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.CrowdControl", true);
+        cfg.Control = sConfigMgr->GetBoolDefault("Bot.Chat.Control.Enabled", false);
+        cfg.FocusRange = std::clamp(sConfigMgr->GetFloatDefault("Bot.Chat.Control.FocusRangeYards", 40.0f), 5.0f, 100.0f);
         cfg.GroupRoles = sConfigMgr->GetBoolDefault("Bot.AI.Roles.Enabled", false);
         cfg.Threat = sConfigMgr->GetBoolDefault("Bot.AI.Roles.Threat", true);
         cfg.HoldMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.HoldSec", 3), 0, 15)) * 1000;
@@ -750,23 +754,48 @@ public:
 };
 
 // Group members for the heal choice (Bot.AI.Roles.*): everybody alive on the bot's map within `range` yards, the bot itself included.
-// The tank is the warrior of the group. At most 40 members are looked at.
-// The tank of the bot's group: the living warrior on the bot's map with the lowest guid (the same answer for every member, the bot included).
+// The tank of the bot's group: a member the leader made tank (chat `role tank`, BotControl), else the living warrior on the bot's map
+// with the lowest guid (the same answer for every member, the bot included). A bot told to be healer or dps does not tank.
 Player* GroupTank(Player* bot)
 {
     Group* group = bot->GetGroup();
     if (!group)
         return nullptr;
     Player* tank = nullptr;
+    int32 tankPrio = -1;
     for (GroupReference const& ref : group->GetMembers())
     {
         Player* m = ref.GetSource();
-        if (!m || !m->IsInWorld() || !m->IsAlive() || m->GetMap() != bot->GetMap() || m->GetClass() != CLASS_WARRIOR)
+        if (!m || !m->IsInWorld() || !m->IsAlive() || m->GetMap() != bot->GetMap())
             continue;
-        if (!tank || m->GetGUID().GetCounter() < tank->GetGUID().GetCounter())
+        BotAI* mAI = m->GetSession() ? m->GetSession()->GetBotAI() : nullptr;
+        int32 const prio = BotControl::TankPriority(mAI ? mAI->GetRole() : BotControl::Role::Auto, m->GetClass() == CLASS_WARRIOR);
+        if (prio < 0)
+            continue;
+        if (!tank || prio < tankPrio || (prio == tankPrio && m->GetGUID().GetCounter() < tank->GetGUID().GetCounter()))
+        {
             tank = m;
+            tankPrio = prio;
+        }
     }
     return tank;
+}
+
+// Stance gate (BotControl::StanceAllows): who the mob is attacking decides whether the bot fights it.
+bool StanceAllowsFoe(Player* bot, BotAI* ai, Unit* mob)
+{
+    BotControl::Stance const stance = ai->GetStance();
+    if (stance == BotControl::Stance::Aggressive)
+        return true;
+    BotControl::FoeFacts f;
+    Unit* victim = mob->GetVictim();
+    f.AttacksSelf = victim == bot;
+    if (victim && victim != bot && stance == BotControl::Stance::Defensive)
+    {
+        Player* vp = victim->GetCharmerOrOwnerPlayerOrPlayerItself();
+        f.AttacksGroup = vp && vp->GetGroup() && vp->GetGroup() == bot->GetGroup();
+    }
+    return BotControl::StanceAllows(stance, f);
 }
 
 std::vector<BotGroupRoles::Ally> GroupAllies(Player* bot, float range, std::vector<Player*>* members = nullptr)
@@ -1189,6 +1218,7 @@ private:
     {
         uint32 const now = ai->GetNowMs();
         std::vector<Candidate> cands;
+        cands.reserve(13);   // `pick` points into it: no reallocation
         for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())
         {
             Unit* mob = ref->GetOther(bot);
@@ -1196,8 +1226,8 @@ private:
                 continue;
             if (mob->GetGUID() == ctx->Ignored && now < ctx->IgnoredUntilMs)
                 continue;
-            if (ai->IsPassive() && mob->GetVictim() != bot)
-                continue;   // `passive` (Bot.Chat.Orders.*): only self defense
+            if (!StanceAllowsFoe(bot, ai, mob))
+                continue;   // stance (Bot.Chat.Orders.* passive, Bot.Chat.Control.* defensive)
             cands.push_back({ mob, Assess(bot, mob), bot->GetDistance(mob) });
             if (cands.size() >= 12)
                 break;
@@ -1206,7 +1236,7 @@ private:
         if (cands.empty() && Cfg().GroupRoles)
             GroupFoes(bot, [&](Unit* mob)
             {
-                if (cands.size() < 12 && CanFight(bot, mob) && !(mob->GetGUID() == ctx->Ignored && now < ctx->IgnoredUntilMs))
+                if (cands.size() < 12 && CanFight(bot, mob) && StanceAllowsFoe(bot, ai, mob) && !(mob->GetGUID() == ctx->Ignored && now < ctx->IgnoredUntilMs))
                     cands.push_back({ mob, Assess(bot, mob), bot->GetDistance(mob) });
             });
         if (cands.empty())
@@ -1272,6 +1302,27 @@ private:
                 int32 const idx = BotGroupRoles::PickAssistTarget(foes, tankVictim ? tankVictim->GetGUID().GetCounter() : 0);
                 if (idx >= 0)
                     pick = usable[size_t(idx)];
+            }
+        }
+        // focus (Bot.Chat.Control.*): the target the leader pointed at comes first, when it is fightable and not too strong
+        if (Cfg().Control)
+        {
+            ObjectGuid const focus = ai->GetFocus();
+            Unit* fu = focus.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*bot, focus);
+            if (fu && CanFight(bot, fu) && StanceAllowsFoe(bot, ai, fu) && bot->GetDistance(fu) <= Cfg().FocusRange
+                && !(fu->GetGUID() == ctx->Ignored && now < ctx->IgnoredUntilMs))
+            {
+                Candidate* fc = nullptr;
+                for (Candidate& c : cands)
+                    if (c.Mob == fu)
+                        fc = &c;
+                if (!fc && cands.size() < 12)
+                {
+                    cands.push_back({ fu, Assess(bot, fu), bot->GetDistance(fu) });
+                    fc = &cands.back();   // pick points into cands: it is not touched again below
+                }
+                if (fc && !fc->T.TooStrong)
+                    pick = fc;
             }
         }
         std::string considered;
@@ -1687,7 +1738,7 @@ public:
             return false;
         float hpBefore = bot->GetHealthPct();
         Unit* healTarget = bot;
-        if (Cfg().GroupRoles && bot->GetGroup())
+        if (Cfg().GroupRoles && bot->GetGroup() && !(Cfg().Control && ai->GetRole() == BotControl::Role::Dps))   // `role dps`: heals only itself
         {
             std::vector<Player*> members;
             std::vector<BotGroupRoles::Ally> allies = GroupAllies(bot, std::max(5.0f, heal->MaxRange - 1.0f), &members);

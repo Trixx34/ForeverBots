@@ -296,3 +296,14 @@ TEST_CASE("BotChat mount choice", "[BotChat]")
     std::vector<MountOption> unknown = { { 5, 0, false }, { 4, 0, false } };
     CHECK(unknown[size_t(PickMount(unknown))].SpellId == 4);
 }
+
+TEST_CASE("BotChat control verbs need the control switch", "[BotChat]")
+{
+    CHECK(ParseVerb("role", false, false) == Verb::None);
+    CHECK(ParseVerb("stance", true, false) == Verb::None);
+    CHECK(ParseVerb("ROLE", false, true) == Verb::Role);
+    CHECK(ParseVerb("stance", false, true) == Verb::Stance);
+    CHECK(ParseVerb("focus", false, true) == Verb::Focus);
+    CHECK(ParseVerb("distance", false, true) == Verb::Distance);
+    CHECK(ParseVerb("follow", false, false) == Verb::Follow);
+}

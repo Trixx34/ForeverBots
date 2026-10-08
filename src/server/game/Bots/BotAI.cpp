@@ -709,6 +709,14 @@ bool BotAI::RemoveStrategy(Player* bot, std::string const& name, char const* sou
     return removed;
 }
 
+bool BotAI::HasStrategy(std::string const& name) const
+{
+    for (uint32 s = 0; s < BOT_STATE_COUNT; ++s)
+        if (_engines[s]->HasStrategy(name))
+            return true;
+    return false;
+}
+
 std::vector<std::string> BotAI::DescribeStrategies() const
 {
     std::vector<std::string> lines;

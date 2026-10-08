@@ -19,6 +19,7 @@
 #include "BotAI.h"
 #include "BotBehavior.h"
 #include "BotCombat.h"
+#include "BotControl.h"
 #include "BotDummy.h"
 #include "BotEngine.h"
 #include "BotMgr.h"
@@ -74,6 +75,10 @@ char const* VerbName(Verb v)
         case Verb::Summon: return "summon";
         case Verb::Revive: return "revive";
         case Verb::Dummy: return "dummy";
+        case Verb::Role: return "role";
+        case Verb::Stance: return "stance";
+        case Verb::Focus: return "focus";
+        case Verb::Distance: return "distance";
         default: return "?";
     }
 }
@@ -88,6 +93,9 @@ struct Cfg
     float HealRange = 40.0f;        // Bot.Chat.Orders.HealRangeYards (the heal spell's own range still applies)
     float ReviveHealthPct = 35.0f;  // Bot.Chat.Orders.ReviveHealthPct
     bool ReviveSickness = true;     // Bot.Chat.Orders.ReviveSickness
+    bool Control = false;           // Bot.Chat.Control.Enabled: role, stance, focus, distance, "what are you doing"
+    float FocusRange = 40.0f;       // Bot.Chat.Control.FocusRangeYards: farthest focus target (also read by BotCombat.cpp)
+    float DistMin = 3.0f, DistMax = 40.0f;   // Bot.Chat.Control.MinFollowYards / MaxFollowYards
     bool VerboseDefault = false;
     uint32 MaxReplyLines = 4;
     uint32 UnauthLogSec = 30;
@@ -116,6 +124,10 @@ Cfg const& Config()
         c.HealRange = std::clamp(sConfigMgr->GetFloatDefault("Bot.Chat.Orders.HealRangeYards", 40.0f), 5.0f, 100.0f);
         c.ReviveHealthPct = std::clamp(sConfigMgr->GetFloatDefault("Bot.Chat.Orders.ReviveHealthPct", 35.0f), 1.0f, 100.0f);
         c.ReviveSickness = sConfigMgr->GetBoolDefault("Bot.Chat.Orders.ReviveSickness", true);
+        c.Control = sConfigMgr->GetBoolDefault("Bot.Chat.Control.Enabled", false);
+        c.FocusRange = std::clamp(sConfigMgr->GetFloatDefault("Bot.Chat.Control.FocusRangeYards", 40.0f), 5.0f, 100.0f);
+        c.DistMin = std::clamp(sConfigMgr->GetFloatDefault("Bot.Chat.Control.MinFollowYards", 3.0f), 2.0f, 40.0f);
+        c.DistMax = std::clamp(sConfigMgr->GetFloatDefault("Bot.Chat.Control.MaxFollowYards", 40.0f), c.DistMin, 100.0f);
         c.VerboseDefault = sConfigMgr->GetBoolDefault("Bot.Chat.VerboseDefault", false);
         c.MaxReplyLines = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Chat.MaxReplyLines", 4), 1, 10));
         c.UnauthLogSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Chat.UnauthorizedLogSec", 30), 0, 3600));
@@ -274,7 +286,7 @@ char const* ParseGotoArgs(std::string_view args, GotoArgs& out)
     return nullptr;
 }
 
-Verb ParseVerb(std::string_view t, bool orders)
+Verb ParseVerb(std::string_view t, bool orders, bool control)
 {
     if (t.empty() || t.size() > 10)
         return Verb::None;
@@ -282,9 +294,14 @@ Verb ParseVerb(std::string_view t, bool orders)
         { "rest", Verb::Rest }, { "release", Verb::Release }, { "status", Verb::Status }, { "strategy", Verb::Strategy }, { "verbose", Verb::Verbose }, { "share", Verb::Share }, { "dummy", Verb::Dummy } };
     static constexpr std::pair<char const*, Verb> orderVerbs[] = { { "stop", Verb::Stop }, { "aggressive", Verb::Aggressive }, { "passive", Verb::Passive },
         { "pull", Verb::Pull }, { "heal", Verb::Heal }, { "mount", Verb::Mount }, { "dismount", Verb::Dismount }, { "summon", Verb::Summon }, { "revive", Verb::Revive } };
+    static constexpr std::pair<char const*, Verb> controlVerbs[] = { { "role", Verb::Role }, { "stance", Verb::Stance }, { "focus", Verb::Focus }, { "distance", Verb::Distance } };
     for (auto const& [name, v] : verbs)
         if (EqI(t, name))
             return v;
+    if (control)
+        for (auto const& [name, v] : controlVerbs)
+            if (EqI(t, name))
+                return v;
     if (orders)
         for (auto const& [name, v] : orderVerbs)
             if (EqI(t, name))
@@ -474,6 +491,9 @@ struct Ctx
     RoleMasks Roles;                                  // role gate of pull / heal
     Unit* Target = nullptr;                           // pull, heal: the issuer's selected target (live during Handle only)
     uint32 DummySec = 0;                              // dummy: run length, 0 = default
+    BotControl::Role RoleSet = BotControl::Role::Auto;            // role
+    BotControl::Stance StanceSet = BotControl::Stance::Aggressive; // stance
+    BotControl::DistanceArgs Dist;                    // distance
 };
 
 void Preflight(Ctx& c)
@@ -563,6 +583,25 @@ void Preflight(Ctx& c)
                 c.DummySec = *sec;
             break;
         }
+        case Verb::Role:
+            if (!BotControl::ParseRole(a, c.RoleSet))
+                c.PreflightError = "BAD_ARGS";
+            break;
+        case Verb::Stance:
+            if (!BotControl::ParseStance(a, c.StanceSet))
+                c.PreflightError = "BAD_ARGS";
+            break;
+        case Verb::Focus:
+            if (a.empty() || EqI(a, "on"))
+                c.Off = false;
+            else if (EqI(a, "off") || EqI(a, "clear"))
+                c.Off = true;
+            else
+                c.PreflightError = "BAD_ARGS";
+            break;
+        case Verb::Distance:
+            c.PreflightError = BotControl::ParseDistance(a, Config().DistMin, Config().DistMax, c.Dist);
+            break;
         case Verb::Release:
         case Verb::Status:
             if (!a.empty())
@@ -804,6 +843,32 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
             bot->TeleportTo(WorldLocation(issuer->GetMapId(), x, y, issuer->GetPositionZ(), issuer->GetOrientation()));
             return "OK";
         }
+        case Verb::Role:
+            ai->SetRole(c.RoleSet);
+            return "OK";
+        case Verb::Stance:
+            ai->SetStance(c.StanceSet);
+            return "OK";
+        case Verb::Focus:
+        {
+            if (c.Off)
+            {
+                ai->SetFocus(ObjectGuid::Empty);
+                return "OK";
+            }
+            if (!c.Target)
+                return "NO_TARGET";
+            Creature* mob = c.Target->ToCreature();
+            if (!mob || !mob->IsAlive() || !mob->IsInWorld() || !bot->IsValidAttackTarget(mob) || mob->IsFriendlyTo(bot))
+                return "NOT_HOSTILE";
+            if (mob->GetMap() != bot->GetMap())
+                return "DIFFERENT_MAP";
+            ai->SetFocus(mob->GetGUID());
+            return "OK";
+        }
+        case Verb::Distance:
+            ai->Motion().SetFollowDistance(c.Dist.Reset ? 0.0f : c.Dist.Yards);
+            return "OK";
         case Verb::Strategy:
             for (auto const& [add, name] : c.Strat)
                 if (add)
@@ -814,6 +879,38 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
         default:
             return "OK";   // status and the strategy listing are read only
     }
+}
+
+// One line per bot: what it is doing and the control panel settings that are not at their defaults.
+std::string ReportLine(Member const& m)
+{
+    Player* bot = m.P;
+    BotAI* ai = m.AI;
+    BotControl::ReportFacts f;
+    f.Name = bot->GetName();
+    f.Alive = bot->IsAlive();
+    f.Ghost = bot->HasPlayerFlag(PLAYER_FLAGS_GHOST);
+    f.InCombat = ai->GetState() == BotState::Combat;
+    if (Unit* victim = bot->GetVictim())
+        f.FightTarget = victim->GetName();
+    f.Resting = ai->Rest().Resting();
+    f.Mounted = bot->IsMounted();
+    f.Staying = ai->HasStrategy("stay");
+    f.Following = !ai->Motion().GetFollow().IsEmpty();
+    f.HasGoal = ai->Motion().HasGoal();
+    if (f.HasGoal)
+        f.GoalTag = ai->Motion().GetTag();
+    f.RoleSet = ai->GetRole();
+    f.StanceSet = ai->GetStance();
+    f.FollowYards = ai->Motion().GetFollowDistance();
+    if (ObjectGuid focus = ai->GetFocus(); !focus.IsEmpty())
+        if (Unit* fu = ObjectAccessor::GetUnit(*bot, focus))
+            f.Focus = fu->GetName();
+    f.HealthPct = uint32(bot->GetHealthPct());
+    f.UsesMana = bot->GetPowerType() == POWER_MANA && bot->GetMaxPower(POWER_MANA) > 0;
+    if (f.UsesMana)
+        f.ManaPct = uint32(100.0f * float(bot->GetPower(POWER_MANA)) / float(bot->GetMaxPower(POWER_MANA)));
+    return BotControl::DescribeReport(f);
 }
 
 std::vector<std::string> BuildStatus(std::vector<Member> const& targets, uint32 maxLines)
@@ -908,7 +1005,13 @@ bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whis
     RoleMasks const roles{ cfg.TankMask, cfg.HealerMask, cfg.DpsMask };
     bool const hasSel = ParseSelector(tok, roles, sel);
     std::string_view const selText = hasSel ? tok : std::string_view();
-    Verb const verb = ParseVerb(hasSel ? NextToken(rest) : tok, cfg.Orders);
+    std::string_view const body = hasSel ? rest : text;   // what follows the selector
+    Verb verb = ParseVerb(hasSel ? NextToken(rest) : tok, cfg.Orders, cfg.Control);
+    if (verb == Verb::None && cfg.Control && BotControl::IsStatusQuestion(Trim(body)))
+    {
+        verb = Verb::Status;   // "what are you doing?"
+        rest = std::string_view();
+    }
     if (verb == Verb::None)
         return false;
     std::string_view const args = Trim(rest);
@@ -1009,7 +1112,7 @@ bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whis
     ctx.Args = args;
     ctx.Roles = roles;
     Preflight(ctx);
-    if ((verb == Verb::Pull || verb == Verb::Heal) && !ctx.PreflightError)
+    if ((verb == Verb::Pull || verb == Verb::Heal || (verb == Verb::Focus && !ctx.Off)) && !ctx.PreflightError)
         ctx.Target = ObjectAccessor::GetUnit(*issuer, issuer->GetTarget());
 
     std::vector<char const*> codes;
@@ -1022,7 +1125,14 @@ bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whis
         LogCommand(m, issuer, channel, verb, args, match, code, !strcmp(code, "OK"), BOTLOG_INFO);
     }
 
-    if (verb == Verb::Status)
+    if (verb == Verb::Status && cfg.Control && targets.size() <= cfg.MaxReplyLines)
+    {
+        std::vector<std::string> lines;
+        for (Member const& m : targets)
+            lines.push_back(ReportLine(m));
+        SendReply(issuer, sink, lines);
+    }
+    else if (verb == Verb::Status)
         SendReply(issuer, sink, BuildStatus(targets, cfg.MaxReplyLines));
     else if (verb == Verb::Strategy && args.empty())
     {

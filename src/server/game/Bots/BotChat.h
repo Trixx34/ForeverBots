@@ -22,6 +22,8 @@
 // The party/raid leader controls the bots of the group through party chat, raid chat or a whisper to one bot:
 //   [selector] <verb> [args]      selector: all | g1 | g2 | g3-g4 | g1,g3 | tank | healer | dps | <class>   (comma lists: same kind = union, subgroup + role/class = intersection, e.g. g1,tank)
 //   verbs (non-combat): follow [off] | stay [off] | goto here|<x> <y> [z] | rest [off] | release | status | strategy [+a,-b] | verbose on|off
+//   control panel (Bot.Chat.Control.Enabled, default off): role tank|healer|dps|auto | stance aggressive|defensive|passive | focus [off] (the issuer's
+//   selected target) | distance <yards>|default (follow distance) | "what are you doing" (a status line per bot). See docs/playerbots/feature-bot-control-commands-20261008.md.
 //   orders (Bot.Chat.Orders.Enabled, default off): stop | aggressive | passive | pull (tanks, the issuer's selected target) | heal (healers, the selected
 //   target) | mount | dismount | summon | revive. See docs/playerbots/feature-bot-chat-orders-20261008.md.
 // Everyone else is ignored and logged (rate limited). Handle() is the single entry point: the ChatHandler hooks and the
@@ -67,11 +69,13 @@ TC_GAME_API bool ParseSelector(std::string_view token, RoleMasks const& roles, S
 enum class Verb : uint8
 {
     None, Follow, Stay, Goto, Rest, Release, Status, Strategy, Verbose, Share, Dummy,
-    Stop, Aggressive, Passive, Pull, Heal, Mount, Dismount, Summon, Revive   // orders (Bot.Chat.Orders.Enabled)
+    Stop, Aggressive, Passive, Pull, Heal, Mount, Dismount, Summon, Revive,  // orders (Bot.Chat.Orders.Enabled)
+    Role, Stance, Focus, Distance                                            // control panel (Bot.Chat.Control.Enabled)
 };
 
-// Pure: the verb of a chat token, case insensitive. The order verbs (stop ... revive) are only recognized when `orders` is true.
-TC_GAME_API Verb ParseVerb(std::string_view token, bool orders);
+// Pure: the verb of a chat token, case insensitive. The order verbs (stop ... revive) are only recognized when `orders` is true, the
+// control verbs (role, stance, focus, distance) only when `control` is true.
+TC_GAME_API Verb ParseVerb(std::string_view token, bool orders, bool control = false);
 
 // Pure: the order verbs take no arguments. Returns nullptr when valid, else the refusal code (BAD_ARGS).
 TC_GAME_API char const* ValidateOrderArgs(Verb verb, std::string_view args);

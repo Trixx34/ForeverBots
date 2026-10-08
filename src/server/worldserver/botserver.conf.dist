@@ -2262,6 +2262,39 @@ Bot.Chat.Orders.ReviveHealthPct = 35
 #        Values:      0 (off) or 1 (on)
 Bot.Chat.Orders.ReviveSickness = 1
 
+#
+#    Bot.Chat.Control.Enabled
+#        Description: Control panel for the bots of your group (docs/playerbots/feature-bot-control-commands-20261008.md).
+#                     The group leader sets, by party chat, raid chat or whisper: "role tank|healer|dps|auto",
+#                     "stance aggressive|defensive|passive", "focus" (the bots attack the selected target first) and
+#                     "focus off", "distance <yards>" or "distance default" (follow distance), and asks "what are you
+#                     doing?" (one status line per bot). Off: these words are ordinary chat.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Chat.Control.Enabled = 0
+
+#
+#    Bot.Chat.Control.FocusRangeYards
+#        Description: Farthest distance from a bot to its focus target. A focus target farther away is ignored
+#                     until it comes closer; a target that is too strong for the bot is never taken.
+#        Default:     40
+#        Values:      whole number 5 to 100 (yards)
+Bot.Chat.Control.FocusRangeYards = 40
+
+#
+#    Bot.Chat.Control.MinFollowYards
+#        Description: Smallest follow distance the "distance" command accepts.
+#        Default:     3
+#        Values:      whole number 2 to 40 (yards)
+Bot.Chat.Control.MinFollowYards = 3
+
+#
+#    Bot.Chat.Control.MaxFollowYards
+#        Description: Largest follow distance the "distance" command accepts (not below MinFollowYards).
+#        Default:     40
+#        Values:      whole number 2 to 100 (yards)
+Bot.Chat.Control.MaxFollowYards = 40
+
 
 ###################################################################################################
 # ALTS, INVITES AND TRADING
