@@ -56,6 +56,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <array>
+#include <deque>
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
@@ -89,6 +91,12 @@ struct QuestCfg
     int32 GrindMaxGap = 1;         // Bot.AI.Grind.MaxLevelGap: grind targets at most this many (effective) levels above the bot
     float GrindMaxRadius = 150.0f; // Bot.AI.Grind.MaxRadius: grind targets stay this close to the grind anchor, 0 = off
     int32 FleeMode = 0;            // Bot.AI.Flee.Mode (0 current, 1 aggro avoidance, 2 flee to guard); here: mode >= 1 avoids gap >= 2 mobs
+    // Death-reduction rules, each off by default (A/B switches)
+    bool GateLegs = false;         // Bot.Quest.GateLongLegs: no go_giver / go_ender / loot leg over LegGateYd for an under-level bot that died recently or sees mobs 2+ levels above
+    bool LootByCost = false;       // Bot.Quest.LootSpawnByCost: loot spawn chosen by path cost, not too far, penalty for death areas
+    bool DeathLoop = false;        // Bot.Quest.DeathLoopBreaker: second death within 10 min on the same quest / area drops the task and defers the quest
+    bool DeferQuest8 = false;      // Bot.Quest.DeferQuest8: quest 8 is not taken before level 4
+    float LegGateYd = 150.0f;      // Bot.Quest.LegGateYd
 };
 
 QuestCfg const& Cfg()
@@ -110,6 +118,11 @@ QuestCfg const& Cfg()
         cfg.GrindMaxGap = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Grind.MaxLevelGap", 1), -5, 10);
         cfg.GrindMaxRadius = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Grind.MaxRadius", 150), 0, 2000));
         cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
+        cfg.GateLegs = sConfigMgr->GetBoolDefault("Bot.Quest.GateLongLegs", false);
+        cfg.LootByCost = sConfigMgr->GetBoolDefault("Bot.Quest.LootSpawnByCost", false);
+        cfg.DeathLoop = sConfigMgr->GetBoolDefault("Bot.Quest.DeathLoopBreaker", false);
+        cfg.DeferQuest8 = sConfigMgr->GetBoolDefault("Bot.Quest.DeferQuest8", false);
+        cfg.LegGateYd = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Quest.LegGateYd", 150), 50, 2000));
     });
     return cfg;
 }
@@ -886,6 +899,33 @@ bool IsReachCode(char const* code)
     return false;
 }
 
+// Death history. Per bot the last few deaths (kept in the context), globally the recent death places of all bots (for spawn choice).
+struct DeathRec { uint32 Map = 0; float X = 0, Y = 0; uint32 Quest = 0; uint32 Ms = 0; };
+std::mutex g_deathMx;
+std::deque<DeathRec> g_deathAreas;
+constexpr size_t DEATH_AREAS_MAX = 600;
+constexpr uint32 DEATH_AREA_KEEP_MS = 3600 * 1000;
+
+void NoteDeathArea(DeathRec const& d)
+{
+    std::lock_guard<std::mutex> lk(g_deathMx);
+    while (!g_deathAreas.empty() && (g_deathAreas.size() >= DEATH_AREAS_MAX || uint32(d.Ms - g_deathAreas.front().Ms) > DEATH_AREA_KEEP_MS))
+        g_deathAreas.pop_front();
+    g_deathAreas.push_back(d);
+}
+
+// number of deaths within radius of a point in the last hour
+uint32 AreaDeaths(uint32 map, float x, float y, float radius)
+{
+    uint32 const nowMs = getMSTime();
+    uint32 n = 0;
+    std::lock_guard<std::mutex> lk(g_deathMx);
+    for (DeathRec const& d : g_deathAreas)
+        if (d.Map == map && uint32(nowMs - d.Ms) <= DEATH_AREA_KEEP_MS && Dist2D(d.X, d.Y, x, y) <= radius)
+            ++n;
+    return n;
+}
+
 class BotQuestCtx : public UntypedValue
 {
 public:
@@ -902,7 +942,10 @@ public:
     // A dead bot changes position anyway (corpse run, spirit healer): give the chest back and drop the loot task.
     void OnStateEnter() override
     {
-        if (GetAI()->GetState() != BotState::Dead || T.K != Kind::Loot)
+        if (GetAI()->GetState() != BotState::Dead)
+            return;
+        NoteDeath();
+        if (T.K != Kind::Loot)
             return;
         ReleaseLoot();
         T = Task();
@@ -910,6 +953,60 @@ public:
         ExpectGoal = false;
         NextChooseMs = 0;
     }
+
+    // Death bookkeeping: own history (last 4), global death places, and the death-loop rule.
+    void NoteDeath()
+    {
+        Player* bot = GetBot();
+        BotAI* ai = GetAI();
+        if (!bot)
+            return;
+        DeathRec d;
+        d.Map = bot->GetMapId();
+        d.X = bot->GetPositionX();
+        d.Y = bot->GetPositionY();
+        d.Quest = T.Quest;
+        d.Ms = getMSTime();
+        DeathRec const prev = Deaths[0];
+        for (size_t i = Deaths.size() - 1; i > 0; --i)
+            Deaths[i] = Deaths[i - 1];
+        Deaths[0] = d;
+        NoteDeathArea(d);
+        if (!Cfg().DeathLoop || !prev.Ms || uint32(d.Ms - prev.Ms) > 600 * 1000)
+            return;
+        bool const sameQuest = d.Quest && d.Quest == prev.Quest;
+        bool const sameArea = prev.Map == d.Map && Dist2D(prev.X, prev.Y, d.X, d.Y) <= 150.0f;
+        if (!sameQuest && !sameArea)
+            return;
+        // second death in a short chain: give up this leg and keep the quest(s) away for a while
+        uint32 const now = ai->GetNowMs();
+        uint32 deferred = 0;
+        for (uint32 qid : { d.Quest, prev.Quest })
+            if (qid)
+            {
+                Blacklist[qid] = now + 15 * 60 * 1000;
+                if (!deferred)
+                    deferred = qid;
+            }
+        ReleaseLoot();
+        T = Task();
+        GoalFails = 0;
+        ExpectGoal = false;
+        NextChooseMs = 0;
+        ++LoopBreaks;
+        BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_DEATH_LOOP", StringFormat("second death within {} s ({}), quest {} deferred for 15 min", (d.Ms - prev.Ms) / 1000, sameQuest ? "same quest" : "same area", deferred));
+        if (deferred)
+            ev.QuestId = deferred;
+        ev.Details = StringFormat(R"({{"gap_s":{},"same_quest":{},"quest":{},"prev_quest":{},"prev_dist":{:.0f}}})", (d.Ms - prev.Ms) / 1000, sameQuest, d.Quest, prev.Quest, Dist2D(prev.X, prev.Y, d.X, d.Y));
+        sBotMgr->LogEvent(std::move(ev));
+    }
+
+    std::array<DeathRec, 4> Deaths{};            // newest first
+    uint32 LoopBreaks = 0;
+    // cache of the leg gate's bot-state part (recent death, hostile mobs 2+ levels above around the bot)
+    uint32 GateUntilMs = 0;
+    char const* GateWhy = nullptr;
+    uint32 GateLogged = 0;
     uint32 ExecCalls = 0;
     char const* Why = "none";
 
@@ -1472,7 +1569,7 @@ private:
                 for (uint32 en : enders)
                 {
                     float d;
-                    if (NearestSpawn(bot, en, &d) && d < bd)
+                    if (NearestSpawn(bot, en, &d) && d < bd && !LegGated(ai, bot, c, now, q, d, "go_ender", true))
                     {
                         bd = d;
                         best = &e;
@@ -1535,7 +1632,7 @@ private:
                     for (uint32 en : gos)
                     {
                         float d;
-                        if (NearestGoSpawn(bot, en, &d) && d < best.D)
+                        if (NearestGoSpawn(bot, en, &d) && d < best.D && !LegGated(ai, bot, c, now, q, d, "loot", true))
                             best = { &e, obj, d, en, true };
                     }
                     if (entries.empty() && gos.empty())
@@ -1635,10 +1732,18 @@ private:
         if (!bot->CanTakeQuest(q, false))
             return 0.0f; // exclusive group, day/week, conditions: not worth a row
 
+        if (Cfg().DeferQuest8 && ref.Quest == 8 && bot->GetLevel() < 4)
+            return 0.0f; // deferred until level 4 (death rate at level 1-3)
         int32 ql = bot->GetQuestLevel(q);
         int32 gap = ql - int32(bot->GetLevel());
         if (gap > 2)
             return 0.0f; // too hard for now, becomes takeable as the bot levels
+        if (Cfg().GateLegs && dist > Cfg().LegGateYd)
+        {
+            bool const lg = canLog && c.SelBlocks < Cfg().SelBlockCap;
+            if (LegGated(ai, bot, c, now, q, dist, "go_giver", lg))
+                return 0.0f;
+        }
         float fit = gap >= 2 ? 0.5f : gap >= 0 ? 1.0f : gap >= -2 ? 0.8f : 0.4f;
         float xp = float(q->XPValue(bot)) + 20.0f;
         float work = 40.0f * float(q->GetObjectives().size());
@@ -2039,6 +2144,8 @@ private:
         {
             Quest const* q = sObjectMgr->GetQuestTemplate(questId);
             if (!q || c.Blacklisted(questId, now) || !giver->hasQuest(questId))
+                continue;
+            if (Cfg().DeferQuest8 && questId == 8 && bot->GetLevel() < 4)
                 continue;
             if (bot->GetQuestStatus(questId) != QUEST_STATUS_NONE || bot->GetQuestRewardStatus(questId))
                 continue;
@@ -2839,6 +2946,53 @@ private:
         bot->GetCreatureListWithOptionsInGrid(list, 90.0f, opt);
     }
 
+    // R6-1: why a long quest leg should not start now (nullptr = fine). The bot-state part is cached for 5 s per bot:
+    // a death on a quest leg in the last 15 min, or a hostile mob 2+ levels above within 90 yd of the bot (the start of the route).
+    char const* LegGateWhy(Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        if (int32(now - c.GateUntilMs) < 0)
+            return c.GateWhy;
+        c.GateUntilMs = now + 5000;
+        c.GateWhy = nullptr;
+        uint32 const ms = getMSTime();
+        for (DeathRec const& d : c.Deaths)
+            if (d.Ms && d.Quest && uint32(ms - d.Ms) <= 15 * 60 * 1000)
+            {
+                c.GateWhy = "recent_death";
+                return c.GateWhy;
+            }
+        std::vector<Creature*> list;
+        GoScanList(bot, list);
+        for (Creature* m : list)
+        {
+            if (!m->IsAlive() || m->IsCritter() || m->IsPet() || m->IsTotem() || m->IsCivilian() || m->GetCreatureTemplate()->npcflag)
+                continue;
+            if ((m->isWorldBoss() || EffectiveDiff(bot, m) >= 2) && bot->IsValidAttackTarget(m))
+            {
+                c.GateWhy = "hostile_above";
+                break;
+            }
+        }
+        return c.GateWhy;
+    }
+
+    // true = do not start this leg (go_giver, go_ender, loot) of legDist yards for quest q
+    bool LegGated(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Quest const* q, float legDist, char const* kind, bool log)
+    {
+        if (!Cfg().GateLegs || !q || legDist <= Cfg().LegGateYd)
+            return false;
+        int32 const ql = bot->GetQuestLevel(q);
+        if (ql <= 0 || int32(bot->GetLevel()) >= ql)
+            return false;
+        char const* why = LegGateWhy(bot, c, now);
+        if (!why)
+            return false;
+        if (log && c.Logged.insert(LogKey(q->GetQuestId(), "LEG_GATED")).second)
+            Decision(ai, bot, "QUEST_LEG_GATED", StringFormat("long {} leg for '{}' held back ({})", kind, q->GetLogTitle(), why), q->GetQuestId(), 0,
+                StringFormat(R"({{"leg":"{}","dist":{:.0f},"why":"{}","bot_level":{},"quest_level":{}}})", kind, legDist, why, bot->GetLevel(), ql));
+        return true;
+    }
+
     // Another bot holds the claimed spawn now (ours expired): give it up without cooling it and pick another.
     void GoSpawnLost(BotAI* ai, Player* bot, BotQuestCtx& c, Task& t)
     {
@@ -2884,49 +3038,101 @@ private:
         std::vector<GoState> states;
         std::vector<uint32> lefts;
         GoGateStateBatch(ids, me, states, lefts); // one lock for the whole pick
+        struct Elig { GoPt const* P; float D; };
+        std::vector<Elig> elig;
+        // sanity before a spawn becomes the candidate: another floor / ledge needs a real path, and a camp of mobs near the
+        // spawn point (when it is in scan range) rules the spawn out for this bot. True = ruled out (and ignored for 5 min).
+        auto sanityBad = [&](GoPt const& p, float d) -> bool
+        {
+            bool bad = false;
+            char const* badWhy = "";
+            if (std::fabs(p.P.Z - bot->GetPositionZ()) > 15.0f && d < 150.0f)
+            {
+                BotPathInfo info = BotMotion::QueryPath(bot, p.P.X, p.P.Y, p.P.Z);
+                if (info.NoPath || (info.Partial && info.EndGap3D > 25.0f) || (info.Valid && info.GoalOffMesh && info.EndGap3D > 25.0f))
+                { bad = true; badWhy = "pick: no path to another level"; }
+            }
+            if (!bad && d < 80.0f)
+            {
+                if (!listed)
+                {
+                    GoScanList(bot, list);
+                    listed = true;
+                }
+                uint32 dEntry = 0, dCount = 0;
+                if (GoDangerAt(bot, list, p.P.X, p.P.Y, dEntry, dCount))
+                { bad = true; badWhy = "pick: danger"; }
+            }
+            if (!bad)
+                return false;
+            c.GoIgnore[p.SpawnId] = now + 300 * 1000;
+            ++cooling;
+            minWaitMs = std::min<uint32>(minWaitMs, 300 * 1000);
+            BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_SPAWN_EMPTY", StringFormat("object {} at spawn {} skipped ({})", p.Entry, p.SpawnId, badWhy));
+            ev.QuestId = t.Quest;
+            ev.TargetEntry = p.Entry;
+            ev.Details = StringFormat(R"({{"cause":"{}","global":false,"spawn_dist":{:.0f},"bot":[{:.0f},{:.0f},{:.0f}]}})", badWhy, d, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            sBotMgr->LogEvent(std::move(ev));
+            return true;
+        };
         for (size_t i = 0; i < cand.size(); ++i)
         {
             GoPt const& p = *cand[i];
             if (states[i] == GoState::Busy) { ++busy; continue; }
             if (states[i] == GoState::Cooling) { ++cooling; minWaitMs = std::min<uint32>(minWaitMs, lefts[i]); continue; }
             float d = Dist2D(p.P.X, p.P.Y, bot->GetPositionX(), bot->GetPositionY());
+            if (Cfg().LootByCost)
+            {
+                elig.push_back({ &p, d });
+                continue;
+            }
             if (d < bd)
             {
-                // sanity before this becomes the candidate: another floor / ledge needs a real path, and a camp of mobs near the
-                // spawn point (when it is in scan range) rules the spawn out for this bot
-                bool bad = false;
-                char const* badWhy = "";
-                if (std::fabs(p.P.Z - bot->GetPositionZ()) > 15.0f && d < 150.0f)
-                {
-                    BotPathInfo info = BotMotion::QueryPath(bot, p.P.X, p.P.Y, p.P.Z);
-                    if (info.NoPath || (info.Partial && info.EndGap3D > 25.0f) || (info.Valid && info.GoalOffMesh && info.EndGap3D > 25.0f))
-                    { bad = true; badWhy = "pick: no path to another level"; }
-                }
-                if (!bad && d < 80.0f)
-                {
-                    if (!listed)
-                    {
-                        GoScanList(bot, list);
-                        listed = true;
-                    }
-                    uint32 dEntry = 0, dCount = 0;
-                    if (GoDangerAt(bot, list, p.P.X, p.P.Y, dEntry, dCount))
-                    { bad = true; badWhy = "pick: danger"; }
-                }
-                if (bad)
-                {
-                    c.GoIgnore[p.SpawnId] = now + 300 * 1000;
-                    ++cooling;
-                    minWaitMs = std::min<uint32>(minWaitMs, 300 * 1000);
-                    BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_SPAWN_EMPTY", StringFormat("object {} at spawn {} skipped ({})", p.Entry, p.SpawnId, badWhy));
-                    ev.QuestId = t.Quest;
-                    ev.TargetEntry = p.Entry;
-                    ev.Details = StringFormat(R"({{"cause":"{}","global":false,"spawn_dist":{:.0f},"bot":[{:.0f},{:.0f},{:.0f}]}})", badWhy, d, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-                    sBotMgr->LogEvent(std::move(ev));
+                if (sanityBad(p, d))
                     continue;
-                }
                 bd = d;
                 best = &p;
+            }
+        }
+        bool tooFar = false;
+        if (Cfg().LootByCost && !elig.empty())
+        {
+            // R6-2: look at the nearest few spawns by straight line, rank them by walking distance plus a penalty for places
+            // where bots died in the last hour, and refuse spawns beyond the leg limit unless the bot is strong enough for the quest
+            std::sort(elig.begin(), elig.end(), [](Elig const& a, Elig const& b) { return a.D < b.D; });
+            Quest const* lq = sObjectMgr->GetQuestTemplate(t.Quest);
+            bool const strong = lq && int32(bot->GetLevel()) >= bot->GetQuestLevel(lq) && bot->GetHealthPct() >= 90.0f;
+            float bestCost = 1e9f;
+            uint32 looked = 0;
+            for (Elig const& e : elig)
+            {
+                if (looked >= 5)
+                    break;
+                if (!strong && e.D > Cfg().LegGateYd)
+                {
+                    tooFar = true;
+                    break;      // sorted: everything after is further
+                }
+                if (sanityBad(*e.P, e.D))
+                    continue;
+                ++looked;
+                float cost = e.D;
+                BotPathInfo info = BotMotion::QueryPath(bot, e.P->P.X, e.P->P.Y, e.P->P.Z);
+                if (info.NoPath || (info.Partial && info.EndGap3D > 25.0f))
+                    continue;
+                if (info.Valid && info.Length > 0.0f)
+                    cost = info.Length;
+                if (!strong && cost > Cfg().LegGateYd * 1.5f)
+                {
+                    tooFar = true;
+                    continue;
+                }
+                cost += 150.0f * float(std::min<uint32>(AreaDeaths(e.P->P.Map, e.P->P.X, e.P->P.Y, 150.0f), 4));
+                if (cost < bestCost)
+                {
+                    bestCost = cost;
+                    best = e.P;
+                }
             }
         }
         if (best && GoTryClaim(best->SpawnId, me))
@@ -2948,6 +3154,8 @@ private:
         }
         if (best || busy)
             return 1;
+        if (tooFar && !cooling)
+            return 4;
         return cooling ? 2 : 3;
     }
 
@@ -3037,6 +3245,12 @@ private:
                 // everything is looted / respawning / ruled out: do other work meanwhile, never stand around in the open waiting
                 GoBackOff(ai, bot, c, now, q, "GO_RESPAWN_WAIT", StringFormat("all object spawns for '{}' are looted, respawn in {} s", q->GetLogTitle(), waitMs / 1000),
                     StringFormat(R"({{"item":{},"wait_s":{}}})", obj->ObjectID, waitMs / 1000), uint32(obj->ObjectID), std::clamp<uint32>(waitMs / 1000, 60, 600));
+                return true;
+            }
+            if (r == 4)
+            {
+                Drop(ai, bot, c, now, t.Quest, "LOOT_TOO_FAR", StringFormat("every free object spawn for '{}' is too far or too costly to walk for this bot now", q->GetLogTitle()),
+                    StringFormat(R"({{"item":{},"limit":{:.0f}}})", obj->ObjectID, Cfg().LegGateYd), uint32(obj->ObjectID), 600);
                 return true;
             }
             if (r == 3)
