@@ -243,6 +243,10 @@ void TempSummon::InitStats(WorldObject* summoner, Milliseconds duration)
             int32 minLevel = m_unitData->ScalingLevelMin + m_unitData->ScalingLevelDelta;
             int32 maxLevel = m_unitData->ScalingLevelMax + m_unitData->ScalingLevelDelta;
             uint8 level = std::clamp<int32>(unitSummoner->GetLevel(), minLevel, maxLevel);
+            // Companions without scaling limits must not be clamped to level zero.
+            if (minLevel == 0 && maxLevel == 0 && (IsGuardian() || IsTotem() || m_Properties->Control == SUMMON_CATEGORY_PET))
+                level = std::max<uint8>(unitSummoner->GetLevel(), 1);
+
             ApplyLevelScaling(unitSummoner->m_unitData->ContentTuningID, unitSummoner->m_unitData->ScalingLevelDelta);
             SetLevel(level);
             if (!IsGuardian())

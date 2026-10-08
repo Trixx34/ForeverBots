@@ -21,7 +21,13 @@
 #include "ItemDefines.h"
 #include "ItemTemplate.h"
 #include "ObjectMgr.h"
+#include "SpellInfo.h"
 #include <cstring> // std::memset
+
+/*static*/ void UnitTestDataLoader::LoadSpellImmunities(SpellInfo& spellInfo)
+{
+    spellInfo._LoadImmunityInfo();
+}
 
 /*static*/ ItemTemplate& UnitTestDataLoader::GetItemTemplate(uint32 itemId, std::string_view name)
 {

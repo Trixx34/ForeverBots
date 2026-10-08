@@ -4526,6 +4526,15 @@ Classic.GuildFinder = 0
 #        Description: Interval of the AI_TICK_STATS row (engine tick cost per state). 0 = off.
 #        Default:     60
 #
+#    Bot.Log.PullDetail
+#        Description: 1 = COMBAT_START carries aggro_cause / aggro_range / pull_dist, COMBAT_SUMMARY carries fight_id, outcome and casts_ok.
+#        Default:     1
+#
+#    Bot.Log.IdleReasons
+#        Description: 1 = AI_TICK_STATS carries "no_action": ticks per engine on which no action ran, by reason (no_trigger,
+#                     multiplied_to_zero, not_possible, not_useful, execute_failed). Needs Bot.Log.AiTickStatsSec > 0.
+#        Default:     1
+#
 #    Bot.Log.BufferMax / Bot.Log.PosBufferMax
 #        Description: Rows held in memory while the bot log database is slow or down. Over the cap rows are dropped and counted
 #                     (an error is logged once; a log_dropped event with the counts is written when the database recovers).
@@ -4716,6 +4725,13 @@ Classic.GuildFinder = 0
 #                     falls back to the spirit healer, and when that fails too the bot is resurrected where it stands
 #                     (decision CORPSE_RUN_GAVE_UP / SPIRIT_HEAL_GAVE_UP, logged once).
 #        Default:     3
+#
+#    Bot.AI.Death.GiveUpSec
+#        Description: Seconds a ghost may spend on the corpse run or the spirit healer walk (NO_PROGRESS /
+#                     UNREACHABLE_TARGET retries included) before it is resurrected at the closest graveyard
+#                     (decision CORPSE_RUN_TIMEOUT / SPIRIT_HEAL_TIMEOUT). The spirit healer give-up
+#                     (SPIRIT_HEAL_GAVE_UP) now also respawns at the graveyard instead of in place. 0 = no time cap.
+#        Default:     300
 
 Bot.Enabled = 1
 Bot.Log.PosIntervalSec = 5
@@ -4723,6 +4739,8 @@ Bot.Log.PosIntervalSlowSec = 15
 Bot.Log.PosScaleBots = 500
 Bot.Log.RepeatCap = 3
 Bot.Log.AiTickStatsSec = 60
+Bot.Log.PullDetail = 1
+Bot.Log.IdleReasons = 1
 Bot.Log.BufferMax = 200000
 Bot.Log.PosBufferMax = 100000
 Bot.Log.FlushRetries = 3
@@ -4795,6 +4813,7 @@ Bot.AI.Recover.MaxCorpseRunYards = 1200
 Bot.AI.Move.StuckSec = 8
 Bot.AI.Move.StuckRepaths = 3
 Bot.AI.Death.CorpseRunMaxFails = 3
+Bot.AI.Death.GiveUpSec = 300
 
 #
 #    Bot.AI.Pet.Enabled
@@ -4841,6 +4860,24 @@ Bot.AI.Death.CorpseRunMaxFails = 3
 #    Bot.AI.Move.Natural.Metrics / Bot.AI.Move.Natural.MetricsSec
 #        Description: One decision row MOVE_METRICS per bot per window (turn rate, repeated legs, idle ratio, stuck count) / window length (10-3600).
 #        Default:     1 / 60
+#
+#    Bot.AI.Ammo.Enabled
+#        Description: Ranged ammo upkeep of the quest strategy's vendor layer: a bot with a bow, crossbow or gun equipped counts its arrows or
+#                     bullets; below Bot.AI.Ammo.LowCount it logs AMMO_LOW, plans a vendor trip to a vendor that sells the right ammo and
+#                     tops up to Bot.AI.Ammo.BuyTarget (AMMO_BOUGHT, AMMO_NO_MONEY, AMMO_NO_VENDOR, AMMO_BUY_FAILED). Needs a restart (vendor index).
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+#
+#    Bot.AI.Ammo.LowCount / Bot.AI.Ammo.BuyTarget / Bot.AI.Ammo.CooldownSec
+#        Description: Trip threshold (rounds), top-up target (rounds) and minimum seconds between ammo trips of one bot.
+#        Default:     60 / 400 / 300
+#
+#    Bot.Talents.Premade.Enabled
+#        Description: On level-up, learn a configured talent per tier for the bot's class (this fork has tiered talents: one pick per tier).
+#                     Bot.Talents.Premade.Class.<classId> = comma list of Talent.db2 ids (first id of a tier wins, tiers that already hold a
+#                     pick are left alone); Bot.Talents.Premade.Spec.<classId> = ChrSpecialization id to set when the bot has none (optional).
+#                     Class ids: 1 warrior, 2 paladin, 3 hunter, 4 rogue, 5 priest, 7 shaman, 8 mage, 9 warlock, 11 druid. Empty = no-op.
+#        Default:     0 - (Disabled)
 #
 #    Bot.AI.Loot.Improved.Enabled
 #        Description: Improved chest loot task of the quest strategy: spawn choice by path cost, skip far spawns and recently deadly areas,
@@ -4891,6 +4928,11 @@ Bot.AI.Move.Natural.Idle = 1
 Bot.AI.Move.Natural.IdleMaxStandSec = 25
 Bot.AI.Move.Natural.Metrics = 1
 Bot.AI.Move.Natural.MetricsSec = 60
+Bot.AI.Ammo.Enabled = 0
+Bot.AI.Ammo.LowCount = 60
+Bot.AI.Ammo.BuyTarget = 400
+Bot.AI.Ammo.CooldownSec = 300
+Bot.Talents.Premade.Enabled = 0
 Bot.AI.Loot.Improved.Enabled = 0
 Bot.AI.Loot.Improved.MaxYards = 150
 Bot.AI.Loot.Improved.DeadlyRadius = 40

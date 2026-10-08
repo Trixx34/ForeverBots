@@ -530,11 +530,15 @@ class TC_GAME_API Spell
         SpellCastResult CheckRange(bool strict) const;
         SpellCastResult CheckPower() const;
         SpellCastResult CheckRuneCost() const;
+        static bool ApplyShadowburnDeathAura(Unit& target, SpellInfo const& spell, Aura* hitAura, uint32 hitMask);
         SpellCastResult CheckCasterAuras(int32* param1) const;
+        static SpellCastResult CheckCasterAuras(Unit* unitCaster, SpellInfo const* spellInfo,
+            bool fromClient, SpellSchoolMask schoolMask, int32* param1);
         SpellCastResult CheckArenaAndRatedBattlegroundCastRules();
         SpellCastResult CheckMovement() const;
 
         bool CheckSpellCancelsAuraEffect(AuraType auraType, int32* param1) const;
+        static bool CheckSpellCancelsAuraEffect(Unit* unitCaster, SpellInfo const* spellInfo, AuraType auraType, int32* param1);
         bool CheckSpellCancelsCharm(int32* param1) const;
         bool CheckSpellCancelsStun(int32* param1) const;
         bool CheckSpellCancelsSilence(int32* param1) const;
