@@ -27,6 +27,7 @@
 #include "BotQuestClassifier.h"
 #include "BotAI.h"
 #include "BotBehavior.h"
+#include "BotCombat.h"
 #include "BotEngine.h"
 #include "BotLootPlan.h"
 #include "BotMgr.h"
@@ -90,7 +91,8 @@ struct QuestCfg
     uint32 HubScanSec = 20;        // minimum time between hub scans of one bot
     int32 GrindMaxGap = 1;         // Bot.AI.Grind.MaxLevelGap: grind targets at most this many (effective) levels above the bot
     float GrindMaxRadius = 150.0f; // Bot.AI.Grind.MaxRadius: grind targets stay this close to the grind anchor, 0 = off
-    int32 FleeMode = 0;            // Bot.AI.Flee.Mode (0 current, 1 aggro avoidance, 2 flee to guard); here: mode >= 1 avoids gap >= 2 mobs
+    float FirstStrikeMargin = 2.0f; // Bot.AI.Pull.FirstStrikeMargin: ranged classes open from the mob's aggro radius plus this (yards), 0 = off
+    float PullRangedMax = 28.0f;   // Bot.AI.Pull.RangedMaxYd: cap of that wider opener distance
 };
 
 QuestCfg const& Cfg()
@@ -111,7 +113,8 @@ QuestCfg const& Cfg()
         cfg.SelBlockCap = uint32(std::max<int32>(0, sConfigMgr->GetIntDefault("Bot.Quest.SelectionBlockLogCap", 40)));
         cfg.GrindMaxGap = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Grind.MaxLevelGap", 1), -5, 10);
         cfg.GrindMaxRadius = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Grind.MaxRadius", 150), 0, 2000));
-        cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
+        cfg.FirstStrikeMargin = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Pull.FirstStrikeMargin", 2), 0, 10));
+        cfg.PullRangedMax = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Pull.RangedMaxYd", 28), 10, 40));
     });
     return cfg;
 }
@@ -1972,7 +1975,7 @@ private:
     bool HighGapMobNear(Player* bot, std::vector<Creature*> const& list, Creature* m)
     {
         for (Creature* o : list)
-            if (o != m && o->IsAlive() && EffectiveDiff(bot, o) >= 2 && m->GetExactDist2d(o) < 22.0f && bot->IsValidAttackTarget(o))
+            if (o != m && o->IsAlive() && (EffectiveDiff(bot, o) >= 2 || BotCombatAvoids(bot, o)) && m->GetExactDist2d(o) < 22.0f && bot->IsValidAttackTarget(o))
                 return true;
         return false;
     }
@@ -3336,7 +3339,12 @@ private:
         if (!bot->IsValidAttackTarget(m))
             return false;
         ++t.SeenLive;
-        if (m->isWorldBoss() || EffectiveDiff(bot, m) > (Cfg().FleeMode >= 1 ? std::min<int32>(Cfg().MaxMobLevelDiff, 1) : Cfg().MaxMobLevelDiff))
+        if (BotCombatAvoids(bot, m))
+        {
+            ++t.TooStrongSeen;   // Bot.AI.Avoid.*: listed killers are skipped unless within the allowed level gap
+            return false;
+        }
+        if (m->isWorldBoss() || EffectiveDiff(bot, m) > (BotCombatFleeMode(bot) >= 1 ? std::min<int32>(Cfg().MaxMobLevelDiff, 1) : Cfg().MaxMobLevelDiff))
         {
             if (m->IsElite() || m->isWorldBoss())
                 ++t.EliteSeen;
@@ -3539,7 +3547,13 @@ private:
     // Returns false when the task was dropped.
     bool ApproachAndPull(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Task& t, Creature* m)
     {
-        float const range = PullRange(bot);
+        float range = PullRange(bot);
+        if (!IsMeleeClass(bot) && Cfg().FirstStrikeMargin > 0.0f)
+        {
+            // first strike: open from just outside the mob's aggro radius so it does not get the first hit while the bot walks in
+            float const open = std::min(m->GetAttackDistance(bot) + Cfg().FirstStrikeMargin, Cfg().PullRangedMax);
+            range = std::max(range, open);
+        }
         float const d = bot->GetExactDist(m);
         t.LastDist = d;
         ++t.Approaches;
