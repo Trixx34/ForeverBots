@@ -4949,6 +4949,26 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: Greed on items the bot cannot use or does not need (it sells them later) instead of passing.
 #        Default:     1
 #
+#    Bot.AI.TownIdle.Enabled
+#        Description: Town idling. A bot with nothing to do inside a city or an inn drifts between the places where players gather
+#                     (innkeeper, bank, auction house, flight master, mailbox, vendors), lingers there, looks around, emotes and
+#                     sometimes sits. Adds the strategy "natural_idle" to the NonCombat engine; works with or without
+#                     Bot.AI.Move.Natural.Enabled (outside towns the plain idling still needs that switch). Walks are logged as
+#                     TOWN_IDLE_GO at trace level.
+#        Default:     0 - Off
+#
+#    Bot.AI.TownIdle.SearchYards
+#        Description: Radius around the bot in which gathering places are looked for (rescanned every minute).
+#        Default:     70
+#
+#    Bot.AI.TownIdle.LingerMinSec / Bot.AI.TownIdle.LingerMaxSec
+#        Description: Each bot stays at one place for a fixed time in this range before it moves on.
+#        Default:     15 / 70
+#
+#    Bot.AI.TownIdle.EmotePct / Bot.AI.TownIdle.SitPct
+#        Description: Chance in percent per decision to emote / to sit down (four times as likely when hurt or drained).
+#        Default:     22 / 10
+#
 #    Bot.AI.Move.Natural.Enabled
 #        Description: Natural-looking movement: smoother paths, human pacing, no repeated identical path requests, a step back or
 #                     another route when stuck, light idling, and movement metrics. Adds the strategy "natural_idle".
@@ -5191,6 +5211,12 @@ Bot.AI.Watchdog.Hearth = 1
 Bot.AI.Watchdog.Home = 1
 Bot.AI.Watchdog.MoveYards = 10
 Bot.AI.Watchdog.MaxPerHour = 6
+Bot.AI.TownIdle.Enabled = 0
+Bot.AI.TownIdle.SearchYards = 70
+Bot.AI.TownIdle.LingerMinSec = 15
+Bot.AI.TownIdle.LingerMaxSec = 70
+Bot.AI.TownIdle.EmotePct = 22
+Bot.AI.TownIdle.SitPct = 10
 Bot.AI.Move.Natural.Enabled = 0
 Bot.AI.Move.Natural.Shortcut = 1
 Bot.AI.Move.Natural.RoundCorners = 1
