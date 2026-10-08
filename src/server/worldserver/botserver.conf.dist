@@ -1,932 +1,1885 @@
 ###################################################################################################
 # BOTSERVER CONFIGURATION
 #
-# Settings of the player-bot subsystem (docs/playerbots/). Kept out of worldserver.conf on purpose:
-# there are a lot of them. Copy this file to botserver.conf next to worldserver.conf and edit the copy;
-# worldserver loads it right after worldserver.conf and the worldserver.conf.d directory. A key set in
-# botserver.conf wins over the same key in worldserver.conf (so an old worldserver.conf keeps working).
-# When there is no botserver.conf every setting keeps its default.
+# Settings of the player-bot subsystem (docs/playerbots/), kept out of worldserver.conf because there are many.
+# Copy this file to botserver.conf next to worldserver.conf and edit the copy. worldserver loads it right after
+# worldserver.conf and the worldserver.conf.d directory. A key set in botserver.conf wins over the same key in
+# worldserver.conf. Without a botserver.conf every setting keeps its default.
+#
+# How to read an entry: Description says what the setting does, Default is the value the server uses when the key is
+# absent (and the value written below the comment), Values lists what is accepted. Numbers outside the accepted range are
+# clamped to the nearest limit, they are not errors. "0 (off) or 1 (on)" settings take exactly those two values.
+# Seconds, milliseconds, yards and percents are named in Values. Settings marked "read once at startup" need a restart.
 ###################################################################################################
 
 ###################################################################################################
 # BOT LOG DATABASE
 #
+# Optional fifth database for the bot activity log (decisions, deaths, blocked quests...). The
+# schema is NOT created automatically: apply forever-botlog-setup.sql once. Never put the real
+# password in a tracked file.
+#
+###################################################################################################
+
+#
 #    BotLogDatabaseInfo
-#        Description: Optional fifth database for the bot activity log (decisions, deaths, blocked
-#                     quests...). Same format as the other *DatabaseInfo entries. Leave it commented
-#                     out to disable bot logging. The schema is NOT created automatically: apply
-#                     forever-botlog-setup.sql once. Never put the real password in a tracked file.
+#        Description: Connection to the bot log database, same format as the other *DatabaseInfo entries. Leave it
+#                     commented out to disable bot logging. Read once at startup.
+#        Default:     (not set, bot logging is off)
+#        Values:      connection string "host;port;user;password;database"
 #        Example:     "<db-host>;3306;<botlog-user>;<password>;forever_botlog"
+# BotLogDatabaseInfo = "<db-host>;3306;<botlog-user>;CHANGE_ME;forever_botlog"
+
+#
+#    BotLogDatabase.WorkerThreads
+#        Description: Asynchronous worker threads of the bot log database connection. Read once at startup.
+#        Default:     1
+#        Values:      whole number 1 or more
+# BotLogDatabase.WorkerThreads = 1
+
+#
+#    BotLogDatabase.SynchThreads
+#        Description: Synchronous connections of the bot log database. Read once at startup.
+#        Default:     1
+#        Values:      whole number 1 or more
+# BotLogDatabase.SynchThreads = 1
+
 #
 #    BotLog.MinSeverity
-#        Description: Lowest severity written to the log: 0 trace, 1 info, 2 warn, 3 error.
+#        Description: Lowest severity written to the log: 0 trace, 1 info, 2 warn, 3 error. Category floors
+#                     (Bot.Log.CategoryMinSeverity) apply on top.
 #        Default:     1
+#        Values:      whole number 0 to 3
+BotLog.MinSeverity = 1
+
 #
 #    BotLog.FlushIntervalMs
-#        Description: Buffered events are written to the database in one batch this often (min 100).
+#        Description: How often buffered events are written to the database in one batch.
 #        Default:     1000
+#        Values:      whole number 100 or more (milliseconds)
+BotLog.FlushIntervalMs = 1000
+
 #
 #    BotLog.MaxBatch
 #        Description: Events buffered before an early flush is requested.
 #        Default:     500
-#
+#        Values:      whole number 1 or more (events)
+BotLog.MaxBatch = 500
 
-# BotLogDatabaseInfo = "<db-host>;3306;<botlog-user>;CHANGE_ME;forever_botlog"
-# BotLogDatabase.WorkerThreads = 1
-# BotLogDatabase.SynchThreads  = 1
-BotLog.MinSeverity     = 1
-BotLog.FlushIntervalMs = 1000
-BotLog.MaxBatch        = 500
+###################################################################################################
+# BOT LOG: WHAT IS LOGGED
+#
+# Bot.Log.Categories and Bot.Log.CategoryMinSeverity decide which kinds of events reach the bot
+# log database. Every event belongs to one category, taken from the prefix of its reason code
+# (DUNGEON_, TRAVEL_, PET_, QUEST_, ...) and then from its event type: lifecycle (login, logout,
+# errors), ai (strategies, engine traces, tick stats), combat (fights, casts, auras, flee, aggro,
+# threat), dummy (training dummy), movement (goto, follow, stuck, path failures, town idling),
+# travel (long distance legs), recovery (death, corpse run, spirit healer, resting, watchdog),
+# quest, progress (xp, levels, talents, spells, reputation), economy (auction, trade, vendors,
+# loot, gear, professions, bank, mail), pets, social (chat orders, alts, invites, bot parties),
+# dungeon, other (a reason no rule matches).
 #
 ###################################################################################################
 
-###################################################################################################
-# PLAYER BOTS (work in progress, see docs/playerbots/)
-#
-#    Bot.Enabled
-#        Description: Master switch for the player-bot subsystem (BotMgr). Gates whether
-#                     BotMgr::Update is ticked from the world loop; when off, `bot spawn` refuses.
-#        Default:     1 - (Enabled)
-#                     0 - (Disabled)
-#
-#    Bot.Log.PosIntervalSec
-#        Description: Position telemetry for the sim console map (table bot_pos in the bot log database, kept 2 days by default; retention
-#                     is the third argument of botlog_roll_partitions3 in the daily event, not a config option). Every
-#                     online bot is sampled at most once per this many seconds, and only when it moved more than 2 yards since its
-#                     last sample; one extra sample is written on login and on map/zone change. 0 = off. Needs the bot log
-#                     database (BotLogDatabaseInfo) and its bot_pos table (forever-botlog-setup.sql); read once at startup.
-#        Default:     5
-#
-#    Bot.Log.PosIntervalSlowSec / Bot.Log.PosScaleBots
-#        Description: Above PosScaleBots bots online the position sample interval grows to PosIntervalSlowSec (keeps bot_pos small
-#                     with large populations). Re-evaluated every world tick.
-#        Default:     15 / 500
 #
 #    Bot.Log.Categories
-#        Description: Which kinds of bot events are written to the bot log database. Comma list read left to right: "all", "none",
-#                     "name" (turn on), "-name" (turn off). A list starting with a plain name begins from none ("quest,dungeon"),
-#                     one starting with "-name" begins from all ("-combat,-movement"). Categories: lifecycle, ai, combat, dummy,
-#                     movement, travel, recovery, quest, progress, economy, pets, social, dungeon, other (an event no rule
-#                     matches). The category comes from the event reason code prefix (e.g. DUNGEON_, TRAVEL_, PET_, QUEST_), then
-#                     from the event type. Applies on top of BotLog.MinSeverity. Read once at startup.
-#        Example:     "-combat,-movement" - everything except fights and walking.
-#        Default:     all
+#        Description: Which categories are written. The list is read left to right: "all" and "none" set every
+#                     category, "name" turns one on, "-name" turns one off. A list that starts with a plain name
+#                     begins from none, one that starts with "-name" begins from all. Unknown names are reported
+#                     at startup and ignored. Read once at startup.
+#        Default:     "all"
+#        Values:      comma list of: all, none, <category>, -<category>. Categories: lifecycle, ai, combat, dummy,
+#                     movement, travel, recovery, quest, progress, economy, pets, social, dungeon, other
+#        Example:     "-combat,-movement" (everything except fights and walking), "quest,dungeon" (only those two)
+Bot.Log.Categories = "all"
+
 #
 #    Bot.Log.CategoryMinSeverity
-#        Description: Severity floor per category, "name:level" comma list, level 0 trace, 1 info, 2 warn, 3 error. Keeps warnings
-#                     and errors of a noisy category without its routine rows. Applies on top of BotLog.MinSeverity.
+#        Description: Severity floor per category, to keep warnings and errors of a noisy category without its
+#                     routine rows. Applies on top of BotLog.MinSeverity. Read once at startup.
+#        Default:     ""
+#        Values:      comma list of <category>:<level>, level 0 trace, 1 info, 2 warn, 3 error; empty = no floors
 #        Example:     "combat:2,movement:2"
-#        Default:     (empty, no floors)
+Bot.Log.CategoryMinSeverity = ""
+
+#
+#    Bot.Log.PosIntervalSec
+#        Description: Position telemetry for the sim console map (table bot_pos). Every online bot is sampled at
+#                     most once per this many seconds, and only when it moved more than 2 yards since its last
+#                     sample; one extra sample is written on login and on map or zone change. 0 = off. Needs the
+#                     bot log database and its bot_pos table (forever-botlog-setup.sql). Read once at startup.
+#        Default:     5
+#        Values:      whole number 0 to 3600 (seconds, 0 = off)
+Bot.Log.PosIntervalSec = 5
+
+#
+#    Bot.Log.PosIntervalSlowSec
+#        Description: Position sample interval used above Bot.Log.PosScaleBots bots online (keeps bot_pos small
+#                     with large populations). Re-evaluated every world tick.
+#        Default:     15
+#        Values:      whole number Bot.Log.PosIntervalSec to 3600 (seconds)
+Bot.Log.PosIntervalSlowSec = 15
+
+#
+#    Bot.Log.PosScaleBots
+#        Description: Number of bots online above which the slow position interval applies. 0 = always slow.
+#        Default:     500
+#        Values:      whole number 0 to 100000 (bots)
+Bot.Log.PosScaleBots = 500
+
 #
 #    Bot.Log.RepeatCap
-#        Description: Identical repeating rows (quest_blocked, NO_PROGRESS, UNREACHABLE_TARGET, TEST_IDLE, TEST_IDLE_NOTE; same bot,
-#                     type, reason, quest and target) written per login; the rest are counted and written as one LOG_SUPPRESSED row.
-#                     0 = no cap.
+#        Description: Identical repeating rows (quest_blocked, NO_PROGRESS, UNREACHABLE_TARGET, TEST_IDLE,
+#                     TEST_IDLE_NOTE; same bot, type, reason, quest and target) written per login; the rest are
+#                     counted and written as one LOG_SUPPRESSED row.
 #        Default:     3
+#        Values:      whole number 0 to 100000 (rows, 0 = no cap)
+Bot.Log.RepeatCap = 3
+
 #
 #    Bot.Log.AiTickStatsSec
-#        Description: Interval of the AI_TICK_STATS row (engine tick cost per state). 0 = off.
+#        Description: Interval of the AI_TICK_STATS row (engine tick cost per state).
 #        Default:     60
+#        Values:      whole number 0 to 3600 (seconds, 0 = off)
+Bot.Log.AiTickStatsSec = 60
+
 #
 #    Bot.Log.ServerStatsSec
-#        Description: Interval of the BOT_TICK_STATS line in the server log (server.worldserver): bots online, world update diff
-#                     (avg/max ms) and BotMgr::Update cost (avg/max us) over the window. Works without the bot log database. Use it
-#                     to compare runs at the same bot count (e.g. before/after a visibility or AI change). 0 = off.
+#        Description: Interval of the BOT_TICK_STATS line in the server log: bots online, world update diff
+#                     (avg/max ms) and BotMgr::Update cost (avg/max us) over the window. Works without the bot log
+#                     database. Use it to compare runs at the same bot count.
 #        Default:     60
+#        Values:      whole number 0 to 3600 (seconds, 0 = off)
+Bot.Log.ServerStatsSec = 60
+
 #
 #    Bot.Log.PullDetail
-#        Description: 1 = COMBAT_START carries aggro_cause / aggro_range / pull_dist, COMBAT_SUMMARY carries fight_id, outcome and casts_ok.
+#        Description: 1 = COMBAT_START carries aggro_cause / aggro_range / pull_dist, COMBAT_SUMMARY carries
+#                     fight_id, outcome and casts_ok.
 #        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Log.PullDetail = 1
+
 #
 #    Bot.Log.IdleReasons
-#        Description: 1 = AI_TICK_STATS carries "no_action": ticks per engine on which no action ran, by reason (no_trigger,
-#                     multiplied_to_zero, not_possible, not_useful, execute_failed). Needs Bot.Log.AiTickStatsSec > 0.
+#        Description: 1 = AI_TICK_STATS carries "no_action": ticks per engine on which no action ran, by reason
+#                     (no_trigger, multiplied_to_zero, not_possible, not_useful, execute_failed). Needs
+#                     Bot.Log.AiTickStatsSec above 0.
 #        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Log.IdleReasons = 1
+
 #
-#    Bot.Log.BufferMax / Bot.Log.PosBufferMax
-#        Description: Rows held in memory while the bot log database is slow or down. Over the cap rows are dropped and counted
-#                     (an error is logged once; a log_dropped event with the counts is written when the database recovers).
-#        Default:     200000 / 100000
+#    Bot.Log.BufferMax
+#        Description: Events held in memory while the bot log database is slow or down. Over the cap events are
+#                     dropped and counted (an error is logged once; a log_dropped event with the counts is written
+#                     when the database recovers).
+#        Default:     200000
+#        Values:      whole number 1000 to 50000000 (events)
+Bot.Log.BufferMax = 200000
+
+#
+#    Bot.Log.PosBufferMax
+#        Description: Same cap for position samples.
+#        Default:     100000
+#        Values:      whole number 1000 to 50000000 (samples)
+Bot.Log.PosBufferMax = 100000
+
 #
 #    Bot.Log.FlushRetries
 #        Description: Re-submissions of a failed log batch before its rows are dropped and counted.
 #        Default:     3
+#        Values:      whole number 0 to 20 (retries)
+Bot.Log.FlushRetries = 3
+
 #
 #    Bot.Log.ProbeIntervalSec
-#        Description: Seconds between reachability probes (TCP connect to the BotLogDatabaseInfo host). When the host stops answering,
-#                     bot logging is switched off (shown by `.bot status`) instead of letting the core DB layer abort the server on a
-#                     failed reconnect; the probe switches it back on. 0 = no probing. Skipped for socket/"." hosts.
+#        Description: Seconds between reachability probes (TCP connect to the BotLogDatabaseInfo host). When the
+#                     host stops answering, bot logging is switched off (shown by .bot status) instead of letting
+#                     the core DB layer abort the server on a failed reconnect; the probe switches it back on.
+#                     Skipped for socket or "." hosts.
 #        Default:     10
+#        Values:      whole number 0 to 3600 (seconds, 0 = no probing)
+Bot.Log.ProbeIntervalSec = 10
+
 #
-#    Bot.Log.HotSplit / Bot.Log.HotTypes
-#        Description: 1 = event types in HotTypes (except COMBAT_SUMMARY/LOG_SUPPRESSED rows) are written to bot_event_hot (5 days
-#                     retention) instead of bot_event (14 days). Needs the bot_event_hot table (forever-botlog-migrate-1.sql);
-#                     query bot_event_all to see both. Ignored with a warning when the table does not exist.
-#        Default:     0 / decision,state_change,trace,cast,aura
+#    Bot.Log.HotSplit
+#        Description: 1 = event types in Bot.Log.HotTypes (except COMBAT_SUMMARY and LOG_SUPPRESSED rows) are
+#                     written to bot_event_hot (5 days retention) instead of bot_event (14 days). Needs the
+#                     bot_event_hot table (forever-botlog-migrate-1.sql); query bot_event_all to see both. Ignored
+#                     with a warning when the table does not exist.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Log.HotSplit = 0
+
 #
+#    Bot.Log.HotTypes
+#        Description: Event types that go to bot_event_hot when Bot.Log.HotSplit is on.
+#        Default:     "decision,state_change,trace,cast,aura"
+#        Values:      comma list of bot_event types, case does not matter
+Bot.Log.HotTypes = "decision,state_change,trace,cast,aura"
+
+###################################################################################################
+# BOT SUBSYSTEM AND POPULATION
 #
-#    Bot.Population.Enabled
-#        Description: Dynamic bot population. The number of pool bots (not alts) online follows a target: Base plus PerPlayerTenths/10
-#                     bots per real player, scaled by the percentage of the hour in HourPct, clamped to Min..Max. Every IntervalSec the
-#                     population moves towards the target by at most StepUp logins or StepDown logouts (nothing within Hysteresis bots
-#                     of the target). Bots in combat or grouped with a real player are not logged out. New characters are created
-#                     when too few exist. Logged out with the reason LOGOUT_POPULATION.
-#        Default:     0 - Off
+###################################################################################################
+
 #
-#    Bot.Population.Base / Bot.Population.PerPlayerTenths / Bot.Population.Min / Bot.Population.Max
-#        Description: Bots wanted with no player online / extra bots per player in tenths (10 = one per player) / lower and upper limit.
-#        Default:     100 / 0 / 0 / 200
-#
-#    Bot.Population.StepUp / Bot.Population.StepDown / Bot.Population.Hysteresis / Bot.Population.IntervalSec / Bot.Population.StartDelaySec
-#        Description: Most logins per check / most logouts per check / tolerated distance from the target / seconds between checks /
-#                     uptime before the first check.
-#        Default:     5 / 3 / 2 / 60 / 60
-#
-#    Bot.Population.HourPct
-#        Description: Up to 24 comma-separated percentages of the target for the hours 0-23 of server local time (missing hours repeat
-#                     the last value). Empty = 100 for every hour. Example: "40,40,40,40,40,50,60,80,100".
-#        Default:     ""
+#    Bot.Enabled
+#        Description: Master switch for the player-bot subsystem (BotMgr). Gates whether BotMgr::Update is ticked
+#                     from the world loop; when off, `bot spawn` refuses.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Enabled = 1
+
 #
 #    Bot.Login.MaxPerTick
 #        Description: Bot logins started per world update tick (spreads a large `bot spawn`).
 #        Default:     5
+#        Values:      whole number 1 or more (logins)
+Bot.Login.MaxPerTick = 5
 
+#
+#    Bot.Population.Enabled
+#        Description: Dynamic bot population. The number of pool bots (not alts) online follows a target: Base
+#                     plus PerPlayerTenths/10 bots per real player, scaled by the percentage of the hour in
+#                     HourPct, clamped to Min..Max. Every IntervalSec the population moves towards the target by
+#                     at most StepUp logins or StepDown logouts. Bots in combat or grouped with a real player are
+#                     not logged out. New characters are created when too few exist. Logouts carry the reason
+#                     LOGOUT_POPULATION.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Population.Enabled = 0
+
+#
+#    Bot.Population.Base
+#        Description: Bots wanted with no player online.
+#        Default:     100
+#        Values:      whole number 0 to 5000 (bots)
+Bot.Population.Base = 100
+
+#
+#    Bot.Population.PerPlayerTenths
+#        Description: Extra bots per real player in tenths (10 = one extra bot per player).
+#        Default:     0
+#        Values:      whole number 0 to 1000 (tenths of a bot)
+Bot.Population.PerPlayerTenths = 0
+
+#
+#    Bot.Population.Min
+#        Description: Lower limit of the target.
+#        Default:     0
+#        Values:      whole number 0 to 5000 (bots)
+Bot.Population.Min = 0
+
+#
+#    Bot.Population.Max
+#        Description: Upper limit of the target.
+#        Default:     200
+#        Values:      whole number 0 to 5000 (bots)
+Bot.Population.Max = 200
+
+#
+#    Bot.Population.StepUp
+#        Description: Most logins per check.
+#        Default:     5
+#        Values:      whole number 1 to 100 (bots)
+Bot.Population.StepUp = 5
+
+#
+#    Bot.Population.StepDown
+#        Description: Most logouts per check.
+#        Default:     3
+#        Values:      whole number 1 to 100 (bots)
+Bot.Population.StepDown = 3
+
+#
+#    Bot.Population.Hysteresis
+#        Description: Tolerated distance from the target; nothing happens within this many bots of it.
+#        Default:     2
+#        Values:      whole number 0 to 100 (bots)
+Bot.Population.Hysteresis = 2
+
+#
+#    Bot.Population.IntervalSec
+#        Description: Seconds between population checks.
+#        Default:     60
+#        Values:      whole number 5 to 3600 (seconds)
+Bot.Population.IntervalSec = 60
+
+#
+#    Bot.Population.StartDelaySec
+#        Description: Server uptime before the first check.
+#        Default:     60
+#        Values:      whole number 0 to 3600 (seconds)
+Bot.Population.StartDelaySec = 60
+
+#
+#    Bot.Population.HourPct
+#        Description: Percentage of the target for each hour of the day; missing hours repeat the last value.
+#        Default:     ""
+#        Values:      up to 24 comma-separated percentages (hours 0-23 of server local time); empty = 100 for
+#                     every hour
+#        Example:     "40,40,40,40,40,50,60,80,100"
+Bot.Population.HourPct = ""
+
+###################################################################################################
+# BOT AI ENGINE
+#
+# Every online bot gets an AI that is ticked from Player::Update on the map thread. With no
+# strategies active a tick only tracks the engine state (non-combat, combat, dead) and logs
+# changes. The AI can be paused at runtime with the console command `bot ai on|off`; strategies
+# can be changed per bot with `bot strategy`.
+#
+###################################################################################################
+
+#
 #    Bot.AI.Enabled
-#        Description: Bot AI engine (Phase 2): every online bot gets an AI that is ticked from Player::Update on the map thread.
-#                     With no strategies active a tick only tracks the engine state (non-combat/combat/dead) and logs changes.
-#                     Can also be paused at runtime with the console command `bot ai on|off`.
-#        Default:     1 - (Enabled)
-#                     0 - (Disabled)
+#        Description: Turns the bot AI engine on. Can also be paused at runtime with `bot ai on|off`.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Enabled = 1
+
 #
 #    Bot.AI.TickMs
-#        Description: Interval between AI ticks of one bot, in milliseconds (50-10000). Bots start at random offsets.
+#        Description: Interval between AI ticks of one bot. Bots start at random offsets.
 #        Default:     500
+#        Values:      whole number 50 to 10000 (milliseconds)
+Bot.AI.TickMs = 500
+
 #
 #    Bot.AI.TestStrategy
-#        Description: New bots get the built-in test strategies (idle log, combat log, dead log). Off by default: they only prove
-#                     the engine and write log rows. Strategies can also be toggled per bot with `bot strategy <name> +test_idle`.
-#        Default:     0 - (Disabled)
+#        Description: New bots get the built-in test strategies (idle log, combat log, dead log). They only prove
+#                     the engine and write log rows. Can also be toggled per bot with `bot strategy <name>
+#                     +test_idle`.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.TestStrategy = 0
+
 #
 #    Bot.AI.Test.IdleSec
-#        Description: Seconds without any executed action before the test strategy's idle trigger fires.
+#        Description: Seconds without any executed action before the test strategy idle trigger fires.
 #        Default:     30
+#        Values:      whole number 1 to 86400 (seconds)
+Bot.AI.Test.IdleSec = 30
+
 #
 #    Bot.AI.Test.CombatSec
-#        Description: Interval in seconds of the test strategy's combat trigger while the combat engine is active.
+#        Description: Interval of the test strategy combat trigger while the combat engine is active.
 #        Default:     5
+#        Values:      whole number 1 to 86400 (seconds)
+Bot.AI.Test.CombatSec = 5
+
 #
-#    Bot.AI.Default.NonCombat / Bot.AI.Default.Combat / Bot.AI.Default.Dead
-#        Description: Comma separated strategies every new bot gets per engine (Phase 3 behaviors:
-#                     goto, follow, stay, rest in the non-combat engine; recover in the dead engine).
-#                     Strategies can be changed per bot at runtime with `bot strategy`.
-#        Default:     "rest,goto,follow" / "combat" / "recover"
+#    Bot.AI.Default.NonCombat
+#        Description: Strategies every new bot gets in the non-combat engine.
+#        Default:     "rest,goto,follow"
+#        Values:      comma list of strategy names (goto, follow, stay, rest, quest, travel, watchdog,
+#                     natural_idle, pet, ...); add "quest" for the quest behavior
+#        Example:     "rest,goto,follow,quest"
+Bot.AI.Default.NonCombat = "rest,goto,follow"
+
 #
-#    Bot.AI.Combat.Flee.Enabled / Bot.AI.Combat.Flee.LevelDiff / Bot.AI.Combat.EliteLevelBonus
-#        Description: Basic combat strategy ("combat"). A bot attacked by mobs that are all too strong runs away
-#                     (flee goal, logged as FLEE_LEVEL_DIFF) instead of fighting. Too strong = mob level minus bot
-#                     level (+ EliteLevelBonus for elites/rare elites) above LevelDiff, or a world boss. Mobs that
-#                     are not too strong are fought first. Flee off, MaxAttempts used up, or no navmesh path = fight back
-#                     (FIGHT_TOO_STRONG). FLEE_START and COMBAT_END (bot_fled) carry flee_reason.
-#        Default:     1 / 2 / 3
+#    Bot.AI.Default.Combat
+#        Description: Strategies every new bot gets in the combat engine.
+#        Default:     "combat"
+#        Values:      comma list of strategy names
+Bot.AI.Default.Combat = "combat"
+
+#
+#    Bot.AI.Default.Dead
+#        Description: Strategies every new bot gets in the dead engine.
+#        Default:     "recover"
+#        Values:      comma list of strategy names
+Bot.AI.Default.Dead = "recover"
+
+###################################################################################################
+# COMBAT, FLEEING AND AGGRO AVOIDANCE
+#
+# Basic combat strategy ("combat"). A bot attacked by mobs that are all too strong runs away
+# (flee goal, logged as FLEE_LEVEL_DIFF) instead of fighting. Too strong = mob level minus bot
+# level (+ Bot.AI.Combat.EliteLevelBonus for elites and rare elites) above
+# Bot.AI.Combat.Flee.LevelDiff, or a world boss. Mobs that are not too strong are fought first.
+# Flee off, MaxAttempts used up, or no navmesh path = fight back (FIGHT_TOO_STRONG).
+#
+###################################################################################################
+
+#
+#    Bot.AI.Combat.Flee.Enabled
+#        Description: Bots run away from fights against mobs that are all too strong. FLEE_START and COMBAT_END
+#                     (bot_fled) carry flee_reason.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Combat.Flee.Enabled = 1
+
+#
+#    Bot.AI.Combat.Flee.LevelDiff
+#        Description: Mob level minus bot level above which a mob is too strong.
+#        Default:     2
+#        Values:      whole number 0 to 60 (levels)
+Bot.AI.Combat.Flee.LevelDiff = 2
+
+#
+#    Bot.AI.Combat.EliteLevelBonus
+#        Description: Levels added to the mob level for elites and rare elites when judging how strong they are
+#                     (also used by quest and grind target choice).
+#        Default:     3
+#        Values:      whole number 0 to 20 (levels)
+Bot.AI.Combat.EliteLevelBonus = 3
+
 #
 #    Bot.AI.Combat.Flee.MaxAttempts
 #        Description: How many times per fight a bot may start fleeing before it fights back.
 #        Default:     3
+#        Values:      whole number 1 to 10 (attempts)
+Bot.AI.Combat.Flee.MaxAttempts = 3
+
 #
 #    Bot.AI.Combat.Flee.LowHpPct
 #        Description: A bot in a fight whose health falls below this percent runs away (flee_reason low_hp, counts
-#                     against Flee.MaxAttempts; not when its target is nearly dead). 0 = off.
+#                     against Flee.MaxAttempts; not when its target is nearly dead).
 #        Default:     15
+#        Values:      whole number 0 to 60 (percent, 0 = off)
+Bot.AI.Combat.Flee.LowHpPct = 15
+
+#
+#    Bot.AI.Combat.Flee.MaxSec
+#        Description: Seconds a bot runs before it gives up and fights.
+#        Default:     10
+#        Values:      whole number 1 to 120 (seconds)
+Bot.AI.Combat.Flee.MaxSec = 10
+
+#
+#    Bot.AI.Combat.Flee.Yards
+#        Description: Distance of the flee destination.
+#        Default:     35
+#        Values:      whole number 10 to 100 (yards)
+Bot.AI.Combat.Flee.Yards = 35
+
 #
 #    Bot.AI.Flee.Mode
-#        Description: A/B switch for fleeing. 0 = current behaviour (flee from too-strong mobs and at low health).
-#                     1 = aggro avoidance: quest and grind targets are capped at gap +1, no flee loop; once engaged the
-#                     bot fights to the end (FIGHT_TOO_STRONG with why FLEE_MODE_FIGHT_TO_END). 2 = flee toward the
-#                     nearest friendly guard within 120 yd (open-field flee when none). The active mode is logged as
-#                     flee_mode in every combat decision row and in COMBAT_SUMMARY.
+#        Description: A/B switch for fleeing. 0 = flee from too-strong mobs and at low health. 1 = aggro
+#                     avoidance: quest and grind targets are capped at gap +1, no flee loop; once engaged the bot
+#                     fights to the end (FIGHT_TOO_STRONG with why FLEE_MODE_FIGHT_TO_END). 2 = flee toward the
+#                     nearest friendly guard within 120 yards (open-field flee when none). The active mode is
+#                     logged as flee_mode in every combat decision row and in COMBAT_SUMMARY.
 #        Default:     0
+#        Values:      0, 1 or 2
+Bot.AI.Flee.Mode = 0
+
 #
-#    Bot.AI.Flee.AbPct / Bot.AI.Flee.AbMode
-#        Description: Flee A/B in one run. The bots whose guid counter modulo 100 is below AbPct run flee mode AbMode
-#                     (the experiment arm), all others run Bot.AI.Flee.Mode (the control). 0 = off, every bot runs
-#                     Flee.Mode. The per-bot mode is logged as flee_mode in every combat row. Protocol:
-#                     docs/playerbots/death-avoidance-20261008.md.
-#        Default:     0 / 1
+#    Bot.AI.Flee.AbPct
+#        Description: Flee A/B in one run: the bots whose guid counter modulo 100 is below this value run mode
+#                     Bot.AI.Flee.AbMode (the experiment arm), all others run Bot.AI.Flee.Mode (the control).
+#                     Protocol: docs/playerbots/death-avoidance-20261008.md.
+#        Default:     0
+#        Values:      whole number 0 to 100 (percent of bots, 0 = off)
+Bot.AI.Flee.AbPct = 0
+
 #
-#    Bot.AI.Avoid.Entries / Bot.AI.Avoid.MaxLevelGap
-#        Description: Creature entries that killed bots far above the expected rate (Defias Bandit 116, Young Forest
-#                     Bear 822, Shadowgale Ursera 250927, Narg 79). Quest and grind target choice skips them (and
-#                     skips targets standing next to them), and the combat target choice fights them last, unless
-#                     the creature is at most MaxLevelGap levels above the bot (plain level difference, -1 = list
-#                     off). Entries separated by comma, semicolon or space.
-#        Default:     "116,822,250927,79" / 1
+#    Bot.AI.Flee.AbMode
+#        Description: Flee mode of the experiment arm of the A/B split.
+#        Default:     1
+#        Values:      0, 1 or 2 (same meaning as Bot.AI.Flee.Mode)
+Bot.AI.Flee.AbMode = 1
+
 #
-#    Bot.AI.Pull.FirstStrikeMargin / Bot.AI.Pull.RangedMaxYd
-#        Description: Ranged classes (non-melee) open a quest or grind pull from the mob's own aggro radius plus
-#                     FirstStrikeMargin yards (capped at RangedMaxYd, never below the normal ranged pull distance), so
-#                     the mob does not get the first hit while the bot walks in. 0 = off. Melee classes are unchanged.
-#        Default:     2 / 28
+#    Bot.AI.Avoid.Entries
+#        Description: Creature entries that killed bots far above the expected rate (Defias Bandit 116, Young
+#                     Forest Bear 822, Shadowgale Ursera 250927, Narg 79). Quest and grind target choice skips
+#                     them and targets standing next to them, and the combat target choice fights them last,
+#                     unless the creature is at most Bot.AI.Avoid.MaxLevelGap levels above the bot.
+#        Default:     "116,822,250927,79"
+#        Values:      creature entry ids separated by comma, semicolon or space; empty = none
+Bot.AI.Avoid.Entries = "116,822,250927,79"
+
+#
+#    Bot.AI.Avoid.MaxLevelGap
+#        Description: Plain level difference up to which a listed creature is still fought. -1 = the list is off.
+#        Default:     1
+#        Values:      whole number -1 to 10 (levels)
+Bot.AI.Avoid.MaxLevelGap = 1
+
+#
+#    Bot.AI.Pull.FirstStrikeMargin
+#        Description: Ranged (non-melee) classes open a quest or grind pull from the mob aggro radius plus this
+#                     margin, so the mob does not get the first hit while the bot walks in. Melee classes are
+#                     unchanged.
+#        Default:     2
+#        Values:      whole number 0 to 10 (yards, 0 = off)
+Bot.AI.Pull.FirstStrikeMargin = 2
+
+#
+#    Bot.AI.Pull.RangedMaxYd
+#        Description: Cap of that ranged pull distance (never below the normal ranged pull distance).
+#        Default:     28
+#        Values:      whole number 10 to 40 (yards)
+Bot.AI.Pull.RangedMaxYd = 28
+
 #
 #    Bot.AI.AggroAvoid.Enabled
-#        Description: Aggro awareness while a bot walks (goto/quest goals), stands idle or wants to eat/drink. Hostile
-#                     elites and mobs above the bot's level are kept clear of: the bot detours around them, waits
-#                     outside their aggro radius, or backs off when inside it, and never sits down to eat or drink
-#                     inside their aggro range. Quest/grind targets next to such a mob are skipped. Each avoidance is
-#                     logged as an AGGRO_AVOID decision (details: action, mob entry, level, elite, distance, aggro
-#                     radius). 0 = off.
+#        Description: Aggro awareness while a bot walks (goto or quest goals), stands idle or wants to eat or
+#                     drink. Hostile elites and mobs above the bot level are kept clear of: the bot detours around
+#                     them, waits outside their aggro radius, or backs off when inside it, and never sits down to
+#                     eat or drink inside their aggro range. Each avoidance is logged as an AGGRO_AVOID decision.
 #        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.AggroAvoid.Enabled = 1
+
 #
 #    Bot.AI.AggroAvoid.MarginYards
-#        Description: Yards kept clear on top of the mob's own aggro radius (which already scales with the level gap).
+#        Description: Yards kept clear on top of the mob aggro radius (which already scales with the level gap).
 #        Default:     10
+#        Values:      whole number 0 to 40 (yards)
+Bot.AI.AggroAvoid.MarginYards = 10
+
 #
-#    Bot.AI.AggroAvoid.MinLevelDiff / Bot.AI.AggroAvoid.Elites
-#        Description: A mob is avoided when its level minus the bot level is at least MinLevelDiff (1 = any mob
-#                     above the bot), and, with Elites on, whatever its level when it is an elite.
-#        Default:     1 / 1
+#    Bot.AI.AggroAvoid.MinLevelDiff
+#        Description: A mob is avoided when its level minus the bot level is at least this (1 = any mob above the
+#                     bot).
+#        Default:     1
+#        Values:      whole number -10 to 20 (levels)
+Bot.AI.AggroAvoid.MinLevelDiff = 1
+
+#
+#    Bot.AI.AggroAvoid.Elites
+#        Description: Also avoid elites whatever their level.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.AggroAvoid.Elites = 1
+
 #
 #    Bot.AI.AggroAvoid.LogIntervalSec
-#        Description: At most one AGGRO_AVOID row per bot per this many seconds (the avoidance itself is not limited).
+#        Description: At most one AGGRO_AVOID row per bot per this many seconds (the avoidance itself is not
+#                     limited).
 #        Default:     15
+#        Values:      whole number 1 to 3600 (seconds)
+Bot.AI.AggroAvoid.LogIntervalSec = 15
+
 #
 #    Bot.AI.AggroAvoid.MaxSec
-#        Description: Seconds a goal may be held back by avoidance before it fails (path_fail AGGRO_BLOCKED), so the
-#                     quest layer picks another goal.
+#        Description: Seconds a goal may be held back by avoidance before it fails (path_fail AGGRO_BLOCKED), so
+#                     the quest layer picks another goal.
 #        Default:     45
+#        Values:      whole number 5 to 600 (seconds)
+Bot.AI.AggroAvoid.MaxSec = 45
+
 #
 #    Bot.AI.Grind.MaxLevelGap
 #        Description: Grind targets may be at most this many effective levels above the bot (elites count
-#                     +EliteLevelBonus). Grind targets also skip mobs with a gap >= 2 mob within 22 yd.
+#                     +Bot.AI.Combat.EliteLevelBonus). Grind targets also skip mobs with a gap of 2 or more within
+#                     22 yards.
 #        Default:     1
+#        Values:      whole number -5 to 10 (levels)
+Bot.AI.Grind.MaxLevelGap = 1
+
 #
 #    Bot.AI.Grind.MaxRadius
-#        Description: Grind targets stay within this many yards of where the grind run began (the last quest area).
-#                     When nothing is left inside, the anchor moves to the bot position. 0 = off.
+#        Description: Grind targets stay within this distance of where the grind run began (the last quest area).
+#                     When nothing is left inside, the anchor moves to the bot position.
 #        Default:     150
+#        Values:      whole number 0 to 2000 (yards, 0 = off)
+Bot.AI.Grind.MaxRadius = 150
+
 #
 #    Bot.AI.Combat.PrePullManaPct
-#        Description: A mana user drinks before pulling when its mana is below this percent (the higher of this and
-#                     Bot.AI.Rest.DrinkBelowPct applies).
+#        Description: A mana user drinks before pulling when its mana is below this percent (the higher of this
+#                     and Bot.AI.Rest.DrinkBelowPct applies).
 #        Default:     40
+#        Values:      whole number 0 to 95 (percent)
+Bot.AI.Combat.PrePullManaPct = 40
+
 #
 #    Bot.AI.Combat.FreeTotems
-#        Description: With Bot.AI.Rotation.Enabled a shaman that casts a totem (Stoneskin, Searing, Healing Stream) gets the totem tool
-#                     (Earth, Fire, Water Totem) for free when the bags lack it. Placeholder until the economy phase.
-#        Default:     1 - On
+#        Description: With Bot.AI.Rotation.Enabled a shaman that casts a totem gets the totem tool (Earth, Fire,
+#                     Water Totem) for free when the bags lack it. Placeholder until the economy phase.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Combat.FreeTotems = 1
+
 #
 #    Bot.AI.Combat.FreeRepair
-#        Description: A bot with a broken (0 durability) equipped item repairs everything for free (REPAIR_FREE) so
-#                     weapon spells (Heroic Strike, Raptor Strike, Auto Shot) do not fail with EQUIPPED_ITEM_CLASS.
+#        Description: A bot with a broken (0 durability) equipped item repairs everything for free (REPAIR_FREE)
+#                     so weapon spells do not fail with EQUIPPED_ITEM_CLASS.
 #        Default:     1
-#
-#    Bot.AI.Combat.Flee.MaxSec / Bot.AI.Combat.Flee.Yards
-#        Description: Seconds a bot runs before it gives up and fights, and the distance of the flee destination.
-#        Default:     10 / 35
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Combat.FreeRepair = 1
+
 #
 #    Bot.AI.Combat.ApproachTimeoutSec
-#        Description: A target the bot cannot get into range of within this many seconds is given up (APPROACH_TIMEOUT).
+#        Description: A target the bot cannot get into range of within this time is given up (APPROACH_TIMEOUT).
 #        Default:     15
+#        Values:      whole number 3 to 120 (seconds)
+Bot.AI.Combat.ApproachTimeoutSec = 15
+
 #
-#    Bot.AI.Combat.HealBelowPct / Bot.AI.Combat.CasterRangePct
-#        Description: Health percent below which a bot with a heal spell casts it on itself in combat; percent of the
-#                     spell range at which casters/hunters stand while chasing their target.
-#        Default:     45 / 80
+#    Bot.AI.Combat.HealBelowPct
+#        Description: Health percent below which a bot with a heal spell casts it on itself in combat.
+#        Default:     45
+#        Values:      whole number 0 to 100 (percent)
+Bot.AI.Combat.HealBelowPct = 45
+
 #
-#    Bot.AI.Rest.EatBelowPct / Bot.AI.Rest.DrinkBelowPct / Bot.AI.Rest.DonePct
-#        Description: Health percent below which a bot out of combat sits and eats, mana percent below which it
-#                     drinks, and the percent at which it stands up again.
-#        Default:     60 / 40 / 95
+#    Bot.AI.Combat.CasterRangePct
+#        Description: Percent of the spell range at which casters and hunters stand while chasing their target.
+#        Default:     80
+#        Values:      whole number 30 to 100 (percent)
+Bot.AI.Combat.CasterRangePct = 80
+
+###################################################################################################
+# RESTING, DEATH AND RECOVERY
+#
+###################################################################################################
+
+#
+#    Bot.AI.Rest.EatBelowPct
+#        Description: Health percent below which a bot out of combat sits and eats.
+#        Default:     60
+#        Values:      whole number 1 to 99 (percent)
+Bot.AI.Rest.EatBelowPct = 60
+
+#
+#    Bot.AI.Rest.DrinkBelowPct
+#        Description: Mana percent below which a bot out of combat sits and drinks.
+#        Default:     40
+#        Values:      whole number 1 to 99 (percent)
+Bot.AI.Rest.DrinkBelowPct = 40
+
+#
+#    Bot.AI.Rest.DonePct
+#        Description: Percent at which a resting bot stands up again.
+#        Default:     95
+#        Values:      whole number 50 to 100 (percent)
+Bot.AI.Rest.DonePct = 95
+
 #
 #    Bot.AI.Rest.FreeFood
-#        Description: Bots eat and drink without carrying food items (the vanilla food/drink spell for their level
-#                     is applied). Placeholder until bots buy consumables (economy phase). 0 = bots only sit.
+#        Description: Bots eat and drink without carrying food items (the vanilla food or drink spell for their
+#                     level is applied). Placeholder until bots buy consumables. 0 = bots only sit.
 #        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Rest.FreeFood = 1
+
 #
-#    Bot.AI.Release.MinDelaySec / Bot.AI.Release.MaxDelaySec
-#        Description: Random delay between a bot's death and releasing its spirit.
-#        Default:     3 / 8
+#    Bot.AI.Release.MinDelaySec
+#        Description: Shortest random delay between a bot death and releasing its spirit.
+#        Default:     3
+#        Values:      whole number 0 to 3600 (seconds)
+Bot.AI.Release.MinDelaySec = 3
+
+#
+#    Bot.AI.Release.MaxDelaySec
+#        Description: Longest random delay between a bot death and releasing its spirit.
+#        Default:     8
+#        Values:      whole number 0 to 3600 (seconds)
+Bot.AI.Release.MaxDelaySec = 8
+
 #
 #    Bot.AI.Recover.MaxCorpseRunYards
 #        Description: Ghosts whose corpse is farther away (or unreachable by path) use the spirit healer instead.
 #        Default:     1200
+#        Values:      whole number 50 to 100000 (yards)
+Bot.AI.Recover.MaxCorpseRunYards = 1200
+
 #
-#    Bot.AI.Move.StuckSec / Bot.AI.Move.StuckRepaths
-#        Description: Seconds without getting closer to the goal before a stuck event, and how many such episodes
-#                     (each re-issues the path) pass before the goal is given up (stuck/UNREACHABLE_TARGET).
-#        Default:     8 / 3
+#    Bot.AI.Move.StuckSec
+#        Description: Seconds without getting closer to the goal before a stuck event.
+#        Default:     8
+#        Values:      whole number 2 to 600 (seconds)
+Bot.AI.Move.StuckSec = 8
+
+#
+#    Bot.AI.Move.StuckRepaths
+#        Description: How many stuck episodes (each re-issues the path) pass before the goal is given up (stuck /
+#                     UNREACHABLE_TARGET).
+#        Default:     3
+#        Values:      whole number 1 to 20 (episodes)
+Bot.AI.Move.StuckRepaths = 3
+
 #
 #    Bot.AI.Death.CorpseRunMaxFails
-#        Description: Failed corpse-run goals (and failed spirit healer walks) before the bot gives up: a failed corpse run
-#                     falls back to the spirit healer, and when that fails too the bot is resurrected where it stands
-#                     (decision CORPSE_RUN_GAVE_UP / SPIRIT_HEAL_GAVE_UP, logged once).
+#        Description: Failed corpse-run goals (and failed spirit healer walks) before the bot gives up: a failed
+#                     corpse run falls back to the spirit healer, and when that fails too the bot is resurrected
+#                     where it stands (CORPSE_RUN_GAVE_UP / SPIRIT_HEAL_GAVE_UP).
 #        Default:     3
+#        Values:      whole number 1 to 20 (failures)
+Bot.AI.Death.CorpseRunMaxFails = 3
+
 #
 #    Bot.AI.Death.GiveUpSec
-#        Description: Seconds a ghost may spend on the corpse run or the spirit healer walk (NO_PROGRESS /
-#                     UNREACHABLE_TARGET retries included) before it is resurrected at the closest graveyard
-#                     (decision CORPSE_RUN_TIMEOUT / SPIRIT_HEAL_TIMEOUT). The spirit healer give-up
-#                     (SPIRIT_HEAL_GAVE_UP) now also respawns at the graveyard instead of in place. 0 = no time cap.
+#        Description: Seconds a ghost may spend on the corpse run or the spirit healer walk before it is
+#                     resurrected at the closest graveyard (CORPSE_RUN_TIMEOUT / SPIRIT_HEAL_TIMEOUT).
 #        Default:     300
+#        Values:      whole number 0 to 3600 (seconds, 0 = no time cap)
+Bot.AI.Death.GiveUpSec = 300
 
-Bot.Enabled = 1
-Bot.Log.PosIntervalSec = 5
-Bot.Log.PosIntervalSlowSec = 15
-Bot.Log.PosScaleBots = 500
-Bot.Log.RepeatCap = 3
-Bot.Log.AiTickStatsSec = 60
-Bot.Log.ServerStatsSec = 60
-Bot.Log.PullDetail = 1
-Bot.Log.IdleReasons = 1
-Bot.Log.BufferMax = 200000
-Bot.Log.PosBufferMax = 100000
-Bot.Log.FlushRetries = 3
-Bot.Log.ProbeIntervalSec = 10
-Bot.Log.HotSplit = 0
-Bot.Log.HotTypes = "decision,state_change,trace,cast,aura"
-Bot.Login.MaxPerTick = 5
-Bot.Population.Enabled = 0
-Bot.Population.Base = 100
-Bot.Population.PerPlayerTenths = 0
-Bot.Population.Min = 0
-Bot.Population.Max = 200
-Bot.Population.StepUp = 5
-Bot.Population.StepDown = 3
-Bot.Population.Hysteresis = 2
-Bot.Population.HourPct = ""
-Bot.Population.IntervalSec = 60
-Bot.Population.StartDelaySec = 60
-Bot.AI.Enabled = 1
-Bot.AI.TickMs = 500
-Bot.AI.TestStrategy = 0
-Bot.AI.Test.IdleSec = 30
-Bot.AI.Test.CombatSec = 5
-Bot.AI.Default.NonCombat = "rest,goto,follow"
+###################################################################################################
+# QUESTING
+#
+# Enable the quest behavior by adding "quest" to Bot.AI.Default.NonCombat (e.g.
+# "rest,goto,follow,quest").
+#
+###################################################################################################
 
 #
 #    Bot.Quest.MaxActive
 #        Description: Quests a bot keeps in its log before it only works and turns in.
 #        Default:     12
+#        Values:      whole number 1 or more (quests)
+Bot.Quest.MaxActive = 12
+
 #
 #    Bot.Quest.StallSec
 #        Description: Seconds without objective progress before a quest is dropped with a quest_blocked reason.
 #        Default:     240
+#        Values:      whole number 30 or more (seconds)
+Bot.Quest.StallSec = 240
+
 #
 #    Bot.Quest.MaxMobLevelDiff
-#        Description: Kill targets more than this many levels above the bot (elites count +Bot.AI.Combat.EliteLevelBonus) are skipped.
+#        Description: Kill targets more than this many levels above the bot (elites count
+#                     +Bot.AI.Combat.EliteLevelBonus) are skipped.
 #        Default:     2
+#        Values:      any whole number, negative allowed (levels)
+Bot.Quest.MaxMobLevelDiff = 2
+
 #
-#    Bot.Quest.SelectRadius / Bot.Quest.FarRadius
-#        Description: Yards searched for a quest giver (near pass, then far pass).
-#        Default:     350 / 1500
+#    Bot.Quest.SelectRadius
+#        Description: Yards searched for a quest giver in the near pass.
+#        Default:     350
+#        Values:      whole number 0 or more (yards)
+Bot.Quest.SelectRadius = 350
+
+#
+#    Bot.Quest.FarRadius
+#        Description: Yards searched for a quest giver in the far pass.
+#        Default:     1500
+#        Values:      whole number 0 or more (yards)
+Bot.Quest.FarRadius = 1500
+
+#
+#    Bot.Quest.GrindSec
+#        Description: Length of one grind run when no quest fits.
+#        Default:     90
+#        Values:      whole number 20 or more (seconds)
+Bot.Quest.GrindSec = 90
+
 #
 #    Bot.Quest.SelectionBlockLogCap
 #        Description: Maximum quest_blocked rows per bot written while choosing quests (nearby givers only).
 #        Default:     40
+#        Values:      whole number 0 or more (rows)
+Bot.Quest.SelectionBlockLogCap = 40
+
 #
-#    Bot.Quest.HubBlacklistSec / Bot.Quest.HubScanSec
-#        Description: Seconds one bot skips a hub it failed to reach (min 30) / minimum seconds between hub scans of one bot (min 5).
-#        Default:     600 / 20
+#    Bot.Quest.HubBlacklistSec
+#        Description: Seconds one bot skips a hub it failed to reach.
+#        Default:     600
+#        Values:      whole number 30 or more (seconds)
+Bot.Quest.HubBlacklistSec = 600
+
+#
+#    Bot.Quest.HubScanSec
+#        Description: Minimum seconds between hub scans of one bot.
+#        Default:     20
+#        Values:      whole number 5 or more (seconds)
+Bot.Quest.HubScanSec = 20
+
 #
 #    Bot.Quest.HubFailGlobalSec
-#        Description: Seconds a hub that any bot failed to reach is skipped by ALL bots (min 60). When no hub fits the bot grinds (QUEST_HUB_NONE, QUEST_GRIND).
+#        Description: Seconds a hub that any bot failed to reach is skipped by ALL bots. When no hub fits the bot
+#                     grinds (QUEST_HUB_NONE, QUEST_GRIND).
 #        Default:     1800
+#        Values:      whole number 60 or more (seconds)
+Bot.Quest.HubFailGlobalSec = 1800
+
 #
 #    Bot.Quest.HubMaxDist
-#        Description: Hubs farther than this many yards are skipped unless a bot already reached them. Hubs in zones of the other faction are always skipped.
+#        Description: Hubs farther than this are skipped unless a bot already reached them. Hubs in zones of the
+#                     other faction are always skipped.
 #        Default:     2500
-#
-#    Enable the quest behavior by adding "quest" to Bot.AI.Default.NonCombat (e.g. "rest,goto,follow,quest").
-#
-
-Bot.Quest.HubBlacklistSec = 600
-Bot.Quest.HubScanSec = 20
-Bot.Quest.HubFailGlobalSec = 1800
+#        Values:      whole number 0 or more (yards)
 Bot.Quest.HubMaxDist = 2500
-Bot.Quest.MaxActive = 12
+
+#
+#    Bot.Quest.GateLongLegs
+#        Description: An under-level bot that died recently, or sees mobs 2 or more levels above it, makes no
+#                     giver, ender or loot leg longer than Bot.Quest.LegGateYd.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.GateLongLegs = 0
+
+#
+#    Bot.Quest.LegGateYd
+#        Description: Leg length above which Bot.Quest.GateLongLegs applies.
+#        Default:     150
+#        Values:      whole number 50 to 2000 (yards)
+Bot.Quest.LegGateYd = 150
+
+#
+#    Bot.Quest.LootSpawnByCost
+#        Description: Loot spawn is chosen by path cost, not too far, with a penalty for death areas.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.LootSpawnByCost = 0
+
+#
+#    Bot.Quest.DeathLoopBreaker
+#        Description: A second death within 10 minutes on the same quest or area drops the task and defers the
+#                     quest.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.DeathLoopBreaker = 0
+
+#
+#    Bot.Quest.DeferQuest8
+#        Description: Quest 8 is not taken before level 4.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.DeferQuest8 = 0
+
+###################################################################################################
+# AUCTION HOUSE
+#
+###################################################################################################
 
 #
 #    Bot.AH.Enabled
-#        Description: Bots list surplus non-stackable gear (green or better, not bound, no use to them) at an auctioneer and collect
-#                     the mail (sold gold, returned items) at a mailbox. Auction calls run on the world thread.
-#        Default:     0 - (Disabled)
+#        Description: Bots list surplus non-stackable gear (green or better, not bound, no use to them) at an
+#                     auctioneer and collect the mail (sold gold, returned items) at a mailbox. Auction calls run
+#                     on the world thread.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AH.Enabled = 0
+
 #
-#    Bot.AH.MaxListingsPerBot / Bot.AH.MaxListingsTotal
-#        Description: Listings one bot may have at once / listings the house may hold before bots stop adding.
-#        Default:     5 / 2000
+#    Bot.AH.MaxListingsPerBot
+#        Description: Listings one bot may have at once.
+#        Default:     5
+#        Values:      whole number 0 or more (listings)
+Bot.AH.MaxListingsPerBot = 5
+
+#
+#    Bot.AH.MaxListingsTotal
+#        Description: Listings the house may hold before bots stop adding.
+#        Default:     2000
+#        Values:      whole number 1 or more (listings)
+Bot.AH.MaxListingsTotal = 2000
+
 #
 #    Bot.AH.UndercutPct
 #        Description: Price is 1.5 x the vendor sell price minus this percent, never below the sell price.
 #        Default:     5
+#        Values:      whole number 0 to 100 (percent)
+Bot.AH.UndercutPct = 5
+
 #
 #    Bot.AH.VisitCooldownSec
 #        Description: Seconds between two auction house or mailbox visits of one bot.
 #        Default:     900
-#
-
-Bot.AH.Enabled = 0
-Bot.AH.MaxListingsPerBot = 5
-Bot.AH.MaxListingsTotal = 2000
-Bot.AH.UndercutPct = 5
+#        Values:      whole number 0 or more (seconds)
 Bot.AH.VisitCooldownSec = 900
-Bot.Quest.StallSec = 240
-Bot.Quest.MaxMobLevelDiff = 2
-Bot.Quest.SelectRadius = 350
-Bot.Quest.FarRadius = 1500
-Bot.Quest.SelectionBlockLogCap = 40
-Bot.AI.Default.Combat = "combat"
-Bot.AI.Default.Dead = "recover"
-Bot.AI.Rest.EatBelowPct = 60
-Bot.AI.Rest.DrinkBelowPct = 40
-Bot.AI.Rest.DonePct = 95
-Bot.AI.Rest.FreeFood = 1
-Bot.AI.Release.MinDelaySec = 3
-Bot.AI.Release.MaxDelaySec = 8
-Bot.AI.Recover.MaxCorpseRunYards = 1200
-Bot.AI.Move.StuckSec = 8
-Bot.AI.Move.StuckRepaths = 3
-Bot.AI.Death.CorpseRunMaxFails = 3
-Bot.AI.Death.GiveUpSec = 300
+
+###################################################################################################
+# PETS, CONSUMABLES, WATCHDOG
+#
+###################################################################################################
 
 #
 #    Bot.AI.Pet.Enabled
-#        Description: Hunter bots look after their pet: summon, revive, dismiss on logout and map change, feed, assist, follow,
-#                     a basic ability set, and Taming the Beast quests. Adds the strategy "pet" to hunter bots.
-#        Default:     0 - Off
+#        Description: Hunter bots look after their pet: summon, revive, dismiss on logout and map change, feed,
+#                     assist, follow, a basic ability set, and Taming the Beast quests. Adds the strategy "pet" to
+#                     hunter bots.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Pet.Enabled = 0
+
 #
-#    Bot.AI.Pet.Feed / Bot.AI.Pet.Abilities / Bot.AI.Pet.Taming / Bot.AI.Pet.TameFirstPet
-#        Description: Feed the pet by its happiness / set the autocast abilities of the pet / complete the Taming the Beast quests
-#                     (needs Bot.AI.Pet.Enabled) / tame a first pet with Tame Beast when the hunter has none.
-#        Default:     1 / 1 / 1 / 1
+#    Bot.AI.Pet.Feed
+#        Description: Feed the pet by its happiness. Needs Bot.AI.Pet.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Pet.Feed = 1
+
+#
+#    Bot.AI.Pet.Abilities
+#        Description: Set the autocast abilities of the pet. Needs Bot.AI.Pet.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Pet.Abilities = 1
+
+#
+#    Bot.AI.Pet.Taming
+#        Description: Complete the Taming the Beast quests. Needs Bot.AI.Pet.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Pet.Taming = 1
+
+#
+#    Bot.AI.Pet.TameFirstPet
+#        Description: Tame a first pet with Tame Beast when the hunter has none. Needs Bot.AI.Pet.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Pet.TameFirstPet = 1
+
 #
 #    Bot.AI.Pet.MinLevel
 #        Description: Level from which a hunter bot is expected to have a pet.
 #        Default:     10
+#        Values:      whole number 1 to 80 (level)
+Bot.AI.Pet.MinLevel = 10
+
 #
-#    Bot.AI.Pet.FeedBelowPct / Bot.AI.Pet.MendBelowPct
-#        Description: Feed the pet below this happiness percentage / cast Mend Pet below this health percentage.
-#        Default:     66 / 60
+#    Bot.AI.Pet.FeedBelowPct
+#        Description: Feed the pet below this happiness percentage.
+#        Default:     66
+#        Values:      whole number 1 to 100 (percent)
+Bot.AI.Pet.FeedBelowPct = 66
+
 #
-#    Bot.AI.Pet.RetrySec / Bot.AI.Pet.TameCooldownSec
-#        Description: Seconds between attempts to summon or revive a pet / pause after a failed tame attempt.
-#        Default:     8 / 300
+#    Bot.AI.Pet.MendBelowPct
+#        Description: Cast Mend Pet below this pet health percentage.
+#        Default:     60
+#        Values:      whole number 1 to 99 (percent)
+Bot.AI.Pet.MendBelowPct = 60
+
+#
+#    Bot.AI.Pet.RetrySec
+#        Description: Seconds between attempts to summon or revive a pet.
+#        Default:     8
+#        Values:      whole number 1 to 600 (seconds)
+Bot.AI.Pet.RetrySec = 8
+
+#
+#    Bot.AI.Pet.TameCooldownSec
+#        Description: Pause after a failed tame attempt.
+#        Default:     300
+#        Values:      whole number 10 to 86400 (seconds)
+Bot.AI.Pet.TameCooldownSec = 300
+
 #
 #    Bot.AI.Consumables.Enabled
-#        Description: Bots drink healing and mana potions from their bags in a fight when health or mana is low and the class heal
-#                     cannot help (instant potions the bot can use; food and drink stay with the rest strategy). Adds the strategy
-#                     "consumables" to the Combat engine. Logged as POTION_HEALTH / POTION_MANA. Bots do not buy potions yet.
-#        Default:     0 - Off
+#        Description: Bots drink healing and mana potions from their bags in a fight when health or mana is low
+#                     and the class heal cannot help (food and drink stay with the rest strategy). Adds the
+#                     strategy "consumables" to the combat engine. Logged as POTION_HEALTH / POTION_MANA. Bots do
+#                     not buy potions yet.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Consumables.Enabled = 0
+
 #
-#    Bot.AI.Consumables.HealthBelowPct / Bot.AI.Consumables.ManaBelowPct
-#        Description: Health percent / mana percent below which a potion is drunk in combat.
-#        Default:     35 / 20
+#    Bot.AI.Consumables.HealthBelowPct
+#        Description: Health percent below which a healing potion is drunk in combat.
+#        Default:     35
+#        Values:      whole number 1 to 90 (percent)
+Bot.AI.Consumables.HealthBelowPct = 35
+
+#
+#    Bot.AI.Consumables.ManaBelowPct
+#        Description: Mana percent below which a mana potion is drunk in combat.
+#        Default:     20
+#        Values:      whole number 1 to 90 (percent)
+Bot.AI.Consumables.ManaBelowPct = 20
+
 #
 #    Bot.AI.Watchdog.Enabled
-#        Description: Stall watchdog. A bot that makes no progress (no movement, xp, money or quest-log change; fighting, flying, being
-#                     dead and instance content count as busy) is recovered in steps: clear the goal, use the hearthstone, teleport to
-#                     the home bind. Adds the strategy "watchdog" to the NonCombat engine. Every step is logged (WATCHDOG_*).
-#        Default:     0 - Off
+#        Description: Stall watchdog. A bot that makes no progress (no movement, xp, money or quest-log change;
+#                     fighting, flying, being dead and instance content count as busy) is recovered in steps:
+#                     clear the goal, use the hearthstone, teleport to the home bind. Adds the strategy
+#                     "watchdog". Every step is logged (WATCHDOG_*).
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Watchdog.Enabled = 0
+
 #
-#    Bot.AI.Watchdog.StallSec / Bot.AI.Watchdog.HearthMul / Bot.AI.Watchdog.HomeMul
-#        Description: Seconds without progress before the goal is cleared / multiples of StallSec for the hearthstone and for the
-#                     home teleport.
-#        Default:     600 / 2 / 4
+#    Bot.AI.Watchdog.StallSec
+#        Description: Seconds without progress before the goal is cleared.
+#        Default:     600
+#        Values:      whole number 60 to 86400 (seconds)
+Bot.AI.Watchdog.StallSec = 600
+
 #
-#    Bot.AI.Watchdog.Hearth / Bot.AI.Watchdog.Home
-#        Description: Allow the hearthstone step / the home teleport step (off: only logged).
-#        Default:     1 / 1
+#    Bot.AI.Watchdog.HearthMul
+#        Description: Hearthstone step after StallSec times this.
+#        Default:     2
+#        Values:      whole number 1 to 20 (multiple)
+Bot.AI.Watchdog.HearthMul = 2
+
 #
-#    Bot.AI.Watchdog.MoveYards / Bot.AI.Watchdog.MaxPerHour
-#        Description: Yards moved that count as progress / hearthstone and home recoveries per bot and hour (beyond it only
-#                     WATCHDOG_EXHAUSTED is logged).
-#        Default:     10 / 6
+#    Bot.AI.Watchdog.HomeMul
+#        Description: Home teleport step after StallSec times this.
+#        Default:     4
+#        Values:      whole number 1 to 40 (multiple)
+Bot.AI.Watchdog.HomeMul = 4
+
+#
+#    Bot.AI.Watchdog.Hearth
+#        Description: Allow the hearthstone step (off: only logged).
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Watchdog.Hearth = 1
+
+#
+#    Bot.AI.Watchdog.Home
+#        Description: Allow the home teleport step (off: only logged).
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Watchdog.Home = 1
+
+#
+#    Bot.AI.Watchdog.MoveYards
+#        Description: Distance moved that counts as progress.
+#        Default:     10
+#        Values:      whole number 1 to 500 (yards)
+Bot.AI.Watchdog.MoveYards = 10
+
+#
+#    Bot.AI.Watchdog.MaxPerHour
+#        Description: Hearthstone and home recoveries per bot and hour (beyond it only WATCHDOG_EXHAUSTED is
+#                     logged).
+#        Default:     6
+#        Values:      whole number 0 to 120 (recoveries)
+Bot.AI.Watchdog.MaxPerHour = 6
+
+###################################################################################################
+# GROUP LOOT ROLLS
+#
+###################################################################################################
+
 #
 #    Bot.Loot.Roll.Enabled
-#        Description: Bots vote in group loot rolls at once instead of leaving the roll to time out (60 s, which holds up the real
-#                     players): Need on a gear upgrade their class can use (class-role gear score) and on items for an active quest,
-#                     Greed on other items (see GreedOnOther), Pass when the bags are full. Needs no strategy.
-#        Default:     0 - Off
+#        Description: Bots vote in group loot rolls at once instead of leaving the roll to time out (60 s, which
+#                     holds up the real players): Need on a gear upgrade their class can use and on items for an
+#                     active quest, Greed on other items (see Bot.Loot.Roll.GreedOnOther), Pass when the bags are
+#                     full. Needs no strategy.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Loot.Roll.Enabled = 0
+
 #
 #    Bot.Loot.Roll.GreedOnOther
 #        Description: Greed on items the bot cannot use or does not need (it sells them later) instead of passing.
 #        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Loot.Roll.GreedOnOther = 1
+
+###################################################################################################
+# NATURAL MOVEMENT
+#
+###################################################################################################
+
 #
 #    Bot.AI.Move.Natural.Enabled
-#        Description: Natural-looking movement: smoother paths, human pacing, no repeated identical path requests, a step back or
-#                     another route when stuck, light idling, and movement metrics. Adds the strategy "natural_idle".
-#        Default:     0 - Off
+#        Description: Natural-looking movement: smoother paths, human pacing, no repeated identical path requests,
+#                     a step back or another route when stuck, light idling, and movement metrics. Adds the
+#                     strategy "natural_idle". The options below only apply when this is on.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Move.Natural.Enabled = 0
+
 #
-#    Bot.AI.Move.Natural.Shortcut / Bot.AI.Move.Natural.RoundCorners / Bot.AI.Move.Natural.MaxShortcutYards
-#        Description: Shorten paths where the walker can see straight ahead on solid ground / round sharp corners and use a smooth spline /
-#                     longest straight leg a shortcut may create, in yards (10-120).
-#        Default:     1 / 1 / 45
+#    Bot.AI.Move.Natural.Shortcut
+#        Description: Shorten paths where the walker can see straight ahead on solid ground.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Move.Natural.Shortcut = 1
+
 #
-#    Bot.AI.Move.Natural.SpeedVariation / Bot.AI.Move.Natural.Pacing / Bot.AI.Move.Natural.Spread
-#        Description: Slow per-bot drift of the walking speed (about 5 percent) / short pauses at start, arrival, after combat, after
-#                     loot and at quest givers / a different approach point per bot and goal.
-#        Default:     1 / 1 / 1
+#    Bot.AI.Move.Natural.RoundCorners
+#        Description: Round sharp corners and use a smooth spline.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Move.Natural.RoundCorners = 1
+
 #
-#    Bot.AI.Move.Natural.Idle / Bot.AI.Move.Natural.IdleMaxStandSec
-#        Description: Look around, sit and wander a few yards while nothing else is to do / longest time a bot stands completely still (5-600).
-#        Default:     1 / 25
+#    Bot.AI.Move.Natural.MaxShortcutYards
+#        Description: Longest straight leg a shortcut may create.
+#        Default:     45
+#        Values:      whole number 10 to 120 (yards)
+Bot.AI.Move.Natural.MaxShortcutYards = 45
+
 #
-#    Bot.AI.Move.Natural.Metrics / Bot.AI.Move.Natural.MetricsSec
-#        Description: One decision row MOVE_METRICS per bot per window (turn rate, repeated legs, idle ratio, stuck count) / window length (10-3600).
-#        Default:     1 / 60
+#    Bot.AI.Move.Natural.SpeedVariation
+#        Description: Slow per-bot drift of the walking speed (about 5 percent).
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Move.Natural.SpeedVariation = 1
+
+#
+#    Bot.AI.Move.Natural.Pacing
+#        Description: Short pauses at start, arrival, after combat, after loot and at quest givers.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Move.Natural.Pacing = 1
+
+#
+#    Bot.AI.Move.Natural.Spread
+#        Description: A different approach point per bot and goal.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Move.Natural.Spread = 1
+
+#
+#    Bot.AI.Move.Natural.Idle
+#        Description: Look around, sit and wander a few yards while nothing else is to do.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Move.Natural.Idle = 1
+
+#
+#    Bot.AI.Move.Natural.IdleMaxStandSec
+#        Description: Longest time a bot stands completely still.
+#        Default:     25
+#        Values:      whole number 5 to 600 (seconds)
+Bot.AI.Move.Natural.IdleMaxStandSec = 25
+
+#
+#    Bot.AI.Move.Natural.Metrics
+#        Description: One decision row MOVE_METRICS per bot per window (turn rate, repeated legs, idle ratio,
+#                     stuck count).
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Move.Natural.Metrics = 1
+
+#
+#    Bot.AI.Move.Natural.MetricsSec
+#        Description: Length of the MOVE_METRICS window.
+#        Default:     60
+#        Values:      whole number 10 to 3600 (seconds)
+Bot.AI.Move.Natural.MetricsSec = 60
+
+###################################################################################################
+# DUNGEON GROUPS
+#
+# Dungeon groups of bots: composition (tank, healer, damage), readiness (rest, repair), pull
+# choice, wipe recovery and run timeouts. See docs/playerbots/feature-bot-dungeon-
+# groups-20261008.md. One group runs at a time.
+#
+###################################################################################################
+
 #
 #    Bot.AI.Dungeon.Enabled
-#        Description: Dungeon groups of bots: composition (tank, healer, damage), readiness (rest, repair), pull choice, wipe
-#                     recovery and run timeouts. See docs/playerbots/feature-bot-dungeon-groups-20261008.md.
-#        Default:     0 - Off
+#        Description: Turns dungeon groups of bots on.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Dungeon.Enabled = 0
+
 #
-#    Bot.AI.Dungeon.GroupSize / Bot.AI.Dungeon.Tanks / Bot.AI.Dungeon.Healers
-#        Description: Places in the group (2-5) / how many go to tanks (0-2) / to healers (0-2); the rest are damage dealers.
-#        Default:     5 / 1 / 1
+#    Bot.AI.Dungeon.GroupSize
+#        Description: Places in the group.
+#        Default:     5
+#        Values:      whole number 2 to 5 (players)
+Bot.AI.Dungeon.GroupSize = 5
+
 #
-#    Bot.AI.Dungeon.MaxLevelSpread / Bot.AI.Dungeon.MinLevel
-#        Description: Highest minus lowest level allowed in one group, anchored on the leader / lowest level that is called at all.
-#        Default:     4 / 15
+#    Bot.AI.Dungeon.Tanks
+#        Description: How many places go to tanks.
+#        Default:     1
+#        Values:      whole number 0 to 2 (players)
+Bot.AI.Dungeon.Tanks = 1
+
 #
-#    Bot.AI.Dungeon.MinHealthPct / Bot.AI.Dungeon.MinManaPct / Bot.AI.Dungeon.MinHealerManaPct / Bot.AI.Dungeon.MinDurabilityPct
-#        Description: The group rests before a pull until everybody has this much health, mana (healers: their own value), and
-#                     goes to repair when somebody's durability is below the last value.
-#        Default:     85 / 70 / 85 / 20
+#    Bot.AI.Dungeon.Healers
+#        Description: How many places go to healers; the rest are damage dealers.
+#        Default:     1
+#        Values:      whole number 0 to 2 (players)
+Bot.AI.Dungeon.Healers = 1
+
 #
-#    Bot.AI.Dungeon.MaxMobsPerPull / Bot.AI.Dungeon.MaxLevelOverGroup / Bot.AI.Dungeon.SkipPatrols
-#        Description: Largest pack that is pulled (bosses excepted) / highest mob level above the group's average that is pulled /
-#                     wait for a patrol to leave instead of pulling it.
-#        Default:     4 / 2 / 1
+#    Bot.AI.Dungeon.MaxLevelSpread
+#        Description: Highest minus lowest level allowed in one group, anchored on the leader.
+#        Default:     4
+#        Values:      whole number 0 to 20 (levels)
+Bot.AI.Dungeon.MaxLevelSpread = 4
+
 #
-#    Bot.AI.Dungeon.MaxWipes / Bot.AI.Dungeon.RunTimeoutMin
-#        Description: Wipes after which the run is given up / minutes after which a bot-led run is given up.
-#        Default:     3 / 90
+#    Bot.AI.Dungeon.MinLevel
+#        Description: Lowest level that is called at all.
+#        Default:     15
+#        Values:      whole number 1 to 80 (level)
+Bot.AI.Dungeon.MinLevel = 15
+
 #
-#    Bot.AI.Dungeon.Map / Bot.AI.Dungeon.MaxLevel
-#        Description: Map id of the dungeon the bots run (its entrance trigger is looked up in the area trigger table) / highest bot level
-#                     taken along. One group runs at a time.
-#        Default:     36 (Deadmines) / 25
+#    Bot.AI.Dungeon.MinHealthPct
+#        Description: The group rests before a pull until everybody has this much health.
+#        Default:     85
+#        Values:      whole number 1 to 100 (percent)
+Bot.AI.Dungeon.MinHealthPct = 85
+
 #
-#    Bot.AI.Dungeon.IntervalSec / Bot.AI.Dungeon.StartCooldownSec / Bot.AI.Dungeon.PackTimeoutSec
-#        Description: Seconds between run updates / between two attempts to form a group / after which a pack that is not cleared is
-#                     written off.
-#        Default:     5 / 120 / 240
+#    Bot.AI.Dungeon.MinManaPct
+#        Description: Same for mana.
+#        Default:     70
+#        Values:      whole number 0 to 100 (percent)
+Bot.AI.Dungeon.MinManaPct = 70
+
 #
-#    Bot.AI.Dungeon.ResurrectDelaySec / Bot.AI.Dungeon.FreeRepair
-#        Description: Seconds after which dead members of a run are raised next to the tank once the fight is over (at once for a wipe,
-#                     they come back at the entrance) / repair the group's gear when the run ends. Map = 0 picks the dungeon that fits the
-#                     middle level of the online bots (raise Bot.AI.Dungeon.MaxLevel for that).
-#        Default:     8 / 1
+#    Bot.AI.Dungeon.MinHealerManaPct
+#        Description: Same for the mana of healers.
+#        Default:     85
+#        Values:      whole number 0 to 100 (percent)
+Bot.AI.Dungeon.MinHealerManaPct = 85
+
 #
-#    Bot.AI.Dungeon.PackLinkYards / Bot.AI.Dungeon.PackMaxMobs
-#        Description: Spawns closer than this many yards (3D, chained) form one pack / larger packs without a boss are cut up.
-#        Default:     14 / 6
+#    Bot.AI.Dungeon.MinDurabilityPct
+#        Description: The group goes to repair when somebody durability is below this.
+#        Default:     20
+#        Values:      whole number 0 to 100 (percent)
+Bot.AI.Dungeon.MinDurabilityPct = 20
+
+#
+#    Bot.AI.Dungeon.MaxMobsPerPull
+#        Description: Largest pack that is pulled (bosses excepted).
+#        Default:     4
+#        Values:      whole number 1 to 12 (mobs)
+Bot.AI.Dungeon.MaxMobsPerPull = 4
+
+#
+#    Bot.AI.Dungeon.MaxLevelOverGroup
+#        Description: Highest mob level above the group average that is pulled.
+#        Default:     2
+#        Values:      whole number 0 to 10 (levels)
+Bot.AI.Dungeon.MaxLevelOverGroup = 2
+
+#
+#    Bot.AI.Dungeon.SkipPatrols
+#        Description: Wait for a patrol to leave instead of pulling it.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Dungeon.SkipPatrols = 1
+
+#
+#    Bot.AI.Dungeon.MaxWipes
+#        Description: Wipes after which the run is given up.
+#        Default:     3
+#        Values:      whole number 0 to 20 (wipes)
+Bot.AI.Dungeon.MaxWipes = 3
+
+#
+#    Bot.AI.Dungeon.RunTimeoutMin
+#        Description: Minutes after which a bot-led run is given up.
+#        Default:     90
+#        Values:      whole number 5 to 600 (minutes)
+Bot.AI.Dungeon.RunTimeoutMin = 90
+
+#
+#    Bot.AI.Dungeon.Map
+#        Description: Map id of the dungeon the bots run (its entrance trigger is looked up in the area trigger
+#                     table). 0 picks the dungeon that fits the middle level of the online bots (raise
+#                     Bot.AI.Dungeon.MaxLevel for that). 36 is the Deadmines.
+#        Default:     36
+#        Values:      whole number 0 to 100000 (map id, 0 = automatic)
+Bot.AI.Dungeon.Map = 36
+
+#
+#    Bot.AI.Dungeon.MaxLevel
+#        Description: Highest bot level taken along.
+#        Default:     25
+#        Values:      whole number 1 to 80 (level)
+Bot.AI.Dungeon.MaxLevel = 25
+
+#
+#    Bot.AI.Dungeon.IntervalSec
+#        Description: Seconds between run updates.
+#        Default:     5
+#        Values:      whole number 1 to 60 (seconds)
+Bot.AI.Dungeon.IntervalSec = 5
+
+#
+#    Bot.AI.Dungeon.StartCooldownSec
+#        Description: Seconds between two attempts to form a group.
+#        Default:     120
+#        Values:      whole number 10 to 36000 (seconds)
+Bot.AI.Dungeon.StartCooldownSec = 120
+
+#
+#    Bot.AI.Dungeon.PackTimeoutSec
+#        Description: Seconds after which a pack that is not cleared is written off.
+#        Default:     240
+#        Values:      whole number 30 to 3600 (seconds)
+Bot.AI.Dungeon.PackTimeoutSec = 240
+
+#
+#    Bot.AI.Dungeon.ResurrectDelaySec
+#        Description: Seconds after which dead members of a run are raised next to the tank once the fight is over
+#                     (at once for a wipe, they come back at the entrance).
+#        Default:     8
+#        Values:      whole number 0 to 600 (seconds)
+Bot.AI.Dungeon.ResurrectDelaySec = 8
+
+#
+#    Bot.AI.Dungeon.FreeRepair
+#        Description: Repair the gear of the group when the run ends.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Dungeon.FreeRepair = 1
+
+#
+#    Bot.AI.Dungeon.PackLinkYards
+#        Description: Spawns closer than this (3D, chained) form one pack.
+#        Default:     14
+#        Values:      whole number 4 to 40 (yards)
+Bot.AI.Dungeon.PackLinkYards = 14
+
+#
+#    Bot.AI.Dungeon.PackMaxMobs
+#        Description: Larger packs without a boss are cut up.
+#        Default:     6
+#        Values:      whole number 2 to 12 (mobs)
+Bot.AI.Dungeon.PackMaxMobs = 6
+
+###################################################################################################
+# AMMO AND TRAVEL
+#
+###################################################################################################
+
 #
 #    Bot.AI.Ammo.Enabled
-#        Description: Ranged ammo upkeep of the quest strategy's vendor layer: a bot with a bow, crossbow or gun equipped counts its arrows or
-#                     bullets; below Bot.AI.Ammo.LowCount it logs AMMO_LOW, plans a vendor trip to a vendor that sells the right ammo and
-#                     tops up to Bot.AI.Ammo.BuyTarget (AMMO_BOUGHT, AMMO_NO_MONEY, AMMO_NO_VENDOR, AMMO_BUY_FAILED). Needs a restart (vendor index).
-#        Default:     0 - (Disabled)
-#                     1 - (Enabled)
+#        Description: Ranged ammo upkeep of the quest strategy vendor layer: a bot with a bow, crossbow or gun
+#                     counts its arrows or bullets; below Bot.AI.Ammo.LowCount it logs AMMO_LOW, plans a vendor
+#                     trip to a vendor that sells the right ammo and tops up to Bot.AI.Ammo.BuyTarget. Read once
+#                     at startup (vendor index).
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Ammo.Enabled = 0
+
 #
-#    Bot.AI.Ammo.LowCount / Bot.AI.Ammo.BuyTarget / Bot.AI.Ammo.CooldownSec
-#        Description: Trip threshold (rounds), top-up target (rounds) and minimum seconds between ammo trips of one bot.
-#        Default:     60 / 400 / 300
+#    Bot.AI.Ammo.LowCount
+#        Description: Ammo count below which a trip is planned.
+#        Default:     60
+#        Values:      whole number 1 to 2000 (rounds)
+Bot.AI.Ammo.LowCount = 60
+
+#
+#    Bot.AI.Ammo.BuyTarget
+#        Description: Ammo count the trip tops up to.
+#        Default:     400
+#        Values:      whole number 1 to 4000 (rounds)
+Bot.AI.Ammo.BuyTarget = 400
+
+#
+#    Bot.AI.Ammo.CooldownSec
+#        Description: Minimum seconds between ammo trips of one bot.
+#        Default:     300
+#        Values:      whole number 30 to 7200 (seconds)
+Bot.AI.Ammo.CooldownSec = 300
+
 #
 #    Bot.AI.Travel.Enabled
-#        Description: Travel and leveling progression. A bot that has outgrown its zone (or has nothing left to quest for) picks the next
-#                     leveling zone for its level and faction, walks or flies there, and the quest strategy continues in the new zone.
-#                     Flight masters close by are learned once and used for long trips; the hearthstone is used when the way from home is
-#                     clearly shorter, and bots bind at inns they pass when that shortens the way back. Adds the strategy "travel".
-#                     Boats and zeppelins are ridden as a simulated trip between two docks (the Deeprun Tram is not used).
-#        Default:     0 - (Disabled)
-#                     1 - (Enabled)
+#        Description: Travel and leveling progression. A bot that has outgrown its zone (or has nothing left to
+#                     quest for) picks the next leveling zone for its level and faction, walks or flies there, and
+#                     the quest strategy continues in the new zone. Flight masters close by are learned once and
+#                     used for long trips; the hearthstone is used when the way from home is clearly shorter, and
+#                     bots bind at inns they pass. Adds the strategy "travel". Boats and zeppelins are ridden as a
+#                     simulated trip between two docks.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Travel.Enabled = 0
+
 #
-#    Bot.AI.Travel.Zones / Bot.AI.Travel.Taxi / Bot.AI.Travel.Transport / Bot.AI.Travel.Hearth
-#        Description: Zone progression / flight paths (learn and use) / boats and zeppelins / hearthstone and inn binding. Each part can be
-#                     switched off alone.
-#        Default:     1 / 1 / 1 / 1
+#    Bot.AI.Travel.Zones
+#        Description: Zone progression. Each travel part can be switched off alone.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Travel.Zones = 1
+
 #
-#    Bot.AI.Travel.CheckSec / Bot.AI.Travel.TripMinutes
-#        Description: Seconds between two "does the zone still fit" checks (2-600) / longest time of one trip before it is abandoned (2-240).
-#        Default:     10 / 25
+#    Bot.AI.Travel.Taxi
+#        Description: Learn and use flight paths.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Travel.Taxi = 1
+
 #
-#    Bot.AI.Travel.MaxRouteSteps / Bot.AI.Travel.RecentZones / Bot.AI.Travel.LeaveMarginLevels
-#        Description: Longest planned route in legs (1-20) / zones a bot remembers so it does not bounce back (1-20) / levels above the
-#                     zone's band before the bot leaves (0-10).
-#        Default:     8 / 4 / 0
+#    Bot.AI.Travel.Transport
+#        Description: Use boats and zeppelins.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Travel.Transport = 1
+
+#
+#    Bot.AI.Travel.Hearth
+#        Description: Use the hearthstone and bind at inns.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Travel.Hearth = 1
+
+#
+#    Bot.AI.Travel.CheckSec
+#        Description: Seconds between two "does the zone still fit" checks.
+#        Default:     10
+#        Values:      whole number 2 to 600 (seconds)
+Bot.AI.Travel.CheckSec = 10
+
+#
+#    Bot.AI.Travel.TripMinutes
+#        Description: Longest time of one trip before it is abandoned.
+#        Default:     25
+#        Values:      whole number 2 to 240 (minutes)
+Bot.AI.Travel.TripMinutes = 25
+
+#
+#    Bot.AI.Travel.MaxRouteSteps
+#        Description: Longest planned route.
+#        Default:     8
+#        Values:      whole number 1 to 20 (legs)
+Bot.AI.Travel.MaxRouteSteps = 8
+
+#
+#    Bot.AI.Travel.RecentZones
+#        Description: Zones a bot remembers so it does not bounce back.
+#        Default:     4
+#        Values:      whole number 1 to 20 (zones)
+Bot.AI.Travel.RecentZones = 4
+
+#
+#    Bot.AI.Travel.LeaveMarginLevels
+#        Description: Levels above the zone band before the bot leaves.
+#        Default:     0
+#        Values:      whole number 0 to 10 (levels)
+Bot.AI.Travel.LeaveMarginLevels = 0
+
 #
 #    Bot.AI.Travel.DiscoverRadius
-#        Description: Yards around a bot within which it visits flight masters it does not know yet (50-5000).
+#        Description: Distance around a bot within which it visits flight masters it does not know yet.
 #        Default:     500
+#        Values:      whole number 50 to 5000 (yards)
+Bot.AI.Travel.DiscoverRadius = 500
+
+###################################################################################################
+# TALENTS, ROTATIONS AND GROUP ROLES
+#
+###################################################################################################
+
 #
 #    Bot.Talents.Premade.Enabled
-#        Description: On level-up, learn a configured talent per tier for the bot's class (this fork has tiered talents: one pick per tier).
-#                     Bot.Talents.Premade.Class.<classId> = comma list of Talent.db2 ids (first id of a tier wins, tiers that already hold a
-#                     pick are left alone); Bot.Talents.Premade.Spec.<classId> = ChrSpecialization id to set when the bot has none (optional).
-#                     Class ids: 1 warrior, 2 paladin, 3 hunter, 4 rogue, 5 priest, 7 shaman, 8 mage, 9 warlock, 11 druid. Empty = no-op.
-#        Default:     0 - (Disabled)
+#        Description: On level-up, learn a configured talent per tier for the bot class (this fork has tiered
+#                     talents: one pick per tier). Needs Bot.Talents.Premade.Class.<classId> = comma list of
+#                     Talent.db2 ids (first id of a tier wins, tiers that already hold a pick are left alone) and
+#                     optionally Bot.Talents.Premade.Spec.<classId> = ChrSpecialization id to set when the bot has
+#                     none. Class ids: 1 warrior, 2 paladin, 3 hunter, 4 rogue, 5 priest, 7 shaman, 8 mage, 9
+#                     warlock, 11 druid. Empty = no-op.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Talents.Premade.Enabled = 0
+
 #
 #    Bot.AI.Rotation.Enabled
-#        Description: Full class rotations: the conditional rows of the class spell table in BotCombat.cpp (Charge, Execute, Thunder
-#                     Clap, Kick, Counterspell, Frost Nova, Power Word: Shield, Flame Shock, Life Tap, Hunter's Mark and more) are cast
-#                     when their condition holds (area attacks against several mobs, interrupts, emergency cooldowns, no damage over
-#                     time on a dying mob). Off: the bots cast the old fixed spells only. See
-#                     docs/playerbots/feature-bot-class-rotations-20261008.md.
-#        Default:     0 - Off
-#
-#    Bot.AI.Roles.Threat
-#        Description: Needs Bot.AI.Roles.Enabled. A bot that is not the tank and whose threat on the fight target nears the pull limit
-#                     over the tank's (110 percent in melee, 130 percent at range, acting at 90 percent of that) casts a threat reducer
-#                     (Fade for priests, Feint for rogues) or, without one, stops attacking for 2.5 s. At most one action per 8 s.
-#                     Logged as THREAT_REDUCE / THREAT_PAUSE.
-#        Default:     1
+#        Description: Full class rotations: the conditional rows of the class spell table in BotCombat.cpp
+#                     (Charge, Execute, Thunder Clap, Kick, Counterspell, Frost Nova, Power Word: Shield, Flame
+#                     Shock, Life Tap, Hunter Mark and more) are cast when their condition holds. Off: the bots
+#                     cast the old fixed spells only. See docs/playerbots/feature-bot-class-rotations-20261008.md.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Rotation.Enabled = 0
+
 #
 #    Bot.AI.Rotation.CrowdControl
-#        Description: With two or more mobs on the bot and none controlled yet, a control spell goes on the strongest mob that is not the
-#                     fight target: Polymorph (mage), Shackle Undead (priest), Hibernate (druid), Banish (warlock), Scare Beast (hunter).
-#                     Needs Bot.AI.Rotation.Enabled. Logged as CROWD_CONTROL.
+#        Description: With two or more mobs on the bot and none controlled yet, a control spell goes on the
+#                     strongest mob that is not the fight target (Polymorph, Shackle Undead, Hibernate, Banish,
+#                     Scare Beast). Needs Bot.AI.Rotation.Enabled. Logged as CROWD_CONTROL.
 #        Default:     1
-#
-#    Bot.AI.Roles.Enabled
-#        Description: Group play in combat: a bot with a heal spell heals the group member who needs it most (an emergency first, then the
-#                     tank, then the lowest health), and bots other than the tank (the warrior of the group) attack the tank's target.
-#                     Only for bots that are in combat themselves. See docs/playerbots/feature-bot-group-roles-20261008.md.
-#        Default:     0 - Off
-#
-#    Bot.AI.Roles.HoldSec
-#        Description: A bot that is not the tank waits up to this many seconds for the tank to gather threat on a mob before it opens
-#                     (shorter when the mob has turned to the tank, never when the mob attacks the bot). 0 = no waiting.
-#                     Also in effect with Bot.AI.Roles.Enabled: bots join the fight of a group member within 45 yards, the warrior of
-#                     the group holds Defensive Stance, taunts mobs that attack other members and applies Sunder Armor.
-#        Default:     3
-#
-#    Bot.AI.Roles.AllyHealBelowPct / Bot.AI.Roles.TankHealBelowPct / Bot.AI.Roles.EmergencyPct
-#        Description: Heal a group member below this health percent / the tank below this percent / below this percent a member is an
-#                     emergency and comes first.
-#        Default:     80 / 90 / 35
-#
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Rotation.CrowdControl = 1
+
 #
 #    Bot.AI.Rotation.DruidForms
-#        Description: Needs Bot.AI.Rotation.Enabled. Druids shift into Bear Form once they know it (level 10) and fight with Maul, Swipe and
-#                     Demoralizing Roar; a bear that needs a heal leaves the form for Healing Touch. Off: druids stay unshifted casters.
-#        Default:     0 - Off
+#        Description: Druids shift into Bear Form once they know it (level 10) and fight with Maul, Swipe and
+#                     Demoralizing Roar; a bear that needs a heal leaves the form for Healing Touch. Off: druids
+#                     stay unshifted casters. Needs Bot.AI.Rotation.Enabled.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Rotation.DruidForms = 0
+
 #
 #    Bot.AI.Rotation.DruidBear
-#        Description: With Bot.AI.Rotation.DruidForms the druid fights in Bear Form (Dire Bear Form from level 40) instead of Cat Form. Off: Cat
-#                     Form once known (level 20), Bear Form before that.
-#        Default:     0 - Off
+#        Description: With Bot.AI.Rotation.DruidForms the druid fights in Bear Form (Dire Bear Form from level 40)
+#                     instead of Cat Form. Off: Cat Form once known (level 20), Bear Form before that.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Rotation.DruidBear = 0
+
+#
+#    Bot.AI.Roles.Enabled
+#        Description: Group play in combat: a bot with a heal spell heals the group member who needs it most (an
+#                     emergency first, then the tank, then the lowest health), and bots other than the tank (the
+#                     warrior of the group) attack the tank target. Only for bots that are in combat themselves.
+#                     See docs/playerbots/feature-bot-group-roles-20261008.md.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Roles.Enabled = 0
+
+#
+#    Bot.AI.Roles.Threat
+#        Description: A bot that is not the tank and whose threat on the fight target nears the pull limit over
+#                     the tank (110 percent in melee, 130 percent at range, acting at 90 percent of that) casts a
+#                     threat reducer (Fade, Feint) or, without one, stops attacking for 2.5 s. At most one action
+#                     per 8 s. Needs Bot.AI.Roles.Enabled. Logged as THREAT_REDUCE / THREAT_PAUSE.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Roles.Threat = 1
+
+#
+#    Bot.AI.Roles.HoldSec
+#        Description: A bot that is not the tank waits up to this long for the tank to gather threat on a mob
+#                     before it opens (shorter when the mob has turned to the tank, never when the mob attacks the
+#                     bot). Needs Bot.AI.Roles.Enabled.
+#        Default:     3
+#        Values:      whole number 0 to 15 (seconds, 0 = no waiting)
+Bot.AI.Roles.HoldSec = 3
+
+#
+#    Bot.AI.Roles.AllyHealBelowPct
+#        Description: Heal a group member below this health percent.
+#        Default:     80
+#        Values:      whole number 10 to 99 (percent)
+Bot.AI.Roles.AllyHealBelowPct = 80
+
+#
+#    Bot.AI.Roles.TankHealBelowPct
+#        Description: Heal the tank below this health percent.
+#        Default:     90
+#        Values:      whole number 10 to 99 (percent)
+Bot.AI.Roles.TankHealBelowPct = 90
+
+#
+#    Bot.AI.Roles.EmergencyPct
+#        Description: Below this health percent a member is an emergency and comes first.
+#        Default:     35
+#        Values:      whole number 5 to 90 (percent)
+Bot.AI.Roles.EmergencyPct = 35
+
+###################################################################################################
+# TRAINING DUMMY
+#
+###################################################################################################
+
 #
 #    Bot.AI.Dummy.Enabled
-#        Description: Training dummy mode: the chat verb "dummy [seconds]" makes a bot summon an immortal, harmless dummy of its own level and
-#                     fight it with its normal combat code; "dummy off" ends the run. The log gets DUMMY_START and DUMMY_SUMMARY (damage per
-#                     spell, dps, time to the first hit, longest gap without a hit). For tuning the class rotations (Bot.AI.Rotation.Enabled)
-#                     without a sim run. Needs sql/custom/world/2026_10_08_04_world_forever_bot_dummy.sql. See
+#        Description: Training dummy mode: the chat verb "dummy [seconds]" makes a bot summon an immortal,
+#                     harmless dummy of its own level and fight it with its normal combat code; "dummy off" ends
+#                     the run. The log gets DUMMY_START and DUMMY_SUMMARY (damage per spell, dps, time to the
+#                     first hit, longest gap without a hit). For tuning the class rotations without a sim run.
+#                     Needs sql/custom/world/2026_10_08_04_world_forever_bot_dummy.sql. See
 #                     docs/playerbots/feature-bot-dummy-20261008.md.
-#        Default:     0 - Off
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Dummy.Enabled = 0
+
 #
-#    Bot.AI.Dummy.Entry / Bot.AI.Dummy.DefaultSec / Bot.AI.Dummy.MaxSec
-#        Description: Creature entry of the dummy, run length without an argument, longest run a command may ask for (seconds).
-#        Default:     9900001 / 60 / 600
+#    Bot.AI.Dummy.Entry
+#        Description: Creature entry of the dummy.
+#        Default:     9900001
+#        Values:      whole number 1 or more (creature id)
+Bot.AI.Dummy.Entry = 9900001
+
+#
+#    Bot.AI.Dummy.DefaultSec
+#        Description: Run length when the command has no argument.
+#        Default:     60
+#        Values:      whole number 5 to 3600 (seconds)
+Bot.AI.Dummy.DefaultSec = 60
+
+#
+#    Bot.AI.Dummy.MaxSec
+#        Description: Longest run a command may ask for.
+#        Default:     600
+#        Values:      whole number 5 to 3600 (seconds)
+Bot.AI.Dummy.MaxSec = 600
+
 #
 #    Bot.AI.Dummy.FullPower
-#        Description: Refill mana, energy and health every second during a run, so the numbers show the rotation and not the mana pool.
-#        Default:     1 - On
+#        Description: Refill mana, energy and health every second during a run, so the numbers show the rotation
+#                     and not the mana pool.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Dummy.FullPower = 1
+
+###################################################################################################
+# CHEST LOOT
+#
+###################################################################################################
+
 #
 #    Bot.AI.Loot.Improved.Enabled
-#        Description: Improved chest loot task of the quest strategy: spawn choice by path cost, skip far spawns and recently deadly areas,
-#                     per-bot spawn blacklist, bag-space check with a planned vendor trip, loot exits never feed the quest quarantine.
-#                     Also: quest spawn index ignores pooled-out, phased, manual and other-difficulty spawns, quests that hand over their
-#                     own items are supplied, and fewer locks and allocations per tick. Read once at startup.
-#        Default:     0 - Off
+#        Description: Improved chest loot task of the quest strategy: spawn choice by path cost, skip far spawns
+#                     and recently deadly areas, per-bot spawn blacklist, bag-space check with a planned vendor
+#                     trip, loot exits never feed the quest quarantine. Also: the quest spawn index ignores
+#                     pooled-out, phased, manual and other-difficulty spawns, and quests that hand over their own
+#                     items are supplied. Read once at startup.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Loot.Improved.Enabled = 0
+
 #
 #    Bot.AI.Loot.Improved.MaxYards
-#        Description: Spawns farther than this (straight line or by path) are skipped (20-1000).
+#        Description: Spawns farther than this (straight line or by path) are skipped.
 #        Default:     150
+#        Values:      whole number 20 to 1000 (yards)
+Bot.AI.Loot.Improved.MaxYards = 150
+
 #
-#    Bot.AI.Loot.Improved.DeadlyRadius / Bot.AI.Loot.Improved.DeadlySec
-#        Description: Spawns within this many yards of a recent bot death are skipped for this many seconds.
-#        Default:     40 / 600
+#    Bot.AI.Loot.Improved.DeadlyRadius
+#        Description: Spawns within this distance of a recent bot death are skipped for
+#                     Bot.AI.Loot.Improved.DeadlySec.
+#        Default:     40
+#        Values:      whole number 5 to 300 (yards)
+Bot.AI.Loot.Improved.DeadlyRadius = 40
+
+#
+#    Bot.AI.Loot.Improved.DeadlySec
+#        Description: How long spawns near a recent bot death are skipped.
+#        Default:     600
+#        Values:      whole number 30 to 86400 (seconds)
+Bot.AI.Loot.Improved.DeadlySec = 600
+
 #
 #    Bot.AI.Loot.Improved.BlacklistSec
 #        Description: A spawn that gave a bot no progress is skipped by that bot for this long; repeats double it.
 #        Default:     900
+#        Values:      whole number 30 to 86400 (seconds)
+Bot.AI.Loot.Improved.BlacklistSec = 900
+
 #
 #    Bot.AI.Loot.Improved.MinFreeSlots
 #        Description: Plan a vendor trip when fewer free bag slots than this would remain after the loot.
 #        Default:     2
+#        Values:      whole number 1 to 20 (slots)
+Bot.AI.Loot.Improved.MinFreeSlots = 2
+
 #
 #    Bot.AI.Loot.Improved.PathProbes
 #        Description: Path queries per spawn choice (the nearest candidates are probed first).
 #        Default:     4
+#        Values:      whole number 1 to 12 (queries)
+Bot.AI.Loot.Improved.PathProbes = 4
+
 #
 #    Bot.AI.Loot.Safety.Enabled
 #        Description: Guards of the chest loot task (independent of Bot.AI.Loot.Improved.Enabled): skip chests
-#                     (the camp danger check of the quest strategy is separate and unchanged), skip chests near a recent bot death, and skip spawns
-#                     that repeatedly failed bots for reasons that do not depend on the bot (no path, stalled approach, cannot interact).
-#                     Every guard only skips or delays a chest. Read once at startup.
-#        Default:     1 - On
-#
-#    Bot.AI.Loot.Safety.QuarantineStrikes / Bot.AI.Loot.Safety.QuarantineSec
-#        Description: Bot-independent failures of one chest spawn within 30 minutes before every bot skips it / how long (doubles on
-#                     repeats, up to 8 times).
-#        Default:     3 / 1200
-#
-
-Bot.AI.Pet.Enabled = 0
-Bot.AI.Pet.Feed = 1
-Bot.AI.Pet.Abilities = 1
-Bot.AI.Pet.Taming = 1
-Bot.AI.Pet.TameFirstPet = 1
-Bot.AI.Pet.MinLevel = 10
-Bot.AI.Pet.FeedBelowPct = 66
-Bot.AI.Pet.MendBelowPct = 60
-Bot.AI.Pet.RetrySec = 8
-Bot.AI.Pet.TameCooldownSec = 300
-Bot.AI.Consumables.Enabled = 0
-Bot.AI.Consumables.HealthBelowPct = 35
-Bot.AI.Consumables.ManaBelowPct = 20
-Bot.AI.Watchdog.Enabled = 0
-Bot.AI.Watchdog.StallSec = 600
-Bot.AI.Watchdog.HearthMul = 2
-Bot.AI.Watchdog.HomeMul = 4
-Bot.AI.Watchdog.Hearth = 1
-Bot.AI.Watchdog.Home = 1
-Bot.AI.Watchdog.MoveYards = 10
-Bot.AI.Watchdog.MaxPerHour = 6
-Bot.AI.Move.Natural.Enabled = 0
-Bot.AI.Move.Natural.Shortcut = 1
-Bot.AI.Move.Natural.RoundCorners = 1
-Bot.AI.Move.Natural.MaxShortcutYards = 45
-Bot.AI.Move.Natural.SpeedVariation = 1
-Bot.AI.Move.Natural.Pacing = 1
-Bot.AI.Move.Natural.Spread = 1
-Bot.AI.Move.Natural.Idle = 1
-Bot.AI.Move.Natural.IdleMaxStandSec = 25
-Bot.AI.Move.Natural.Metrics = 1
-Bot.AI.Move.Natural.MetricsSec = 60
-Bot.AI.Travel.Enabled = 0
-Bot.AI.Travel.Zones = 1
-Bot.AI.Travel.Taxi = 1
-Bot.AI.Travel.Transport = 1
-Bot.AI.Travel.Hearth = 1
-Bot.AI.Travel.CheckSec = 10
-Bot.AI.Travel.TripMinutes = 25
-Bot.AI.Travel.MaxRouteSteps = 8
-Bot.AI.Travel.RecentZones = 4
-Bot.AI.Travel.LeaveMarginLevels = 0
-Bot.AI.Travel.DiscoverRadius = 500
-Bot.AI.Ammo.Enabled = 0
-Bot.AI.Ammo.LowCount = 60
-Bot.AI.Ammo.BuyTarget = 400
-Bot.AI.Ammo.CooldownSec = 300
-Bot.Talents.Premade.Enabled = 0
-Bot.AI.Rotation.DruidForms = 0
-Bot.AI.Rotation.DruidBear = 0
-Bot.AI.Combat.FreeTotems = 1
-Bot.AI.Dummy.Enabled = 0
-Bot.AI.Dummy.Entry = 9900001
-Bot.AI.Dummy.DefaultSec = 60
-Bot.AI.Dummy.MaxSec = 600
-Bot.AI.Dummy.FullPower = 1
-
-Bot.AI.Loot.Improved.Enabled = 0
-Bot.AI.Loot.Improved.MaxYards = 150
-Bot.AI.Loot.Improved.DeadlyRadius = 40
-Bot.AI.Loot.Improved.DeadlySec = 600
-Bot.AI.Loot.Improved.BlacklistSec = 900
-Bot.AI.Loot.Improved.MinFreeSlots = 2
-Bot.AI.Loot.Improved.PathProbes = 4
+#                     near a recent bot death, and skip spawns that repeatedly failed bots for reasons that do not
+#                     depend on the bot (no path, stalled approach, cannot interact). Every guard only skips or
+#                     delays a chest. Read once at startup.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
 Bot.AI.Loot.Safety.Enabled = 1
+
+#
+#    Bot.AI.Loot.Safety.QuarantineStrikes
+#        Description: Bot-independent failures of one chest spawn within 30 minutes before every bot skips it.
+#        Default:     3
+#        Values:      whole number 1 to 20 (failures)
 Bot.AI.Loot.Safety.QuarantineStrikes = 3
+
+#
+#    Bot.AI.Loot.Safety.QuarantineSec
+#        Description: How long a quarantined spawn is skipped (doubles on repeats, up to 8 times).
+#        Default:     1200
+#        Values:      whole number 60 to 86400 (seconds)
 Bot.AI.Loot.Safety.QuarantineSec = 1200
+
+###################################################################################################
+# CHAT COMMANDS
+#
+# Bots obey chat commands from the leader of their group (party, raid, whisper to a bot). Syntax:
+# [selector] verb [args]. Selectors: all, g1, g3-g4, g1,g3 (raid subgroups, read live), tank,
+# healer, dps, or a class name; g1,g3 is the union of subgroups, g1,tank the intersection. Party
+# chat without selector addresses all bots of that party (in a raid: the subgroup of the issuer);
+# raid chat needs a selector. Verbs: follow, stay, goto <x y [z]|here>, rest, release, status,
+# strategy [+name -name], verbose on|off. Anyone but the group leader is ignored and logged.
+#
+###################################################################################################
+
 #
 #    Bot.Chat.Enabled
-#        Description: Bots obey chat commands from the leader of their group (party, raid, whisper to a bot).
-#                     Syntax: [selector] verb [args]; selectors: all, g1, g3-g4, g1,g3 (raid subgroups, read live),
-#                     tank, healer, dps, or a class name; g1,g3 = union of subgroups, g1,tank = intersection (tanks inside subgroup 1). Party chat without selector = all bots of that party
-#                     (in a raid: the issuer's subgroup); raid chat needs a selector.
-#                     Verbs: follow, stay, goto <x y [z]|here>, rest, release, status, strategy [+name -name],
-#                     verbose on|off. Anyone but the group leader is ignored and logged.
-#        Default:     1 - Enabled
+#        Description: Bots obey chat commands from their group leader.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Chat.Enabled = 1
+
 #
 #    Bot.Chat.VerboseDefault
 #        Description: Acknowledgements and refusals are sent back to the leader (aggregated, one line per
 #                     command). Toggled per leader with the chat command "verbose on|off". Status always replies.
-#        Default:     0 - Off
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Chat.VerboseDefault = 0
+
 #
 #    Bot.Chat.MaxReplyLines
-#        Description: Maximum reply lines for status / strategy listings (1-10).
+#        Description: Maximum reply lines for status and strategy listings.
 #        Default:     4
+#        Values:      whole number 1 to 10 (lines)
+Bot.Chat.MaxReplyLines = 4
+
 #
 #    Bot.Chat.UnauthorizedLogSec
-#        Description: Log at most one bot_event per issuer per this many seconds for non-leader attempts (0 = every one).
+#        Description: Log at most one bot_event per issuer per this many seconds for non-leader attempts.
 #        Default:     30
+#        Values:      whole number 0 to 3600 (seconds, 0 = every one)
+Bot.Chat.UnauthorizedLogSec = 30
+
 #
 #    Bot.Chat.LogEvents
 #        Description: Log a bot_event (type chat_command) per bot for every accepted or refused command.
 #        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Chat.LogEvents = 1
+
 #
 #    Bot.Chat.GotoArriveYards
-#        Description: Arrival distance of the "goto" chat command (1-50).
+#        Description: Arrival distance of the "goto" chat command.
 #        Default:     3
+#        Values:      whole number 1 to 50 (yards)
+Bot.Chat.GotoArriveYards = 3
+
 #
-#    Bot.Chat.Role.Tank / Bot.Chat.Role.Healer / Bot.Chat.Role.Dps
-#        Description: Comma separated class lists behind the tank, healer and dps selectors. They also gate the
-#                     orders pull (tank classes only) and heal (healer classes only).
-#        Default:     "warrior" / "priest" / "rogue,mage,warlock,hunter"
+#    Bot.Chat.Role.Tank
+#        Description: Classes behind the tank selector. They also gate the pull order (tank classes only).
+#        Default:     "warrior"
+#        Values:      comma list of class names
+Bot.Chat.Role.Tank = "warrior"
+
+#
+#    Bot.Chat.Role.Healer
+#        Description: Classes behind the healer selector. They also gate the heal order (healer classes only).
+#        Default:     "priest"
+#        Values:      comma list of class names
+Bot.Chat.Role.Healer = "priest"
+
+#
+#    Bot.Chat.Role.Dps
+#        Description: Classes behind the dps selector.
+#        Default:     "rogue,mage,warlock,hunter"
+#        Values:      comma list of class names
+Bot.Chat.Role.Dps = "rogue,mage,warlock,hunter"
+
 #
 #    Bot.Chat.Orders.Enabled
 #        Description: More chat verbs (docs/playerbots/feature-bot-chat-orders-20261008.md): stop, aggressive,
-#                     passive, pull (tank bots attack the leader's selected target), heal (healer bots heal
-#                     the selected target), mount, dismount, summon (bots port to the leader), revive (dead
-#                     bots come back to life next to the leader). Off: these words are ordinary chat.
-#        Default:     0 - Off
-#
-#    Bot.Chat.Orders.PullRangeYards / Bot.Chat.Orders.HealRangeYards
-#        Description: Farthest distance from the bot to the selected target for pull (5-150) and heal (5-100;
-#                     the heal spell's own range applies as well).
-#        Default:     60 / 40
-#
-#    Bot.Chat.Orders.ReviveHealthPct / Bot.Chat.Orders.ReviveSickness
-#        Description: Health percent (1-100) of a bot revived with the revive order, and whether it gets
-#                     resurrection sickness (from the level the core gives it). Ignored on Classic.Hardcore realms,
-#                     where revive is refused.
-#        Default:     35 / 1
-#
-Bot.Chat.Enabled = 1
-Bot.Chat.VerboseDefault = 0
-Bot.Chat.MaxReplyLines = 4
-Bot.Chat.UnauthorizedLogSec = 30
-Bot.Chat.LogEvents = 1
-Bot.Chat.GotoArriveYards = 3
-Bot.Chat.Role.Tank = "warrior"
-Bot.Chat.Role.Healer = "priest"
-Bot.Chat.Role.Dps = "rogue,mage,warlock,hunter"
+#                     passive, pull (tank bots attack the leader selected target), heal (healer bots heal the
+#                     selected target), mount, dismount, summon (bots port to the leader), revive (dead bots come
+#                     back to life next to the leader). Off: these words are ordinary chat.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
 Bot.Chat.Orders.Enabled = 0
+
+#
+#    Bot.Chat.Orders.PullRangeYards
+#        Description: Farthest distance from the bot to the selected target for the pull order.
+#        Default:     60
+#        Values:      whole number 5 to 150 (yards)
 Bot.Chat.Orders.PullRangeYards = 60
+
+#
+#    Bot.Chat.Orders.HealRangeYards
+#        Description: Farthest distance for the heal order (the heal spell own range applies as well).
+#        Default:     40
+#        Values:      whole number 5 to 100 (yards)
 Bot.Chat.Orders.HealRangeYards = 40
+
+#
+#    Bot.Chat.Orders.ReviveHealthPct
+#        Description: Health percent of a bot revived with the revive order.
+#        Default:     35
+#        Values:      whole number 1 to 100 (percent)
 Bot.Chat.Orders.ReviveHealthPct = 35
+
+#
+#    Bot.Chat.Orders.ReviveSickness
+#        Description: Revived bots get resurrection sickness (from the level the core gives it). Ignored on
+#                     Classic.Hardcore realms, where revive is refused.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
 Bot.Chat.Orders.ReviveSickness = 1
+
+###################################################################################################
+# ALTS, INVITES AND TRADING
+#
+###################################################################################################
+
 #
 #    Bot.Alt.Enabled
-#        Description: Players may log in characters of their own account as bots (".bot alt add|remove|list <name>").
-#                     Never while the character is online as a player; a bot character cannot log in as a player.
-#                     Alts are remembered across a restart when Bot.Alt.Persist is on. The group leader controls them like other bots.
-#        Default:     1 - Enabled
+#        Description: Players may log in characters of their own account as bots (".bot alt add|remove|list
+#                     <name>"). Never while the character is online as a player; a bot character cannot log in as
+#                     a player. The group leader controls them like other bots.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Alt.Enabled = 1
+
 #
 #    Bot.Alt.MaxPerAccount
 #        Description: Maximum alt bots logged in at the same time per account (protects the tick budget).
 #        Default:     4
+#        Values:      whole number 1 or more (alts)
+Bot.Alt.MaxPerAccount = 4
+
 #
 #    Bot.Alt.Persist
-#        Description: Remember alt bots (table bot_alt in the characters database, see forever-characters-bot-alt.sql) and log
-#                     them in again at startup. Disables itself with one log line when the table does not exist.
-#        Default:     1 - Enabled
+#        Description: Remember alt bots (table bot_alt in the characters database, see forever-characters-bot-
+#                     alt.sql) and log them in again at startup. Alts are remembered across a restart. Disables
+#                     itself with one log line when the table does not exist.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Alt.Persist = 1
+
 #
 #    Bot.Alt.Default.NonCombat
-#        Description: Non-combat strategies of an alt bot at login (comma separated). Alts idle until commanded: no quest or
-#                     grind AI by default. A group leader command (e.g. "quest on") adds strategies.
+#        Description: Non-combat strategies of an alt bot at login. Alts idle until commanded: no quest or grind
+#                     AI by default. A group leader command (e.g. "quest on") adds strategies.
 #        Default:     "rest,follow,goto"
+#        Values:      comma list of strategy names
+Bot.Alt.Default.NonCombat = "rest,follow,goto"
+
 #
 #    Bot.Invite.Enabled
 #        Description: Bots accept party invites from players. Alt bots accept only invites of their owner account;
 #                     world bots accept any invite the core did not refuse (ignore, faction, already grouped).
-#        Default:     1 - Enabled
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Invite.Enabled = 1
+
 #
 #    Bot.Trade.Enabled
-#        Description: Bots react to trade requests. Alt bots trade only with their owner account (the bot accepts a
-#                     non-empty offer and gives nothing); world bots refuse every trade. Trades left open time out.
-#        Default:     1 - Enabled
+#        Description: Bots react to trade requests. Alt bots trade only with their owner account (the bot accepts
+#                     a non-empty offer and gives nothing); world bots refuse every trade. Trades left open time
+#                     out.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Trade.Enabled = 1
+
 #
 #    Bot.Trade.TimeoutSeconds
-#        Description: Seconds a trade opened towards an alt bot may stay open before the bot cancels it (10-600).
+#        Description: Seconds a trade opened towards an alt bot may stay open before the bot cancels it.
 #        Default:     90
+#        Values:      whole number 10 to 600 (seconds)
+Bot.Trade.TimeoutSeconds = 90
+
 #
 #    Bot.Trade.Link.Enabled
-#        Description: Trading items with the bots of your group by whisper. After a trade window opens, the bot whispers
-#                     the items it can give (tradable stacks of its bags: never equipped, soulbound or quest items) as
-#                     item links. Whisper it the links of the ones you want and it puts the largest stack of each in the
-#                     window; confirm and the bot accepts. World bots of your own group may trade this way too (otherwise
-#                     they refuse every trade); alt bots stay limited to their owner account. Needs Bot.Trade.Enabled.
-#        Default:     0 - Disabled
+#        Description: Trading items with the bots of your group by whisper. After a trade window opens, the bot
+#                     whispers the items it can give (tradable stacks of its bags: never equipped, soulbound or
+#                     quest items) as item links. Whisper it the links of the ones you want and it puts the
+#                     largest stack of each in the window; confirm and the bot accepts. World bots of your own
+#                     group may trade this way too; alt bots stay limited to their owner account. Needs
+#                     Bot.Trade.Enabled.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Trade.Link.Enabled = 0
+
 #
 #    Bot.Trade.Link.MaxListed
-#        Description: Items in the bot's whispered list (1-40); the best quality and the largest stacks come first.
+#        Description: Items in the whispered list; the best quality and the largest stacks come first.
 #        Default:     15
+#        Values:      whole number 1 to 40 (items)
+Bot.Trade.Link.MaxListed = 15
+
 #
 #    Bot.Social.QuestShare.LogEach
-#        Description: Log one quest_share bot_event per receiver of a bot's quest share. Off: one summary row per share
-#                     command (accepted count, refused count per reason); "verbose on" of the issuer also logs each receiver.
-#        Default:     0 - Disabled
-#
-Bot.Alt.Enabled = 1
-Bot.Alt.MaxPerAccount = 4
-Bot.Alt.Persist = 1
-Bot.Alt.Default.NonCombat = "rest,follow,goto"
-Bot.Invite.Enabled = 1
-Bot.Trade.Enabled = 1
-Bot.Trade.TimeoutSeconds = 90
-Bot.Trade.Link.Enabled = 0
-Bot.Trade.Link.MaxListed = 15
+#        Description: Log one quest_share bot_event per receiver of a bot quest share. Off: one summary row per
+#                     share command (accepted count, refused count per reason); "verbose on" of the issuer also
+#                     logs each receiver.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
 Bot.Social.QuestShare.LogEach = 0
-#
-###################################################################################################
+
