@@ -928,6 +928,9 @@ Dungeon quests (`QuestInfoID` 81) come with Phase 11 and need party/instance log
 5. **XP rates and time acceleration:** the sim runs real time; a level 1-10 run is hours. Is a rate multiplier allowed in the sim config
    (only for sim scenarios) to shorten runs, and what is the real-server rate?
 6. **Class quests** (Hunter taming, Warlock imp ...): in scope for level 10 or later? They are the only way to pets/summons.
+   If taming quests are enabled for bots: Tame Beast and the Taming Rod spells are 20-second channels, so the bot must stand still for the
+   whole channel and nothing from the movement layer may interrupt it (a stuck move or cast would cancel it). Pets also lose happiness
+   (Pet.h `HAPPINESS_*`) and bots have no feeding logic.
 7. **Where do bots go at level 10?** The pool is per start zone; Phase 9 needs a rule for the next ring (Westfall 24 quests, Loch Modan
    22, Darkshore 28, Barrens 53, Silverpine 36 at `MinLevel <= 10`) including boats (Darkshore) and taxis.
 8. **Quest log limit:** should the bot soft cap follow the real client limit (unverified, 20 in classic vanilla, 35 in the core), and is
