@@ -31,6 +31,7 @@
 #include "BotBehavior.h"
 #include "BotCombat.h"
 #include "BotDungeonRun.h"
+#include "BotLfg.h"
 #include "BotParty.h"
 #include "BotEngine.h"
 #include "BotLootPlan.h"
@@ -1681,6 +1682,12 @@ public:
         if (BotParty::Busy(ai) && bot->IsAlive()) // a member of a bot party follows its leader
         {
             c.Why = "party";
+            return false;
+        }
+
+        if (BotLfg::Busy(ai) && bot->IsAlive()) // called into a player's group by a looking-for-group search
+        {
+            c.Why = "lfg";
             return false;
         }
 

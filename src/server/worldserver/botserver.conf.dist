@@ -2017,6 +2017,100 @@ Bot.AI.Dungeon.PlayerLed.NoticeRepeatSec = 60
 
 
 ###################################################################################################
+# LOOKING FOR GROUP
+#
+# A player whispers "lfg" to any bot (or says it in party chat as the leader) and free bots join the
+# player's group until it is a full party with a tank, a healer and damage dealers. "lfg tank",
+# "lfg healer" or "lfg dps" names the role the player plays, "lfg status" shows the search and
+# "lfg off" cancels it and sends the bots away. Works in the open world and inside a five-man
+# dungeon; in a dungeon the bots follow the player through BotPlayerLed (needs
+# Bot.AI.Dungeon.PlayerLed.Enabled for the run itself). See
+# docs/playerbots/feature-bot-lfg-20261008.md.
+#
+###################################################################################################
+
+#
+#    Bot.LFG.Enabled
+#        Description: Turns looking for group on. Logged as LFG_QUEUED / LFG_JOINED / LFG_COMPLETE /
+#                     LFG_TIMEOUT / LFG_RELEASED / LFG_GONE.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.LFG.Enabled = 0
+
+#
+#    Bot.LFG.GroupSize
+#        Description: Size a search fills the group up to (the player included).
+#        Default:     5
+#        Values:      whole number 2 to 5 (players)
+Bot.LFG.GroupSize = 5
+
+#
+#    Bot.LFG.IntervalSec
+#        Description: Seconds between two searches for bots (the first bots come at once when the player asks).
+#        Default:     3
+#        Values:      whole number 1 to 60 (seconds)
+Bot.LFG.IntervalSec = 3
+
+#
+#    Bot.LFG.TimeoutSec
+#        Description: A search that is not full after this long ends. The bots found so far stay in the group.
+#        Default:     180
+#        Values:      whole number 10 to 3600 (seconds)
+Bot.LFG.TimeoutSec = 180
+
+#
+#    Bot.LFG.MaxQueued
+#        Description: Searches running at the same time on the server; further requests are told to try later.
+#        Default:     20
+#        Values:      whole number 1 to 500 (searches)
+Bot.LFG.MaxQueued = 20
+
+#
+#    Bot.LFG.MaxLevelSpread
+#        Description: A bot may be this many levels above or below the player.
+#        Default:     4
+#        Values:      whole number 0 to 20 (levels)
+Bot.LFG.MaxLevelSpread = 4
+
+#
+#    Bot.LFG.MinLevel
+#        Description: Lowest bot level that is called.
+#        Default:     10
+#        Values:      whole number 1 to 80 (level)
+Bot.LFG.MinLevel = 10
+
+#
+#    Bot.LFG.Teleport
+#        Description: A found bot is moved next to the player, wherever it is, so the player never waits for it
+#                     to arrive. Off: only bots on the player's map within Bot.LFG.MaxDistance are called and
+#                     they walk to the player.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.LFG.Teleport = 1
+
+#
+#    Bot.LFG.MaxDistance
+#        Description: Farthest bot that is called when Bot.LFG.Teleport is off.
+#        Default:     1500
+#        Values:      whole number 20 to 20000 (yards)
+Bot.LFG.MaxDistance = 1500
+
+#
+#    Bot.LFG.ReleaseSec
+#        Description: The bots leave the group this long after the player went offline.
+#        Default:     60
+#        Values:      whole number 5 to 3600 (seconds)
+Bot.LFG.ReleaseSec = 60
+
+#
+#    Bot.LFG.Notify
+#        Description: Tell the player in the chat window who joined, what is still missing and how the search ended.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.LFG.Notify = 1
+
+
+###################################################################################################
 # TRAINING DUMMY
 #
 ###################################################################################################
