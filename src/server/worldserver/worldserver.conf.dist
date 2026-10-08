@@ -4526,6 +4526,15 @@ Classic.GuildFinder = 0
 #        Description: Interval of the AI_TICK_STATS row (engine tick cost per state). 0 = off.
 #        Default:     60
 #
+#    Bot.Log.PullDetail
+#        Description: 1 = COMBAT_START carries aggro_cause / aggro_range / pull_dist, COMBAT_SUMMARY carries fight_id, outcome and casts_ok.
+#        Default:     1
+#
+#    Bot.Log.IdleReasons
+#        Description: 1 = AI_TICK_STATS carries "no_action": ticks per engine on which no action ran, by reason (no_trigger,
+#                     multiplied_to_zero, not_possible, not_useful, execute_failed). Needs Bot.Log.AiTickStatsSec > 0.
+#        Default:     1
+#
 #    Bot.Log.BufferMax / Bot.Log.PosBufferMax
 #        Description: Rows held in memory while the bot log database is slow or down. Over the cap rows are dropped and counted
 #                     (an error is logged once; a log_dropped event with the counts is written when the database recovers).
@@ -4606,6 +4615,27 @@ Classic.GuildFinder = 0
 #                     nearest friendly guard within 120 yd (open-field flee when none). The active mode is logged as
 #                     flee_mode in every combat decision row and in COMBAT_SUMMARY.
 #        Default:     0
+#
+#    Bot.AI.Flee.AbPct / Bot.AI.Flee.AbMode
+#        Description: Flee A/B in one run. The bots whose guid counter modulo 100 is below AbPct run flee mode AbMode
+#                     (the experiment arm), all others run Bot.AI.Flee.Mode (the control). 0 = off, every bot runs
+#                     Flee.Mode. The per-bot mode is logged as flee_mode in every combat row. Protocol:
+#                     docs/playerbots/death-avoidance-20261008.md.
+#        Default:     0 / 1
+#
+#    Bot.AI.Avoid.Entries / Bot.AI.Avoid.MaxLevelGap
+#        Description: Creature entries that killed bots far above the expected rate (Defias Bandit 116, Young Forest
+#                     Bear 822, Shadowgale Ursera 250927, Narg 79). Quest and grind target choice skips them (and
+#                     skips targets standing next to them), and the combat target choice fights them last, unless
+#                     the creature is at most MaxLevelGap levels above the bot (plain level difference, -1 = list
+#                     off). Entries separated by comma, semicolon or space.
+#        Default:     "116,822,250927,79" / 1
+#
+#    Bot.AI.Pull.FirstStrikeMargin / Bot.AI.Pull.RangedMaxYd
+#        Description: Ranged classes (non-melee) open a quest or grind pull from the mob's own aggro radius plus
+#                     FirstStrikeMargin yards (capped at RangedMaxYd, never below the normal ranged pull distance), so
+#                     the mob does not get the first hit while the bot walks in. 0 = off. Melee classes are unchanged.
+#        Default:     2 / 28
 #
 #    Bot.AI.AggroAvoid.Enabled
 #        Description: Aggro awareness while a bot walks (goto/quest goals), stands idle or wants to eat/drink. Hostile
@@ -4695,6 +4725,13 @@ Classic.GuildFinder = 0
 #                     falls back to the spirit healer, and when that fails too the bot is resurrected where it stands
 #                     (decision CORPSE_RUN_GAVE_UP / SPIRIT_HEAL_GAVE_UP, logged once).
 #        Default:     3
+#
+#    Bot.AI.Death.GiveUpSec
+#        Description: Seconds a ghost may spend on the corpse run or the spirit healer walk (NO_PROGRESS /
+#                     UNREACHABLE_TARGET retries included) before it is resurrected at the closest graveyard
+#                     (decision CORPSE_RUN_TIMEOUT / SPIRIT_HEAL_TIMEOUT). The spirit healer give-up
+#                     (SPIRIT_HEAL_GAVE_UP) now also respawns at the graveyard instead of in place. 0 = no time cap.
+#        Default:     300
 
 Bot.Enabled = 1
 Bot.Log.PosIntervalSec = 5
@@ -4702,6 +4739,8 @@ Bot.Log.PosIntervalSlowSec = 15
 Bot.Log.PosScaleBots = 500
 Bot.Log.RepeatCap = 3
 Bot.Log.AiTickStatsSec = 60
+Bot.Log.PullDetail = 1
+Bot.Log.IdleReasons = 1
 Bot.Log.BufferMax = 200000
 Bot.Log.PosBufferMax = 100000
 Bot.Log.FlushRetries = 3
@@ -4774,6 +4813,7 @@ Bot.AI.Recover.MaxCorpseRunYards = 1200
 Bot.AI.Move.StuckSec = 8
 Bot.AI.Move.StuckRepaths = 3
 Bot.AI.Death.CorpseRunMaxFails = 3
+Bot.AI.Death.GiveUpSec = 300
 
 #
 #    Bot.AI.Pet.Enabled
@@ -4848,6 +4888,24 @@ Bot.AI.Death.CorpseRunMaxFails = 3
 #        Description: Wipes after which the run is given up / minutes after which a bot-led run is given up.
 #        Default:     3 / 90
 #
+#    Bot.AI.Ammo.Enabled
+#        Description: Ranged ammo upkeep of the quest strategy's vendor layer: a bot with a bow, crossbow or gun equipped counts its arrows or
+#                     bullets; below Bot.AI.Ammo.LowCount it logs AMMO_LOW, plans a vendor trip to a vendor that sells the right ammo and
+#                     tops up to Bot.AI.Ammo.BuyTarget (AMMO_BOUGHT, AMMO_NO_MONEY, AMMO_NO_VENDOR, AMMO_BUY_FAILED). Needs a restart (vendor index).
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+#
+#    Bot.AI.Ammo.LowCount / Bot.AI.Ammo.BuyTarget / Bot.AI.Ammo.CooldownSec
+#        Description: Trip threshold (rounds), top-up target (rounds) and minimum seconds between ammo trips of one bot.
+#        Default:     60 / 400 / 300
+#
+#    Bot.Talents.Premade.Enabled
+#        Description: On level-up, learn a configured talent per tier for the bot's class (this fork has tiered talents: one pick per tier).
+#                     Bot.Talents.Premade.Class.<classId> = comma list of Talent.db2 ids (first id of a tier wins, tiers that already hold a
+#                     pick are left alone); Bot.Talents.Premade.Spec.<classId> = ChrSpecialization id to set when the bot has none (optional).
+#                     Class ids: 1 warrior, 2 paladin, 3 hunter, 4 rogue, 5 priest, 7 shaman, 8 mage, 9 warlock, 11 druid. Empty = no-op.
+#        Default:     0 - (Disabled)
+#
 #    Bot.AI.Loot.Improved.Enabled
 #        Description: Improved chest loot task of the quest strategy: spawn choice by path cost, skip far spawns and recently deadly areas,
 #                     per-bot spawn blacklist, bag-space check with a planned vendor trip, loot exits never feed the quest quarantine.
@@ -4897,6 +4955,11 @@ Bot.AI.Move.Natural.Idle = 1
 Bot.AI.Move.Natural.IdleMaxStandSec = 25
 Bot.AI.Move.Natural.Metrics = 1
 Bot.AI.Move.Natural.MetricsSec = 60
+Bot.AI.Ammo.Enabled = 0
+Bot.AI.Ammo.LowCount = 60
+Bot.AI.Ammo.BuyTarget = 400
+Bot.AI.Ammo.CooldownSec = 300
+Bot.Talents.Premade.Enabled = 0
 Bot.AI.Loot.Improved.Enabled = 0
 Bot.AI.Loot.Improved.MaxYards = 150
 Bot.AI.Loot.Improved.DeadlyRadius = 40

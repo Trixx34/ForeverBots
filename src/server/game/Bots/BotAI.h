@@ -46,7 +46,10 @@ struct BotAIConfig
     uint32 MaxCorpseRunYards = 1200; // Bot.AI.Recover.MaxCorpseRunYards: farther corpses use the spirit healer
     uint32 StuckSec = 8;          // Bot.AI.Move.StuckSec: seconds without progress before a stuck episode
     uint32 TickStatsSec = 60;     // Bot.Log.AiTickStatsSec: AI_TICK_STATS row per bot every N s (0 = off)
+    bool PullDetail = true;       // Bot.Log.PullDetail: aggro_cause / aggro_range on COMBAT_START, fight_id / outcome on COMBAT_SUMMARY
+    bool IdleReasons = true;      // Bot.Log.IdleReasons: ticks that ran no action, by reason, in AI_TICK_STATS
     uint32 CorpseRunMaxFails = 3; // Bot.AI.Death.CorpseRunMaxFails: failed corpse runs (and spirit healer walks) before the bot gives up
+    uint32 DeathGiveUpSec = 300;  // Bot.AI.Death.GiveUpSec: seconds a ghost may spend on the corpse run / spirit healer before it respawns at the graveyard (0 = never)
     uint32 StuckRepaths = 3;      // Bot.AI.Move.StuckRepaths: episodes (each re-issues the path) before the goal is given up
     // aggro awareness while walking, idle or resting (BotBehavior.cpp)
     bool AggroAvoid = true;       // Bot.AI.AggroAvoid.Enabled
@@ -161,9 +164,13 @@ public:
     void OnXpGain(Player* bot, uint32 amount, uint32 bonus, Unit* victim);
     // Player::GiveLevel (end) -> LEVEL_UP row and a fresh SPELLS_KNOWN row.
     void OnLevelUp(Player* bot, uint8 oldLevel, uint8 newLevel);
+    // Bot.Talents.Premade.*: learns the configured talent per tier for the bot's class (opt-in, default off). Called from OnLevelUp.
+    void ApplyPremadeTalents(Player* bot, char const* cause);
     // For BotCombatCtx::End (COMBAT_SUMMARY): JSON members (no braces, no leading comma) with the per-spell breakdown of the current
     // Combat engine stay ("spell_stats":[{id,name,casts,hits,dmg,power}], "power_type", "unused_spells":[{id,name}]). Resets the stats.
     std::string TakeSpellBreakdownJson(Player* bot);
+    // Id of the open fight row set ("" when none), so COMBAT_SUMMARY can be joined to COMBAT_START / COMBAT_END.
+    std::string const& CurrentFightId() const { return _fight.Id; }
     // Test commands call this so a death (and the fight) within 120 s is tagged source=test_command.
     void NoteTestCommand(char const* command);
 

@@ -27,6 +27,7 @@
 #include "BotQuestClassifier.h"
 #include "BotAI.h"
 #include "BotBehavior.h"
+#include "BotCombat.h"
 #include "BotEngine.h"
 #include "BotLootPlan.h"
 #include "BotMgr.h"
@@ -92,6 +93,8 @@ struct QuestCfg
     uint32 HubScanSec = 20;        // minimum time between hub scans of one bot
     int32 GrindMaxGap = 1;         // Bot.AI.Grind.MaxLevelGap: grind targets at most this many (effective) levels above the bot
     float GrindMaxRadius = 150.0f; // Bot.AI.Grind.MaxRadius: grind targets stay this close to the grind anchor, 0 = off
+    float FirstStrikeMargin = 2.0f; // Bot.AI.Pull.FirstStrikeMargin: ranged classes open from the mob's aggro radius plus this (yards), 0 = off
+    float PullRangedMax = 28.0f;   // Bot.AI.Pull.RangedMaxYd: cap of that wider opener distance
     int32 FleeMode = 0;            // Bot.AI.Flee.Mode (0 current, 1 aggro avoidance, 2 flee to guard); here: mode >= 1 avoids gap >= 2 mobs
     // Death-reduction rules, each off by default (A/B switches)
     bool GateLegs = false;         // Bot.Quest.GateLongLegs: no go_giver / go_ender / loot leg over LegGateYd for an under-level bot that died recently or sees mobs 2+ levels above
@@ -119,6 +122,8 @@ QuestCfg const& Cfg()
         cfg.SelBlockCap = uint32(std::max<int32>(0, sConfigMgr->GetIntDefault("Bot.Quest.SelectionBlockLogCap", 40)));
         cfg.GrindMaxGap = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Grind.MaxLevelGap", 1), -5, 10);
         cfg.GrindMaxRadius = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Grind.MaxRadius", 150), 0, 2000));
+        cfg.FirstStrikeMargin = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Pull.FirstStrikeMargin", 2), 0, 10));
+        cfg.PullRangedMax = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Pull.RangedMaxYd", 28), 10, 40));
         cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
         cfg.GateLegs = sConfigMgr->GetBoolDefault("Bot.Quest.GateLongLegs", false);
         cfg.LootByCost = sConfigMgr->GetBoolDefault("Bot.Quest.LootSpawnByCost", false);
@@ -254,6 +259,40 @@ struct BagOffer
     int32 ReqLevel = 0;
 };
 
+// Bot.AI.Ammo.*: ranged bots (a bow, crossbow or gun equipped) keep ammo stocked: low ammo plans a vendor trip and buys arrows or bullets. Off by default.
+struct AmmoConfig
+{
+    bool Enabled = false;
+    uint32 LowCount = 60;       // below this many rounds of the right type the bot plans a vendor trip
+    uint32 BuyTarget = 400;     // the vendor visit tops the bot up to about this many
+    uint32 CooldownSec = 300;   // minimum time between ammo trips of one bot
+};
+
+AmmoConfig const& AmmoCfg()
+{
+    static AmmoConfig cfg;
+    static std::once_flag once;
+    std::call_once(once, []()
+    {
+        cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Ammo.Enabled", false);
+        cfg.LowCount = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Ammo.LowCount", 60), 1, 2000));
+        cfg.BuyTarget = std::max<uint32>(cfg.LowCount + 1, uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Ammo.BuyTarget", 400), 1, 4000)));
+        cfg.CooldownSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Ammo.CooldownSec", 300), 30, 7200));
+    });
+    return cfg;
+}
+
+struct AmmoOffer
+{
+    uint32 Item = 0;
+    uint32 VendorSlot = 0;
+    uint32 SubClass = 0;      // ITEM_SUBCLASS_ARROW / ITEM_SUBCLASS_BULLET
+    uint32 Price = 0;         // copper per BuyCount units
+    uint32 BuyCount = 1;
+    uint32 MaxStack = 1;
+    int32 ReqLevel = 0;
+};
+
 constexpr float GRID_CELL = 200.0f;
 constexpr uint32 MAX_STARTER_POINTS = 8;
 
@@ -276,7 +315,8 @@ struct Index
     std::unordered_map<uint32, std::vector<SvcPt>> Trainers;
     std::vector<SvcPt> Vendors;
     std::unordered_map<uint32, std::vector<BagOffer>> VendorBags;   // vendor entry -> plain bags it sells for gold
-    uint32 NumTrainers = 0, NumBagVendors = 0, MinBagPrice = 0xFFFFFFFFu;
+    std::unordered_map<uint32, std::vector<AmmoOffer>> VendorAmmo;  // vendor entry -> arrows/bullets it sells for gold (only filled with Bot.AI.Ammo.Enabled)
+    uint32 NumTrainers = 0, NumBagVendors = 0, MinBagPrice = 0xFFFFFFFFu, NumAmmoVendors = 0;
     uint32 NumStarterQuests = 0, NumStarterPoints = 0, NumSpawnEntries = 0, NumItemSources = 0, NumGoItems = 0, NumGoSpawns = 0;
 } g;
 
@@ -740,6 +780,25 @@ void BuildIndex()
                 vb = g.VendorBags.emplace(data.id, std::move(offers)).first;
                 if (!vb->second.empty())
                     ++g.NumBagVendors;
+                if (AmmoCfg().Enabled)
+                {
+                    std::vector<AmmoOffer> ammo;
+                    for (uint32 i = 0; i < items->GetItemCount(); ++i)
+                    {
+                        VendorItem const* vi = items->GetItem(i);
+                        if (!vi || vi->ExtendedCost || vi->maxcount || vi->PlayerConditionId)
+                            continue;
+                        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(vi->item);
+                        if (!proto || proto->GetClass() != ITEM_CLASS_PROJECTILE || (proto->GetSubClass() != ITEM_SUBCLASS_ARROW && proto->GetSubClass() != ITEM_SUBCLASS_BULLET) || !proto->GetBuyPrice())
+                            continue;
+                        ammo.push_back({ vi->item, i, proto->GetSubClass(), proto->GetBuyPrice(), proto->GetBuyCount(), std::max<uint32>(1, proto->GetMaxStackSize()), proto->GetBaseRequiredLevel() });
+                    }
+                    if (!ammo.empty())
+                    {
+                        ++g.NumAmmoVendors;
+                        g.VendorAmmo.emplace(data.id, std::move(ammo));
+                    }
+                }
             }
             pt.Repair = (flags & uint64(UNIT_NPC_FLAG_REPAIR)) != 0;
             g.Vendors.push_back(pt);
@@ -747,8 +806,8 @@ void BuildIndex()
     }
 
     g.Ready.store(true, std::memory_order_release);
-    TC_LOG_INFO("server.worldserver", "Bot quest index: {} starter quests, {} starter points, {} spawn entries, {} quest items with creature sources, {} quest items in chest objects ({} object spawns), {} hubs, {} grind spawns, {} class trainer spawns, {} vendor spawns ({} bag vendor entries), {} ms",
-        g.NumStarterQuests, g.NumStarterPoints, g.NumSpawnEntries, g.NumItemSources, g.NumGoItems, g.NumGoSpawns, uint32(g.Hubs.size()), g.NumGrind, g.NumTrainers, uint32(g.Vendors.size()), g.NumBagVendors, GetMSTimeDiffToNow(startMs));
+    TC_LOG_INFO("server.worldserver", "Bot quest index: {} starter quests, {} starter points, {} spawn entries, {} quest items with creature sources, {} quest items in chest objects ({} object spawns), {} hubs, {} grind spawns, {} class trainer spawns, {} vendor spawns ({} bag vendor entries, {} ammo vendor entries), {} ms",
+        g.NumStarterQuests, g.NumStarterPoints, g.NumSpawnEntries, g.NumItemSources, g.NumGoItems, g.NumGoSpawns, uint32(g.Hubs.size()), g.NumGrind, g.NumTrainers, uint32(g.Vendors.size()), g.NumBagVendors, g.NumAmmoVendors, GetMSTimeDiffToNow(startMs));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1170,13 +1229,13 @@ public:
     uint32 TrainWant = 0;                           // copper needed for the cheapest available but unaffordable spell (0 = none)
     uint32 TrainRetryMs = 0;
     uint32 TrainedTotal = 0, VendorTrips = 0;
-    uint32 NextVendorMs = 0, NextBagMs = 0;
+    uint32 NextVendorMs = 0, NextBagMs = 0, NextAmmoMs = 0;
     bool VendorNow = false;                         // a reward could not be stored: go to a vendor now
     std::unordered_map<uint64, uint8> Repeats;      // (quest, npc) -> reach failures (quarantine)
     std::unordered_map<uint32, uint32> SvcBlack;    // npc entry -> AI clock until
     std::unordered_map<uint64, uint32> GoIgnore;    // chest spawn id -> AI clock until (empty / unusable for this bot)
     BotLoot::SpawnBlacklist LootBlack;              // chest spawns that gave this bot no progress (Bot.AI.Loot.Improved)
-    uint8 NoTrainerLevel = 0, NoMoneyLevel = 0, BagNoMoneyLevel = 0, NoVendorLevel = 0;
+    uint8 NoTrainerLevel = 0, NoMoneyLevel = 0, BagNoMoneyLevel = 0, NoVendorLevel = 0, AmmoNoMoneyLevel = 0;
     std::string LastNote;
 
     bool Blacklisted(uint32 quest, uint32 now) const
@@ -2092,7 +2151,7 @@ private:
     bool HighGapMobNear(Player* bot, std::vector<Creature*> const& list, Creature* m)
     {
         for (Creature* o : list)
-            if (o != m && o->IsAlive() && EffectiveDiff(bot, o) >= 2 && m->GetExactDist2d(o) < 22.0f && bot->IsValidAttackTarget(o))
+            if (o != m && o->IsAlive() && (EffectiveDiff(bot, o) >= 2 || BotCombatAvoids(bot, o)) && m->GetExactDist2d(o) < 22.0f && bot->IsValidAttackTarget(o))
                 return true;
         return false;
     }
@@ -2323,7 +2382,7 @@ private:
         return !(bf && nf && nf->IsHostileTo(bf));
     }
 
-    SvcPt const* NearestSvc(Player* bot, BotQuestCtx& c, uint32 now, std::vector<SvcPt> const& list, bool needRepair, bool needBags, float maxDist, float& dOut)
+    SvcPt const* NearestSvc(Player* bot, BotQuestCtx& c, uint32 now, std::vector<SvcPt> const& list, bool needRepair, bool needBags, float maxDist, float& dOut, uint32 ammoSub = 0)
     {
         SvcPt const* best = nullptr;
         float bs = 1e9f;
@@ -2344,6 +2403,12 @@ private:
             {
                 auto vb = g.VendorBags.find(p.Entry);
                 if (vb == g.VendorBags.end() || vb->second.empty())
+                    continue;
+            }
+            if (ammoSub)
+            {
+                auto va = g.VendorAmmo.find(p.Entry);
+                if (va == g.VendorAmmo.end() || std::none_of(va->second.begin(), va->second.end(), [&](AmmoOffer const& o) { return o.SubClass == ammoSub; }))
                     continue;
             }
             if (!FriendlyNpc(bot, p.Faction))
@@ -2387,6 +2452,35 @@ private:
         SvcPt const* tp = NearestSvc(bot, c, now, it->second, false, false, 4000.0f, d);
         Trainer::Trainer const* tr = tp ? sObjectMgr->GetTrainer(tp->TrainerId) : nullptr;
         return tr ? EvalTrain(bot, tr).CostAll : 0;
+    }
+
+    // ammo item subclass the equipped ranged weapon fires (ITEM_SUBCLASS_ARROW / ITEM_SUBCLASS_BULLET), 0 when none (wands, thrown, no ranged weapon)
+    static uint32 AmmoSubClassOf(Player* bot)
+    {
+        Item* ranged = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+        ItemTemplate const* proto = ranged ? ranged->GetTemplate() : nullptr;
+        if (!proto || proto->GetClass() != ITEM_CLASS_WEAPON)
+            return 0;
+        switch (proto->GetSubClass())
+        {
+            case ITEM_SUBCLASS_WEAPON_BOW:
+            case ITEM_SUBCLASS_WEAPON_CROSSBOW: return ITEM_SUBCLASS_ARROW;
+            case ITEM_SUBCLASS_WEAPON_GUN: return ITEM_SUBCLASS_BULLET;
+            default: return 0;
+        }
+    }
+
+    static uint32 AmmoCount(Player* bot, uint32 sub)
+    {
+        uint32 total = 0;
+        bot->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
+        {
+            ItemTemplate const* proto = item->GetTemplate();
+            if (proto && proto->GetClass() == ITEM_CLASS_PROJECTILE && proto->GetSubClass() == sub)
+                total += item->GetCount();
+            return ItemSearchCallbackResult::Continue;
+        });
+        return total;
     }
 
     static uint64 RepairCost(Player* bot)
@@ -2467,6 +2561,9 @@ private:
             auto tl = g.Trainers.find(bot->GetClass());
             float d = 0.0f;
             SvcPt const* tp = tl == g.Trainers.end() ? nullptr : NearestSvc(bot, c, now, tl->second, false, false, 4000.0f, d);
+            // fallback: a friendly trainer of the class on the same map that is farther than 4000 yd (large continents) beats no training at all
+            if (!tp && tl != g.Trainers.end())
+                tp = NearestSvc(bot, c, now, tl->second, false, false, 15000.0f, d);
             if (!tp)
             {
                 c.TrainLevel = level;
@@ -2490,7 +2587,7 @@ private:
                         }
                     char const* why = tl == g.Trainers.end() ? "no_trainer_of_class_in_world" : !friendlyAny ? "no_friendly_trainer_for_race_in_world" :
                         !friendlyOnMap ? "no_friendly_trainer_on_map" : "friendly_trainers_blacklisted_or_far";
-                    Blocked(ai, bot, c, 0, "TRAIN_NO_TRAINER", StringFormat("no reachable class trainer on map {} within 4000 yd (class {}, race {}, level {}): {}", bot->GetMapId(), bot->GetClass(), bot->GetRace(), level, why),
+                    Blocked(ai, bot, c, 0, "TRAIN_NO_TRAINER", StringFormat("no reachable class trainer on map {} within 15000 yd (class {}, race {}, level {}): {}", bot->GetMapId(), bot->GetClass(), bot->GetRace(), level, why),
                         StringFormat(R"({{"map":{},"class":{},"race":{},"level":{},"x":{:.0f},"y":{:.0f},"why":"{}","on_map":{},"friendly_on_map":{},"friendly_any":{}}})", bot->GetMapId(), bot->GetClass(), bot->GetRace(), level, bot->GetPositionX(), bot->GetPositionY(), why, onMap, friendlyOnMap, friendlyAny), 0, false);
                     // no point re-checking every level when the world has no friendly trainer for this class and race
                     if (!friendlyAny)
@@ -2527,7 +2624,18 @@ private:
         bool const needRepair = repairCost >= 150 && bot->GetMoney() >= repairCost * 2;
         uint32 replaceSize = 0;
         bool const needBags = level >= 3 && now >= c.NextBagMs && g.MinBagPrice != 0xFFFFFFFFu && bot->GetMoney() >= g.MinBagPrice && BagTargetSlot(bot, replaceSize) != 0xFF;
-        if (!forced && !(now >= c.NextVendorMs && (full || needRepair || needBags)))
+        uint32 ammoSub = 0, ammoHave = 0;
+        bool needAmmo = false;
+        if (AmmoCfg().Enabled && level >= 2 && now >= c.NextAmmoMs && !g.VendorAmmo.empty())
+        {
+            ammoSub = AmmoSubClassOf(bot);
+            if (ammoSub)
+            {
+                ammoHave = AmmoCount(bot, ammoSub);
+                needAmmo = ammoHave < AmmoCfg().LowCount && bot->GetMoney() >= 10;
+            }
+        }
+        if (!forced && !(now >= c.NextVendorMs && (full || needRepair || needBags || needAmmo)))
             return false;
 
         float d = 0.0f;
@@ -2535,11 +2643,28 @@ private:
         SvcPt const* vp = nullptr;
         if (needBags && !full && !needRepair)
             vp = NearestSvc(bot, c, now, g.Vendors, false, true, maxD, d);
+        if (!vp && needAmmo)
+            vp = NearestSvc(bot, c, now, g.Vendors, needRepair, false, maxD, d, ammoSub);
         if (!vp && needRepair)
             vp = NearestSvc(bot, c, now, g.Vendors, true, false, maxD, d);
+        if (!vp && needAmmo && !full && !forced && !needRepair && !needBags)
+        {
+            // only ammo is due and no vendor within range sells it: back off instead of walking to a vendor that cannot help
+            c.NextAmmoMs = now + AmmoCfg().CooldownSec * 1000;
+            c.NextVendorMs = now + 120 * 1000;
+            Blocked(ai, bot, c, 0, "AMMO_NO_VENDOR", StringFormat("{} ammo left (low below {}) and no reachable vendor within {:.0f} yd sells the right type", ammoHave, AmmoCfg().LowCount, maxD),
+                StringFormat(R"({{"have":{},"low":{},"subclass":{},"map":{}}})", ammoHave, AmmoCfg().LowCount, ammoSub, bot->GetMapId()), 0, false);
+            return false;
+        }
         if (!vp)
             vp = NearestSvc(bot, c, now, g.Vendors, false, false, maxD, d);
         c.VendorNow = false;
+        if (needAmmo)
+        {
+            c.NextAmmoMs = now + AmmoCfg().CooldownSec * 1000;
+            Decision(ai, bot, "AMMO_LOW", StringFormat("{} ammo left (low below {}), planning a vendor trip", ammoHave, AmmoCfg().LowCount), 0, 0,
+                StringFormat(R"({{"have":{},"low":{},"subclass":{},"money":{}}})", ammoHave, AmmoCfg().LowCount, ammoSub, bot->GetMoney()));
+        }
         if (needBags)
             c.NextBagMs = now + 300 * 1000;
         if (!vp)
@@ -2754,7 +2879,70 @@ private:
                     StringFormat(R"({{"cheapest":{},"money":{},"reserve":{},"level":{}}})", cheapest, money, reserve, level), npc->GetEntry(), false);
             }
         }
+        if (AmmoCfg().Enabled)
+            BuyAmmo(ai, bot, c, npc);
         c.NextVendorMs = now + (bot->GetFreeInventorySlotCount() <= 1 ? 600 : 120) * 1000;
+    }
+
+    // tops up arrows or bullets at a vendor visit (Bot.AI.Ammo.Enabled): the best usable offer of the right subclass, whole vendor stacks, no spell-money reserve
+    void BuyAmmo(BotAI* ai, Player* bot, BotQuestCtx& c, Creature* npc)
+    {
+        uint32 const sub = AmmoSubClassOf(bot);
+        auto va = g.VendorAmmo.find(npc->GetEntry());
+        if (!sub || va == g.VendorAmmo.end())
+            return;
+        AmmoConfig const& cfg = AmmoCfg();
+        uint32 const level = bot->GetLevel();
+        uint32 const have0 = AmmoCount(bot, sub);
+        if (have0 >= cfg.BuyTarget)
+            return;
+        AmmoOffer const* pick = nullptr;
+        for (AmmoOffer const& o : va->second)
+        {
+            if (o.SubClass != sub || o.ReqLevel > int32(level))
+                continue;
+            if (!pick || o.ReqLevel > pick->ReqLevel || (o.ReqLevel == pick->ReqLevel && o.Price < pick->Price))
+                pick = &o;
+        }
+        if (!pick)
+            return;
+        uint64 const money0 = bot->GetMoney();
+        uint32 have = have0;
+        for (int round = 0; round < 4 && have < cfg.BuyTarget; ++round)
+        {
+            uint32 const unit = std::max<uint32>(1, pick->BuyCount);
+            uint32 want = std::min<uint32>(pick->MaxStack, cfg.BuyTarget - have);
+            want = std::max<uint32>(unit, want / unit * unit);
+            uint64 const cost = uint64(pick->Price) * (want / unit);
+            if (bot->GetMoney() < cost)
+            {
+                // buy what the bot can pay for, at least one vendor unit
+                uint64 const units = unit ? bot->GetMoney() / std::max<uint32>(1, pick->Price) : 0;
+                if (!units)
+                    break;
+                want = uint32(std::min<uint64>(units, want / unit)) * unit;
+            }
+            uint64 const before = bot->GetMoney();
+            bot->BuyItemFromVendorSlot(npc->GetGUID(), pick->VendorSlot, pick->Item, want, NULL_BAG, NULL_SLOT);
+            if (bot->GetMoney() >= before)
+                break;   // refused (no inventory space, level, stock)
+            have = AmmoCount(bot, sub);
+        }
+        if (have > have0)
+            Decision(ai, bot, "AMMO_BOUGHT", StringFormat("bought {} ammo (item {}) for {} copper, now {}", have - have0, pick->Item, money0 - bot->GetMoney(), have), 0, npc->GetEntry(),
+                StringFormat(R"({{"item":{},"bought":{},"have":{},"price":{},"money_left":{}}})", pick->Item, have - have0, have, money0 - bot->GetMoney(), bot->GetMoney()));
+        else if (bot->GetMoney() < pick->Price)
+        {
+            if (c.AmmoNoMoneyLevel != level)
+            {
+                c.AmmoNoMoneyLevel = uint8(level);
+                Blocked(ai, bot, c, 0, "AMMO_NO_MONEY", StringFormat("cannot afford ammo: {} copper per {} rounds, bot has {}", pick->Price, pick->BuyCount, bot->GetMoney()),
+                    StringFormat(R"({{"item":{},"price":{},"unit":{},"money":{},"have":{}}})", pick->Item, pick->Price, pick->BuyCount, bot->GetMoney(), have0), npc->GetEntry(), false);
+            }
+        }
+        else
+            Blocked(ai, bot, c, 0, "AMMO_BUY_FAILED", StringFormat("could not buy ammo {} (no inventory space or vendor refused)", pick->Item),
+                StringFormat(R"({{"item":{},"free_slots":{},"money":{}}})", pick->Item, bot->GetFreeInventorySlotCount(), bot->GetMoney()), npc->GetEntry(), false);
     }
 
     // ----- running the task -----
@@ -3681,7 +3869,12 @@ private:
         if (!bot->IsValidAttackTarget(m))
             return false;
         ++t.SeenLive;
-        if (m->isWorldBoss() || EffectiveDiff(bot, m) > (Cfg().FleeMode >= 1 ? std::min<int32>(Cfg().MaxMobLevelDiff, 1) : Cfg().MaxMobLevelDiff))
+        if (BotCombatAvoids(bot, m))
+        {
+            ++t.TooStrongSeen;   // Bot.AI.Avoid.*: listed killers are skipped unless within the allowed level gap
+            return false;
+        }
+        if (m->isWorldBoss() || EffectiveDiff(bot, m) > (BotCombatFleeMode(bot) >= 1 ? std::min<int32>(Cfg().MaxMobLevelDiff, 1) : Cfg().MaxMobLevelDiff))
         {
             if (m->IsElite() || m->isWorldBoss())
                 ++t.EliteSeen;
@@ -3884,7 +4077,13 @@ private:
     // Returns false when the task was dropped.
     bool ApproachAndPull(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Task& t, Creature* m)
     {
-        float const range = PullRange(bot);
+        float range = PullRange(bot);
+        if (!IsMeleeClass(bot) && Cfg().FirstStrikeMargin > 0.0f)
+        {
+            // first strike: open from just outside the mob's aggro radius so it does not get the first hit while the bot walks in
+            float const open = std::min(m->GetAttackDistance(bot) + Cfg().FirstStrikeMargin, Cfg().PullRangedMax);
+            range = std::max(range, open);
+        }
         float const d = bot->GetExactDist(m);
         t.LastDist = d;
         ++t.Approaches;

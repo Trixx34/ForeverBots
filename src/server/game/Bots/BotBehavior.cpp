@@ -36,6 +36,7 @@
 #include "MoveSplineInit.h"
 #include "NPCPackets.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "PathGenerator.h"
 #include "Player.h"
 #include "Random.h"
@@ -630,6 +631,27 @@ public:
     }
 };
 
+// Last resort of the death code: resurrect the ghost at the closest graveyard (release and respawn) instead of retrying forever.
+static void RespawnAtGraveyard(BotAI* ai, Player* bot, char const* reason, uint32 fails)
+{
+    WorldSafeLocsEntry const* grave = sObjectMgr->GetClosestGraveyard(bot->GetWorldLocation(), bot->GetTeam(), bot);
+    ai->Motion().ClearGoal();
+    ai->EmitEvent(bot, "decision", BOTLOG_WARN, reason, "recovery gave up, respawning at the closest graveyard",
+        StringFormat(R"({{"reason":"{}","fails":{},"graveyard":{},"pos":{}}})", reason, fails, grave ? grave->ID : 0u, Pos3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ())));
+    bot->ResurrectPlayer(0.5f);
+    bot->SpawnCorpseBones();
+    if (grave)
+        bot->TeleportTo(grave->Loc);
+}
+
+// true when the ghost has been dead longer than Bot.AI.Death.GiveUpSec (0 = never)
+static bool GhostTimedOut(BotAI* ai)
+{
+    uint32 const cap = BotAI::Config().DeathGiveUpSec;
+    BotRecover const& r = ai->Recover();
+    return cap && r.DiedMs && ai->GetNowMs() - r.DiedMs >= cap * 1000;
+}
+
 class CorpseRunAction : public Action
 {
 public:
@@ -652,6 +674,12 @@ public:
         Player* bot = GetBot();
         BotRecover& r = ai->Recover();
         SetResult("CORPSE_RUN_STEP");
+
+        if (GhostTimedOut(ai))
+        {
+            RespawnAtGraveyard(ai, bot, "CORPSE_RUN_TIMEOUT", r.CorpseFails);
+            return true;
+        }
 
         if (r.Plan == BotRecover::Mode::None)
         {
@@ -749,6 +777,12 @@ public:
         uint32 const now = ai->GetNowMs();
         SetResult("SPIRIT_HEAL_STEP");
 
+        if (GhostTimedOut(ai))
+        {
+            RespawnAtGraveyard(ai, bot, "SPIRIT_HEAL_TIMEOUT", r.HealerFails);
+            return true;
+        }
+
         Creature* healer = r.Healer.IsEmpty() ? nullptr : ObjectAccessor::GetCreature(*bot, r.Healer);
         if (!healer)
         {
@@ -799,12 +833,8 @@ public:
                 r.NextTryMs = now + 20000;
                 if (++r.HealerFails >= BotAI::Config().CorpseRunMaxFails)
                 {
-                    // nothing reachable: resurrect where the ghost stands instead of looping forever
-                    ai->EmitEvent(bot, "decision", BOTLOG_WARN, "SPIRIT_HEAL_GAVE_UP", "cannot reach a spirit healer, resurrecting in place",
-                        StringFormat(R"({{"reason":"SPIRIT_HEAL_GAVE_UP","fails":{},"pos":{}}})", r.HealerFails, Pos3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ())));
-                    motion.ClearGoal();
-                    bot->ResurrectPlayer(0.5f);
-                    bot->SpawnCorpseBones();
+                    // nothing reachable: respawn at the closest graveyard instead of looping forever
+                    RespawnAtGraveyard(ai, bot, "SPIRIT_HEAL_GAVE_UP", r.HealerFails);
                 }
             }
             return true;
