@@ -6323,6 +6323,10 @@ SpellCastResult Spell::CheckCast(bool strict, int32* param1 /*= nullptr*/, int32
                 if (foodItem->GetTemplate()->GetBaseItemLevel() + 30 <= pet->GetLevel())
                    return SPELL_FAILED_FOOD_LOWLEVEL;
 
+                // Classic 1.60: food more than 14 levels below the pet gives no happiness
+                if (pet->HasHappiness() && !Pet::GetFoodBenefit(pet->GetLevel(), foodItem->GetTemplate()->GetBaseItemLevel()))
+                   return SPELL_FAILED_FOOD_LOWLEVEL;
+
                 if (m_caster->ToPlayer()->IsInCombat() || pet->IsInCombat())
                     return SPELL_FAILED_AFFECTING_COMBAT;
 

@@ -136,12 +136,14 @@ TC_API_EXPORT EnumText EnumUtils<Powers>::ToString(Powers value)
         case POWER_ALTERNATE_QUEST: return { "POWER_ALTERNATE_QUEST", "Alternate (Quest)", "" };
         case POWER_ALTERNATE_ENCOUNTER: return { "POWER_ALTERNATE_ENCOUNTER", "Alternate (Encounter)", "" };
         case POWER_ALTERNATE_MOUNT: return { "POWER_ALTERNATE_MOUNT", "Alternate (Mount)", "" };
+        case POWER_UNUSED_26: return { "POWER_UNUSED_26", "Unused", "" };
+        case POWER_HAPPINESS: return { "POWER_HAPPINESS", "Happiness", "Classic 1.60 hunter pets, PowerType.db2 27, max 1000000" };
         default: throw std::out_of_range("value");
     }
 }
 
 template <>
-TC_API_EXPORT size_t EnumUtils<Powers>::Count() { return 27; }
+TC_API_EXPORT size_t EnumUtils<Powers>::Count() { return 29; }
 
 template <>
 TC_API_EXPORT Powers EnumUtils<Powers>::FromIndex(size_t index)
@@ -175,6 +177,8 @@ TC_API_EXPORT Powers EnumUtils<Powers>::FromIndex(size_t index)
         case 24: return POWER_ALTERNATE_QUEST;
         case 25: return POWER_ALTERNATE_ENCOUNTER;
         case 26: return POWER_ALTERNATE_MOUNT;
+        case 27: return POWER_UNUSED_26;
+        case 28: return POWER_HAPPINESS;
         default: throw std::out_of_range("index");
     }
 }
@@ -211,6 +215,8 @@ TC_API_EXPORT size_t EnumUtils<Powers>::ToIndex(Powers value)
         case POWER_ALTERNATE_QUEST: return 24;
         case POWER_ALTERNATE_ENCOUNTER: return 25;
         case POWER_ALTERNATE_MOUNT: return 26;
+        case POWER_UNUSED_26: return 27;
+        case POWER_HAPPINESS: return 28;
         default: throw std::out_of_range("value");
     }
 }

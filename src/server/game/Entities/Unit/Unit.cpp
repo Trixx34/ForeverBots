@@ -1261,15 +1261,16 @@ void Unit::CalculateSpellDamageTaken(SpellNonMeleeDamage* damageInfo, int32 dama
                 // Spell weapon based damage CAN BE crit & blocked at same time
                 if (blocked)
                 {
-                    // double blocked amount if block is critical
-                    uint32 value = victim->GetBlockPercent(GetLevel());
+                    // Classic 1.60 (vanilla): weapon based spells are blocked by the flat shield block value like melee hits (retail: a
+                    // share of the damage; Player::GetBlockPercent gave a fraction that truncated to 0, so players blocked nothing)
+                    float value = float(victim->GetClassicShieldBlockValue());
                     if (victim->IsBlockCritical())
                     {
-                        value *= 2; // double blocked percent
+                        value *= 2; // double blocked amount if block is critical
                         value *= GetTotalAuraMultiplier(SPELL_AURA_MOD_CRITICAL_BLOCK_AMOUNT);
                     }
 
-                    damageInfo->blocked = CalculatePct(damage, value);
+                    damageInfo->blocked = uint32(value);
                     if (damage <= int32(damageInfo->blocked))
                     {
                         damageInfo->blocked = uint32(damage);
@@ -1489,6 +1490,8 @@ void Unit::CalculateMeleeDamage(Unit* victim, CalcDamageInfo* damageInfo, Weapon
                 damageInfo->Blocked *= GetTotalAuraMultiplier(SPELL_AURA_MOD_CRITICAL_BLOCK_AMOUNT);
             }
 
+            // a critical block must not subtract more than the incoming damage (unsigned, it would wrap)
+            damageInfo->Blocked = std::min(damageInfo->Blocked, damageInfo->Damage);
             damageInfo->OriginalDamage = damageInfo->Damage;
             damageInfo->Damage      -= damageInfo->Blocked;
             damageInfo->CleanDamage += damageInfo->Blocked;
@@ -7068,6 +7071,10 @@ float Unit::SpellDamagePctDone(Unit* victim, SpellInfo const* spellProto, Damage
     if (GetTypeId() == TYPEID_UNIT && !IsPet())
         DoneTotalMod *= ToCreature()->GetSpellDamageMod(ToCreature()->GetCreatureTemplate()->Classification);
 
+    // Classic 1.60: a hunter pet's mood (unhappy 75%, content 100%, happy 125%)
+    if (Pet const* pet = ToPet())
+        DoneTotalMod *= pet->GetHappinessDamageMod();
+
     // Versatility
     if (Player* modOwner = GetSpellModOwner())
         AddPct(DoneTotalMod, modOwner->GetRatingBonusValue(CR_VERSATILITY_DAMAGE_DONE) + modOwner->GetTotalAuraModifier(SPELL_AURA_MOD_VERSATILITY));
@@ -8211,6 +8218,10 @@ int32 Unit::MeleeDamageBonusDone(Unit* pVictim, int32 damage, WeaponAttackType a
 
     // Done total percent damage auras
     float DoneTotalMod = 1.0f;
+
+    // Classic 1.60: a hunter pet's mood (unhappy 75%, content 100%, happy 125%)
+    if (Pet const* pet = ToPet())
+        DoneTotalMod *= pet->GetHappinessDamageMod();
 
     SpellSchoolMask schoolMask = spellProto ? spellProto->GetSchoolMask() : damageSchoolMask;
 
@@ -11359,6 +11370,13 @@ bool Unit::InitTamedPet(Pet* pet, uint8 level, uint32 spell_id)
     pet->GetCharmInfo()->SetPetNumber(sObjectMgr->GeneratePetNumber(), true);
     // this enables pet details window (Shift+P)
     pet->InitPetCreateSpells();
+
+    // Classic 1.60: a freshly tamed beast is unhappy until it is fed
+    if (pet->HasHappiness())
+    {
+        pet->SetMaxPower(POWER_HAPPINESS, Pet::HAPPINESS_MAX);
+        pet->SetPower(POWER_HAPPINESS, Pet::HAPPINESS_TAMED);
+    }
     //pet->InitLevelupSpellsForLevel();
     pet->SetFullHealth();
 

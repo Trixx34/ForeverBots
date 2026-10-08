@@ -207,6 +207,8 @@ enum UnitMods
     UNIT_MOD_ALTERNATE_QUEST,
     UNIT_MOD_ALTERNATE_ENCOUNTER,
     UNIT_MOD_ALTERNATE_MOUNT,
+    UNIT_MOD_UNUSED_26,
+    UNIT_MOD_HAPPINESS,
     UNIT_MOD_ARMOR,                                         // UNIT_MOD_ARMOR..UNIT_MOD_RESISTANCE_ARCANE must be in existed order, it's accessed by index values of SpellSchools enum.
     UNIT_MOD_RESISTANCE_HOLY,
     UNIT_MOD_RESISTANCE_FIRE,
@@ -224,7 +226,7 @@ enum UnitMods
     UNIT_MOD_RESISTANCE_START = UNIT_MOD_ARMOR,
     UNIT_MOD_RESISTANCE_END = UNIT_MOD_RESISTANCE_ARCANE + 1,
     UNIT_MOD_POWER_START = UNIT_MOD_MANA,
-    UNIT_MOD_POWER_END = UNIT_MOD_ALTERNATE_MOUNT + 1
+    UNIT_MOD_POWER_END = UNIT_MOD_HAPPINESS + 1
 };
 
 static_assert(UNIT_MOD_STAT_END - UNIT_MOD_STAT_START == MAX_STATS, "UnitMods stats section does not match Stats enum!");

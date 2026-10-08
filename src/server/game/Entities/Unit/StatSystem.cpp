@@ -1082,6 +1082,10 @@ void Player::_RemoveAllStatBonuses()
 
 int32 Creature::GetCreatePowerValue(Powers power) const
 {
+    // Classic 1.60: hunter pet happiness, 0..1000000
+    if (power == POWER_HAPPINESS)
+        return IsPet() && ToPet()->HasHappiness() ? Pet::HAPPINESS_MAX : 0;
+
     if (PowerTypeEntry const* powerType = sDB2Manager.GetPowerTypeEntry(power))
         if (!powerType->GetFlags().HasFlag(PowerTypeFlags::IsUsedByNPCs))
             return 0;
@@ -1137,6 +1141,10 @@ uint32 Creature::GetPowerIndex(Powers power) const
             return 4;
         case POWER_ALTERNATE_MOUNT:
             return 5;
+        case POWER_HAPPINESS:           // Classic 1.60: hunter pets only, power slot 6 (sniffs of the official beta)
+            if (IsPet() && ToPet()->getPetType() == HUNTER_PET)
+                return 6;
+            break;
         default:
             break;
     }

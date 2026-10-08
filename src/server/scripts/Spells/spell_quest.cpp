@@ -70,29 +70,36 @@ enum TamingTheBeast
 
 class spell_quest_taming_the_beast : public AuraScript
 {
-    bool Validate(SpellInfo const* /*spellInfo*/) override
+    static uint32 GetTameSpell(uint32 spellId)
     {
-        return ValidateSpellInfo(
+        switch (spellId)
         {
-            SPELL_TAME_ICE_CLAW_BEAR_1,
-            SPELL_TAME_LARGE_CRAG_BOAR_1,
-            SPELL_TAME_SNOW_LEOPARD_1,
-            SPELL_TAME_ADULT_PLAINSTRIDER_1,
-            SPELL_TAME_PRAIRIE_STALKER_1,
-            SPELL_TAME_SWOOP_1,
-            SPELL_TAME_WEBWOOD_LURKER_1,
-            SPELL_TAME_DIRE_MOTTLED_BOAR_1,
-            SPELL_TAME_SURF_CRAWLER_1,
-            SPELL_TAME_ARMORED_SCORPID_1,
-            SPELL_TAME_NIGHTSABER_STALKER_1,
-            SPELL_TAME_STRIGID_SCREECHER_1,
-            SPELL_TAME_BARBED_CRAWLER_1,
-            SPELL_TAME_GREATER_TIMBERSTRIDER_1,
-            SPELL_TAME_NIGHTSTALKER_1,
-            SPELL_TAME_CRAZED_DRAGONHAWK_1,
-            SPELL_TAME_ELDER_SPRINGPAW_1,
-            SPELL_TAME_MISTBAT_1
-        });
+            case SPELL_TAME_ICE_CLAW_BEAR:         return SPELL_TAME_ICE_CLAW_BEAR_1;
+            case SPELL_TAME_LARGE_CRAG_BOAR:       return SPELL_TAME_LARGE_CRAG_BOAR_1;
+            case SPELL_TAME_SNOW_LEOPARD:          return SPELL_TAME_SNOW_LEOPARD_1;
+            case SPELL_TAME_ADULT_PLAINSTRIDER:    return SPELL_TAME_ADULT_PLAINSTRIDER_1;
+            case SPELL_TAME_PRAIRIE_STALKER:       return SPELL_TAME_PRAIRIE_STALKER_1;
+            case SPELL_TAME_SWOOP:                 return SPELL_TAME_SWOOP_1;
+            case SPELL_TAME_WEBWOOD_LURKER:        return SPELL_TAME_WEBWOOD_LURKER_1;
+            case SPELL_TAME_DIRE_MOTTLED_BOAR:     return SPELL_TAME_DIRE_MOTTLED_BOAR_1;
+            case SPELL_TAME_SURF_CRAWLER:          return SPELL_TAME_SURF_CRAWLER_1;
+            case SPELL_TAME_ARMORED_SCORPID:       return SPELL_TAME_ARMORED_SCORPID_1;
+            case SPELL_TAME_NIGHTSABER_STALKER:    return SPELL_TAME_NIGHTSABER_STALKER_1;
+            case SPELL_TAME_STRIGID_SCREECHER:     return SPELL_TAME_STRIGID_SCREECHER_1;
+            case SPELL_TAME_BARBED_CRAWLER:        return SPELL_TAME_BARBED_CRAWLER_1;
+            case SPELL_TAME_GREATER_TIMBERSTRIDER: return SPELL_TAME_GREATER_TIMBERSTRIDER_1;
+            case SPELL_TAME_NIGHTSTALKER:          return SPELL_TAME_NIGHTSTALKER_1;
+            case SPELL_TAME_CRAZED_DRAGONHAWK:     return SPELL_TAME_CRAZED_DRAGONHAWK_1;
+            case SPELL_TAME_ELDER_SPRINGPAW:       return SPELL_TAME_ELDER_SPRINGPAW_1;
+            case SPELL_TAME_MISTBAT:               return SPELL_TAME_MISTBAT_1;
+            default:                               return 0;
+        }
+    }
+
+    // Classic: only the rod's own tame spell; the client data has no TBC rods, and requiring them dropped the script for the vanilla ones
+    bool Validate(SpellInfo const* spellInfo) override
+    {
+        return ValidateSpellInfo({ GetTameSpell(spellInfo->Id) });
     }
 
     void OnRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
@@ -103,30 +110,7 @@ class spell_quest_taming_the_beast : public AuraScript
         if (GetTargetApplication()->GetRemoveMode() != AURA_REMOVE_BY_EXPIRE)
             return;
 
-        uint32 finalSpellId = 0;
-        switch (GetId())
-        {
-            case SPELL_TAME_ICE_CLAW_BEAR:         finalSpellId = SPELL_TAME_ICE_CLAW_BEAR_1; break;
-            case SPELL_TAME_LARGE_CRAG_BOAR:       finalSpellId = SPELL_TAME_LARGE_CRAG_BOAR_1; break;
-            case SPELL_TAME_SNOW_LEOPARD:          finalSpellId = SPELL_TAME_SNOW_LEOPARD_1; break;
-            case SPELL_TAME_ADULT_PLAINSTRIDER:    finalSpellId = SPELL_TAME_ADULT_PLAINSTRIDER_1; break;
-            case SPELL_TAME_PRAIRIE_STALKER:       finalSpellId = SPELL_TAME_PRAIRIE_STALKER_1; break;
-            case SPELL_TAME_SWOOP:                 finalSpellId = SPELL_TAME_SWOOP_1; break;
-            case SPELL_TAME_WEBWOOD_LURKER:        finalSpellId = SPELL_TAME_WEBWOOD_LURKER_1; break;
-            case SPELL_TAME_DIRE_MOTTLED_BOAR:     finalSpellId = SPELL_TAME_DIRE_MOTTLED_BOAR_1; break;
-            case SPELL_TAME_SURF_CRAWLER:          finalSpellId = SPELL_TAME_SURF_CRAWLER_1; break;
-            case SPELL_TAME_ARMORED_SCORPID:       finalSpellId = SPELL_TAME_ARMORED_SCORPID_1; break;
-            case SPELL_TAME_NIGHTSABER_STALKER:    finalSpellId = SPELL_TAME_NIGHTSABER_STALKER_1; break;
-            case SPELL_TAME_STRIGID_SCREECHER:     finalSpellId = SPELL_TAME_STRIGID_SCREECHER_1; break;
-            case SPELL_TAME_BARBED_CRAWLER:        finalSpellId = SPELL_TAME_BARBED_CRAWLER_1; break;
-            case SPELL_TAME_GREATER_TIMBERSTRIDER: finalSpellId = SPELL_TAME_GREATER_TIMBERSTRIDER_1; break;
-            case SPELL_TAME_NIGHTSTALKER:          finalSpellId = SPELL_TAME_NIGHTSTALKER_1; break;
-            case SPELL_TAME_CRAZED_DRAGONHAWK:     finalSpellId = SPELL_TAME_CRAZED_DRAGONHAWK_1; break;
-            case SPELL_TAME_ELDER_SPRINGPAW:       finalSpellId = SPELL_TAME_ELDER_SPRINGPAW_1; break;
-            case SPELL_TAME_MISTBAT:               finalSpellId = SPELL_TAME_MISTBAT_1; break;
-        }
-
-        if (finalSpellId)
+        if (uint32 finalSpellId = GetTameSpell(GetId()))
             GetCaster()->CastSpell(GetTarget(), finalSpellId, true);
     }
 

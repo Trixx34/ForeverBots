@@ -400,8 +400,103 @@ class classic_spell_pal_holy_shock : public SpellScript
     }
 };
 
+// 1515 - Tame Beast: a 20 second channel in Classic (periodic aura on the beast); when it runs out the beast is tamed with 13481
+// (SPELL_EFFECT_TAME_CREATURE). The retail script on 1515 (spell_hun_tame_beast) keeps its cast checks; it tames instantly in
+// retail, so the Classic channel ended without a pet.
+class classic_spell_hun_tame_beast_channel : public AuraScript
+{
+    static constexpr uint32 SPELL_TAME_BEAST_TAME = 13481;
+
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_TAME_BEAST_TAME });
+    }
+
+    void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (GetTargetApplication()->GetRemoveMode() != AURA_REMOVE_BY_EXPIRE)
+            return;
+
+        if (Unit* caster = GetCaster())
+            caster->CastSpell(GetTarget(), SPELL_TAME_BEAST_TAME, CastSpellExtraArgs(TRIGGERED_FULL_MASK).SetOriginalCaster(caster->GetGUID()));
+    }
+
+    void Register() override
+    {
+        AfterEffectRemove += AuraEffectRemoveFn(classic_spell_hun_tame_beast_channel::HandleRemove, EFFECT_1, SPELL_AURA_PERIODIC_TRIGGER_SPELL, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// 1280003, 1280046, 1271103 - Taming Rod (Skyborne hunter quests Taming the Beast 94978, 94979, 94013), and 1277794, 1278028,
+// 1278029 (human hunter quests 94792, 94863, 94864, not sniffed yet): a 20 second channel with a
+// dummy aura on the beast; when it runs out the rod's tame spell charms the beast for 12 sec and completes the quest (sniff of the
+// official beta: channel 20000 ms, then 1280004 / 1280044 / 1271102)
+class classic_spell_hun_taming_rod : public AuraScript
+{
+    static uint32 GetTameSpell(uint32 channelSpellId)
+    {
+        switch (channelSpellId)
+        {
+            case 1280003: return 1280004;   // Windsong Crawler (94978)
+            case 1280046: return 1280044;   // Ornery Galestrider (94979)
+            case 1271103: return 1271102;   // Vuldren Alpha (94013)
+            case 1277794: return 1277851;   // Rockhide Boar (94792, human)
+            case 1278028: return 1278060;   // Gray Forest Wolf (94863, human)
+            case 1278029: return 1278061;   // Young Forest Bear (94864, human)
+            default:      return 0;
+        }
+    }
+
+    bool Validate(SpellInfo const* spellInfo) override
+    {
+        return ValidateSpellInfo({ GetTameSpell(spellInfo->Id) });
+    }
+
+    void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (GetTargetApplication()->GetRemoveMode() != AURA_REMOVE_BY_EXPIRE)
+            return;
+
+        if (Unit* caster = GetCaster())
+            caster->CastSpell(GetTarget(), GetTameSpell(GetId()), CastSpellExtraArgs(TRIGGERED_FULL_MASK).SetOriginalCaster(caster->GetGUID()));
+    }
+
+    void Register() override
+    {
+        AfterEffectRemove += AuraEffectRemoveFn(classic_spell_hun_taming_rod::HandleRemove, EFFECT_1, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// 348, 707, 1094, 2941, 11665, 11667, 11668, 25309 - Immolate: Classic 1.60 added a script effect (EFFECT_2) that puts the hidden
+// Immolate aura 1282590 on the target (sniff: both auras on the target, same caster). Every Conflagrate rank needs it
+// (SpellAuraRestrictions TargetAuraSpell 1282590), so without it Conflagrate could never be cast.
+class classic_spell_warl_immolate : public SpellScript
+{
+    static constexpr uint32 SPELL_IMMOLATE_CONFLAGRATE_MARKER = 1282590;
+
+    bool Validate(SpellInfo const* spellInfo) override
+    {
+        return ValidateSpellInfo({ SPELL_IMMOLATE_CONFLAGRATE_MARKER }) && ValidateSpellEffect({ { spellInfo->Id, EFFECT_2 } });
+    }
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        // the marker targets its caster, so the target casts it on itself for the warlock
+        Unit* target = GetHitUnit();
+        target->CastSpell(target, SPELL_IMMOLATE_CONFLAGRATE_MARKER, CastSpellExtraArgs(TRIGGERED_FULL_MASK).SetOriginalCaster(GetCaster()->GetGUID()));
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(classic_spell_warl_immolate::HandleScript, EFFECT_2, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
 void AddSC_classic_spell_scripts()
 {
+    RegisterSpellScript(classic_spell_warl_immolate);
+    RegisterSpellScript(classic_spell_hun_taming_rod);
+    RegisterSpellScript(classic_spell_hun_tame_beast_channel);
     RegisterSpellScript(classic_spell_pal_holy_shock);
     RegisterSpellScript(classic_spell_pal_judgement_of_the_crusader_refresh);
     RegisterSpellScript(classic_spell_pal_seal_of_righteousness);

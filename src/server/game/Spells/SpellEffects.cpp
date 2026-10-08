@@ -3566,6 +3566,23 @@ void Spell::EffectFeedPet()
 
     ExecuteLogEffectDestroyItem(effectInfo->Effect, foodItem->GetEntry());
 
+    // Classic 1.60: food gives hunter pets happiness, the trigger (Feed Pet Effect 1539) adds it every 2 s; vanilla benefit by level
+    if (pet->HasHappiness())
+    {
+        int32 benefit = Pet::GetFoodBenefit(pet->GetLevel(), foodItem->GetTemplate()->GetBaseItemLevel());
+        if (!benefit)
+            return;
+
+        uint32 count = 1;
+        player->DestroyItemCount(foodItem, count, true);
+
+        CastSpellExtraArgs args(TRIGGERED_FULL_MASK);
+        args.SetTriggeringSpell(this);
+        args.AddSpellMod(SPELLVALUE_BASE_POINT0, benefit);
+        m_caster->CastSpell(pet, effectInfo->TriggerSpell, args);
+        return;
+    }
+
     int32 pct;
     int32 levelDiff = int32(pet->GetLevel()) - int32(foodItem->GetTemplate()->GetBaseItemLevel());
     if (levelDiff >= 30)
