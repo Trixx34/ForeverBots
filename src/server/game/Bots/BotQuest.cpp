@@ -34,6 +34,7 @@
 #include "BotLootPlan.h"
 #include "BotGear.h"
 #include "BotProfession.h"
+#include "BotReputationPlan.h"
 #include "GameTime.h"
 #include "BotMgr.h"
 #include "BotPet.h"
@@ -55,6 +56,7 @@
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "ReputationMgr.h"
 #include "Player.h"
 #include "QuestDef.h"
 #include "StringFormat.h"
@@ -109,6 +111,8 @@ struct QuestCfg
     bool DeathLoop = false;        // Bot.Quest.DeathLoopBreaker: second death within 10 min on the same quest / area drops the task and defers the quest
     bool DeferQuest8 = false;      // Bot.Quest.DeferQuest8: quest 8 is not taken before level 4
     float LegGateYd = 150.0f;      // Bot.Quest.LegGateYd
+    bool Reputation = false;       // Bot.Quest.Reputation.Enabled: reputation rewards weigh into the quest choice
+    BotReputation::Config Rep;     // Bot.Quest.Reputation.BonusPct / LossPenaltyPct / FullPoints
 };
 
 QuestCfg const& Cfg()
@@ -137,6 +141,10 @@ QuestCfg const& Cfg()
         cfg.DeathLoop = sConfigMgr->GetBoolDefault("Bot.Quest.DeathLoopBreaker", false);
         cfg.DeferQuest8 = sConfigMgr->GetBoolDefault("Bot.Quest.DeferQuest8", false);
         cfg.LegGateYd = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Quest.LegGateYd", 150), 50, 2000));
+        cfg.Reputation = sConfigMgr->GetBoolDefault("Bot.Quest.Reputation.Enabled", false);
+        cfg.Rep.BonusPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Quest.Reputation.BonusPct", 25), 0, 200);
+        cfg.Rep.LossPenaltyPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Quest.Reputation.LossPenaltyPct", 40), 0, 100);
+        cfg.Rep.FullPoints = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Quest.Reputation.FullPoints", 250), 1, 10000);
     });
     return cfg;
 }
@@ -2068,6 +2076,35 @@ private:
     }
 
     // Candidate evaluation of a starter reference. Returns score > 0 when takeable now. `log` blocks are throttled.
+    // Bot.Quest.Reputation.*: reputation points the quest hands out (base value like Player::RewardReputation, without rate bonuses)
+    // set against the bot's current standing. 1.0 when off or the quest has no reputation reward.
+    static float ReputationWeight(Player* bot, Quest const* q)
+    {
+        if (!Cfg().Reputation)
+            return 1.0f;
+        std::vector<BotReputation::Reward> rewards;
+        ReputationMgr const& mgr = bot->GetReputationMgr();
+        for (uint8 i = 0; i < QUEST_REWARD_REPUTATIONS_COUNT; ++i)
+        {
+            if (!q->RewardFactionId[i])
+                continue;
+            FactionEntry const* faction = sFactionStore.LookupEntry(q->RewardFactionId[i]);
+            if (!faction)
+                continue;
+            BotReputation::Reward r;
+            r.OtherSide = mgr.IsOtherSideFaction(faction);
+            if (q->RewardFactionOverride[i])
+                r.Amount = q->RewardFactionOverride[i] / 100;
+            else if (QuestFactionRewardEntry const* row = sQuestFactionRewardStore.LookupEntry((q->RewardFactionValue[i] < 0 ? 1 : 0) + 1))
+                r.Amount = row->Difficulty[std::abs(q->RewardFactionValue[i])];
+            r.Standing = mgr.GetReputation(faction);
+            r.Rank = int32(mgr.GetRank(faction));
+            r.CapRank = q->RewardFactionCapIn[i];
+            rewards.push_back(r);
+        }
+        return rewards.empty() ? 1.0f : BotReputation::QuestWeight(rewards, Cfg().Rep);
+    }
+
     float Score(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, StarterRef const& ref, float dist, bool logBlocks)
     {
         Quest const* q = sObjectMgr->GetQuestTemplate(ref.Quest);
@@ -2138,7 +2175,7 @@ private:
         float xp = float(q->XPValue(bot)) + 20.0f;
         float work = 40.0f * float(q->GetObjectives().size());
         float const chain = q->GetPrevQuestId() > 0 ? 1.4f : 1.0f;   // chain successors first
-        return chain * fit * xp / (dist + 150.0f + work);
+        return chain * fit * ReputationWeight(bot, q) * xp / (dist + 150.0f + work);
     }
 
     bool PickNew(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, std::vector<LogEntry> const& log)
