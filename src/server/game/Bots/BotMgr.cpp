@@ -19,6 +19,7 @@
 #include "BotSocial.h"
 #include "AccountMgr.h"
 #include "BotAI.h"
+#include "BotDungeonRun.h"
 #include "BotAlts.h"
 #include "BotLogDatabase.h"
 #include "BotPet.h"
@@ -301,6 +302,12 @@ void BotMgr::UpdateProbe(uint32 diff)
     }
 }
 
+void BotMgr::PostWorldTask(std::function<void()> task)
+{
+    std::lock_guard<std::mutex> lock(_worldTaskLock);
+    _worldTasks.push_back(std::move(task));
+}
+
 // One server log line per Bot.Log.ServerStatsSec: world update diff (sWorldUpdateTime, includes bot visibility and AI work done inside
 // the map updates) and the cost of BotMgr::Update itself. Compare the line between runs/builds (same bot count) to A/B the cost of a change.
 void BotMgr::LogTickStats(uint32 diff, uint64 updateUs)
@@ -328,6 +335,14 @@ void BotMgr::Update(uint32 diff)
     ++_ticks;
     _uptimeMs += diff;
 
+    std::vector<std::function<void()>> tasks;
+    {
+        std::lock_guard<std::mutex> lock(_worldTaskLock);
+        tasks.swap(_worldTasks);
+    }
+    for (auto& task : tasks)
+        task();
+
     struct StatsScope
     {
         BotMgr* mgr; uint32 diff; std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -340,6 +355,7 @@ void BotMgr::Update(uint32 diff)
 
     ProcessLogins();
     ProcessBotTeleports();
+    BotDungeonRun::Update(diff);
     UpdateProbe(diff);
     BotSocial::Update(diff);
     BotAlts::RestoreOnce();

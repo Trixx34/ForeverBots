@@ -17,3 +17,14 @@ The glue is not written: filling `Candidate`, `MemberState`, `Pack` and `RunFact
 ## Tests and verification
 
 `bin/tests "[BotDungeon]"`: roles, composition (pure vs hybrid, leader choice, missing roles, filters, level window, stability), readiness, pull choice, run phases. The plan file and its tests were compiled and run standalone (95 assertions passed). The full `game` library and `tests` target were not built in this session.
+
+## Glue (branch claude/project-thread-8mh0k5, compiled, unit tests pass, never run on a server)
+
+`BotDungeonRun.{h,cpp}`, called from `BotMgr::Update` (world thread). With `Bot.AI.Dungeon.Enabled` on it runs one group at a time:
+
+1. **Start** (every `Bot.AI.Dungeon.StartCooldownSec`): the entrance is found from the area trigger table for `Bot.AI.Dungeon.Map`; eligible bots (alive, no group, not in a dungeon, not an alt, level `MinLevel`..`MaxLevel`) become `Candidate`s, a random one on the entrance's continent leads, `Compose()` picks the group. Complete: a real `Group` is created, members follow the leader (`Motion().SetFollow`). `DUNGEON_GROUP`.
+2. **Gather / Travel**: `AdvanceRun()` drives the phases from facts read off the players. The leader walks to the entrance (goal tag `dungeon`); once all members are within 40 yd the group is teleported to the entrance's target (`DUNGEON_ENTER`). The quest AI stands back for group members (`BotDungeonRun::Busy`).
+3. **Clear**: packs are built from the creature spawn data of the dungeon map (hostile, non-civilian, spawns within 14 yd merge, `INSTANCE_BIND` = boss, waypoint movement = patrol). `CheckReady` + `ChoosePull` pick the next pack, the leader walks to it and the other bots follow and fight with their normal combat AI. A pack is done when nothing alive of its entries is within 35 yd of the leader (or after `PackTimeoutSec`: `DUNGEON_PACK_SKIPPED`). Events: DUNGEON_PULL, DUNGEON_PACK_DONE, DUNGEON_PHASE.
+4. **End**: Done or Aborted disbands the group, clears follow and teleports survivors still inside back to the entrance (`DUNGEON_DONE`, `DUNGEON_ABORTED`).
+
+Known gaps: no tank or healer behavior (`Role` is only used to compose the group), mob levels are not known from spawn data (level filter off), durability is not read (repair never triggers), loot is whatever the combat AI takes, a wipe waits for the corpse runs and usually times out into Aborted, one run at a time, and the world thread reads creatures and players that map threads update.
