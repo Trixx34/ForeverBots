@@ -16,6 +16,7 @@
  */
 
 #include "BotAI.h"
+#include "BotCombat.h"
 #include "BotPet.h"
 #include "BotQuest.h"
 #include "CellImpl.h"
@@ -253,6 +254,12 @@ BotState BotAI::DesiredState(Player* bot, char const*& cause) const
     if (bot->IsInCombat())
     {
         cause = "COMBAT_START";
+        return BotState::Combat;
+    }
+
+    if (BotCombatGroupEngaged(bot))
+    {
+        cause = "GROUP_COMBAT";
         return BotState::Combat;
     }
 

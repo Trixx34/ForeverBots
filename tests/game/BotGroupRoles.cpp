@@ -162,3 +162,74 @@ TEST_CASE("BotGroupRoles: assist target", "[BotGroupRoles]")
         CHECK(PickAssistTarget({}, 0) == -1);
     }
 }
+
+TEST_CASE("BotGroupRoles: taunt target", "[BotGroupRoles]")
+{
+    auto F = [](uint64 guid, int32 hp, bool onHealer, int32 victimHp = 100, bool victimHealer = false)
+    {
+        Foe f;
+        f.Guid = guid; f.HealthPct = hp; f.OnHealer = onHealer; f.VictimHealthPct = victimHp; f.VictimIsHealer = victimHealer;
+        return f;
+    };
+    SECTION("nothing loose")
+    {
+        std::vector<Foe> v = { F(1, 80, false), F(2, 50, false) };
+        v[0].OnTank = true;
+        CHECK(PickTauntTarget(v) == -1);
+        CHECK(PickTauntTarget({}) == -1);
+    }
+    SECTION("a mob on the healer first")
+    {
+        std::vector<Foe> v = { F(1, 80, true, 20), F(2, 60, true, 90, true) };
+        CHECK(PickTauntTarget(v) == 1);
+    }
+    SECTION("then the weakest victim")
+    {
+        std::vector<Foe> v = { F(1, 80, true, 70), F(2, 60, true, 40) };
+        CHECK(PickTauntTarget(v) == 1);
+    }
+    SECTION("then the mob with the most health, then the lower guid")
+    {
+        std::vector<Foe> v = { F(3, 50, true, 50), F(2, 90, true, 50), F(1, 90, true, 50) };
+        CHECK(PickTauntTarget(v) == 2);
+    }
+    SECTION("taunted, out of range and tank-bound mobs are skipped")
+    {
+        std::vector<Foe> v = { F(1, 80, true), F(2, 80, true), F(3, 80, true) };
+        v[0].Taunted = true;
+        v[1].InRange = false;
+        CHECK(PickTauntTarget(v) == 2);
+        v[2].OnTank = true;
+        CHECK(PickTauntTarget(v) == -1);
+    }
+}
+
+TEST_CASE("BotGroupRoles: hold fire", "[BotGroupRoles]")
+{
+    HoldFacts f;
+    f.TankKnown = true;
+    f.TankEngaged = true;
+    f.SinceMs = 500;
+
+    CHECK(HoldFire(f, 3000));                      // the tank has just started
+    f.SinceMs = 3000;
+    CHECK_FALSE(HoldFire(f, 3000));                // waited long enough
+    f.SinceMs = 500;
+    f.MobOnTank = true;
+    CHECK(HoldFire(f, 3000));                      // the mob turned to the tank but the lead is short
+    f.SinceMs = 1500;
+    CHECK_FALSE(HoldFire(f, 3000));
+    f.SinceMs = 100;
+    f.MobOnTank = false;
+    f.MobOnMe = true;
+    CHECK_FALSE(HoldFire(f, 3000));                // the mob is on the bot: fight back
+    f.MobOnMe = false;
+    f.IsTank = true;
+    CHECK_FALSE(HoldFire(f, 3000));
+    f.IsTank = false;
+    f.TankEngaged = false;
+    CHECK_FALSE(HoldFire(f, 3000));                // the tank is not fighting this mob
+    f.TankEngaged = true;
+    f.TankKnown = false;
+    CHECK_FALSE(HoldFire(f, 3000));
+}
