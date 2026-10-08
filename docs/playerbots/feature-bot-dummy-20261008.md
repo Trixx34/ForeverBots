@@ -56,3 +56,8 @@ Compare rotation on and off with the same class and level, and check the existin
 * With `Bot.AI.Rotation.Enabled`, the self-heal is the last known heal row in table order: priest Flash Heal (level 20) after Lesser Heal, paladin Flash of Light (level 20) after Holy Light. Rotation off: the first row only, as before.
 * Renew (priest) and Rejuvenation (druid, unshifted) are self buffs cast when health is under 85% (the aura check keeps them from being recast while they run).
 * The group heal logic of `Bot.AI.Roles.*` picks its target as before and uses the same heal row.
+
+## Pre-pull additions: warlock pet, buffs on group members
+
+* Warlocks summon a pet out of combat when they have none: Voidwalker (needs a Soul Shard; without one the cast fails) then Imp. The pet strategy for hunters (`Bot.AI.Pet.*`) is separate.
+* Power Word: Fortitude, Arcane Intellect, Mark of the Wild and Blessing of Might are also cast on group members in range (30 yd at most, line of sight) that lack the aura, one cast per member per buff per 30 s. A member with a different rank of the same buff is skipped only when it carries the same aura id; otherwise the cast is tried and the core refuses it.

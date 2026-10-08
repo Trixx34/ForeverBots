@@ -1712,17 +1712,21 @@ struct PreBuffDef
     Classes Class;
     uint32 Root;
     char const* Name;
+    bool Party = false;    // also cast on group members that lack it
+    bool Pet = false;      // a pet summon: only without a pet
 };
 
 constexpr PreBuffDef PREBUFFS[] =
 {
-    { CLASS_PRIEST,  1243,  "Power Word: Fortitude" },
+    { CLASS_PRIEST,  1243,  "Power Word: Fortitude", true },
     { CLASS_PRIEST,  588,   "Inner Fire" },
-    { CLASS_MAGE,    1459,  "Arcane Intellect" },
+    { CLASS_MAGE,    1459,  "Arcane Intellect", true },
     { CLASS_MAGE,    168,   "Frost Armor" },
-    { CLASS_DRUID,   1126,  "Mark of the Wild" },
-    { CLASS_PALADIN, 19740, "Blessing of Might" },
+    { CLASS_DRUID,   1126,  "Mark of the Wild", true },
+    { CLASS_PALADIN, 19740, "Blessing of Might", true },
     { CLASS_WARLOCK, 687,   "Demon Skin" },
+    { CLASS_WARLOCK, 697,   "Summon Voidwalker", false, true },   // needs a Soul Shard: without one the cast fails and the Imp row below runs
+    { CLASS_WARLOCK, 688,   "Summon Imp", false, true },
     { CLASS_HUNTER,  13165, "Aspect of the Hawk" },
     { CLASS_SHAMAN,  324,   "Lightning Shield" },
 };
@@ -1744,10 +1748,14 @@ public:
         uint32 const now = ai->GetNowMs();
         if (int32(now - _nextMs) < 0)
             return false;
+        if (_lastMs.size() > 64)
+            _lastMs.clear();   // bounded: members come and go
         for (size_t i = 0; i < std::size(PREBUFFS); ++i)
         {
             PreBuffDef const& def = PREBUFFS[i];
             if (def.Class != bot->GetClass() || !bot->HasSpell(def.Root))
+                continue;
+            if (def.Pet && (bot->GetPet() || !bot->GetPetGUID().IsEmpty()))
                 continue;
             uint32 id = def.Root;
             for (uint32 guard = 0; guard < 16; ++guard)
@@ -1760,18 +1768,38 @@ public:
             SpellInfo const* si = sSpellMgr->GetSpellInfo(id, DIFFICULTY_NONE);
             if (!si || !StringEqualI(SpellNameOf(sSpellMgr->GetSpellInfo(def.Root, DIFFICULTY_NONE)), def.Name))
                 continue;   // wrong id: the name does not match, never cast a stranger
-            if (bot->HasAura(id) || bot->HasAura(def.Root) || bot->GetSpellHistory()->HasCooldown(si) || bot->GetSpellHistory()->HasGlobalCooldown(si) ||
-                bot->GetPower(bot->GetPowerType()) < CostOf(bot, si) || bot->GetPowerPct(bot->GetPowerType()) < float(Cfg().PrePullManaPct))
+            if (bot->GetSpellHistory()->HasCooldown(si) || bot->GetSpellHistory()->HasGlobalCooldown(si) || bot->GetPower(bot->GetPowerType()) < CostOf(bot, si) ||
+                bot->GetPowerPct(bot->GetPowerType()) < float(Cfg().PrePullManaPct))
                 continue;
-            if (int32(now - _lastMs[i]) < 30000)
-                continue;
-            _lastMs[i] = now;
-            SpellCastResult const res = bot->CastSpell(bot, id, CastSpellExtraArgs(TRIGGERED_NONE));
-            if (res == SPELL_CAST_OK)
+
+            std::vector<Unit*> targets;
+            targets.push_back(bot);
+            if (def.Party)
+                if (Group* group = bot->GetGroup())
+                    for (GroupReference const& ref : group->GetMembers())
+                    {
+                        Player* m = ref.GetSource();
+                        if (m && m != bot && m->IsInWorld() && m->IsAlive() && m->GetMap() == bot->GetMap() && bot->GetDistance(m) <= std::max(5.0f, si->GetMaxRange(true, bot) - 2.0f) &&
+                            bot->IsWithinLOSInMap(m))
+                            targets.push_back(m);
+                    }
+            for (Unit* t : targets)
             {
-                SetResult("PREBUFF", StringFormat("casts {} before the next fight", SpellNameOf(si)), StringFormat(R"({{"spell":{},"spell_name":"{}"}})", id, Json(SpellNameOf(si))));
-                _nextMs = now + 2000;
-                return true;
+                if (t->HasAura(id) || t->HasAura(def.Root))
+                    continue;
+                uint64 const key = (uint64(t->GetGUID().GetCounter()) << 8) | uint64(i);
+                auto it = _lastMs.find(key);
+                if (it != _lastMs.end() && int32(now - it->second) < 30000)
+                    continue;
+                _lastMs[key] = now;
+                SpellCastResult const res = bot->CastSpell(t, id, CastSpellExtraArgs(TRIGGERED_NONE));
+                if (res == SPELL_CAST_OK)
+                {
+                    SetResult("PREBUFF", StringFormat("casts {} {}", SpellNameOf(si), t == bot ? "on itself" : "on a group member"),
+                        StringFormat(R"({{"spell":{},"spell_name":"{}","self":{}}})", id, Json(SpellNameOf(si)), t == bot ? "true" : "false"));
+                    _nextMs = now + 2000;
+                    return true;
+                }
             }
         }
         _nextMs = now + 3000;
@@ -1779,7 +1807,7 @@ public:
     }
 private:
     uint32 _nextMs = 0;
-    std::array<uint32, std::size(PREBUFFS)> _lastMs = { };
+    std::unordered_map<uint64, uint32> _lastMs;   // (target guid, table index) -> last cast
 };
 
 class PreBuffTrigger : public Trigger
