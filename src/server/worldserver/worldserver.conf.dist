@@ -4796,6 +4796,31 @@ Bot.Quest.HubScanSec = 20
 Bot.Quest.HubFailGlobalSec = 1800
 Bot.Quest.HubMaxDist = 2500
 Bot.Quest.MaxActive = 12
+
+#
+#    Bot.AH.Enabled
+#        Description: Bots list surplus non-stackable gear (green or better, not bound, no use to them) at an auctioneer and collect
+#                     the mail (sold gold, returned items) at a mailbox. Auction calls run on the world thread.
+#        Default:     0 - (Disabled)
+#
+#    Bot.AH.MaxListingsPerBot / Bot.AH.MaxListingsTotal
+#        Description: Listings one bot may have at once / listings the house may hold before bots stop adding.
+#        Default:     5 / 2000
+#
+#    Bot.AH.UndercutPct
+#        Description: Price is 1.5 x the vendor sell price minus this percent, never below the sell price.
+#        Default:     5
+#
+#    Bot.AH.VisitCooldownSec
+#        Description: Seconds between two auction house or mailbox visits of one bot.
+#        Default:     900
+#
+
+Bot.AH.Enabled = 0
+Bot.AH.MaxListingsPerBot = 5
+Bot.AH.MaxListingsTotal = 2000
+Bot.AH.UndercutPct = 5
+Bot.AH.VisitCooldownSec = 900
 Bot.Quest.StallSec = 240
 Bot.Quest.MaxMobLevelDiff = 2
 Bot.Quest.SelectRadius = 350
@@ -4887,6 +4912,16 @@ Bot.AI.Death.GiveUpSec = 300
 #    Bot.AI.Dungeon.MaxWipes / Bot.AI.Dungeon.RunTimeoutMin
 #        Description: Wipes after which the run is given up / minutes after which a bot-led run is given up.
 #        Default:     3 / 90
+#
+#    Bot.AI.Dungeon.Map / Bot.AI.Dungeon.MaxLevel
+#        Description: Map id of the dungeon the bots run (its entrance trigger is looked up in the area trigger table) / highest bot level
+#                     taken along. One group runs at a time.
+#        Default:     36 (Deadmines) / 25
+#
+#    Bot.AI.Dungeon.IntervalSec / Bot.AI.Dungeon.StartCooldownSec / Bot.AI.Dungeon.PackTimeoutSec
+#        Description: Seconds between run updates / between two attempts to form a group / after which a pack that is not cleared is
+#                     written off.
+#        Default:     5 / 120 / 240
 #
 #    Bot.AI.Ammo.Enabled
 #        Description: Ranged ammo upkeep of the quest strategy's vendor layer: a bot with a bow, crossbow or gun equipped counts its arrows or

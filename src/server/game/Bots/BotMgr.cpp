@@ -19,6 +19,7 @@
 #include "BotSocial.h"
 #include "AccountMgr.h"
 #include "BotAI.h"
+#include "BotDungeonRun.h"
 #include "BotAlts.h"
 #include "BotLogDatabase.h"
 #include "BotPet.h"
@@ -300,13 +301,28 @@ void BotMgr::UpdateProbe(uint32 diff)
     }
 }
 
+void BotMgr::PostWorldTask(std::function<void()> task)
+{
+    std::lock_guard<std::mutex> lock(_worldTaskLock);
+    _worldTasks.push_back(std::move(task));
+}
+
 void BotMgr::Update(uint32 diff)
 {
     ++_ticks;
     _uptimeMs += diff;
 
+    std::vector<std::function<void()>> tasks;
+    {
+        std::lock_guard<std::mutex> lock(_worldTaskLock);
+        tasks.swap(_worldTasks);
+    }
+    for (auto& task : tasks)
+        task();
+
     ProcessLogins();
     ProcessBotTeleports();
+    BotDungeonRun::Update(diff);
     UpdateProbe(diff);
     BotSocial::Update(diff);
     BotAlts::RestoreOnce();
