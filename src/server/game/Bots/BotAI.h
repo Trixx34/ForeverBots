@@ -114,6 +114,9 @@ public:
     BotState GetState() const { return _state; }
     std::optional<BotState> GetForcedState() const { return _forced; }
     uint64 GetGuid() const { return _guid; }
+    // Bot.Chat.Orders.*: `passive` (BotChat, world thread) makes the Combat engine fight only mobs that attack this bot; `aggressive` clears it.
+    void SetPassive(bool on) { _passive.store(on, std::memory_order_relaxed); }
+    bool IsPassive() const { return _passive.load(std::memory_order_relaxed); }
 
     // Phase 3 per-bot behavior state (map thread during ticks; the goal/follow setters from console commands on the world thread)
     BotMotion& Motion() { return _motion; }
@@ -270,6 +273,7 @@ private:
     bool _started = false;
     bool _trace;
     bool _forcedChanged = false;
+    std::atomic<bool> _passive{false};
     std::optional<BotState> _forced;
 
     std::array<std::unique_ptr<BotEngine>, BOT_STATE_COUNT> _engines;

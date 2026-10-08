@@ -4861,6 +4861,33 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: One decision row MOVE_METRICS per bot per window (turn rate, repeated legs, idle ratio, stuck count) / window length (10-3600).
 #        Default:     1 / 60
 #
+#    Bot.AI.Dungeon.Enabled
+#        Description: Dungeon groups of bots: composition (tank, healer, damage), readiness (rest, repair), pull choice, wipe
+#                     recovery and run timeouts. See docs/playerbots/feature-bot-dungeon-groups-20261008.md.
+#        Default:     0 - Off
+#
+#    Bot.AI.Dungeon.GroupSize / Bot.AI.Dungeon.Tanks / Bot.AI.Dungeon.Healers
+#        Description: Places in the group (2-5) / how many go to tanks (0-2) / to healers (0-2); the rest are damage dealers.
+#        Default:     5 / 1 / 1
+#
+#    Bot.AI.Dungeon.MaxLevelSpread / Bot.AI.Dungeon.MinLevel
+#        Description: Highest minus lowest level allowed in one group, anchored on the leader / lowest level that is called at all.
+#        Default:     4 / 15
+#
+#    Bot.AI.Dungeon.MinHealthPct / Bot.AI.Dungeon.MinManaPct / Bot.AI.Dungeon.MinHealerManaPct / Bot.AI.Dungeon.MinDurabilityPct
+#        Description: The group rests before a pull until everybody has this much health, mana (healers: their own value), and
+#                     goes to repair when somebody's durability is below the last value.
+#        Default:     85 / 70 / 85 / 20
+#
+#    Bot.AI.Dungeon.MaxMobsPerPull / Bot.AI.Dungeon.MaxLevelOverGroup / Bot.AI.Dungeon.SkipPatrols
+#        Description: Largest pack that is pulled (bosses excepted) / highest mob level above the group's average that is pulled /
+#                     wait for a patrol to leave instead of pulling it.
+#        Default:     4 / 2 / 1
+#
+#    Bot.AI.Dungeon.MaxWipes / Bot.AI.Dungeon.RunTimeoutMin
+#        Description: Wipes after which the run is given up / minutes after which a bot-led run is given up.
+#        Default:     3 / 90
+#
 #    Bot.AI.Ammo.Enabled
 #        Description: Ranged ammo upkeep of the quest strategy's vendor layer: a bot with a bow, crossbow or gun equipped counts its arrows or
 #                     bullets; below Bot.AI.Ammo.LowCount it logs AMMO_LOW, plans a vendor trip to a vendor that sells the right ammo and
@@ -4871,6 +4898,33 @@ Bot.AI.Death.GiveUpSec = 300
 #    Bot.AI.Ammo.LowCount / Bot.AI.Ammo.BuyTarget / Bot.AI.Ammo.CooldownSec
 #        Description: Trip threshold (rounds), top-up target (rounds) and minimum seconds between ammo trips of one bot.
 #        Default:     60 / 400 / 300
+#
+#    Bot.AI.Travel.Enabled
+#        Description: Travel and leveling progression. A bot that has outgrown its zone (or has nothing left to quest for) picks the next
+#                     leveling zone for its level and faction, walks or flies there, and the quest strategy continues in the new zone.
+#                     Flight masters close by are learned once and used for long trips; the hearthstone is used when the way from home is
+#                     clearly shorter, and bots bind at inns they pass when that shortens the way back. Adds the strategy "travel".
+#                     Boats and zeppelins are ridden as a simulated trip between two docks (the Deeprun Tram is not used).
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+#
+#    Bot.AI.Travel.Zones / Bot.AI.Travel.Taxi / Bot.AI.Travel.Transport / Bot.AI.Travel.Hearth
+#        Description: Zone progression / flight paths (learn and use) / boats and zeppelins / hearthstone and inn binding. Each part can be
+#                     switched off alone.
+#        Default:     1 / 1 / 1 / 1
+#
+#    Bot.AI.Travel.CheckSec / Bot.AI.Travel.TripMinutes
+#        Description: Seconds between two "does the zone still fit" checks (2-600) / longest time of one trip before it is abandoned (2-240).
+#        Default:     10 / 25
+#
+#    Bot.AI.Travel.MaxRouteSteps / Bot.AI.Travel.RecentZones / Bot.AI.Travel.LeaveMarginLevels
+#        Description: Longest planned route in legs (1-20) / zones a bot remembers so it does not bounce back (1-20) / levels above the
+#                     zone's band before the bot leaves (0-10).
+#        Default:     8 / 4 / 0
+#
+#    Bot.AI.Travel.DiscoverRadius
+#        Description: Yards around a bot within which it visits flight masters it does not know yet (50-5000).
+#        Default:     500
 #
 #    Bot.Talents.Premade.Enabled
 #        Description: On level-up, learn a configured talent per tier for the bot's class (this fork has tiered talents: one pick per tier).
@@ -4886,6 +4940,24 @@ Bot.AI.Death.GiveUpSec = 300
 #                     time on a dying mob). Off: the bots cast the old fixed spells only. See
 #                     docs/playerbots/feature-bot-class-rotations-20261008.md.
 #        Default:     0 - Off
+#
+#    Bot.AI.Roles.Enabled
+#        Description: Group play in combat: a bot with a heal spell heals the group member who needs it most (an emergency first, then the
+#                     tank, then the lowest health), and bots other than the tank (the warrior of the group) attack the tank's target.
+#                     Only for bots that are in combat themselves. See docs/playerbots/feature-bot-group-roles-20261008.md.
+#        Default:     0 - Off
+#
+#    Bot.AI.Roles.HoldSec
+#        Description: A bot that is not the tank waits up to this many seconds for the tank to gather threat on a mob before it opens
+#                     (shorter when the mob has turned to the tank, never when the mob attacks the bot). 0 = no waiting.
+#                     Also in effect with Bot.AI.Roles.Enabled: bots join the fight of a group member within 45 yards, the warrior of
+#                     the group holds Defensive Stance, taunts mobs that attack other members and applies Sunder Armor.
+#        Default:     3
+#
+#    Bot.AI.Roles.AllyHealBelowPct / Bot.AI.Roles.TankHealBelowPct / Bot.AI.Roles.EmergencyPct
+#        Description: Heal a group member below this health percent / the tank below this percent / below this percent a member is an
+#                     emergency and comes first.
+#        Default:     80 / 90 / 35
 #
 #    Bot.AI.Loot.Improved.Enabled
 #        Description: Improved chest loot task of the quest strategy: spawn choice by path cost, skip far spawns and recently deadly areas,
@@ -4936,6 +5008,17 @@ Bot.AI.Move.Natural.Idle = 1
 Bot.AI.Move.Natural.IdleMaxStandSec = 25
 Bot.AI.Move.Natural.Metrics = 1
 Bot.AI.Move.Natural.MetricsSec = 60
+Bot.AI.Travel.Enabled = 0
+Bot.AI.Travel.Zones = 1
+Bot.AI.Travel.Taxi = 1
+Bot.AI.Travel.Transport = 1
+Bot.AI.Travel.Hearth = 1
+Bot.AI.Travel.CheckSec = 10
+Bot.AI.Travel.TripMinutes = 25
+Bot.AI.Travel.MaxRouteSteps = 8
+Bot.AI.Travel.RecentZones = 4
+Bot.AI.Travel.LeaveMarginLevels = 0
+Bot.AI.Travel.DiscoverRadius = 500
 Bot.AI.Ammo.Enabled = 0
 Bot.AI.Ammo.LowCount = 60
 Bot.AI.Ammo.BuyTarget = 400
@@ -4980,8 +5063,27 @@ Bot.AI.Loot.Improved.PathProbes = 4
 #        Default:     3
 #
 #    Bot.Chat.Role.Tank / Bot.Chat.Role.Healer / Bot.Chat.Role.Dps
-#        Description: Comma separated class lists behind the tank, healer and dps selectors.
+#        Description: Comma separated class lists behind the tank, healer and dps selectors. They also gate the
+#                     orders pull (tank classes only) and heal (healer classes only).
 #        Default:     "warrior" / "priest" / "rogue,mage,warlock,hunter"
+#
+#    Bot.Chat.Orders.Enabled
+#        Description: More chat verbs (docs/playerbots/feature-bot-chat-orders-20261008.md): stop, aggressive,
+#                     passive, pull (tank bots attack the leader's selected target), heal (healer bots heal
+#                     the selected target), mount, dismount, summon (bots port to the leader), revive (dead
+#                     bots come back to life next to the leader). Off: these words are ordinary chat.
+#        Default:     0 - Off
+#
+#    Bot.Chat.Orders.PullRangeYards / Bot.Chat.Orders.HealRangeYards
+#        Description: Farthest distance from the bot to the selected target for pull (5-150) and heal (5-100;
+#                     the heal spell's own range applies as well).
+#        Default:     60 / 40
+#
+#    Bot.Chat.Orders.ReviveHealthPct / Bot.Chat.Orders.ReviveSickness
+#        Description: Health percent (1-100) of a bot revived with the revive order, and whether it gets
+#                     resurrection sickness (from the level the core gives it). Ignored on Classic.Hardcore realms,
+#                     where revive is refused.
+#        Default:     35 / 1
 #
 Bot.Chat.Enabled = 1
 Bot.Chat.VerboseDefault = 0
@@ -4992,6 +5094,11 @@ Bot.Chat.GotoArriveYards = 3
 Bot.Chat.Role.Tank = "warrior"
 Bot.Chat.Role.Healer = "priest"
 Bot.Chat.Role.Dps = "rogue,mage,warlock,hunter"
+Bot.Chat.Orders.Enabled = 0
+Bot.Chat.Orders.PullRangeYards = 60
+Bot.Chat.Orders.HealRangeYards = 40
+Bot.Chat.Orders.ReviveHealthPct = 35
+Bot.Chat.Orders.ReviveSickness = 1
 #
 #    Bot.Alt.Enabled
 #        Description: Players may log in characters of their own account as bots (".bot alt add|remove|list <name>").
@@ -5027,6 +5134,18 @@ Bot.Chat.Role.Dps = "rogue,mage,warlock,hunter"
 #        Description: Seconds a trade opened towards an alt bot may stay open before the bot cancels it (10-600).
 #        Default:     90
 #
+#    Bot.Trade.Link.Enabled
+#        Description: Trading items with the bots of your group by whisper. After a trade window opens, the bot whispers
+#                     the items it can give (tradable stacks of its bags: never equipped, soulbound or quest items) as
+#                     item links. Whisper it the links of the ones you want and it puts the largest stack of each in the
+#                     window; confirm and the bot accepts. World bots of your own group may trade this way too (otherwise
+#                     they refuse every trade); alt bots stay limited to their owner account. Needs Bot.Trade.Enabled.
+#        Default:     0 - Disabled
+#
+#    Bot.Trade.Link.MaxListed
+#        Description: Items in the bot's whispered list (1-40); the best quality and the largest stacks come first.
+#        Default:     15
+#
 #    Bot.Social.QuestShare.LogEach
 #        Description: Log one quest_share bot_event per receiver of a bot's quest share. Off: one summary row per share
 #                     command (accepted count, refused count per reason); "verbose on" of the issuer also logs each receiver.
@@ -5039,6 +5158,8 @@ Bot.Alt.Default.NonCombat = "rest,follow,goto"
 Bot.Invite.Enabled = 1
 Bot.Trade.Enabled = 1
 Bot.Trade.TimeoutSeconds = 90
+Bot.Trade.Link.Enabled = 0
+Bot.Trade.Link.MaxListed = 15
 Bot.Social.QuestShare.LogEach = 0
 #
 ###################################################################################################
