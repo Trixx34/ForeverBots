@@ -4686,6 +4686,11 @@ Classic.GuildFinder = 0
 #                     Bot.AI.Rest.DrinkBelowPct applies).
 #        Default:     40
 #
+#    Bot.AI.Combat.FreeTotems
+#        Description: With Bot.AI.Rotation.Enabled a shaman that casts a totem (Stoneskin, Searing, Healing Stream) gets the totem tool
+#                     (Earth, Fire, Water Totem) for free when the bags lack it. Placeholder until the economy phase.
+#        Default:     1 - On
+#
 #    Bot.AI.Combat.FreeRepair
 #        Description: A bot with a broken (0 durability) equipped item repairs everything for free (REPAIR_FREE) so
 #                     weapon spells (Heroic Strike, Raptor Strike, Auto Shot) do not fail with EQUIPPED_ITEM_CLASS.
@@ -5032,6 +5037,33 @@ Bot.AI.Death.GiveUpSec = 300
 #                     emergency and comes first.
 #        Default:     80 / 90 / 35
 #
+#
+#    Bot.AI.Rotation.DruidForms
+#        Description: Needs Bot.AI.Rotation.Enabled. Druids shift into Bear Form once they know it (level 10) and fight with Maul, Swipe and
+#                     Demoralizing Roar; a bear that needs a heal leaves the form for Healing Touch. Off: druids stay unshifted casters.
+#        Default:     0 - Off
+#
+#    Bot.AI.Rotation.DruidBear
+#        Description: With Bot.AI.Rotation.DruidForms the druid fights in Bear Form (Dire Bear Form from level 40) instead of Cat Form. Off: Cat
+#                     Form once known (level 20), Bear Form before that.
+#        Default:     0 - Off
+#
+#    Bot.AI.Dummy.Enabled
+#        Description: Training dummy mode: the chat verb "dummy [seconds]" makes a bot summon an immortal, harmless dummy of its own level and
+#                     fight it with its normal combat code; "dummy off" ends the run. The log gets DUMMY_START and DUMMY_SUMMARY (damage per
+#                     spell, dps, time to the first hit, longest gap without a hit). For tuning the class rotations (Bot.AI.Rotation.Enabled)
+#                     without a sim run. Needs sql/custom/world/2026_10_08_04_world_forever_bot_dummy.sql. See
+#                     docs/playerbots/feature-bot-dummy-20261008.md.
+#        Default:     0 - Off
+#
+#    Bot.AI.Dummy.Entry / Bot.AI.Dummy.DefaultSec / Bot.AI.Dummy.MaxSec
+#        Description: Creature entry of the dummy, run length without an argument, longest run a command may ask for (seconds).
+#        Default:     9900001 / 60 / 600
+#
+#    Bot.AI.Dummy.FullPower
+#        Description: Refill mana, energy and health every second during a run, so the numbers show the rotation and not the mana pool.
+#        Default:     1 - On
+#
 #    Bot.AI.Loot.Improved.Enabled
 #        Description: Improved chest loot task of the quest strategy: spawn choice by path cost, skip far spawns and recently deadly areas,
 #                     per-bot spawn blacklist, bag-space check with a planned vendor trip, loot exits never feed the quest quarantine.
@@ -5058,6 +5090,18 @@ Bot.AI.Death.GiveUpSec = 300
 #    Bot.AI.Loot.Improved.PathProbes
 #        Description: Path queries per spawn choice (the nearest candidates are probed first).
 #        Default:     4
+#
+#    Bot.AI.Loot.Safety.Enabled
+#        Description: Guards of the chest loot task (independent of Bot.AI.Loot.Improved.Enabled): skip chests
+#                     (the camp danger check of the quest strategy is separate and unchanged), skip chests near a recent bot death, and skip spawns
+#                     that repeatedly failed bots for reasons that do not depend on the bot (no path, stalled approach, cannot interact).
+#                     Every guard only skips or delays a chest. Read once at startup.
+#        Default:     1 - On
+#
+#    Bot.AI.Loot.Safety.QuarantineStrikes / Bot.AI.Loot.Safety.QuarantineSec
+#        Description: Bot-independent failures of one chest spawn within 30 minutes before every bot skips it / how long (doubles on
+#                     repeats, up to 8 times).
+#        Default:     3 / 1200
 #
 
 Bot.AI.Pet.Enabled = 0
@@ -5105,6 +5149,15 @@ Bot.AI.Ammo.LowCount = 60
 Bot.AI.Ammo.BuyTarget = 400
 Bot.AI.Ammo.CooldownSec = 300
 Bot.Talents.Premade.Enabled = 0
+Bot.AI.Rotation.DruidForms = 0
+Bot.AI.Rotation.DruidBear = 0
+Bot.AI.Combat.FreeTotems = 1
+Bot.AI.Dummy.Enabled = 0
+Bot.AI.Dummy.Entry = 9900001
+Bot.AI.Dummy.DefaultSec = 60
+Bot.AI.Dummy.MaxSec = 600
+Bot.AI.Dummy.FullPower = 1
+
 Bot.AI.Loot.Improved.Enabled = 0
 Bot.AI.Loot.Improved.MaxYards = 150
 Bot.AI.Loot.Improved.DeadlyRadius = 40
@@ -5112,6 +5165,9 @@ Bot.AI.Loot.Improved.DeadlySec = 600
 Bot.AI.Loot.Improved.BlacklistSec = 900
 Bot.AI.Loot.Improved.MinFreeSlots = 2
 Bot.AI.Loot.Improved.PathProbes = 4
+Bot.AI.Loot.Safety.Enabled = 1
+Bot.AI.Loot.Safety.QuarantineStrikes = 3
+Bot.AI.Loot.Safety.QuarantineSec = 1200
 #
 #    Bot.Chat.Enabled
 #        Description: Bots obey chat commands from the leader of their group (party, raid, whisper to a bot).

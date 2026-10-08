@@ -338,3 +338,37 @@ TEST_CASE("BotLoot: spawn index filter (M1)", "[BotLoot]")
     CHECK_FALSE(CountsAsSpawn(SpawnUse::SkipDifficulty));
     CHECK_FALSE(CountsAsSpawn(SpawnUse::SkipSpawnGroup));
 }
+
+TEST_CASE("BotLoot: shared spawn quarantine", "[BotLoot]")
+{
+    SpawnQuarantine q;
+    constexpr uint32 window = 30 * 60 * 1000, base = 20 * 60 * 1000;
+
+    CHECK_FALSE(q.Note(7, 1000, 3, window, base));
+    CHECK_FALSE(q.Note(7, 2000, 3, window, base));
+    CHECK_FALSE(q.Quarantined(7, 2500));
+    CHECK(q.Note(7, 3000, 3, window, base));     // third strike
+    CHECK(q.Quarantined(7, 4000));
+    CHECK_FALSE(q.Note(7, 5000, 3, window, base));   // already quarantined: no second report
+    CHECK_FALSE(q.Quarantined(7, 3000 + base + 1));
+    CHECK_FALSE(q.Quarantined(8, 4000));             // other spawns are untouched
+
+    // a second round doubles the length
+    uint32 const t2 = 3000 + base + 10;
+    CHECK_FALSE(q.Note(7, t2, 3, window, base));
+    CHECK_FALSE(q.Note(7, t2 + 1, 3, window, base));
+    CHECK(q.Note(7, t2 + 2, 3, window, base));
+    CHECK(q.Quarantined(7, t2 + 2 + base + 5));
+    CHECK_FALSE(q.Quarantined(7, t2 + 2 + 2 * base + 5));
+
+    // strikes older than the window do not add up
+    CHECK_FALSE(q.Note(9, 0, 2, 1000, 100));
+    CHECK_FALSE(q.Note(9, 5000, 2, 1000, 100));
+    CHECK_FALSE(q.Quarantined(9, 5001));
+    CHECK(q.Note(9, 5100, 2, 1000, 100));
+
+    // a successful loot clears the history
+    q.Clear(7);
+    CHECK_FALSE(q.Quarantined(7, t2 + 100));
+    CHECK_FALSE(q.Note(7, t2 + 100, 3, window, base));
+}
