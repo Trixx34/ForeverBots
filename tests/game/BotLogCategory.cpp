@@ -123,3 +123,9 @@ TEST_CASE("Severity floors apply per category", "[BotLogCategory]")
     CHECK(unknown.size() == 3);
     CHECK(cfg.MinSeverity[Combat] == 2);
 }
+
+TEST_CASE("Conversation replies are social", "[BotLogCategory]")
+{
+    CHECK(Classify("conversation", "CONV_REPLY") == Social);
+    CHECK(Classify("conversation", "") == Social);
+}

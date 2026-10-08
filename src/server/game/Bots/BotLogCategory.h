@@ -74,7 +74,7 @@ namespace BotLogCat
         { "VENDOR_", Economy }, { "SOLD_", Economy }, { "TRAIN_", Economy }, { "BAG_", Economy }, { "GEAR_", Economy },
         { "LOOT_", Economy }, { "PROF_", Economy }, { "GATHER_", Economy }, { "FISH_", Economy }, { "AMMO_", Economy },
         { "POTION_", Economy }, { "EAT_", Economy }, { "DRINK_", Economy }, { "BANK_", Economy }, { "MAIL_", Economy },
-        { "PET_", Pets }, { "ALT_", Social }, { "INVITE_", Social }, { "GROUP_", Social }, { "PARTY_", Social }, { "DUNGEON_", Dungeon }
+        { "PET_", Pets }, { "CONV_", Social }, { "ALT_", Social }, { "INVITE_", Social }, { "GROUP_", Social }, { "PARTY_", Social }, { "DUNGEON_", Dungeon }
     };
 
     // Event type fallback, used when the reason code has no prefix rule.
@@ -87,7 +87,7 @@ namespace BotLogCat
         { "death", Recovery },
         { "quest", Quest }, { "quest_blocked", Quest }, { "quest_done", Quest },
         { "xp", Progress }, { "level_up", Progress }, { "spells", Progress },
-        { "chat_command", Social }, { "alt_command", Social }
+        { "chat_command", Social }, { "conversation", Social }, { "alt_command", Social }
     };
 
     inline bool StartsWith(std::string_view s, std::string_view p) { return s.size() >= p.size() && s.compare(0, p.size(), p) == 0; }

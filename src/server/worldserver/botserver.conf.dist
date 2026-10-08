@@ -2148,6 +2148,91 @@ Bot.AI.Loot.Safety.QuarantineSec = 1200
 
 
 ###################################################################################################
+# CONVERSATIONS
+#
+# Bots answer whispers and party chat in a voice of their own instead of staying silent. Everything is
+# local: keyword matching and line templates, no external service. Each bot has a stable personality
+# (friendly, cheerful, grumpy, stoic, sarcastic or nerdy) derived from its guid, so it sounds the same
+# every session. Chat commands keep working: a message that is command-shaped ("follow", "g1 stay",
+# "tank pull") is never answered as conversation. Whisper a bot to talk to it; in party chat say a bot's
+# name, or greet the group and one bot may answer. Replies are queued and sent after a short typing delay.
+# Topics: greetings, goodbyes, thanks, "how are you", "what are you doing", "where are we", "who are
+# you", help, compliments, insults, jokes, apologies, "ready" and "wait".
+#
+###################################################################################################
+
+#
+#    Bot.Conversation.Enabled
+#        Description: Bots answer whispers and party chat.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Conversation.Enabled = 0
+
+#
+#    Bot.Conversation.Whisper.Enabled
+#        Description: A bot answers every whisper that is not a command. A whisper it does not understand
+#                     gets the "did not catch that" line of its personality. Needs Bot.Conversation.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Conversation.Whisper.Enabled = 1
+
+#
+#    Bot.Conversation.Party.Enabled
+#        Description: Bots answer in party chat. A bot whose name is in the message answers (at most two
+#                     bots per message, whatever the topic); otherwise one bot of the party may answer a
+#                     greeting, goodbye, thanks, joke, compliment or "ready" (see Party.ChatterPct).
+#                     Needs Bot.Conversation.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Conversation.Party.Enabled = 1
+
+#
+#    Bot.Conversation.Party.ChatterPct
+#        Description: Chance that one bot answers a social party message that did not name any bot.
+#        Default:     35
+#        Values:      whole number 0 to 100 (percent)
+Bot.Conversation.Party.ChatterPct = 35
+
+#
+#    Bot.Conversation.Personality
+#        Description: Personality of the bots. random gives each bot a stable personality from its guid; a
+#                     name gives every bot that one.
+#        Default:     random
+#        Values:      random, friendly, cheerful, grumpy, stoic, sarcastic or nerdy
+Bot.Conversation.Personality = random
+
+#
+#    Bot.Conversation.Delay.MinMs
+#        Description: Shortest typing delay before a bot sends its reply. The delay grows a little with the
+#                     line and gets some jitter, within MinMs and MaxMs.
+#        Default:     800
+#        Values:      whole number 0 to 10000 (milliseconds)
+Bot.Conversation.Delay.MinMs = 800
+
+#
+#    Bot.Conversation.Delay.MaxMs
+#        Description: Longest typing delay before a bot sends its reply. Raised to MinMs when lower.
+#        Default:     3500
+#        Values:      whole number 0 to 15000 (milliseconds)
+Bot.Conversation.Delay.MaxMs = 3500
+
+#
+#    Bot.Conversation.CooldownSec
+#        Description: A bot does not start a new reply within this time of its previous one, so a spammed
+#                     chat does not make the bots spam back. Only one reply per bot is in flight at a time.
+#        Default:     4
+#        Values:      whole number 0 to 600 (seconds)
+Bot.Conversation.CooldownSec = 4
+
+#
+#    Bot.Conversation.LogEvents
+#        Description: Write a bot_event (type conversation, reason CONV_REPLY, category social) for every reply.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Conversation.LogEvents = 1
+
+
+###################################################################################################
 # CHAT COMMANDS
 #
 # Bots obey chat commands from the leader of their group (party, raid, whisper to a bot). Syntax:
