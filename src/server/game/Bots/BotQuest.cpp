@@ -2832,7 +2832,60 @@ private:
                     StringFormat(R"({{"cheapest":{},"money":{},"reserve":{},"level":{}}})", cheapest, money, reserve, level), npc->GetEntry(), false);
             }
         }
+        BuyGearUpgrades(ai, bot, c, now, npc);
         c.NextVendorMs = now + (bot->GetFreeInventorySlotCount() <= 1 ? 600 : 120) * 1000;
+    }
+
+    // E2/gear: buys armor and weapons from this vendor that are a clear upgrade for the class and equips them. At most 3 per visit,
+    // plain gold price only, and the money the class trainer still wants stays untouched.
+    void BuyGearUpgrades(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Creature* npc)
+    {
+        VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(npc->GetEntry());
+        if (!items || items->Empty() || bot->GetLevel() < 3)
+            return;
+        uint64 const reserve = TrainReserve(bot, c, now);
+        for (int round = 0; round < 3; ++round)
+        {
+            if (bot->GetFreeInventorySlotCount() == 0)
+                return;
+            VendorItem const* pick = nullptr;
+            uint32 pickSlot = 0;
+            double pickGain = 0.0;
+            for (uint32 i = 0; i < items->GetItemCount(); ++i)
+            {
+                VendorItem const* vi = items->GetItem(i);
+                if (!vi || vi->ExtendedCost || vi->maxcount || vi->PlayerConditionId)
+                    continue;
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(vi->item);
+                if (!proto || !(proto->IsArmor() || proto->IsWeapon()) || !proto->GetBuyPrice() || bot->GetMoney() < reserve + proto->GetBuyPrice())
+                    continue;
+                if (bot->CanUseItem(proto) != EQUIP_ERR_OK)
+                    continue;
+                GearChoice gc;
+                if (BestGearSlot(bot, proto, gc) && (!pick || gc.Gain() > pickGain))
+                {
+                    pick = vi;
+                    pickSlot = i;
+                    pickGain = gc.Gain();
+                }
+            }
+            if (!pick)
+                return;
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(pick->item);
+            uint64 const before = bot->GetMoney();
+            bot->BuyItemFromVendorSlot(npc->GetGUID(), pickSlot, pick->item, 1, NULL_BAG, NULL_SLOT);
+            Item* bought = bot->GetMoney() < before ? bot->GetItemByEntry(pick->item) : nullptr;
+            if (!bought)
+            {
+                Blocked(ai, bot, c, 0, "GEAR_BUY_FAILED", StringFormat("could not buy {} (vendor refused or no space)", pick->item),
+                    StringFormat(R"({{"item":{},"money":{},"free_slots":{}}})", pick->item, bot->GetMoney(), bot->GetFreeInventorySlotCount()), npc->GetEntry(), false);
+                return;
+            }
+            Decision(ai, bot, "GEAR_BOUGHT", StringFormat("bought {} for {} copper", proto->GetName(DEFAULT_LOCALE), before - bot->GetMoney()), 0, npc->GetEntry(),
+                StringFormat(R"({{"item":{},"price":{},"gain":{:.1f},"money_left":{}}})", pick->item, before - bot->GetMoney(), pickGain, bot->GetMoney()));
+            if (!EquipIfUpgrade(ai, bot, bought, "GEAR_EQUIPPED", 0))
+                return;   // could not wear it: do not buy the same thing again
+        }
     }
 
     // ----- running the task -----
