@@ -1714,6 +1714,7 @@ struct PreBuffDef
     char const* Name;
     bool Party = false;    // also cast on group members that lack it
     bool Pet = false;      // a pet summon: only without a pet
+    bool Stealth = false;  // only with an unaware hostile creature close by (stealthed travel is slow)
 };
 
 constexpr PreBuffDef PREBUFFS[] =
@@ -1727,9 +1728,22 @@ constexpr PreBuffDef PREBUFFS[] =
     { CLASS_WARLOCK, 687,   "Demon Skin" },
     { CLASS_WARLOCK, 697,   "Summon Voidwalker", false, true },   // needs a Soul Shard: without one the cast fails and the Imp row below runs
     { CLASS_WARLOCK, 688,   "Summon Imp", false, true },
+    { CLASS_ROGUE,   1784,  "Stealth", false, false, true },
     { CLASS_HUNTER,  13165, "Aspect of the Hawk" },
     { CLASS_SHAMAN,  324,   "Lightning Shield" },
 };
+
+// An attackable, unaware creature that the bot could pull within `range` yards (not a critter, level at most 3 above the bot): the rogue sneaks up on it.
+bool HostileCloseBy(Player* bot, float range)
+{
+    std::list<Creature*> list;
+    bot->GetCreatureListWithEntryInGrid(list, 0, range);
+    for (Creature* c : list)
+        if (c && c->IsAlive() && !c->IsInCombat() && c->GetCreatureType() != CREATURE_TYPE_CRITTER && !c->IsTrigger() && bot->IsValidAttackTarget(c) &&
+            int32(c->GetLevel()) <= int32(bot->GetLevel()) + 3 && bot->CanSeeOrDetect(c))
+            return true;
+    return false;
+}
 
 class PreBuffAction : public Action
 {
@@ -1769,7 +1783,9 @@ public:
             if (!si || !StringEqualI(SpellNameOf(sSpellMgr->GetSpellInfo(def.Root, DIFFICULTY_NONE)), def.Name))
                 continue;   // wrong id: the name does not match, never cast a stranger
             if (bot->GetSpellHistory()->HasCooldown(si) || bot->GetSpellHistory()->HasGlobalCooldown(si) || bot->GetPower(bot->GetPowerType()) < CostOf(bot, si) ||
-                bot->GetPowerPct(bot->GetPowerType()) < float(Cfg().PrePullManaPct))
+                (!def.Stealth && bot->GetPowerPct(bot->GetPowerType()) < float(Cfg().PrePullManaPct)))
+                continue;
+            if (def.Stealth && !HostileCloseBy(bot, 25.0f))
                 continue;
 
             std::vector<Unit*> targets;
