@@ -27,6 +27,7 @@
 
 class Creature;
 class Player;
+class Unit;
 
 // Bot.AI.Combat.PrePullManaPct: a mana user out of combat drinks when its mana is below this percent, so it does not pull
 // with an almost empty pool (used by the rest strategy together with Bot.AI.Rest.DrinkBelowPct, the higher one wins).
@@ -38,6 +39,10 @@ TC_GAME_API uint32 BotCombatPrePullManaPct();
 TC_GAME_API bool BotCombatAvoids(Player const* bot, Creature const* mob);
 // Flee mode of this bot: Bot.AI.Flee.Mode, or Bot.AI.Flee.AbMode for the share of bots picked by Bot.AI.Flee.AbPct (A/B runs).
 TC_GAME_API int32 BotCombatFleeMode(Player const* bot);
+
+// Bot.Chat.Orders (`heal`): the bot casts its best known heal of the combat spell table at `target` right now (no fight context needed).
+// Returns "OK" or a refusal code: NO_HEAL_SPELL, OUT_OF_RANGE, NO_LOS, NO_POWER, COOLDOWN, BUSY (casting or moving), CAST_FAILED.
+TC_GAME_API char const* BotCombatHealUnit(Player* bot, Unit* target);
 
 // Console aid (`bot spells <name>`): the spells the bot knows (id, name) and what the combat strategy resolved from them
 // (role, highest known rank per table entry, why an entry is not usable). Not for per-tick use.

@@ -5048,8 +5048,27 @@ Bot.AI.Loot.Improved.PathProbes = 4
 #        Default:     3
 #
 #    Bot.Chat.Role.Tank / Bot.Chat.Role.Healer / Bot.Chat.Role.Dps
-#        Description: Comma separated class lists behind the tank, healer and dps selectors.
+#        Description: Comma separated class lists behind the tank, healer and dps selectors. They also gate the
+#                     orders pull (tank classes only) and heal (healer classes only).
 #        Default:     "warrior" / "priest" / "rogue,mage,warlock,hunter"
+#
+#    Bot.Chat.Orders.Enabled
+#        Description: More chat verbs (docs/playerbots/feature-bot-chat-orders-20261008.md): stop, aggressive,
+#                     passive, pull (tank bots attack the leader's selected target), heal (healer bots heal
+#                     the selected target), mount, dismount, summon (bots port to the leader), revive (dead
+#                     bots come back to life next to the leader). Off: these words are ordinary chat.
+#        Default:     0 - Off
+#
+#    Bot.Chat.Orders.PullRangeYards / Bot.Chat.Orders.HealRangeYards
+#        Description: Farthest distance from the bot to the selected target for pull (5-150) and heal (5-100;
+#                     the heal spell's own range applies as well).
+#        Default:     60 / 40
+#
+#    Bot.Chat.Orders.ReviveHealthPct / Bot.Chat.Orders.ReviveSickness
+#        Description: Health percent (1-100) of a bot revived with the revive order, and whether it gets
+#                     resurrection sickness (from the level the core gives it). Ignored on Classic.Hardcore realms,
+#                     where revive is refused.
+#        Default:     35 / 1
 #
 Bot.Chat.Enabled = 1
 Bot.Chat.VerboseDefault = 0
@@ -5060,6 +5079,11 @@ Bot.Chat.GotoArriveYards = 3
 Bot.Chat.Role.Tank = "warrior"
 Bot.Chat.Role.Healer = "priest"
 Bot.Chat.Role.Dps = "rogue,mage,warlock,hunter"
+Bot.Chat.Orders.Enabled = 0
+Bot.Chat.Orders.PullRangeYards = 60
+Bot.Chat.Orders.HealRangeYards = 40
+Bot.Chat.Orders.ReviveHealthPct = 35
+Bot.Chat.Orders.ReviveSickness = 1
 #
 #    Bot.Alt.Enabled
 #        Description: Players may log in characters of their own account as bots (".bot alt add|remove|list <name>").
