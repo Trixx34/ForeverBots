@@ -190,4 +190,14 @@ bool HoldFire(HoldFacts const& f, uint32 holdMs, uint32 afterTurnMs)
         return false;
     return true;
 }
+
+ThreatAct CheckThreat(ThreatFacts const& f, ThreatConfig const& cfg)
+{
+    if (f.IsTank || !f.TankKnown || f.TankThreat <= 0.0f || f.SinceLastMs < cfg.CooldownMs)
+        return ThreatAct::None;
+    float const limit = f.Ranged ? 1.3f : 1.1f;
+    if (f.MyThreat < f.TankThreat * limit * cfg.WarnFraction)
+        return ThreatAct::None;
+    return f.CanReduce ? ThreatAct::Reduce : ThreatAct::Pause;
+}
 }

@@ -4994,6 +4994,13 @@ Bot.AI.Death.GiveUpSec = 300
 #                     docs/playerbots/feature-bot-class-rotations-20261008.md.
 #        Default:     0 - Off
 #
+#    Bot.AI.Roles.Threat
+#        Description: Needs Bot.AI.Roles.Enabled. A bot that is not the tank and whose threat on the fight target nears the pull limit
+#                     over the tank's (110 percent in melee, 130 percent at range, acting at 90 percent of that) casts a threat reducer
+#                     (Fade for priests, Feint for rogues) or, without one, stops attacking for 2.5 s. At most one action per 8 s.
+#                     Logged as THREAT_REDUCE / THREAT_PAUSE.
+#        Default:     1
+#
 #    Bot.AI.Roles.Enabled
 #        Description: Group play in combat: a bot with a heal spell heals the group member who needs it most (an emergency first, then the
 #                     tank, then the lowest health), and bots other than the tank (the warrior of the group) attack the tank's target.

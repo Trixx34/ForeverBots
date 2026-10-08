@@ -75,6 +75,7 @@ struct CombatConfig
     uint32 HoldMs = 3000;          // Bot.AI.Roles.HoldSec: non-tanks wait this long for the tank to gather threat before they open
     BotGroupRoles::Config Roles;   // Bot.AI.Roles.AllyHealBelowPct / TankHealBelowPct / EmergencyPct
     int32 FleeMode = 0;            // Bot.AI.Flee.Mode: 0 current, 1 aggro avoidance + fight to the end, 2 flee toward nearest friendly guard
+    bool Threat = true;            // Bot.AI.Roles.Threat: non-tanks in a group with a tank reduce threat or pause before they pull the mob (needs Bot.AI.Roles.Enabled)
     bool Rotation = false;         // Bot.AI.Rotation.Enabled: full class rotations (conditional rows of the spell table); off = the old fixed spells
     int32 FleeAbMode = 1;          // Bot.AI.Flee.AbMode: the mode the experiment arm runs
     int32 FleeAbPct = 0;           // Bot.AI.Flee.AbPct: percent of bots (guid counter % 100 below it) on AbMode, 0 = everyone on Flee.Mode
@@ -103,6 +104,7 @@ CombatConfig const& Cfg()
         cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
         cfg.Rotation = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.Enabled", false);
         cfg.GroupRoles = sConfigMgr->GetBoolDefault("Bot.AI.Roles.Enabled", false);
+        cfg.Threat = sConfigMgr->GetBoolDefault("Bot.AI.Roles.Threat", true);
         cfg.HoldMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.HoldSec", 3), 0, 15)) * 1000;
         cfg.Roles.AllyHealBelowPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.AllyHealBelowPct", 80), 10, 99);
         cfg.Roles.TankHealBelowPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.TankHealBelowPct", 90), 10, 99);
@@ -157,7 +159,8 @@ enum class Kind : uint8
     AutoShot,   // auto-repeat ranged attack (hunter)
     Wand,       // auto-repeat wand attack (Shoot): filler of a caster that cannot afford its spells (needs a wand equipped)
     Heal,       // self-heal (combat_heal)
-    Debuff      // cast while the target does not carry the spell's aura (Sunder Armor, Hunter's Mark); like Dot but not a damage spell
+    Debuff,     // cast while the target does not carry the spell's aura (Sunder Armor, Hunter's Mark); like Dot but not a damage spell
+    Threat      // threat reducer, cast only when the bot is about to pull the mob off the tank (Fade, Feint); see ThreatStep
 };
 
 struct SpellDef
@@ -191,6 +194,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_WARRIOR, 845,   "Cleave",               Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_WARRIOR, 78,    "Heroic Strike",        Kind::Direct },
     // Rogue: Kick a caster, Evasion when hurt, Slice and Dice before the damage finisher
+    { CLASS_ROGUE,   1966,  "Feint",                Kind::Threat },
     { CLASS_ROGUE,   1766,  "Kick",                 Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
     { CLASS_ROGUE,   5277,  "Evasion",              Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 50 } },
     { CLASS_ROGUE,   5171,  "Slice and Dice",       Kind::Finisher, 0, 2, { RC::TargetHpAbove, 40 } },
@@ -225,6 +229,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_MAGE,    133,   "Fireball",             Kind::Direct },
     { CLASS_MAGE,    5019,  "Shoot",                Kind::Wand },
     // Priest: Power Word: Shield when hurt, Inner Fire at the start, Psychic Scream against several mobs, Mind Blast with a mana reserve
+    { CLASS_PRIEST,  586,   "Fade",                 Kind::Threat },
     { CLASS_PRIEST,  17,    "Power Word: Shield",   Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 70 } },
     { CLASS_PRIEST,  588,   "Inner Fire",           Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
     { CLASS_PRIEST,  8122,  "Psychic Scream",       Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 3 } },
@@ -403,6 +408,7 @@ public:
     bool RangedBroken = false;       // no ammo / no ranged weapon: never worth chasing at range
     uint32 RangedBrokenLevel = 0;
     uint32 BlockSpell = 0;           // spell that failed with an aura state / power result: not tried again until BlockUntilMs (kept across fights)
+    uint32 ThreatPauseUntilMs = 0, ThreatNextMs = 0;   // threat awareness: no attacking until the pause ends; time of the last action
     uint32 BlockUntilMs = 0;
     bool BlockPower = false;         // the block is a power shortage (counts as "could not afford" so the wand fills in)
 
@@ -1012,6 +1018,8 @@ public:
         // attack
         if (bot->GetVictim() != target)
         {
+            if (ai->GetNowMs() < ctx->ThreatPauseUntilMs)
+                return changed;   // threat awareness: the tank is building a lead
             if (!bot->Attack(target, true))
                 return changed;
             changed = true;
@@ -1357,6 +1365,50 @@ BotRotation::Facts RotationFacts(BotAI* ai, Player* bot, BotCombatCtx* ctx, Unit
     return f;
 }
 
+// Threat awareness (Bot.AI.Roles.Threat): a non-tank whose threat on the fight target nears the pull limit over the tank's casts a threat
+// reducer when it has one (Fade, Feint), else stops attacking for 2.5 s so the tank builds a lead. True when it acted this tick.
+bool ThreatStep(BotAI* ai, Player* bot, BotCombatCtx* ctx, Unit* target)
+{
+    Player* tank = GroupTank(bot);
+    if (!tank || tank == bot || bot->GetDistance(tank) > 60.0f)
+        return false;
+    BotGroupRoles::ThreatFacts f;
+    f.TankKnown = target->GetVictim() == tank || tank->GetVictim() == target;
+    f.Ranged = bot->GetDistance(target) > 6.0f;
+    f.MyThreat = target->GetThreatManager().GetThreat(bot);
+    f.TankThreat = target->GetThreatManager().GetThreat(tank);
+    uint32 const now = ai->GetNowMs();
+    f.SinceLastMs = ctx->ThreatNextMs ? now - ctx->ThreatNextMs : 0xFFFFFFFFu;
+    Resolved const* reducer = nullptr;
+    for (Resolved const& r : ctx->Spells)
+        if (r.Def->Type == Kind::Threat && Ready(bot, r) && Affordable(bot, r.Info))
+        {
+            reducer = &r;
+            break;
+        }
+    f.CanReduce = reducer != nullptr;
+    switch (BotGroupRoles::CheckThreat(f, BotGroupRoles::ThreatConfig()))
+    {
+        case BotGroupRoles::ThreatAct::None:
+            return false;
+        case BotGroupRoles::ThreatAct::Reduce:
+            ctx->ThreatNextMs = now ? now : 1;
+            if (!TryCast(ai, bot, ctx, *reducer, reducer->Info->IsPositive() ? static_cast<Unit*>(bot) : target))
+                return false;
+            LogDecision(ai, bot, ctx, "THREAT_REDUCE", StringFormat("{} at {:.0f}% of the tank's threat", SpellNameOf(reducer->Info), f.MyThreat * 100.0f / f.TankThreat),
+                StringFormat(R"("spell":{},"my_threat":{:.0f},"tank_threat":{:.0f},"ranged":{})", reducer->Id, f.MyThreat, f.TankThreat, f.Ranged ? "true" : "false"));
+            return true;
+        case BotGroupRoles::ThreatAct::Pause:
+            ctx->ThreatNextMs = now ? now : 1;
+            ctx->ThreatPauseUntilMs = now + 2500;
+            bot->AttackStop();
+            LogDecision(ai, bot, ctx, "THREAT_PAUSE", StringFormat("pauses at {:.0f}% of the tank's threat", f.MyThreat * 100.0f / f.TankThreat),
+                StringFormat(R"("my_threat":{:.0f},"tank_threat":{:.0f},"ranged":{})", f.MyThreat, f.TankThreat, f.Ranged ? "true" : "false"));
+            return true;
+    }
+    return false;
+}
+
 class CastAction : public Action
 {
 public:
@@ -1374,6 +1426,10 @@ public:
 
         if (bot->GetVictim() != target && HeldByTank(bot, ai, ctx, target))
             return false;
+        if (Cfg().GroupRoles && Cfg().Threat && bot->GetGroup() && ThreatStep(ai, bot, ctx, target))
+            return true;
+        if (ai->GetNowMs() < ctx->ThreatPauseUntilMs)
+            return false;
 
         float const dist = bot->GetDistance(target);
         bool const inMelee = bot->IsWithinMeleeRange(target);
@@ -1384,7 +1440,7 @@ public:
         for (Resolved const& r : ctx->Spells)
         {
             Kind const kind = r.Def->Type;
-            if (kind == Kind::Heal || !BotRotation::Allowed(r.Def->When, facts))
+            if (kind == Kind::Heal || kind == Kind::Threat || !BotRotation::Allowed(r.Def->When, facts))
                 continue;
             if (r.Id == ctx->BlockSpell && ai->GetNowMs() < ctx->BlockUntilMs)
             {
