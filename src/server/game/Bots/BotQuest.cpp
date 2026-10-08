@@ -154,6 +154,17 @@ struct GoPt
     uint32 Entry;
 };
 
+// a mining vein or herb node (E2), indexed once from the lock of every chest-type game object
+struct NodePt
+{
+    uint32 Map = 0;
+    float X = 0, Y = 0, Z = 0;
+    uint32 Entry = 0;
+    uint32 Skill = 0;      // BotProfession::SKILL_MINING / SKILL_HERBALISM
+    uint32 Req = 0;        // skill needed to open it
+    uint64 SpawnId = 0;
+};
+
 struct GrindPt
 {
     float X, Y, Z;
@@ -181,6 +192,8 @@ struct BagOffer
 };
 
 constexpr uint32 SPELL_SKINNING = 8613;
+constexpr uint32 SPELL_MINING = 2575;
+constexpr uint32 SPELL_HERB_GATHERING = 2366;
 constexpr float GRID_CELL = 200.0f;
 constexpr uint32 MAX_STARTER_POINTS = 8;
 
@@ -202,6 +215,7 @@ struct Index
     // trainers by key: class id (1..11), or 0x100 | skill line for the profession trainers of BotProfession (first aid, cooking, gathering)
     std::unordered_map<uint32, std::vector<SvcPt>> Trainers;
     std::vector<SvcPt> Vendors;
+    std::vector<NodePt> Nodes;
     std::unordered_map<uint32, std::vector<BagOffer>> VendorBags;   // vendor entry -> plain bags it sells for gold
     uint32 NumTrainers = 0, NumProfTrainers = 0, NumBagVendors = 0, MinBagPrice = 0xFFFFFFFFu;
     uint32 NumStarterQuests = 0, NumStarterPoints = 0, NumSpawnEntries = 0, NumItemSources = 0, NumGoItems = 0, NumGoSpawns = 0;
@@ -560,6 +574,35 @@ void BuildIndex()
         ++g.NumGrind;
     }
 
+    // 8b. mining veins and herb nodes (E2): a chest-type game object whose lock asks for the mining or herbalism skill
+    {
+        std::unordered_map<uint32, std::pair<uint32, uint32>> nodeKinds;   // go entry -> (skill, required value)
+        for (auto const& [goEntry, goTmpl] : sObjectMgr->GetGameObjectTemplates())
+        {
+            if (goTmpl.type != GAMEOBJECT_TYPE_CHEST || !goTmpl.GetLockId())
+                continue;
+            LockEntry const* lock = sLockStore.LookupEntry(goTmpl.GetLockId());
+            if (!lock)
+                continue;
+            for (uint32 i = 0; i < MAX_LOCK_CASE; ++i)
+            {
+                if (lock->Type[i] != LOCK_KEY_SKILL)
+                    continue;
+                if (lock->Index[i] == LOCKTYPE_MINING || lock->Index[i] == LOCKTYPE_MINING_2)
+                    nodeKinds[goEntry] = { BotProfession::SKILL_MINING, lock->Skill[i] };
+                else if (lock->Index[i] == LOCKTYPE_HERBALISM)
+                    nodeKinds[goEntry] = { BotProfession::SKILL_HERBALISM, lock->Skill[i] };
+            }
+        }
+        for (auto const& [spawnId, data] : sObjectMgr->GetAllGameObjectData())
+        {
+            auto nk = nodeKinds.find(data.id);
+            if (nk == nodeKinds.end())
+                continue;
+            g.Nodes.push_back({ data.mapId, data.spawnPoint.GetPositionX(), data.spawnPoint.GetPositionY(), data.spawnPoint.GetPositionZ(), data.id, nk->second.first, nk->second.second, spawnId });
+        }
+    }
+
     // 9. class trainers, profession trainers and vendors (E1/E2/E4)
     std::unordered_map<uint32, std::vector<uint32>> profSkills;   // trainer id -> planned professions it teaches
     for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
@@ -699,6 +742,7 @@ struct Task
     uint8 Svc = 0;                 // Service task: 1 = train, 2 = vendor visit
     float SvcX = 0, SvcY = 0, SvcZ = 0;
     uint32 SvcTrainerId = 0;
+    uint64 NodeSpawn = 0;     // Svc 3 (gather): spawn id of the node
     bool SvcRepair = false, SvcBags = false;
     // Loot task (quest item inside a chest game object)
     uint64 GoSpawn = 0;            // claimed spawn (0 = none picked yet)
@@ -980,6 +1024,9 @@ public:
     std::unordered_map<uint64, uint8> Repeats;      // (quest, npc) -> reach failures (quarantine)
     std::unordered_map<uint32, uint32> SvcBlack;    // npc entry -> AI clock until
     std::unordered_map<uint64, uint32> GoIgnore;    // chest spawn id -> AI clock until (empty / unusable for this bot)
+    uint32 GatherNextMs = 0;               // next node check
+    ObjectGuid GatherGuid;                 // node being opened
+    uint32 GatherSinceMs = 0;
     uint32 CraftNextMs = 0;                // next craft attempt
     std::unordered_map<uint32, uint32> CraftBackoff;   // skill -> time before which crafting it is not retried (failed cast)
     ObjectGuid SkinGuid;                   // corpse being skinned
@@ -1286,13 +1333,15 @@ private:
         if (c.T.K == Kind::Service)
         {
             // E1/E4: the failure is reported under the service code, the movement code goes into the summary
-            c.SvcBlack[c.T.NpcEntry] = now + 600 * 1000;
+            c.SvcBlack[c.T.Svc == 3 ? (0x80000000u | uint32(c.T.NodeSpawn)) : c.T.NpcEntry] = now + 600 * 1000;
             if (c.T.Svc == 1)
                 c.TrainRetryMs = now + 300 * 1000;
+            else if (c.T.Svc == 3)
+                c.GatherNextMs = now + 60 * 1000;
             else
                 c.NextVendorMs = now + 300 * 1000;
             summary = StringFormat("{} ({})", summary, code);
-            code = c.T.Svc == 1 ? "TRAIN_UNREACHABLE" : "VENDOR_UNREACHABLE";
+            code = c.T.Svc == 1 ? "TRAIN_UNREACHABLE" : c.T.Svc == 3 ? "GATHER_UNREACHABLE" : "VENDOR_UNREACHABLE";
         }
         Blocked(ai, bot, c, questId, code, std::move(summary), std::move(details), entry);
         if (questId && IsReachCode(code))
@@ -2250,6 +2299,99 @@ private:
             EquipIfUpgrade(ai, bot, best, "GEAR_EQUIPPED", 0);
     }
 
+    // E2: a mining vein or herb node of a skill the bot has, within reach of its skill, close to where it is.
+    bool GatherDue(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        c.GatherNextMs = now + 20000;
+        if (bot->IsInCombat() || bot->GetFreeInventorySlotCount() < 2)
+            return false;
+        bool const mine = bot->HasSkill(BotProfession::SKILL_MINING) && bot->HasSpell(SPELL_MINING);
+        bool const herb = bot->HasSkill(BotProfession::SKILL_HERBALISM) && bot->HasSpell(SPELL_HERB_GATHERING);
+        if (!mine && !herb)
+            return false;
+        uint32 const mv = mine ? bot->GetSkillValue(BotProfession::SKILL_MINING) : 0;
+        uint32 const hv = herb ? bot->GetSkillValue(BotProfession::SKILL_HERBALISM) : 0;
+        NodePt const* best = nullptr;
+        float bd = 80.0f;
+        for (NodePt const& n : g.Nodes)
+        {
+            if (n.Map != bot->GetMapId())
+                continue;
+            if (n.Skill == BotProfession::SKILL_MINING ? (!mine || n.Req > mv) : (!herb || n.Req > hv))
+                continue;
+            float const d = Dist2D(n.X, n.Y, bot->GetPositionX(), bot->GetPositionY());
+            if (d >= bd)
+                continue;
+            auto bl = c.SvcBlack.find(0x80000000u | uint32(n.SpawnId));
+            if (bl != c.SvcBlack.end() && now < bl->second)
+                continue;
+            best = &n;
+            bd = d;
+        }
+        if (!best)
+            return false;
+        SvcPt pt;
+        pt.Map = best->Map; pt.X = best->X; pt.Y = best->Y; pt.Z = best->Z; pt.Entry = best->Entry;
+        StartService(bot, c, now, 3, pt, false, false);
+        c.T.NodeSpawn = best->SpawnId;
+        c.GatherGuid.Clear();
+        Decision(ai, bot, "GATHER_TRIP", StringFormat("walking to {} node {} ({:.0f} yd)", best->Skill == BotProfession::SKILL_MINING ? "mining" : "herb", best->Entry, bd), 0, best->Entry,
+            StringFormat(R"({{"skill":{},"req":{},"dist":{:.0f},"skill_value":{}}})", best->Skill, best->Req, bd, best->Skill == BotProfession::SKILL_MINING ? mv : hv));
+        return true;
+    }
+
+    // Svc 3: walk to the node, cast the gathering spell on it, take the loot.
+    bool RunGather(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        Task& t = c.T;
+        if (now - t.SinceMs > 2 * 60 * 1000)
+        {
+            Drop(ai, bot, c, now, 0, "UNREACHABLE", StringFormat("gave up walking to node {} after 2 min", t.NpcEntry), std::string(), t.NpcEntry, 0);
+            return true;
+        }
+        GameObject* go = bot->FindNearestGameObject(t.NpcEntry, 60.0f);
+        float const dgo = go ? Dist2D(go->GetPositionX(), go->GetPositionY(), bot->GetPositionX(), bot->GetPositionY()) : 1e9f;
+        if (go && dgo <= 3.5f && std::abs(go->GetPositionZ() - bot->GetPositionZ()) < 6.0f)
+        {
+            StopMoving(ai, bot, c);
+            uint32 const spell = IsMiningEntry(t.NpcEntry) ? SPELL_MINING : SPELL_HERB_GATHERING;
+            if (c.GatherGuid == go->GetGUID())
+            {
+                if (bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) && now - c.GatherSinceMs < 8000)
+                    return false;   // still casting
+                bool const took = LootGameObject(bot, go);
+                Decision(ai, bot, took ? "GATHERED" : "GATHER_FAILED", StringFormat("{} node {}", took ? "gathered" : "could not gather", go->GetEntry()), 0, go->GetEntry(),
+                    StringFormat(R"({{"spell":{},"mining":{},"herbalism":{}}})", spell, bot->GetSkillValue(BotProfession::SKILL_MINING), bot->GetSkillValue(BotProfession::SKILL_HERBALISM)));
+                c.GatherGuid.Clear();
+                Finish(c, now);
+                return true;
+            }
+            if (bot->CastSpell(go, spell, CastSpellExtraArgs(TRIGGERED_NONE)) != SPELL_CAST_OK)
+            {
+                Drop(ai, bot, c, now, 0, "GATHER_CAST_FAILED", StringFormat("cannot open node {}", t.NpcEntry), std::string(), t.NpcEntry, 0);
+                return true;
+            }
+            c.GatherGuid = go->GetGUID();
+            c.GatherSinceMs = now;
+            return false;
+        }
+        if (!go && Dist2D(t.SvcX, t.SvcY, bot->GetPositionX(), bot->GetPositionY()) < 8.0f)
+        {
+            Drop(ai, bot, c, now, 0, "NODE_GONE", StringFormat("node {} is not spawned", t.NpcEntry), std::string(), t.NpcEntry, 0);
+            return true;
+        }
+        Travel(ai, bot, c, now, go ? go->GetPositionX() : t.SvcX, go ? go->GetPositionY() : t.SvcY, go ? go->GetPositionZ() : t.SvcZ, 2.5f, t.NpcEntry);
+        return false;
+    }
+
+    static bool IsMiningEntry(uint32 goEntry)
+    {
+        for (NodePt const& n : g.Nodes)
+            if (n.Entry == goEntry)
+                return n.Skill == BotProfession::SKILL_MINING;
+        return false;
+    }
+
     // E2: first aid and cooking level up by crafting what the bot already knows from materials it already carries. One cast per call,
     // only while standing still and out of combat. A failed cast (no cooking fire nearby, missing tool) backs that skill off for 5 minutes.
     void CraftForSkill(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
@@ -2377,6 +2519,9 @@ private:
             EquipBagUpgrade(ai, bot);
         }
 
+        if (level >= 5 && now >= c.GatherNextMs && GatherDue(ai, bot, c, now))
+            return true;
+
         if (now >= c.CraftNextMs)
         {
             c.CraftNextMs = now + 15000;
@@ -2494,6 +2639,8 @@ private:
             Drop(ai, bot, c, now, 0, "UNREACHABLE", StringFormat("gave up walking to {} npc {} after 10 min", t.Svc == 1 ? "trainer" : "vendor", t.NpcEntry), std::string(), t.NpcEntry, 0);
             return true;
         }
+        if (t.Svc == 3)
+            return RunGather(ai, bot, c, now);
         Creature* npc = FindLiveNpc(bot, t.NpcEntry, 45.0f);
         if (npc && npc->IsAlive() && bot->IsWithinDistInMap(npc, 4.5f))
         {
