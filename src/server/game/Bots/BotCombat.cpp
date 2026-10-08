@@ -169,6 +169,7 @@ struct SpellDef
     uint32 ReqAura = 0;        // aura (spell id) the bot must carry first (Judgement needs a seal), 0 none
     uint8 MinCombo = 0;        // Finisher: combo points needed
     BotRotation::Rule When;    // condition of the row (BotRotation.h); rows with a condition other than Always only run with Bot.AI.Rotation.Enabled
+    bool Hot = false;          // Heal rows: heal over time (Renew); skipped while the heal target already carries the bot's own aura
 };
 
 using RC = BotRotation::Cond;
@@ -231,6 +232,10 @@ constexpr SpellDef SPELLS[] =
     { CLASS_PRIEST,  589,   "Shadow Word: Pain",    Kind::Dot },
     { CLASS_PRIEST,  8092,  "Mind Blast",           Kind::Direct, 0, 0, { RC::SelfPowerAbove, 25 } },
     { CLASS_PRIEST,  585,   "Smite",                Kind::Direct },
+    // Heal rows: the first that passes wins (Rule is read against the health of the heal target). Flash Heal when badly hurt, Renew when
+    // moderately hurt and not yet running, else the plain heal (the only row without the rotation)
+    { CLASS_PRIEST,  2061,  "Flash Heal",           Kind::Heal, 0, 0, { RC::SelfHpBelow, 40 } },
+    { CLASS_PRIEST,  139,   "Renew",                Kind::Heal, 0, 0, { RC::SelfHpBelow, 85 }, true },
     { CLASS_PRIEST,  2050,  "Lesser Heal",          Kind::Heal },
     { CLASS_PRIEST,  5019,  "Shoot",                Kind::Wand },
     // Warlock: Death Coil and Drain Life when hurt, Life Tap when mana is low, Curse of Agony, no damage over time on a dying mob
@@ -1473,6 +1478,26 @@ public:
     }
 };
 
+// The heal row to cast on healTarget: the first Heal row that passes its condition (read against the target's health), is not a heal
+// over time the target already carries, is ready and affordable. Without Bot.AI.Rotation.Enabled only the rows without a condition pass.
+Resolved const* PickHeal(Player* bot, BotCombatCtx* ctx, Unit* healTarget)
+{
+    BotRotation::Facts f;
+    f.Enabled = Cfg().Rotation;
+    f.SelfHpPct = int32(healTarget->GetHealthPct());
+    for (Resolved const& r : ctx->Spells)
+    {
+        if (r.Def->Type != Kind::Heal || !BotRotation::Allowed(r.Def->When, f))
+            continue;
+        if (r.Def->Hot && healTarget->HasAura(r.Id, bot->GetGUID()))
+            continue;
+        if (!Ready(bot, r) || !Affordable(bot, r.Info))
+            continue;
+        return &r;
+    }
+    return nullptr;
+}
+
 class HealAction : public Action
 {
 public:
@@ -1484,15 +1509,15 @@ public:
         BotCombatCtx* ctx = FightCtx(ai, bot);
         if (CastingNow(bot) || ai->GetNowMs() - ctx->LastHealMs < (Cfg().GroupRoles && bot->GetGroup() ? 1500u : 3000u) && ctx->Heals)
             return false;
-        Resolved const* heal = ctx->Find(Kind::Heal);
-        if (!heal || !Ready(bot, *heal) || !Affordable(bot, heal->Info))
+        Resolved const* range = ctx->Find(Kind::Heal);   // first heal row: only its range is used to look for group members
+        if (!range)
             return false;
         float hpBefore = bot->GetHealthPct();
         Unit* healTarget = bot;
         if (Cfg().GroupRoles && bot->GetGroup())
         {
             std::vector<Player*> members;
-            std::vector<BotGroupRoles::Ally> allies = GroupAllies(bot, std::max(5.0f, heal->MaxRange - 1.0f), &members);
+            std::vector<BotGroupRoles::Ally> allies = GroupAllies(bot, std::max(5.0f, range->MaxRange - 1.0f), &members);
             int32 const pick = BotGroupRoles::PickHealTarget(allies, Cfg().Roles);
             if (pick >= 0)
             {
@@ -1502,7 +1527,8 @@ public:
             else if (bot->GetHealthPct() >= float(Cfg().HealBelowPct))
                 return false;   // somebody needs a heal but cannot be reached, and the bot itself is fine
         }
-        if (!TryCast(ai, bot, ctx, *heal, healTarget))
+        Resolved const* heal = PickHeal(bot, ctx, healTarget);
+        if (!heal || !TryCast(ai, bot, ctx, *heal, healTarget))
             return false;
         ctx->LastHealMs = ai->GetNowMs();
         ++ctx->Heals;
@@ -1655,14 +1681,12 @@ char const* BotCombatHealUnit(Player* bot, Unit* target)
         return "CAST_FAILED";
     BotCombatCtx probe(nullptr);
     probe.Resolve(bot);
-    Resolved const* heal = probe.Find(Kind::Heal);
-    if (!heal)
+    if (!probe.Find(Kind::Heal))
         return "NO_HEAL_SPELL";
     if (CastingNow(bot) || bot->isMoving())
         return "BUSY";
-    if (!Ready(bot, *heal))
-        return "COOLDOWN";
-    if (!Affordable(bot, heal->Info))
+    Resolved const* heal = PickHeal(bot, &probe, target);
+    if (!heal)
         return "NO_POWER";
     if (bot->GetDistance(target) > heal->MaxRange)
         return "OUT_OF_RANGE";
