@@ -16,6 +16,7 @@
  */
 
 #include "BotAI.h"
+#include "BotCombat.h"
 #include "BotDummy.h"
 #include "BotPet.h"
 #include "BotQuest.h"
@@ -124,6 +125,8 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
     if (state == BotState::NonCombat && BotMove::Natural().Enabled && BotMove::Natural().Idle
         && std::find(names.begin(), names.end(), "natural_idle") == names.end())
         names.push_back("natural_idle");
+    if (state == BotState::NonCombat && BotCombatRotationEnabled() && std::find(names.begin(), names.end(), "prebuff") == names.end())
+        names.push_back("prebuff");   // pre-pull buffs of the class rotations
     if (BotPet::Cfg().Enabled && bot && bot->GetClass() == CLASS_HUNTER && state != BotState::Dead
         && std::find(names.begin(), names.end(), "pet") == names.end())
         names.push_back("pet");

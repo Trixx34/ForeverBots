@@ -29,6 +29,7 @@ class Player;
 
 // Bot.AI.Combat.PrePullManaPct: a mana user out of combat drinks when its mana is below this percent, so it does not pull
 // with an almost empty pool (used by the rest strategy together with Bot.AI.Rest.DrinkBelowPct, the higher one wins).
+TC_GAME_API bool BotCombatRotationEnabled();
 TC_GAME_API uint32 BotCombatPrePullManaPct();
 
 // Console aid (`bot spells <name>`): the spells the bot knows (id, name) and what the combat strategy resolved from them
