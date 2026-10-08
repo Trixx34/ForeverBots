@@ -61,3 +61,7 @@ Compare rotation on and off with the same class and level, and check the existin
 
 * Warlocks summon a pet out of combat when they have none: Voidwalker (needs a Soul Shard; without one the cast fails) then Imp. The pet strategy for hunters (`Bot.AI.Pet.*`) is separate.
 * Power Word: Fortitude, Arcane Intellect, Mark of the Wild and Blessing of Might are also cast on group members in range (30 yd at most, line of sight) that lack the aura, one cast per member per buff per 30 s. A member with a different rank of the same buff is skipped only when it carries the same aura id; otherwise the cast is tried and the core refuses it.
+
+## Rogue self-stealth
+
+* The pre-pull pass (`Bot.AI.Rotation.Enabled`) casts Stealth when an attackable, unaware creature (not a critter, at most 3 levels above the bot, visible to it) is within 25 yards, so Cheap Shot / Ambush can open. Stealth is not cast otherwise (stealthed travel is slow). Nothing makes the rogue walk to the mob stealthed or pick the mob; the quest layer still chooses targets. Not run on a server.
