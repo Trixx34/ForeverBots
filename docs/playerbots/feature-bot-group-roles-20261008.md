@@ -9,6 +9,15 @@ Branch `feature/bot-group-roles`, started from `forever`. First slice of the tan
 * The tank is the warrior of the group (the first living warrior on the map). No warrior means no tank: triage then treats everybody equally and nobody assists.
 * The decisions are `BotGroupRoles.h/.cpp` (pure, tests `tests/game/BotGroupRoles.cpp`, tag `[BotGroupRoles]`); the glue is in `BotCombat.cpp` (`GroupAllies`, `NeedHealTrigger`, `HealAction`, `PickTarget`).
 
+## Group combat, taunt and hold fire (second step, 2026-10-08)
+
+* **Joining a fight.** A bot in a group that is not in combat itself but has a group member within 45 yards fighting a mob it could attack goes into the Combat engine (`GROUP_COMBAT`). Its target candidates are then the mobs the other members fight, so a healer heals and a damage dealer assists before any mob reaches it. This closes the gap listed below for the first step.
+* **Tank.** The tank is the living warrior of the group with the lowest guid (same answer for every member). `combat_tank` runs before the engage and cast actions: Defensive Stance, then a Taunt on a mob that attacks another member (a mob on a healer first, then the weakest victim, then the mob with the most health; a mob already taunted by this bot is skipped), then Sunder Armor up to five stacks. Log rows `TANK_STANCE`, `TAUNT`.
+* **Hold fire.** `Bot.AI.Roles.HoldSec` (3): a non-tank waits for the tank to gather threat before the first hit or cast, shorter (1.5 s) once the mob has turned to the tank, and not at all when the mob attacks the bot, there is no tank in range, or the tank fights another mob.
+* Pure parts: `PickTauntTarget`, `HoldFire` in `BotGroupRoles` (tested). Glue in `BotCombat.cpp`, one hook in `BotAI::DesiredState`.
+
+Limits: Taunt and Defensive Stance are the Classic ids resolved by name (a mismatch skips the step silently); no paladin or druid tanks; no threat table is read (taunt triggers on who a mob attacks, not on threat values); the offensive stance spells of the warrior table (Rend, Charge) fail while in Defensive Stance and back off for 60 s.
+
 ## Not in this step
 
 * **Taunt and threat.** No taunt, no threat-based target switching, no tank stance/form management (a paladin or druid tank is not recognised).

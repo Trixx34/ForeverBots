@@ -75,12 +75,33 @@ namespace BotGroupRoles
         bool OnHealer = false;         // attacking a healer or another non-tank member
         bool IsCaster = false;
         bool InRange = true;
+        int32 VictimHealthPct = 100;   // health of the member the mob attacks (OnHealer foes)
+        bool VictimIsHealer = false;
+        bool Taunted = false;          // a taunt landed on it recently (or it is taunt immune): skip
     };
 
     // The mob a damage dealer attacks: one that attacks a non-tank member (peel) when it is nearly dead or alone, otherwise the
     // tank's target (so threat builds on one mob), otherwise any mob on the tank, then the lowest health. `tankTarget` is the mob
     // the tank attacks (0 = unknown). -1 when no foe is in range.
     TC_GAME_API int32 PickAssistTarget(std::span<Foe const> foes, uint64 tankTarget);
+
+    // The mob the tank taunts: one that attacks a non-tank member and was not taunted lately. A mob on a healer first, then on the
+    // member with the lowest health, then the mob with the most health left (it threatens the longest). -1 when nothing needs a taunt.
+    TC_GAME_API int32 PickTauntTarget(std::span<Foe const> foes);
+
+    struct HoldFacts
+    {
+        bool IsTank = false;
+        bool TankKnown = false;        // the group has a tank in range
+        bool TankEngaged = false;      // the tank is fighting this mob (or is about to)
+        bool MobOnTank = false;        // the mob attacks the tank
+        bool MobOnMe = false;          // the mob attacks this bot
+        uint32 SinceMs = 0;            // time since the bot picked the mob
+    };
+
+    // true = hold fire: a damage dealer or healer waits for the tank to gather threat, up to `holdMs`, and a little after the mob turned
+    // to the tank. Never when the bot is the tank, when there is no tank or the tank is not engaged, or when the mob already attacks the bot.
+    TC_GAME_API bool HoldFire(HoldFacts const& f, uint32 holdMs, uint32 afterTurnMs = 1500);
 }
 
 #endif

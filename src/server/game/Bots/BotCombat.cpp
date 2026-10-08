@@ -71,6 +71,7 @@ struct CombatConfig
     bool FreeRepair = true;        // Bot.AI.Combat.FreeRepair: broken equipment is repaired for free (placeholder until the economy phase)
     uint32 LowHpFleePct = 15;      // Bot.AI.Combat.Flee.LowHpPct: flee (flee_reason low_hp) below this health percent, 0 = off
     bool GroupRoles = false;       // Bot.AI.Roles.Enabled: healers heal group members, damage dealers assist the tank's target (needs a group)
+    uint32 HoldMs = 3000;          // Bot.AI.Roles.HoldSec: non-tanks wait this long for the tank to gather threat before they open
     BotGroupRoles::Config Roles;   // Bot.AI.Roles.AllyHealBelowPct / TankHealBelowPct / EmergencyPct
     int32 FleeMode = 0;            // Bot.AI.Flee.Mode: 0 current, 1 aggro avoidance + fight to the end, 2 flee toward nearest friendly guard
     int32 FleeAbMode = 1;          // Bot.AI.Flee.AbMode: the mode the experiment arm runs
@@ -99,6 +100,7 @@ CombatConfig const& Cfg()
         cfg.LowHpFleePct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.LowHpPct", 15), 0, 60));
         cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
         cfg.GroupRoles = sConfigMgr->GetBoolDefault("Bot.AI.Roles.Enabled", false);
+        cfg.HoldMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.HoldSec", 3), 0, 15)) * 1000;
         cfg.Roles.AllyHealBelowPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.AllyHealBelowPct", 80), 10, 99);
         cfg.Roles.TankHealBelowPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.TankHealBelowPct", 90), 10, 99);
         cfg.Roles.EmergencyPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.EmergencyPct", 35), 5, 90);
@@ -619,8 +621,27 @@ public:
 
 // Group members for the heal choice (Bot.AI.Roles.*): everybody alive on the bot's map within `range` yards, the bot itself included.
 // The tank is the warrior of the group. At most 40 members are looked at.
+// The tank of the bot's group: the living warrior on the bot's map with the lowest guid (the same answer for every member, the bot included).
+Player* GroupTank(Player* bot)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return nullptr;
+    Player* tank = nullptr;
+    for (GroupReference const& ref : group->GetMembers())
+    {
+        Player* m = ref.GetSource();
+        if (!m || !m->IsInWorld() || !m->IsAlive() || m->GetMap() != bot->GetMap() || m->GetClass() != CLASS_WARRIOR)
+            continue;
+        if (!tank || m->GetGUID().GetCounter() < tank->GetGUID().GetCounter())
+            tank = m;
+    }
+    return tank;
+}
+
 std::vector<BotGroupRoles::Ally> GroupAllies(Player* bot, float range, std::vector<Player*>* members = nullptr)
 {
+    Player* const tank = GroupTank(bot);
     std::vector<BotGroupRoles::Ally> out;
     Group* group = bot->GetGroup();
     if (!group)
@@ -635,7 +656,7 @@ std::vector<BotGroupRoles::Ally> GroupAllies(Player* bot, float range, std::vect
         a.Alive = m->IsAlive();
         a.HealthPct = int32(m->GetHealthPct());
         a.MissingHealth = m->GetMaxHealth() > m->GetHealth() ? uint32(m->GetMaxHealth() - m->GetHealth()) : 0;
-        a.IsTank = m->GetClass() == CLASS_WARRIOR;
+        a.IsTank = m == tank;
         a.IsSelf = m == bot;
         a.InRange = m == bot || (bot->GetDistance(m) <= range && bot->IsWithinLOSInMap(m));
         out.push_back(a);
@@ -835,6 +856,56 @@ public:
 // Opponents = PvE combat references of the bot (melee attackers and casters alike).
 struct Candidate { Unit* Mob; Threat T; float Dist; };
 
+// Calls `fn` for each distinct hostile unit a living group member (not the bot) is fighting, within 45 yards of the bot. At most 32 units.
+template<typename Fn>
+void GroupFoes(Player* bot, Fn&& fn)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return;
+    ObjectGuid seen[32];
+    uint32 n = 0;
+    auto visit = [&](Unit* mob)
+    {
+        if (!mob || !mob->IsInWorld() || !mob->IsAlive() || n >= 32 || bot->GetDistance(mob) > 45.0f)
+            return;
+        for (uint32 i = 0; i < n; ++i)
+            if (seen[i] == mob->GetGUID())
+                return;
+        seen[n++] = mob->GetGUID();
+        fn(mob);
+    };
+    for (GroupReference const& ref : group->GetMembers())
+    {
+        Player* m = ref.GetSource();
+        if (!m || m == bot || !m->IsInWorld() || !m->IsAlive() || m->GetMap() != bot->GetMap() || !m->IsInCombat())
+            continue;
+        visit(m->GetVictim());
+        for (auto const& [guid, combatRef] : m->GetCombatManager().GetPvECombatRefs())
+            visit(combatRef->GetOther(m));
+    }
+}
+
+// Hold fire (Bot.AI.Roles.*): a non-tank waits for the tank to gather threat on the mob before it opens (BotGroupRoles::HoldFire).
+bool HeldByTank(Player* bot, BotAI* ai, BotCombatCtx* ctx, Unit* target)
+{
+    if (!Cfg().GroupRoles || !Cfg().HoldMs || !bot->GetGroup() || !target)
+        return false;
+    Player* tank = GroupTank(bot);
+    BotGroupRoles::HoldFacts f;
+    f.IsTank = tank == bot;
+    f.TankKnown = tank && bot->GetDistance(tank) <= 60.0f;
+    if (f.TankKnown)
+    {
+        Unit* victim = target->GetVictim();
+        f.MobOnTank = victim == tank;
+        f.TankEngaged = f.MobOnTank || tank->GetVictim() == target;
+    }
+    f.MobOnMe = target->GetVictim() == bot;
+    f.SinceMs = ai->GetNowMs() - ctx->TargetSinceMs;
+    return BotGroupRoles::HoldFire(f, Cfg().HoldMs);
+}
+
 class EngageAction : public Action
 {
 public:
@@ -885,6 +956,10 @@ public:
             if (ctx->Fleeing)
                 return true;
         }
+
+        // group play: wait for the tank to gather threat before the first hit
+        if (bot->GetVictim() != target && HeldByTank(bot, ai, ctx, target))
+            return changed;
 
         // attack
         if (bot->GetVictim() != target)
@@ -990,6 +1065,13 @@ private:
             if (cands.size() >= 12)
                 break;
         }
+        // in a group the bot may be called into a fight it is not in yet: the mobs the other members fight are its candidates
+        if (cands.empty() && Cfg().GroupRoles)
+            GroupFoes(bot, [&](Unit* mob)
+            {
+                if (cands.size() < 12 && CanFight(bot, mob) && !(mob->GetGUID() == ctx->Ignored && now < ctx->IgnoredUntilMs))
+                    cands.push_back({ mob, Assess(bot, mob), bot->GetDistance(mob) });
+            });
         if (cands.empty())
         {
             if (!ctx->NoTargetLogged && now - ctx->StartMs >= 2000)
@@ -1027,15 +1109,11 @@ private:
 
         Candidate* pick = nearest(false);
         // group play (Bot.AI.Roles.*): everybody but the tank attacks what the tank attacks, so threat builds on one mob
-        if (pick && Cfg().GroupRoles && bot->GetGroup() && bot->GetClass() != CLASS_WARRIOR)
+        if (pick && Cfg().GroupRoles && bot->GetGroup())
         {
-            Player* tank = nullptr;
-            for (GroupReference const& ref : bot->GetGroup()->GetMembers())
-                if (Player* m = ref.GetSource(); m && m != bot && m->IsAlive() && m->GetMap() == bot->GetMap() && m->GetClass() == CLASS_WARRIOR)
-                {
-                    tank = m;
-                    break;
-                }
+            Player* tank = GroupTank(bot);
+            if (tank == bot)
+                tank = nullptr;
             if (tank)
             {
                 std::vector<BotGroupRoles::Foe> foes;
@@ -1225,6 +1303,9 @@ public:
         if (!CanFight(bot, target))
             return false;
 
+        if (bot->GetVictim() != target && HeldByTank(bot, ai, ctx, target))
+            return false;
+
         float const dist = bot->GetDistance(target);
         bool const inMelee = bot->IsWithinMeleeRange(target);
         bool const moving = bot->isMoving();
@@ -1357,11 +1438,128 @@ public:
     }
 };
 
+// ---------------------------------------------------------------------------------------------------------------------
+// tank (Bot.AI.Roles.*): the warrior of a group holds Defensive Stance, taunts mobs that attack other members and keeps Sunder Armor up
+// ---------------------------------------------------------------------------------------------------------------------
+constexpr SpellDef TANK_SPELLS[] =
+{
+    { CLASS_WARRIOR, 71,   "Defensive Stance", Kind::SelfBuff },
+    { CLASS_WARRIOR, 355,  "Taunt",            Kind::Direct },
+    { CLASS_WARRIOR, 7386, "Sunder Armor",     Kind::Direct },
+};
+
+// Highest known rank of a tank spell, only when the id still carries the expected name; false when the bot does not know it.
+bool ResolveTankSpell(Player* bot, SpellDef const& def, Resolved& out)
+{
+    if (!bot->HasSpell(def.Root))
+        return false;
+    uint32 id = def.Root;
+    for (uint32 guard = 0; guard < 16; ++guard)
+    {
+        uint32 const next = sSpellMgr->GetNextSpellInChain(id);
+        if (!next || !bot->HasSpell(next))
+            break;
+        id = next;
+    }
+    SpellInfo const* si = sSpellMgr->GetSpellInfo(id, DIFFICULTY_NONE);
+    if (!si || !StringEqualI(SpellNameOf(sSpellMgr->GetSpellInfo(def.Root, DIFFICULTY_NONE)), def.Name))
+        return false;
+    out.Def = &def;
+    out.Id = id;
+    out.Info = si;
+    out.MaxRange = si->GetMaxRange(false, bot);
+    out.MinRange = si->GetMinRange(false);
+    out.MeleeRange = false;
+    return true;
+}
+
+class TankAction : public Action
+{
+public:
+    explicit TankAction(BotAI* ai) : Action(ai, "combat_tank", ACTION_FLAG_NONE) { }
+    bool Execute() override
+    {
+        Player* bot = GetBot();
+        BotAI* ai = GetAI();
+        if (!Cfg().GroupRoles || bot->GetClass() != CLASS_WARRIOR || !bot->GetGroup() || GroupTank(bot) != bot)
+            return false;
+        BotCombatCtx* ctx = FightCtx(ai, bot);
+        if (ctx->Fleeing || CastingNow(bot) || bot->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_CONFUSED | UNIT_STATE_FLEEING))
+            return false;
+        uint32 const now = ai->GetNowMs();
+
+        // 1. Defensive Stance (Taunt needs it); the offensive stance spells of the table then fail and back off
+        Resolved stance;
+        if (ResolveTankSpell(bot, TANK_SPELLS[0], stance) && !bot->HasAura(stance.Id) && Ready(bot, stance) && Affordable(bot, stance.Info))
+            if (TryCast(ai, bot, ctx, stance, nullptr))
+            {
+                SetResult("TANK_STANCE", "takes Defensive Stance", StringFormat(R"({{"spell":{},"fight_seq":{}}})", stance.Id, ctx->Seq));
+                return true;
+            }
+
+        // 2. taunt a mob that attacks another member
+        Resolved taunt;
+        if (ResolveTankSpell(bot, TANK_SPELLS[1], taunt) && Ready(bot, taunt) && Affordable(bot, taunt.Info) && bot->HasAura(71))
+        {
+            std::vector<BotGroupRoles::Foe> foes;
+            std::vector<Unit*> mobs;
+            GroupFoes(bot, [&](Unit* mob)
+            {
+                Unit* victim = mob->GetVictim();
+                if (!CanFight(bot, mob) || !victim || victim == bot || victim->GetTypeId() != TYPEID_PLAYER)
+                    return;
+                BotGroupRoles::Foe f;
+                f.Guid = mob->GetGUID().GetCounter();
+                f.HealthPct = int32(mob->GetHealthPct());
+                f.OnHealer = true;
+                f.VictimHealthPct = int32(victim->GetHealthPct());
+                f.VictimIsHealer = victim->GetClass() == CLASS_PRIEST || victim->GetClass() == CLASS_DRUID || victim->GetClass() == CLASS_SHAMAN || victim->GetClass() == CLASS_PALADIN;
+                f.InRange = bot->GetDistance(mob) <= std::max(5.0f, taunt.MaxRange - 1.0f) && bot->IsWithinLOSInMap(mob);
+                f.Taunted = mob->HasAura(taunt.Id, bot->GetGUID());
+                foes.push_back(f);
+                mobs.push_back(mob);
+            });
+            int32 const idx = BotGroupRoles::PickTauntTarget(foes);
+            if (idx >= 0 && TryCast(ai, bot, ctx, taunt, mobs[size_t(idx)]))
+            {
+                SetResult("TAUNT", StringFormat("taunts {}", mobs[size_t(idx)]->GetName()),
+                    StringFormat(R"({{"spell":{},"target_entry":{},"victim_hp_pct":{},"fight_seq":{}}})", taunt.Id, mobs[size_t(idx)]->GetEntry(), foes[size_t(idx)].VictimHealthPct, ctx->Seq));
+                return true;
+            }
+        }
+
+        // 3. Sunder Armor on the target until five stacks
+        Unit* target = ctx->Target.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*bot, ctx->Target);
+        Resolved sunder;
+        if (target && CanFight(bot, target) && ResolveTankSpell(bot, TANK_SPELLS[2], sunder) && bot->IsWithinMeleeRange(target) && Ready(bot, sunder) && Affordable(bot, sunder.Info))
+        {
+            Aura const* aura = target->GetAura(sunder.Id, bot->GetGUID());
+            if ((!aura || aura->GetStackAmount() < 5) && now - _lastSunderMs >= 1500 && TryCast(ai, bot, ctx, sunder, target))
+            {
+                _lastSunderMs = now;
+                return true;
+            }
+        }
+        return false;
+    }
+private:
+    uint32 _lastSunderMs = 0;
+};
+
 } // namespace
 
 // ---------------------------------------------------------------------------------------------------------------------
 // console aid and registration
 // ---------------------------------------------------------------------------------------------------------------------
+bool BotCombatGroupEngaged(Player* bot)
+{
+    if (!bot || !Cfg().GroupRoles || !bot->GetGroup() || !bot->IsAlive())
+        return false;
+    bool found = false;
+    GroupFoes(bot, [&](Unit* mob) { found = found || CanFight(bot, mob); });
+    return found;
+}
+
 bool BotCombatAvoids(Player const* bot, Creature const* mob)
 {
     return bot && AvoidedByList(bot, mob);
@@ -1433,6 +1631,7 @@ void RegisterCombatBotObjects(BotRegistry& r)
     r.AddAction("combat_heal", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<HealAction>(ai); });
     r.AddAction("combat_engage", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<EngageAction>(ai); });
     r.AddAction("combat_cast", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<CastAction>(ai); });
+    r.AddAction("combat_tank", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<TankAction>(ai); });
 
     class CombatStrategy : public Strategy
     {
@@ -1443,7 +1642,7 @@ void RegisterCombatBotObjects(BotRegistry& r)
             t.push_back({ "combat_fleeing", { { "combat_flee", BotRelevance::Emergency } } });
             t.push_back({ "combat_low_hp", { { "combat_flee_low_hp", BotRelevance::Emergency - 10.0f } } });
             t.push_back({ "combat_need_heal", { { "combat_heal", BotRelevance::High + 40.0f } } });
-            t.push_back({ "combat_engaged", { { "combat_engage", BotRelevance::Move }, { "combat_cast", BotRelevance::Normal } } });
+            t.push_back({ "combat_engaged", { { "combat_engage", BotRelevance::Move }, { "combat_cast", BotRelevance::Normal }, { "combat_tank", BotRelevance::Move + 5.0f } } });
         }
     };
     r.AddStrategy("combat", BotStateBit(BotState::Combat), []() -> std::unique_ptr<Strategy> { return std::make_unique<CombatStrategy>(); });
