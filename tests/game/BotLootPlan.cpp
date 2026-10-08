@@ -338,3 +338,77 @@ TEST_CASE("BotLoot: spawn index filter (M1)", "[BotLoot]")
     CHECK_FALSE(CountsAsSpawn(SpawnUse::SkipDifficulty));
     CHECK_FALSE(CountsAsSpawn(SpawnUse::SkipSpawnGroup));
 }
+
+TEST_CASE("BotLoot: chest danger", "[BotLoot]")
+{
+    DangerConfig cfg;
+    cfg.MaxGap = 4;
+    cfg.EliteBonus = 3;
+    cfg.SpawnRadius = 30.0f;
+    cfg.BotRadius = 18.0f;
+
+    CHECK_FALSE(ChestDangerous(std::span<MobFacts const>{}, cfg));
+
+    MobFacts strongAtChest;
+    strongAtChest.DistToSpawn = 10.0f;
+    strongAtChest.DistToBot = 80.0f;
+    strongAtChest.LevelDiff = 4;
+    MobFacts const one[] = { strongAtChest };
+    CHECK(ChestDangerous(one, cfg));
+
+    MobFacts weakAtChest = strongAtChest;
+    weakAtChest.LevelDiff = 3;
+    MobFacts const two[] = { weakAtChest };
+    CHECK_FALSE(ChestDangerous(two, cfg));
+
+    MobFacts eliteAtChest = weakAtChest;
+    eliteAtChest.LevelDiff = 1;
+    eliteAtChest.Elite = true;
+    MobFacts const three[] = { eliteAtChest };
+    CHECK(ChestDangerous(three, cfg));
+
+    MobFacts farAway = strongAtChest;   // strong but neither near the chest nor near the bot
+    farAway.DistToSpawn = 60.0f;
+    farAway.DistToBot = 60.0f;
+    MobFacts const four[] = { farAway };
+    CHECK_FALSE(ChestDangerous(four, cfg));
+
+    MobFacts nearBot = farAway;         // strong and close to the bot: it would aggro on the way
+    nearBot.DistToBot = 10.0f;
+    MobFacts const five[] = { weakAtChest, nearBot };
+    CHECK(ChestDangerous(five, cfg));
+}
+
+TEST_CASE("BotLoot: shared spawn quarantine", "[BotLoot]")
+{
+    SpawnQuarantine q;
+    constexpr uint32 window = 30 * 60 * 1000, base = 20 * 60 * 1000;
+
+    CHECK_FALSE(q.Note(7, 1000, 3, window, base));
+    CHECK_FALSE(q.Note(7, 2000, 3, window, base));
+    CHECK_FALSE(q.Quarantined(7, 2500));
+    CHECK(q.Note(7, 3000, 3, window, base));     // third strike
+    CHECK(q.Quarantined(7, 4000));
+    CHECK_FALSE(q.Note(7, 5000, 3, window, base));   // already quarantined: no second report
+    CHECK_FALSE(q.Quarantined(7, 3000 + base + 1));
+    CHECK_FALSE(q.Quarantined(8, 4000));             // other spawns are untouched
+
+    // a second round doubles the length
+    uint32 const t2 = 3000 + base + 10;
+    CHECK_FALSE(q.Note(7, t2, 3, window, base));
+    CHECK_FALSE(q.Note(7, t2 + 1, 3, window, base));
+    CHECK(q.Note(7, t2 + 2, 3, window, base));
+    CHECK(q.Quarantined(7, t2 + 2 + base + 5));
+    CHECK_FALSE(q.Quarantined(7, t2 + 2 + 2 * base + 5));
+
+    // strikes older than the window do not add up
+    CHECK_FALSE(q.Note(9, 0, 2, 1000, 100));
+    CHECK_FALSE(q.Note(9, 5000, 2, 1000, 100));
+    CHECK_FALSE(q.Quarantined(9, 5001));
+    CHECK(q.Note(9, 5100, 2, 1000, 100));
+
+    // a successful loot clears the history
+    q.Clear(7);
+    CHECK_FALSE(q.Quarantined(7, t2 + 100));
+    CHECK_FALSE(q.Note(7, t2 + 100, 3, window, base));
+}

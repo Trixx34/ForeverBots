@@ -208,6 +208,78 @@ void SpawnBlacklist::Prune(uint32 nowMs)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// chest danger and spawn quarantine
+// ---------------------------------------------------------------------------------------------------------------------
+bool ChestDangerous(std::span<MobFacts const> mobs, DangerConfig const& cfg)
+{
+    for (MobFacts const& m : mobs)
+    {
+        if (m.DistToSpawn > cfg.SpawnRadius && m.DistToBot > cfg.BotRadius)
+            continue;
+        if (m.LevelDiff + (m.Elite ? cfg.EliteBonus : 0) >= cfg.MaxGap)
+            return true;
+    }
+    return false;
+}
+
+bool SpawnQuarantine::Note(uint64 spawnId, uint32 nowMs, uint32 strikes, uint32 windowMs, uint32 baseMs)
+{
+    std::lock_guard<std::mutex> lk(_mx);
+    Entry* hit = nullptr;
+    for (Entry& e : _e)
+        if (e.Id == spawnId)
+            hit = &e;
+    if (!hit)
+    {
+        if (_e.size() >= 512)
+            _e.erase(_e.begin());   // oldest first; the table is a safety net, not a database
+        _e.push_back({ spawnId, 0, nowMs, 0, 0 });
+        hit = &_e.back();
+    }
+    if (int32(hit->UntilMs - nowMs) > 0)
+        return false;   // already quarantined
+    if (!hit->Count || nowMs - hit->FirstMs > windowMs)
+    {
+        hit->Count = 0;
+        hit->FirstMs = nowMs;
+    }
+    if (++hit->Count < std::max<uint32>(1, strikes))
+        return false;
+    hit->Count = 0;
+    ++hit->Rounds;
+    uint64 const dur = std::min<uint64>(uint64(baseMs) << std::min<uint32>(hit->Rounds - 1, 3), uint64(baseMs) * 8);
+    hit->UntilMs = nowMs + uint32(dur);
+    return true;
+}
+
+bool SpawnQuarantine::Quarantined(uint64 spawnId, uint32 nowMs) const
+{
+    std::lock_guard<std::mutex> lk(_mx);
+    for (Entry const& e : _e)
+        if (e.Id == spawnId)
+            return int32(e.UntilMs - nowMs) > 0;
+    return false;
+}
+
+void SpawnQuarantine::Clear(uint64 spawnId)
+{
+    std::lock_guard<std::mutex> lk(_mx);
+    std::erase_if(_e, [spawnId](Entry const& e) { return e.Id == spawnId; });
+}
+
+size_t SpawnQuarantine::Size() const
+{
+    std::lock_guard<std::mutex> lk(_mx);
+    return _e.size();
+}
+
+void SpawnQuarantine::Reset()
+{
+    std::lock_guard<std::mutex> lk(_mx);
+    _e.clear();
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // bags
 // ---------------------------------------------------------------------------------------------------------------------
 BagPlan PlanBags(BagFacts const& f, BagConfig const& cfg)

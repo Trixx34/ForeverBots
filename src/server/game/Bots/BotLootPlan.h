@@ -121,6 +121,45 @@ namespace BotLoot
     };
 
     // ---------------------------------------------------------------------------------------------------------------------
+    // danger near a chest and shared spawn quarantine (Bot.AI.Loot.Safety.*, R5 regression: deaths, stuck and path failures rose
+    // after the chest loot task went live)
+    // ---------------------------------------------------------------------------------------------------------------------
+    struct MobFacts
+    {
+        float DistToSpawn = 0.0f;    // 2D yards from the chest spawn point
+        float DistToBot = 0.0f;      // 2D yards from the bot
+        int32 LevelDiff = 0;         // mob level minus bot level, elite bonus not yet added
+        bool Elite = false;
+    };
+    struct DangerConfig
+    {
+        int32 MaxGap = 3;            // effective level gap (elites count EliteBonus more) at which a mob makes the chest unsafe
+        int32 EliteBonus = 2;
+        float SpawnRadius = 30.0f;   // mobs this close to the chest count
+        float BotRadius = 18.0f;     // mobs this close to the bot count (they would aggro it on the way)
+    };
+    // True when any live hostile mob near the chest or near the bot is too strong for the bot.
+    TC_GAME_API bool ChestDangerous(std::span<MobFacts const> mobs, DangerConfig const& cfg);
+
+    // Chest spawns that repeatedly gave bots no progress for bot-independent reasons (no path, stalled approach, cannot interact,
+    // dangerous) are skipped by every bot for a while. Shared by all bots, own mutex. Clock = a monotonic millisecond clock.
+    class TC_GAME_API SpawnQuarantine
+    {
+    public:
+        // Records a failure. Returns true when this one put the spawn into quarantine (strikes within windowMs reached `strikes`).
+        // Each further quarantine of the same spawn doubles the length (cap 8x baseMs).
+        bool Note(uint64 spawnId, uint32 nowMs, uint32 strikes, uint32 windowMs, uint32 baseMs);
+        bool Quarantined(uint64 spawnId, uint32 nowMs) const;
+        void Clear(uint64 spawnId);      // a bot looted it: it works
+        size_t Size() const;
+        void Reset();
+    private:
+        struct Entry { uint64 Id; uint32 Count; uint32 FirstMs; uint32 UntilMs; uint32 Rounds; };
+        mutable std::mutex _mx;
+        std::vector<Entry> _e;
+    };
+
+    // ---------------------------------------------------------------------------------------------------------------------
     // bag space
     // ---------------------------------------------------------------------------------------------------------------------
     enum class BagPlan : uint8

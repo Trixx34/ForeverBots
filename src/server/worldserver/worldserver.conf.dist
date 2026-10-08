@@ -4848,6 +4848,27 @@ Bot.AI.Death.CorpseRunMaxFails = 3
 #        Description: Path queries per spawn choice (the nearest candidates are probed first).
 #        Default:     4
 #
+#    Bot.AI.Loot.Safety.Enabled
+#        Description: Guards of the chest loot task (independent of Bot.AI.Loot.Improved.Enabled): skip chests with strong hostile mobs
+#                     near them or near the bot (checked again while approaching), skip chests near a recent bot death, and skip spawns
+#                     that repeatedly failed bots for reasons that do not depend on the bot (no path, stalled approach, cannot interact).
+#                     Every guard only skips or delays a chest. Read once at startup.
+#        Default:     1 - On
+#
+#    Bot.AI.Loot.Safety.DangerGap
+#        Description: A live hostile mob this many effective levels above the bot (elites count Bot.AI.Combat.EliteLevelBonus more)
+#                     within 30 yd of the chest or 18 yd of the bot makes the chest unsafe. 0 = Bot.Quest.MaxMobLevelDiff + 2 (0-20).
+#        Default:     0
+#
+#    Bot.AI.Loot.Safety.QuarantineStrikes / Bot.AI.Loot.Safety.QuarantineSec
+#        Description: Bot-independent failures of one chest spawn within 30 minutes before every bot skips it / how long (doubles on
+#                     repeats, up to 8 times).
+#        Default:     3 / 1200
+#
+#    Bot.AI.Loot.Safety.DangerCooldownSec
+#        Description: A bot skips a chest it found guarded for this long; after 3 guarded chests in one task the quest is parked for 10 minutes.
+#        Default:     300
+#
 
 Bot.AI.Pet.Enabled = 0
 Bot.AI.Pet.Feed = 1
@@ -4877,6 +4898,11 @@ Bot.AI.Loot.Improved.DeadlySec = 600
 Bot.AI.Loot.Improved.BlacklistSec = 900
 Bot.AI.Loot.Improved.MinFreeSlots = 2
 Bot.AI.Loot.Improved.PathProbes = 4
+Bot.AI.Loot.Safety.Enabled = 1
+Bot.AI.Loot.Safety.DangerGap = 0
+Bot.AI.Loot.Safety.QuarantineStrikes = 3
+Bot.AI.Loot.Safety.QuarantineSec = 1200
+Bot.AI.Loot.Safety.DangerCooldownSec = 300
 #
 #    Bot.Chat.Enabled
 #        Description: Bots obey chat commands from the leader of their group (party, raid, whisper to a bot).

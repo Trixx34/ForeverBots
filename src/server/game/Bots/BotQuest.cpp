@@ -148,6 +148,35 @@ LootCfg const& Improved()
 
 BotLoot::DeadlyAreas g_deadly{ 128 };   // bot deaths of the last minutes, shared by all bots (own mutex); clock = getMSTime()
 
+// Bot.AI.Loot.Safety.*: guards of the chest loot task against the R5 regression (deaths 459 to 960, stuck 657 to 888, path failures
+// 250 to 399 after the task went live). Independent of Bot.AI.Loot.Improved.Enabled; on by default because every guard only skips or
+// delays a chest. Read once at startup.
+struct LootSafetyCfg
+{
+    bool Enabled = true;
+    int32 DangerGap = 0;           // effective level gap of a nearby mob that makes a chest unsafe; 0 = Bot.Quest.MaxMobLevelDiff + 2
+    uint32 QuarantineStrikes = 3;  // bot-independent failures of one spawn (in 30 min) before every bot skips it
+    uint32 QuarantineSec = 1200;
+    uint32 DangerCooldownSec = 300;
+};
+
+LootSafetyCfg const& Safety()
+{
+    static LootSafetyCfg cfg;
+    static std::once_flag once;
+    std::call_once(once, []()
+    {
+        cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Loot.Safety.Enabled", true);
+        cfg.DangerGap = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Loot.Safety.DangerGap", 0), 0, 20);
+        cfg.QuarantineStrikes = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Loot.Safety.QuarantineStrikes", 3), 1, 20));
+        cfg.QuarantineSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Loot.Safety.QuarantineSec", 1200), 60, 86400));
+        cfg.DangerCooldownSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Loot.Safety.DangerCooldownSec", 300), 30, 86400));
+    });
+    return cfg;
+}
+
+BotLoot::SpawnQuarantine g_goBad;       // chest spawns that failed bots for bot-independent reasons, shared by all bots; clock = getMSTime()
+
 // natural pacing: a short pause after an interaction (Bot.AI.Move.Natural.Pacing)
 void PaceAfter(BotAI* ai, Player* bot, uint32 now, BotMove::Pause kind)
 {
@@ -807,6 +836,9 @@ struct Task
     uint32 GoUseTries = 0;
     uint32 GoRenewMs = 0;          // next claim renewal while GoSpawn is set
     uint32 GoMap = 0;              // map of the claimed spawn
+    uint32 GoDangerMs = 0;         // next danger scan around the claimed spawn (Bot.AI.Loot.Safety)
+    uint8 GoDangers = 0;           // spawns given up in this task because of strong mobs near them
+    uint32 GoSkipQuar = 0, GoSkipDeadly = 0;   // spawns the last pick skipped (quarantined by all bots / near a recent death)
 };
 
 struct Visited
@@ -1391,6 +1423,8 @@ private:
             summary = StringFormat("{} ({})", summary, code);
             code = c.T.Svc == 1 ? "TRAIN_UNREACHABLE" : "VENDOR_UNREACHABLE";
         }
+        if (c.T.K == Kind::Loot && c.T.GoSpawn && IsReachCode(code) && std::strcmp(code, "ITEM_NOT_DROPPING") != 0)
+            GoNoteBad(ai, bot, c.T, code);   // the spawn itself cannot be reached: other bots should not try it over and over
         Blocked(ai, bot, c, questId, code, std::move(summary), std::move(details), entry);
         // a loot task that ends is not a failure of the quest itself (the chest may simply be elsewhere or gone): it never feeds the quarantine
         bool const fromLoot = c.T.K == Kind::Loot && Improved().Enabled;
@@ -2908,6 +2942,51 @@ private:
     }
 
     // ----- chest object loot -----
+    // A chest spawn failed for a reason that does not depend on this bot (no path, stalled approach, cannot interact): after a few
+    // such failures within 30 minutes every bot skips it for Bot.AI.Loot.Safety.QuarantineSec (doubling on repeats).
+    void GoNoteBad(BotAI* ai, Player* bot, Task const& t, char const* why)
+    {
+        if (!Safety().Enabled || !t.GoSpawn)
+            return;
+        if (!g_goBad.Note(t.GoSpawn, getMSTime(), Safety().QuarantineStrikes, 30 * 60 * 1000, Safety().QuarantineSec * 1000))
+            return;
+        BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_SPAWN_QUARANTINED", StringFormat("object {} at spawn {} skipped by all bots ({})", t.GoEntry, t.GoSpawn, why));
+        ev.QuestId = t.Quest;
+        ev.TargetEntry = t.GoEntry;
+        ev.Details = StringFormat(R"({{"spawn":{},"reason":"{}","strikes":{},"seconds":{}}})", t.GoSpawn, why, Safety().QuarantineStrikes, Safety().QuarantineSec);
+        sBotMgr->LogEvent(std::move(ev));
+    }
+
+    // True when a live hostile mob that is too strong for the bot stands near the chest (or near the bot): the bot would pull it on the
+    // way in or while it stands at the chest. Only sees mobs in the loaded grid around the bot, so it is asked again while approaching.
+    bool ChestUnsafe(Player* bot, float sx, float sy)
+    {
+        static thread_local std::vector<Creature*> list;
+        static thread_local std::vector<BotLoot::MobFacts> facts;
+        list.clear();
+        facts.clear();
+        FindCreatureOptions opt;
+        opt.IsAlive = FindCreatureAliveState::Alive;
+        bot->GetCreatureListWithOptionsInGrid(list, 70.0f, opt);
+        for (Creature* m : list)
+        {
+            if (m->IsPet() || m->IsTotem() || m->IsCritter() || m->IsCivilian() || m->IsTrigger())
+                continue;
+            if (!bot->IsHostileTo(m) || !bot->IsValidAttackTarget(m))
+                continue;
+            BotLoot::MobFacts f;
+            f.DistToSpawn = Dist2D(m->GetPositionX(), m->GetPositionY(), sx, sy);
+            f.DistToBot = Dist2D(m->GetPositionX(), m->GetPositionY(), bot->GetPositionX(), bot->GetPositionY());
+            f.LevelDiff = int32(m->GetLevel()) - int32(bot->GetLevel());
+            f.Elite = m->IsElite() || m->isWorldBoss();
+            facts.push_back(f);
+        }
+        BotLoot::DangerConfig dc;
+        dc.MaxGap = Safety().DangerGap > 0 ? Safety().DangerGap : Cfg().MaxMobLevelDiff + 2;
+        dc.EliteBonus = Cfg().EliteBonus;
+        return BotLoot::ChestDangerous(facts, dc);
+    }
+
     // Backs a Loot task off: the quest is parked for this bot for `sec` seconds (no quarantine, this is contention, not failure).
     void GoBackOff(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Quest const* q, char const* code, std::string summary, std::string details, uint32 entry, uint32 sec)
     {
@@ -2961,6 +3040,8 @@ private:
         float bd = 1e9f;
         uint32 busy = 0, cooling = 0;
         minWaitMs = 0xFFFFFFFFu;
+        t.GoSkipQuar = 0;
+        t.GoSkipDeadly = 0;
         static thread_local std::vector<GoPt const*> cand;   // M5: no allocation per pick
         static thread_local std::vector<uint64> ids;
         cand.clear();
@@ -2979,6 +3060,11 @@ private:
                 {
                     ++cooling;
                     minWaitMs = std::min<uint32>(minWaitMs, ign->second - now);
+                    continue;
+                }
+                if (Safety().Enabled && g_goBad.Quarantined(p.SpawnId, getMSTime()))
+                {
+                    ++t.GoSkipQuar;   // failed other bots for reasons that do not depend on them
                     continue;
                 }
                 cand.push_back(&p);
@@ -3042,6 +3128,11 @@ private:
             GoPt const& p = *cand[i];
             if (states[i] == GoState::Busy) { ++busy; continue; }
             if (states[i] == GoState::Cooling) { ++cooling; minWaitMs = std::min<uint32>(minWaitMs, lefts[i]); continue; }
+            if (Safety().Enabled && g_deadly.IsDeadly(bot->GetMapId(), p.P.X, p.P.Y, Improved().DeadlyRadius, getMSTime(), Improved().DeadlySec * 1000))
+            {
+                ++t.GoSkipDeadly;   // a bot died near this chest lately
+                continue;
+            }
             float d = Dist2D(p.P.X, p.P.Y, bot->GetPositionX(), bot->GetPositionY());
             if (d < bd)
             {
@@ -3068,7 +3159,7 @@ private:
             return 1;
         if (cooling)
             return 2;
-        return rejectedByRules ? 4 : 3;
+        return (rejectedByRules || t.GoSkipQuar || t.GoSkipDeadly) ? 4 : 3;
     }
 
     bool RunLoot(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Quest const* q)
@@ -3198,7 +3289,7 @@ private:
             if (r == 4)
             {
                 GoBackOff(ai, bot, c, now, q, "LOOT_NO_USABLE_SPAWN", StringFormat("no object spawn for '{}' is reachable, close enough and safe right now", q->GetLogTitle()),
-                    StringFormat(R"({{"item":{}}})", obj->ObjectID), uint32(obj->ObjectID), 300);
+                    StringFormat(R"({{"item":{},"quarantined":{},"deadly":{}}})", obj->ObjectID, t.GoSkipQuar, t.GoSkipDeadly), uint32(obj->ObjectID), 300);
                 return true;
             }
             if (r == 3)
@@ -3216,6 +3307,27 @@ private:
         }
 
         float const dSpawn = Dist2D(t.GoX, t.GoY, bot->GetPositionX(), bot->GetPositionY());
+        if (Safety().Enabled && dSpawn <= 80.0f && int32(now - t.GoDangerMs) >= 0)
+        {
+            // strong mobs near the chest (or on the way in): do not walk into them, take another spawn or park the quest
+            t.GoDangerMs = now + 1500;
+            if (ChestUnsafe(bot, t.GoX, t.GoY))
+            {
+                uint64 const spawn = t.GoSpawn;
+                BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_DANGER", StringFormat("strong mobs near object {} at spawn {} for '{}', not going", t.GoEntry, spawn, q->GetLogTitle()));
+                ev.QuestId = t.Quest;
+                ev.TargetEntry = t.GoEntry;
+                ev.Details = StringFormat(R"({{"spawn":{},"dist":{:.0f},"level":{},"danger_count":{}}})", spawn, dSpawn, bot->GetLevel(), uint32(t.GoDangers) + 1);
+                sBotMgr->LogEvent(std::move(ev));
+                GoSpawnFailed(ai, bot, c, now, t, "strong mobs near", false);
+                uint32& ign = c.GoIgnore[spawn];
+                ign = std::max<uint32>(ign, now + Safety().DangerCooldownSec * 1000);
+                if (++t.GoDangers >= 3)
+                    GoBackOff(ai, bot, c, now, q, "LOOT_DANGER", StringFormat("chests for '{}' are guarded by mobs too strong for level {}", q->GetLogTitle(), bot->GetLevel()),
+                        StringFormat(R"({{"item":{},"level":{}}})", obj->ObjectID, bot->GetLevel()), uint32(obj->ObjectID), 600);
+                return false;
+            }
+        }
         if (dSpawn > 20.0f)
         {
             // far: walk to the spawn point, then switch to the live object; no progress for a while = give this spawn up
@@ -3226,6 +3338,7 @@ private:
             }
             else if (now - t.TargetBestMs > 60000)
             {
+                GoNoteBad(ai, bot, t, "no approach progress");
                 GoSpawnFailed(ai, bot, c, now, t, "no approach progress", false);
                 return false;
             }
@@ -3266,6 +3379,8 @@ private:
         {
             if (++t.GoUseTries < 4)
                 return false;
+            if (!usable)
+                GoNoteBad(ai, bot, t, "cannot interact");
             GoSpawnFailed(ai, bot, c, now, t, usable ? "not active for this quest" : "cannot interact", false);
             return false;
         }
@@ -3274,6 +3389,7 @@ private:
         if (LootGameObject(bot, usable))
         {
             ++t.GoLooted;
+            g_goBad.Clear(t.GoSpawn);   // it works: forget earlier failures
             uint32 const respawnMs = std::min<uint32>(t.GoRespawn, 600) * 1000;
             c.GoIgnore[t.GoSpawn] = now + respawnMs;
             GoRelease(t.GoSpawn, t.GoBot, respawnMs);
@@ -3671,7 +3787,7 @@ std::string DescribeTask(BotAI* ai)
 
 void NoteDeath(Player* bot)
 {
-    if (Improved().Enabled)
+    if (Improved().Enabled || Safety().Enabled)
         g_deadly.Note(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), getMSTime());
 }
 
