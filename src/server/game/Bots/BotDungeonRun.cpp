@@ -19,6 +19,7 @@
 #include "BotAI.h"
 #include "BotBehavior.h"
 #include "BotDungeon.h"
+#include "BotDungeonData.h"
 #include "BotMgr.h"
 #include "Config.h"
 #include "Creature.h"
@@ -30,6 +31,7 @@
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "Item.h"
 #include "Player.h"
 #include "Random.h"
 #include "StringFormat.h"
@@ -54,6 +56,11 @@ namespace
         uint32 IntervalMs = 5000;     // Bot.AI.Dungeon.IntervalSec
         uint32 CooldownMs = 120000;   // Bot.AI.Dungeon.StartCooldownSec: between two group attempts
         uint32 PackTimeoutMs = 240000; // a pack not cleared this long after the pull is written off
+        uint32 RezDelayMs = 8000;     // Bot.AI.Dungeon.ResurrectDelaySec: dead members of a group that is out of combat come back after this
+        float LinkRadius = 14.0f;     // Bot.AI.Dungeon.PackLinkYards: spawns this close belong to one pack
+        uint32 MaxPack = 6;           // Bot.AI.Dungeon.PackMaxMobs: larger clusters (without a boss) are cut up
+        bool AutoMap = true;          // Bot.AI.Dungeon.Map = 0: pick the dungeon from the group level
+        bool FreeRepair = true;       // Bot.AI.Dungeon.FreeRepair: the group's gear is repaired when the run ends
     };
 
     struct PackInfo
@@ -62,6 +69,7 @@ namespace
         float X = 0, Y = 0, Z = 0;
         std::vector<uint32> Entries;
         uint32 PulledMs = 0;
+        bool Final = false;       // holds the dungeon's last boss
     };
 
     struct RunState
@@ -75,11 +83,15 @@ namespace
         uint32 InMap = 0; float InX = 0, InY = 0, InZ = 0, InO = 0; // where the entrance leads
         std::vector<PackInfo> Packs;
         int32 CurPack = -1;
+        uint32 MapId = 0;                 // the dungeon being run
+        DungeonInfo const* Info = nullptr;
+        uint32 DeadSinceMs = 0;           // somebody has been dead (group out of combat) since then
     };
 
     RunState s_run;
     Opts s_opt;
     bool s_optRead = false;
+    uint32 s_runCount = 0;
     uint32 s_accMs = 0, s_nowMs = 0, s_nextStartMs = 0;
     std::mutex s_busyLock;
     std::unordered_set<uint64> s_busy;
@@ -91,6 +103,11 @@ namespace
         s_optRead = true;
         auto opt = [](char const* k, int32 def, int32 lo, int32 hi) { return std::max(lo, std::min(hi, sConfigMgr->GetIntDefault(k, def))); };
         s_opt.MapId = uint32(opt("Bot.AI.Dungeon.Map", 36, 0, 100000));
+        s_opt.AutoMap = s_opt.MapId == 0;
+        s_opt.RezDelayMs = uint32(opt("Bot.AI.Dungeon.ResurrectDelaySec", 8, 0, 600)) * 1000;
+        s_opt.LinkRadius = float(opt("Bot.AI.Dungeon.PackLinkYards", 14, 4, 40));
+        s_opt.MaxPack = uint32(opt("Bot.AI.Dungeon.PackMaxMobs", 6, 2, 12));
+        s_opt.FreeRepair = sConfigMgr->GetBoolDefault("Bot.AI.Dungeon.FreeRepair", true);
         s_opt.MaxLevel = uint32(opt("Bot.AI.Dungeon.MaxLevel", 25, 1, 80));
         s_opt.IntervalMs = uint32(opt("Bot.AI.Dungeon.IntervalSec", 5, 1, 60)) * 1000;
         s_opt.CooldownMs = uint32(opt("Bot.AI.Dungeon.StartCooldownSec", 120, 10, 36000)) * 1000;
@@ -139,10 +156,24 @@ namespace
         return false;
     }
 
-    // Hostile, non-civilian spawns of the dungeon map, grouped greedily into packs (spawns within 14 yd of the pack's first spawn).
+    Player* Find(uint64 counter)
+    {
+        return ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(counter));
+    }
+
+    // Mob level of a spawn: the creature templates here scale with content tuning, so the level comes from the dungeon's own range
+    // (middle of it, one more for elites and two for bosses). Close enough for the "do not pull far above the group" filter.
+    int32 SpawnLevel(DungeonInfo const* info, bool elite, bool boss)
+    {
+        int32 const mid = info ? (int32(info->MinLevel) + int32(info->MaxLevel)) / 2 : 1;
+        return mid + (boss ? 2 : elite ? 1 : 0);
+    }
+
+    // Hostile, non-civilian spawns of the dungeon map, clustered into packs by BotDungeonData (3D link radius, big clusters cut up).
     void BuildPacks(RunState& r)
     {
         r.Packs.clear();
+        std::vector<SpawnPoint> pts;
         for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
         {
             if (data.mapId != r.InMap)
@@ -153,34 +184,53 @@ namespace
             FactionTemplateEntry const* ft = sFactionTemplateStore.LookupEntry(t->faction);
             if (!ft || !ft->IsHostileToPlayers())
                 continue;
-            bool const elite = t->Classification == CreatureClassifications::Elite || t->Classification == CreatureClassifications::RareElite;
-            bool const boss = (t->flags_extra & CREATURE_FLAG_EXTRA_INSTANCE_BIND) != 0;
-            float const x = data.spawnPoint.GetPositionX(), y = data.spawnPoint.GetPositionY();
-            PackInfo* into = nullptr;
-            if (!boss)
-                for (PackInfo& pk : r.Packs)
-                    if (!pk.P.Boss && std::hypot(pk.X - x, pk.Y - y) <= 14.0f)
-                    {
-                        into = &pk;
-                        break;
-                    }
-            if (!into)
-            {
-                r.Packs.emplace_back();
-                into = &r.Packs.back();
-                into->P.Id = uint32(r.Packs.size());
-                into->P.Mobs = 0;
-                into->X = x; into->Y = y; into->Z = data.spawnPoint.GetPositionZ();
-                into->P.Boss = boss;
-            }
-            ++into->P.Mobs;
-            if (elite)
-                ++into->P.Elites;
-            if (data.movementType == 2)
-                into->P.Patrols = true;
-            if (std::find(into->Entries.begin(), into->Entries.end(), data.id) == into->Entries.end())
-                into->Entries.push_back(data.id);
+            SpawnPoint sp;
+            sp.SpawnId = spawnId;
+            sp.Entry = data.id;
+            sp.X = data.spawnPoint.GetPositionX(); sp.Y = data.spawnPoint.GetPositionY(); sp.Z = data.spawnPoint.GetPositionZ();
+            sp.Elite = t->Classification == CreatureClassifications::Elite || t->Classification == CreatureClassifications::RareElite;
+            sp.Boss = (t->flags_extra & (CREATURE_FLAG_EXTRA_INSTANCE_BIND | CREATURE_FLAG_EXTRA_DUNGEON_BOSS)) != 0;
+            sp.Patrol = data.movementType == 2;
+            sp.Level = SpawnLevel(r.Info, sp.Elite, sp.Boss);
+            pts.push_back(sp);
         }
+        for (PackSpec const& spec : ClusterPacks(pts, s_opt.LinkRadius, s_opt.MaxPack, r.Info ? r.Info->FinalBoss : 0))
+        {
+            PackInfo pk;
+            pk.P.Id = spec.Id;
+            pk.P.Mobs = spec.Mobs;
+            pk.P.Elites = spec.Elites;
+            pk.P.MaxMobLevel = spec.MaxLevel;
+            pk.P.Patrols = spec.Patrols;
+            pk.P.Boss = spec.Boss;
+            pk.Final = spec.HasFinalBoss;
+            pk.X = spec.X; pk.Y = spec.Y; pk.Z = spec.Z;
+            for (SpawnPoint const& sp : spec.Points)
+                if (std::find(pk.Entries.begin(), pk.Entries.end(), sp.Entry) == pk.Entries.end())
+                    pk.Entries.push_back(sp.Entry);
+            r.Packs.push_back(std::move(pk));
+        }
+    }
+
+    // Lowest durability percentage of the equipped gear (100 when nothing wears out).
+    int32 DurabilityPct(Player* p)
+    {
+        int32 low = 100;
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            if (Item* it = p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                if (uint32 maxDur = it->m_itemData->MaxDurability)
+                    low = std::min(low, int32(100u * it->m_itemData->Durability / maxDur));
+        return low;
+    }
+
+    // The member that walks into packs: the group's tank when it is alive and here, otherwise the leader.
+    Player* Puller(RunState const& r, Player* leader)
+    {
+        for (Member const& m : r.Members)
+            if (m.AsRole == Role::Tank)
+                if (Player* p = Find(m.Guid); p && p->IsAlive() && p->IsInWorld() && p->GetMapId() == leader->GetMapId())
+                    return p;
+        return leader;
     }
 
     void SetBusy(RunState const& r, bool on)
@@ -191,11 +241,6 @@ namespace
                 s_busy.insert(m.Guid);
             else
                 s_busy.erase(m.Guid);
-    }
-
-    Player* Find(uint64 counter)
-    {
-        return ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(counter));
     }
 
     void End(RunState& r, Phase final, char const* why)
@@ -211,6 +256,8 @@ namespace
                     ai->Motion().SetFollow(ObjectGuid::Empty);
                     ai->Motion().ClearGoal();
                 }
+                if (s_opt.FreeRepair)
+                    p->DurabilityRepairAll(false, 0.0f, false);
                 if (p->IsAlive() && p->GetMapId() == r.InMap)
                     p->TeleportTo(r.OutMap, r.OutX, r.OutY, r.OutZ, 0.0f);
             }
@@ -228,17 +275,35 @@ namespace
         s_nextStartMs = s_nowMs + s_opt.CooldownMs;
 
         RunState r;
-        if (!FindEntrance(r, s_opt.MapId))
-        {
-            Log(0, "DUNGEON_NO_ENTRANCE", StringFormat("no entrance trigger leads to map {}", s_opt.MapId), BOTLOG_WARN);
-            s_nextStartMs = s_nowMs + 3600000;
-            return;
-        }
-
         std::vector<Player*> bots;
         for (Player* p : sBotMgr->GetOnlineBotPlayers())
             if (Eligible(p, cfg.Compose.MinLevel, s_opt.MaxLevel))
                 bots.push_back(p);
+        if (bots.empty())
+            return;
+        r.MapId = s_opt.MapId;
+        if (s_opt.AutoMap)
+        {
+            // the dungeon that fits the middle level of the online bots best, one after the other
+            std::vector<int32> lv;
+            for (Player* p : bots)
+                lv.push_back(int32(p->GetLevel()));
+            std::sort(lv.begin(), lv.end());
+            auto fit = DungeonsForLevel(lv[lv.size() / 2], 0);
+            if (fit.empty())
+                return;
+            r.MapId = fit[(s_runCount++) % fit.size()]->MapId;
+        }
+        r.Info = nullptr;
+        for (DungeonInfo const& d : Dungeons())
+            if (d.MapId == r.MapId)
+                r.Info = &d;
+        if (!FindEntrance(r, r.MapId))
+        {
+            Log(0, "DUNGEON_NO_ENTRANCE", StringFormat("no entrance trigger leads to map {}", r.MapId), BOTLOG_WARN);
+            s_nextStartMs = s_nowMs + 3600000;
+            return;
+        }
         std::vector<Player*> onContinent;
         for (Player* p : bots)
             if (p->GetMapId() == r.OutMap)
@@ -288,7 +353,7 @@ namespace
         SetBusy(s_run, true);
         if (BotAI* ai = AiOf(leader))
             ai->Motion().ClearGoal();
-        Log(leader->GetGUID().GetCounter(), "DUNGEON_GROUP", StringFormat("dungeon group formed for map {}: {}", s_opt.MapId, roles));
+        Log(leader->GetGUID().GetCounter(), "DUNGEON_GROUP", StringFormat("dungeon group formed for map {}: {}", s_run.MapId, roles));
     }
 
     void Step(Settings const& cfg)
@@ -322,7 +387,7 @@ namespace
                 st.HealthPct = int32(p->GetHealthPct());
                 st.ManaPct = p->GetMaxPower(POWER_MANA) ? int32(100.0f * p->GetPower(POWER_MANA) / p->GetMaxPower(POWER_MANA)) : 100;
                 st.Eating = p->HasAuraType(SPELL_AURA_MOD_POWER_REGEN) || p->HasAuraType(SPELL_AURA_MOD_REGEN);
-                st.DurabilityPct = 100;   // not read yet: a run does not stop for repairs
+                st.DurabilityPct = DurabilityPct(p);
             }
             alive += st.Alive;
             present += st.Alive && st.Present;
@@ -341,8 +406,12 @@ namespace
         f.Inside = leader->GetMapId() == r.InMap;
         f.AtEntrance = leader->GetMapId() == r.OutMap && leader->GetDistance2d(r.OutX, r.OutY) <= 10.0f;
         f.PacksLeft = r.Packs.empty() || std::any_of(r.Packs.begin(), r.Packs.end(), [](PackInfo const& p) { return !p.P.Done; });
-        f.BossKilled = !r.Packs.empty() && std::none_of(r.Packs.begin(), r.Packs.end(), [](PackInfo const& p) { return p.P.Boss && !p.P.Done; })
-            && std::any_of(r.Packs.begin(), r.Packs.end(), [](PackInfo const& p) { return p.P.Boss; });
+        // the dungeon's last boss when the table knows it, otherwise every boss pack
+        bool const hasFinal = std::any_of(r.Packs.begin(), r.Packs.end(), [](PackInfo const& p) { return p.Final; });
+        f.BossKilled = !r.Packs.empty() && (hasFinal
+            ? std::any_of(r.Packs.begin(), r.Packs.end(), [](PackInfo const& p) { return p.Final && p.P.Done; })
+            : (std::none_of(r.Packs.begin(), r.Packs.end(), [](PackInfo const& p) { return p.P.Boss && !p.P.Done; })
+                && std::any_of(r.Packs.begin(), r.Packs.end(), [](PackInfo const& p) { return p.P.Boss; })));
 
         RunResult next = AdvanceRun(f, cfg.Run);
         if (next.Next != r.Cur)
@@ -364,6 +433,54 @@ namespace
         BotAI* lai = AiOf(leader);
         if (!lai)
             return;
+
+        // Dead members: nobody is fighting any more (or the whole group is down), so after a short delay they are raised next to the
+        // puller (a stand-in for a healer's resurrection and the walk back, the bots have no corpse-run inside instances yet).
+        bool anyCombat = false;
+        for (MemberState const& st : states)
+            anyCombat |= st.Alive && st.InCombat;
+        bool const anyDead = alive < f.Size;
+        if (anyDead && (!anyCombat || alive == 0) && f.Inside)
+        {
+            if (!r.DeadSinceMs)
+                r.DeadSinceMs = s_nowMs;
+            if (s_nowMs - r.DeadSinceMs >= s_opt.RezDelayMs)
+            {
+                Player* anchor = alive ? Puller(r, leader) : nullptr;
+                for (Member const& m : r.Members)
+                {
+                    Player* p = Find(m.Guid);
+                    if (!p || !p->IsInWorld() || p->IsAlive())
+                        continue;
+                    p->ResurrectPlayer(0.5f);
+                    p->SpawnCorpseBones();
+                    if (anchor && anchor->IsAlive())
+                        p->TeleportTo(anchor->GetMapId(), anchor->GetPositionX(), anchor->GetPositionY(), anchor->GetPositionZ(), anchor->GetOrientation());
+                    else
+                        p->TeleportTo(r.InMap, r.InX, r.InY, r.InZ, r.InO);
+                    Log(m.Guid, "DUNGEON_RAISED", StringFormat("raised after {} s", (s_nowMs - r.DeadSinceMs) / 1000));
+                }
+                r.DeadSinceMs = 0;
+                if (r.CurPack >= 0 && alive == 0)
+                {
+                    // a wiped pull is tried again later: back to the start of the queue
+                    r.Packs[r.CurPack].PulledMs = 0;
+                    r.CurPack = -1;
+                    lai->Motion().ClearGoal();
+                }
+            }
+        }
+        else
+            r.DeadSinceMs = 0;
+
+        // Everybody follows the puller, who walks the pull; the leader keeps the group's identity (loot, disband).
+        Player* const puller = Puller(r, leader);
+        if (r.Cur == Phase::Clear || r.Cur == Phase::Recover)
+            for (Member const& m : r.Members)
+                if (Player* p = Find(m.Guid); p && p != puller && p->IsAlive())
+                    if (BotAI* ai = AiOf(p))
+                        ai->Motion().SetFollow(puller->GetGUID());
+
         switch (r.Cur)
         {
             case Phase::Travel:
@@ -388,16 +505,19 @@ namespace
             {
                 if (!f.Inside)
                     break;
+                BotAI* pai = AiOf(puller);
+                if (!pai)
+                    break;
                 // write off or finish the pack in progress
                 if (r.CurPack >= 0)
                 {
                     PackInfo& pk = r.Packs[r.CurPack];
                     bool cleared = false;
-                    if (leader->GetDistance2d(pk.X, pk.Y) <= 30.0f && !leader->IsInCombat())
+                    if (puller->GetDistance2d(pk.X, pk.Y) <= 30.0f && !anyCombat)
                     {
                         cleared = true;
                         for (uint32 entry : pk.Entries)
-                            if (leader->FindNearestCreature(entry, 35.0f, true))
+                            if (puller->FindNearestCreature(entry, 35.0f, true))
                             {
                                 cleared = false;
                                 break;
@@ -409,7 +529,7 @@ namespace
                         pk.P.Done = true;
                         Log(r.Leader.GetCounter(), cleared ? "DUNGEON_PACK_DONE" : "DUNGEON_PACK_SKIPPED", StringFormat("pack {} ({} mobs{}) {}", pk.P.Id, pk.P.Mobs, pk.P.Boss ? ", boss" : "", cleared ? "cleared" : "written off after the timeout"));
                         r.CurPack = -1;
-                        lai->Motion().ClearGoal();
+                        pai->Motion().ClearGoal();
                     }
                 }
                 if (r.CurPack >= 0)
@@ -422,8 +542,7 @@ namespace
                 std::vector<Pack> view;
                 for (PackInfo& pk : r.Packs)
                 {
-                    pk.P.Distance = leader->GetDistance2d(pk.X, pk.Y);
-                    pk.P.MaxMobLevel = avg;   // mob levels are not known from the spawn data: the level filter is off
+                    pk.P.Distance = puller->GetDistance2d(pk.X, pk.Y);
                     view.push_back(pk.P);
                 }
                 Ready ready = CheckReady(states, cfg.Ready);
@@ -435,11 +554,11 @@ namespace
                             r.CurPack = int32(i);
                     PackInfo& pk = r.Packs[r.CurPack];
                     pk.PulledMs = s_nowMs;
-                    lai->Motion().SetGoal(r.InMap, pk.X, pk.Y, pk.Z, 6.0f, "dungeon");
+                    pai->Motion().SetGoal(r.InMap, pk.X, pk.Y, pk.Z, 6.0f, "dungeon");
                     Log(r.Leader.GetCounter(), "DUNGEON_PULL", StringFormat("pulling pack {} ({} mobs, {} elites{}): {}", pk.P.Id, pk.P.Mobs, pk.P.Elites, pk.P.Boss ? ", boss" : "", pc.Why));
                 }
                 else if (pc.Kind == PullKind::Rest)
-                    lai->Motion().ClearGoal();
+                    pai->Motion().ClearGoal();
                 else
                     End(r, pc.Kind == PullKind::Finished ? Phase::Done : Phase::Aborted, pc.Why);
                 break;
