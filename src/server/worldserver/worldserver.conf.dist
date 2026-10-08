@@ -4879,6 +4879,17 @@ Bot.AI.Death.GiveUpSec = 300
 #                     Class ids: 1 warrior, 2 paladin, 3 hunter, 4 rogue, 5 priest, 7 shaman, 8 mage, 9 warlock, 11 druid. Empty = no-op.
 #        Default:     0 - (Disabled)
 #
+#    Bot.AI.Roles.Enabled
+#        Description: Group play in combat: a bot with a heal spell heals the group member who needs it most (an emergency first, then the
+#                     tank, then the lowest health), and bots other than the tank (the warrior of the group) attack the tank's target.
+#                     Only for bots that are in combat themselves. See docs/playerbots/feature-bot-group-roles-20261008.md.
+#        Default:     0 - Off
+#
+#    Bot.AI.Roles.AllyHealBelowPct / Bot.AI.Roles.TankHealBelowPct / Bot.AI.Roles.EmergencyPct
+#        Description: Heal a group member below this health percent / the tank below this percent / below this percent a member is an
+#                     emergency and comes first.
+#        Default:     80 / 90 / 35
+#
 #    Bot.AI.Loot.Improved.Enabled
 #        Description: Improved chest loot task of the quest strategy: spawn choice by path cost, skip far spawns and recently deadly areas,
 #                     per-bot spawn blacklist, bag-space check with a planned vendor trip, loot exits never feed the quest quarantine.

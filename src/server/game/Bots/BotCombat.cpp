@@ -27,9 +27,11 @@
 
 #include "BotAI.h"
 #include "BotCombat.h"
+#include "BotGroupRoles.h"
 #include "CombatManager.h"
 #include "Config.h"
 #include "Creature.h"
+#include "Group.h"
 #include "Item.h"
 #include "Log.h"
 #include "Map.h"
@@ -68,6 +70,8 @@ struct CombatConfig
     uint32 PrePullManaPct = 40;    // Bot.AI.Combat.PrePullManaPct: mana users drink out of combat below this mana percent (before pulling)
     bool FreeRepair = true;        // Bot.AI.Combat.FreeRepair: broken equipment is repaired for free (placeholder until the economy phase)
     uint32 LowHpFleePct = 15;      // Bot.AI.Combat.Flee.LowHpPct: flee (flee_reason low_hp) below this health percent, 0 = off
+    bool GroupRoles = false;       // Bot.AI.Roles.Enabled: healers heal group members, damage dealers assist the tank's target (needs a group)
+    BotGroupRoles::Config Roles;   // Bot.AI.Roles.AllyHealBelowPct / TankHealBelowPct / EmergencyPct
     int32 FleeMode = 0;            // Bot.AI.Flee.Mode: 0 current, 1 aggro avoidance + fight to the end, 2 flee toward nearest friendly guard
     int32 FleeAbMode = 1;          // Bot.AI.Flee.AbMode: the mode the experiment arm runs
     int32 FleeAbPct = 0;           // Bot.AI.Flee.AbPct: percent of bots (guid counter % 100 below it) on AbMode, 0 = everyone on Flee.Mode
@@ -94,6 +98,10 @@ CombatConfig const& Cfg()
         cfg.FreeRepair = sConfigMgr->GetBoolDefault("Bot.AI.Combat.FreeRepair", true);
         cfg.LowHpFleePct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.LowHpPct", 15), 0, 60));
         cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
+        cfg.GroupRoles = sConfigMgr->GetBoolDefault("Bot.AI.Roles.Enabled", false);
+        cfg.Roles.AllyHealBelowPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.AllyHealBelowPct", 80), 10, 99);
+        cfg.Roles.TankHealBelowPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.TankHealBelowPct", 90), 10, 99);
+        cfg.Roles.EmergencyPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.EmergencyPct", 35), 5, 90);
         cfg.FleeAbMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.AbMode", 1), 0, 2);
         cfg.FleeAbPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.AbPct", 0), 0, 100);
         cfg.AvoidMaxGap = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Avoid.MaxLevelGap", 1), -1, 10);
@@ -609,6 +617,34 @@ public:
     bool IsActive() override { return GetAI()->GetState() == BotState::Combat; }
 };
 
+// Group members for the heal choice (Bot.AI.Roles.*): everybody alive on the bot's map within `range` yards, the bot itself included.
+// The tank is the warrior of the group. At most 40 members are looked at.
+std::vector<BotGroupRoles::Ally> GroupAllies(Player* bot, float range, std::vector<Player*>* members = nullptr)
+{
+    std::vector<BotGroupRoles::Ally> out;
+    Group* group = bot->GetGroup();
+    if (!group)
+        return out;
+    for (GroupReference const& ref : group->GetMembers())
+    {
+        Player* m = ref.GetSource();
+        if (!m || !m->IsInWorld() || m->GetMap() != bot->GetMap() || out.size() >= 40)
+            continue;
+        BotGroupRoles::Ally a;
+        a.Guid = m->GetGUID().GetCounter();
+        a.Alive = m->IsAlive();
+        a.HealthPct = int32(m->GetHealthPct());
+        a.MissingHealth = m->GetMaxHealth() > m->GetHealth() ? uint32(m->GetMaxHealth() - m->GetHealth()) : 0;
+        a.IsTank = m->GetClass() == CLASS_WARRIOR;
+        a.IsSelf = m == bot;
+        a.InRange = m == bot || (bot->GetDistance(m) <= range && bot->IsWithinLOSInMap(m));
+        out.push_back(a);
+        if (members)
+            members->push_back(m);
+    }
+    return out;
+}
+
 class NeedHealTrigger : public Trigger
 {
 public:
@@ -616,7 +652,12 @@ public:
     bool IsActive() override
     {
         Player* bot = GetBot();
-        return bot && GetAI()->GetState() == BotState::Combat && bot->GetHealthPct() < float(Cfg().HealBelowPct);
+        if (!bot || GetAI()->GetState() != BotState::Combat)
+            return false;
+        if (bot->GetHealthPct() < float(Cfg().HealBelowPct))
+            return true;
+        // a healer with a heal spell watches the group too (the heal itself is chosen by HealAction)
+        return Cfg().GroupRoles && bot->GetGroup() && bot->GetGroup()->GetMembersCount() > 1 && BotGroupRoles::AnyoneNeedsHeal(GroupAllies(bot, 100.0f), Cfg().Roles);
     }
 };
 
@@ -985,6 +1026,39 @@ private:
         };
 
         Candidate* pick = nearest(false);
+        // group play (Bot.AI.Roles.*): everybody but the tank attacks what the tank attacks, so threat builds on one mob
+        if (pick && Cfg().GroupRoles && bot->GetGroup() && bot->GetClass() != CLASS_WARRIOR)
+        {
+            Player* tank = nullptr;
+            for (GroupReference const& ref : bot->GetGroup()->GetMembers())
+                if (Player* m = ref.GetSource(); m && m != bot && m->IsAlive() && m->GetMap() == bot->GetMap() && m->GetClass() == CLASS_WARRIOR)
+                {
+                    tank = m;
+                    break;
+                }
+            if (tank)
+            {
+                std::vector<BotGroupRoles::Foe> foes;
+                std::vector<Candidate*> usable;
+                for (Candidate& c : cands)
+                {
+                    if (c.T.TooStrong)
+                        continue;
+                    Unit* victim = c.Mob->GetVictim();
+                    BotGroupRoles::Foe f;
+                    f.Guid = c.Mob->GetGUID().GetCounter();
+                    f.HealthPct = int32(c.Mob->GetHealthPct());
+                    f.OnTank = victim == tank;
+                    f.OnHealer = victim && victim != tank && victim->GetTypeId() == TYPEID_PLAYER;
+                    foes.push_back(f);
+                    usable.push_back(&c);
+                }
+                Unit* tankVictim = tank->GetVictim();
+                int32 const idx = BotGroupRoles::PickAssistTarget(foes, tankVictim ? tankVictim->GetGUID().GetCounter() : 0);
+                if (idx >= 0)
+                    pick = usable[size_t(idx)];
+            }
+        }
         std::string considered;
         for (size_t i = 0; i < cands.size() && i < 6; ++i)
             considered += StringFormat(R"({}{{"entry":{},"level":{},"eff_diff":{},"dist":{:.0f},"too_strong":{}}})", i ? "," : "", cands[i].Mob->GetEntry(),
@@ -1253,17 +1327,31 @@ public:
         Player* bot = GetBot();
         BotAI* ai = GetAI();
         BotCombatCtx* ctx = FightCtx(ai, bot);
-        if (CastingNow(bot) || ai->GetNowMs() - ctx->LastHealMs < 3000 && ctx->Heals)
+        if (CastingNow(bot) || ai->GetNowMs() - ctx->LastHealMs < (Cfg().GroupRoles && bot->GetGroup() ? 1500u : 3000u) && ctx->Heals)
             return false;
         Resolved const* heal = ctx->Find(Kind::Heal);
         if (!heal || !Ready(bot, *heal) || !Affordable(bot, heal->Info))
             return false;
-        float const hpBefore = bot->GetHealthPct();
-        if (!TryCast(ai, bot, ctx, *heal, bot))
+        float hpBefore = bot->GetHealthPct();
+        Unit* healTarget = bot;
+        if (Cfg().GroupRoles && bot->GetGroup())
+        {
+            std::vector<Player*> members;
+            std::vector<BotGroupRoles::Ally> allies = GroupAllies(bot, std::max(5.0f, heal->MaxRange - 1.0f), &members);
+            int32 const pick = BotGroupRoles::PickHealTarget(allies, Cfg().Roles);
+            if (pick >= 0)
+            {
+                healTarget = members[size_t(pick)];
+                hpBefore = healTarget->GetHealthPct();
+            }
+            else if (bot->GetHealthPct() >= float(Cfg().HealBelowPct))
+                return false;   // somebody needs a heal but cannot be reached, and the bot itself is fine
+        }
+        if (!TryCast(ai, bot, ctx, *heal, healTarget))
             return false;
         ctx->LastHealMs = ai->GetNowMs();
         ++ctx->Heals;
-        SetResult("SELF_HEAL", StringFormat("casts {} at {:.0f}% health", SpellNameOf(heal->Info), hpBefore),
+        SetResult(healTarget == bot ? "SELF_HEAL" : "GROUP_HEAL", StringFormat("casts {} at {:.0f}% health", SpellNameOf(heal->Info), hpBefore),
             StringFormat(R"({{"spell":{},"spell_name":"{}","hp_pct":{:.0f},"threshold":{},"fight_seq":{}}})", heal->Id, Json(SpellNameOf(heal->Info)), hpBefore, Cfg().HealBelowPct, ctx->Seq));
         return true;
     }
