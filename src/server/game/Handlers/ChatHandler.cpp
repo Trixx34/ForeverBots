@@ -20,6 +20,7 @@
 #include "Channel.h"
 #include "ChannelMgr.h"
 #include "BotChat.h"
+#include "BotTradeLink.h"
 #include "Chat.h"
 #include "ChatPackets.h"
 #include "Common.h"
@@ -345,6 +346,7 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
 
             GetPlayer()->Whisper(msg, lang, receiver);
             BotChat::Handle(GetPlayer(), BotChat::Channel::Whisper, msg, receiver);
+            BotTradeLink::OnWhisper(GetPlayer(), receiver, msg);
             break;
         }
         case CHAT_MSG_PARTY:

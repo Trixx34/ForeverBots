@@ -27,6 +27,7 @@
 
 class Creature;
 class Player;
+class Unit;
 
 // Bot.AI.Combat.PrePullManaPct: a mana user out of combat drinks when its mana is below this percent, so it does not pull
 // with an almost empty pool (used by the rest strategy together with Bot.AI.Rest.DrinkBelowPct, the higher one wins).
@@ -42,6 +43,10 @@ TC_GAME_API int32 BotCombatFleeMode(Player const* bot);
 // Bot.AI.Roles.*: true when a group member within 45 yards is fighting a mob this bot could attack and the bot is not in combat itself yet.
 // BotAI::DesiredState puts such a bot into the Combat engine so a healer or damage dealer joins the fight of the group.
 TC_GAME_API bool BotCombatGroupEngaged(Player* bot);
+
+// Bot.Chat.Orders (`heal`): the bot casts its best known heal of the combat spell table at `target` right now (no fight context needed).
+// Returns "OK" or a refusal code: NO_HEAL_SPELL, OUT_OF_RANGE, NO_LOS, NO_POWER, COOLDOWN, BUSY (casting or moving), CAST_FAILED.
+TC_GAME_API char const* BotCombatHealUnit(Player* bot, Unit* target);
 
 // Console aid (`bot spells <name>`): the spells the bot knows (id, name) and what the combat strategy resolved from them
 // (role, highest known rank per table entry, why an entry is not usable). Not for per-tick use.
