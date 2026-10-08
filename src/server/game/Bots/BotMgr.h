@@ -158,6 +158,13 @@ public:
     // 1 = horde. Logins are spread over several ticks (Bot.Login.MaxPerTick).
     BotSpawnResult SpawnBots(uint32 count, uint8 classId, int8 faction, std::optional<uint8> level);
 
+    // Bots of the spawn/despawn pool that are queued, logging in, being created or online (alts are not part of the pool).
+    uint32 PoolBotCount() const;
+
+    // Logs out up to `count` online pool bots that nobody is playing with: not in combat, not in a group with a real player. Returns
+    // how many were logged out. Used by the dynamic population (BotPopulation.cpp).
+    uint32 TrimPoolBots(uint32 count);
+
     // Logs bots out and saves them. name empty = all. Returns how many were (or will be) logged out.
     uint32 DespawnBots(std::string const& name);
 

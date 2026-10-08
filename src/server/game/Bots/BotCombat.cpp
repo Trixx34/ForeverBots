@@ -46,6 +46,8 @@
 #include "StringFormat.h"
 #include "Util.h"
 #include <algorithm>
+#include <array>
+#include <unordered_map>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -69,6 +71,7 @@ struct CombatConfig
     uint32 CasterRangePct = 80;    // Bot.AI.Combat.CasterRangePct: casters stand at this percent of the spell range
     uint32 FleeMaxAttempts = 3;    // Bot.AI.Combat.Flee.MaxAttempts: flee runs per fight before the bot fights back as a last resort
     uint32 PrePullManaPct = 40;    // Bot.AI.Combat.PrePullManaPct: mana users drink out of combat below this mana percent (before pulling)
+    bool FreeTotems = true;        // Bot.AI.Combat.FreeTotems: a shaman that knows a totem spell gets the totem tool (Earth/Fire/Water Totem) for free, like free repair a placeholder until the economy phase
     bool FreeRepair = true;        // Bot.AI.Combat.FreeRepair: broken equipment is repaired for free (placeholder until the economy phase)
     uint32 LowHpFleePct = 15;      // Bot.AI.Combat.Flee.LowHpPct: flee (flee_reason low_hp) below this health percent, 0 = off
     bool GroupRoles = false;       // Bot.AI.Roles.Enabled: healers heal group members, damage dealers assist the tank's target (needs a group)
@@ -76,6 +79,9 @@ struct CombatConfig
     BotGroupRoles::Config Roles;   // Bot.AI.Roles.AllyHealBelowPct / TankHealBelowPct / EmergencyPct
     int32 FleeMode = 0;            // Bot.AI.Flee.Mode: 0 current, 1 aggro avoidance + fight to the end, 2 flee toward nearest friendly guard
     bool Threat = true;            // Bot.AI.Roles.Threat: non-tanks in a group with a tank reduce threat or pause before they pull the mob (needs Bot.AI.Roles.Enabled)
+    bool CrowdControl = true;      // Bot.AI.Rotation.CrowdControl: control spells on extra attackers (needs Bot.AI.Rotation.Enabled)
+    bool DruidBear = false;        // Bot.AI.Rotation.DruidBear: with DruidForms the druid prefers Bear (Dire Bear) Form to Cat Form (tankier, less damage)
+    bool DruidForms = false;       // Bot.AI.Rotation.DruidForms (needs Bot.AI.Rotation.Enabled): druids fight in Bear Form once they know it
     bool Rotation = false;         // Bot.AI.Rotation.Enabled: full class rotations (conditional rows of the spell table); off = the old fixed spells
     int32 FleeAbMode = 1;          // Bot.AI.Flee.AbMode: the mode the experiment arm runs
     int32 FleeAbPct = 0;           // Bot.AI.Flee.AbPct: percent of bots (guid counter % 100 below it) on AbMode, 0 = everyone on Flee.Mode
@@ -100,9 +106,11 @@ CombatConfig const& Cfg()
         cfg.FleeMaxAttempts = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.MaxAttempts", 3), 1, 10));
         cfg.PrePullManaPct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.PrePullManaPct", 40), 0, 95));
         cfg.FreeRepair = sConfigMgr->GetBoolDefault("Bot.AI.Combat.FreeRepair", true);
+        cfg.FreeTotems = sConfigMgr->GetBoolDefault("Bot.AI.Combat.FreeTotems", true);
         cfg.LowHpFleePct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.LowHpPct", 15), 0, 60));
         cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
         cfg.Rotation = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.Enabled", false);
+        cfg.CrowdControl = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.CrowdControl", true);
         cfg.GroupRoles = sConfigMgr->GetBoolDefault("Bot.AI.Roles.Enabled", false);
         cfg.Threat = sConfigMgr->GetBoolDefault("Bot.AI.Roles.Threat", true);
         cfg.HoldMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.HoldSec", 3), 0, 15)) * 1000;
@@ -113,6 +121,8 @@ CombatConfig const& Cfg()
         cfg.FleeAbPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.AbPct", 0), 0, 100);
         cfg.AvoidMaxGap = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Avoid.MaxLevelGap", 1), -1, 10);
         cfg.AvoidEntries = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.AI.Avoid.Entries", "116,822,250927,79"));
+        cfg.DruidForms = cfg.Rotation && sConfigMgr->GetBoolDefault("Bot.AI.Rotation.DruidForms", false);
+        cfg.DruidBear = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.DruidBear", false);
     });
     return cfg;
 }
@@ -159,9 +169,14 @@ enum class Kind : uint8
     AutoShot,   // auto-repeat ranged attack (hunter)
     Wand,       // auto-repeat wand attack (Shoot): filler of a caster that cannot afford its spells (needs a wand equipped)
     Heal,       // self-heal (combat_heal)
+    Totem,      // totem of a shaman: a self buff without an aura on the shaman (the totem lasts about a minute, so the recast time is longer)
+    Shift,      // changes the shapeshift form (Bear Form): a self buff that only runs with Bot.AI.Rotation.DruidForms
     Debuff,     // cast while the target does not carry the spell's aura (Sunder Armor, Hunter's Mark); like Dot but not a damage spell
+    Control,    // crowd control on a mob other than the fight target (Polymorph, Shackle Undead, Hibernate, Banish, Scare Beast); see TryControl
     Threat      // threat reducer, cast only when the bot is about to pull the mob off the tank (Fade, Feint); see ThreatStep
 };
+
+constexpr uint8 FORM_ANY = 0xFF;
 
 struct SpellDef
 {
@@ -172,9 +187,11 @@ struct SpellDef
     uint32 ReqAura = 0;        // aura (spell id) the bot must carry first (Judgement needs a seal), 0 none
     uint8 MinCombo = 0;        // Finisher: combo points needed
     BotRotation::Rule When;    // condition of the row (BotRotation.h); rows with a condition other than Always only run with Bot.AI.Rotation.Enabled
+    uint8 Form = FORM_ANY;     // shapeshift form the row needs: FORM_ANY (any), FORM_NONE (not shifted), or a ShapeshiftForm value
 };
 
 using RC = BotRotation::Cond;
+
 
 constexpr SpellDef SPELLS[] =
 {
@@ -182,6 +199,8 @@ constexpr SpellDef SPELLS[] =
     // and only run with Bot.AI.Rotation.Enabled (docs/playerbots/feature-bot-class-rotations-20261008.md). Spell ids are rank 1; a row whose
     // id is missing or whose name differs is dropped at startup and logged, and a spell the bot has not learned yet is skipped.
     // Warrior: Charge to open, Battle Shout, Bloodrage when rage-starved, Execute, area and debuff moves, Rend (Battle Stance), Heroic Strike (next melee swing)
+    // Battle Stance first: Charge, Rend and Overpower need it, and the bots use no other stance (a bot that is in another stance switches back)
+    { CLASS_WARRIOR, 2457,  "Battle Stance",        Kind::SelfBuff },
     { CLASS_WARRIOR, 100,   "Charge",               Kind::Direct, 0, 0, { RC::Opener, 8 } },
     { CLASS_WARRIOR, 6673,  "Battle Shout",         Kind::SelfBuff },
     { CLASS_WARRIOR, 2687,  "Bloodrage",            Kind::SelfBuff, 0, 0, { RC::SelfPowerBelow, 20 } },
@@ -195,6 +214,9 @@ constexpr SpellDef SPELLS[] =
     { CLASS_WARRIOR, 78,    "Heroic Strike",        Kind::Direct },
     // Rogue: Kick a caster, Evasion when hurt, Slice and Dice before the damage finisher
     { CLASS_ROGUE,   1966,  "Feint",                Kind::Threat },
+    // Cheap Shot and Ambush only run from stealth (ReqAura Stealth): a bot that is stealthed when the fight starts opens with them
+    { CLASS_ROGUE,   1833,  "Cheap Shot",           Kind::Direct, 1784 },
+    { CLASS_ROGUE,   8676,  "Ambush",               Kind::Direct, 1784 },
     { CLASS_ROGUE,   1766,  "Kick",                 Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
     { CLASS_ROGUE,   5277,  "Evasion",              Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 50 } },
     { CLASS_ROGUE,   5171,  "Slice and Dice",       Kind::Finisher, 0, 2, { RC::TargetHpAbove, 40 } },
@@ -207,10 +229,12 @@ constexpr SpellDef SPELLS[] =
     { CLASS_PALADIN, 853,   "Hammer of Justice",    Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
     { CLASS_PALADIN, 26573, "Consecration",         Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 3 } },
     { CLASS_PALADIN, 635,   "Holy Light",           Kind::Heal },
+    { CLASS_PALADIN, 19750, "Flash of Light",       Kind::Heal },
     // Hunter. Pet upkeep (calling, feeding, taming) is the separate "pet" strategy (BotPet.cpp, Bot.AI.Pet.*, off by default); without
     // it a pet would lose happiness (Pet.h HAPPINESS_*) and deal 75% damage once unhappy.
     // Auto Shot first: it is only (re)started when not running, so it never waits behind the shots below
     { CLASS_HUNTER,  75,    "Auto Shot",            Kind::AutoShot },
+    { CLASS_HUNTER,  1513,  "Scare Beast",          Kind::Control, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_HUNTER,  1130,  "Hunter's Mark",        Kind::Debuff, 0, 0, { RC::TargetStrong, 2 } },
     { CLASS_HUNTER,  5116,  "Concussive Shot",      Kind::Direct, 0, 0, { RC::TargetFleeing, 0 } },
     { CLASS_HUNTER,  2974,  "Wing Clip",            Kind::Direct, 0, 0, { RC::TargetFleeing, 0 } },
@@ -219,6 +243,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_HUNTER,  3044,  "Arcane Shot",          Kind::Direct },
     { CLASS_HUNTER,  2973,  "Raptor Strike",        Kind::Direct },   // melee, so only used once a mob is on top of the hunter
     // Mage: Counterspell, Frost Nova and Cone of Cold against several mobs, Mana Shield / Ice Barrier when hurt
+    { CLASS_MAGE,    118,   "Polymorph",            Kind::Control, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_MAGE,    2139,  "Counterspell",         Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
     { CLASS_MAGE,    122,   "Frost Nova",           Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_MAGE,    1463,  "Mana Shield",          Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 40 } },
@@ -230,6 +255,8 @@ constexpr SpellDef SPELLS[] =
     { CLASS_MAGE,    5019,  "Shoot",                Kind::Wand },
     // Priest: Power Word: Shield when hurt, Inner Fire at the start, Psychic Scream against several mobs, Mind Blast with a mana reserve
     { CLASS_PRIEST,  586,   "Fade",                 Kind::Threat },
+    { CLASS_PRIEST,  9484,  "Shackle Undead",       Kind::Control, 0, 0, { RC::EnemiesAtLeast, 2 } },
+    { CLASS_PRIEST,  139,   "Renew",                Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 85 } },
     { CLASS_PRIEST,  17,    "Power Word: Shield",   Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 70 } },
     { CLASS_PRIEST,  588,   "Inner Fire",           Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
     { CLASS_PRIEST,  8122,  "Psychic Scream",       Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 3 } },
@@ -237,8 +264,10 @@ constexpr SpellDef SPELLS[] =
     { CLASS_PRIEST,  8092,  "Mind Blast",           Kind::Direct, 0, 0, { RC::SelfPowerAbove, 25 } },
     { CLASS_PRIEST,  585,   "Smite",                Kind::Direct },
     { CLASS_PRIEST,  2050,  "Lesser Heal",          Kind::Heal },
+    { CLASS_PRIEST,  2061,  "Flash Heal",           Kind::Heal },     // heal rows: the last known one in table order is the heal (the quicker spell of a higher level)
     { CLASS_PRIEST,  5019,  "Shoot",                Kind::Wand },
     // Warlock: Death Coil and Drain Life when hurt, Life Tap when mana is low, Curse of Agony, no damage over time on a dying mob
+    { CLASS_WARLOCK, 710,   "Banish",               Kind::Control, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_WARLOCK, 6789,  "Death Coil",           Kind::Direct, 0, 0, { RC::SelfHpBelow, 40 } },
     { CLASS_WARLOCK, 689,   "Drain Life",           Kind::Direct, 0, 0, { RC::SelfHpBelow, 50 } },
     { CLASS_WARLOCK, 1454,  "Life Tap",             Kind::SelfBuff, 0, 0, { RC::LifeTapSafe, 30 } },
@@ -247,21 +276,39 @@ constexpr SpellDef SPELLS[] =
     { CLASS_WARLOCK, 172,   "Corruption",           Kind::Dot },
     { CLASS_WARLOCK, 686,   "Shadow Bolt",          Kind::Direct },
     { CLASS_WARLOCK, 5019,  "Shoot",                Kind::Wand },
-    // Shaman: Lightning Shield at the start, Flame Shock (shares the cooldown of Earth Shock), Stormstrike
+    // Shaman: Lightning Shield at the start, Stoneskin / Searing / Healing Stream Totem (a totem needs its totem tool: the cast fails and is logged once without it), Flame Shock (shares the cooldown of Earth Shock), Stormstrike
     { CLASS_SHAMAN,  324,   "Lightning Shield",     Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
+    { CLASS_SHAMAN,  8071,  "Stoneskin Totem",      Kind::Totem, 0, 0, { RC::Opener, 10 } },
+    { CLASS_SHAMAN,  3599,  "Searing Totem",        Kind::Totem, 0, 0, { RC::TargetHpAbove, 60 } },
+    { CLASS_SHAMAN,  5394,  "Healing Stream Totem", Kind::Totem, 0, 0, { RC::SelfHpBelow, 70 } },
     { CLASS_SHAMAN,  8050,  "Flame Shock",          Kind::Dot, 0, 0, { RC::TargetHpAbove, 40 } },
     { CLASS_SHAMAN,  17364, "Stormstrike",          Kind::Direct, 0, 0, { RC::TargetHpAbove, 20 } },
     { CLASS_SHAMAN,  8042,  "Earth Shock",          Kind::Direct },
     { CLASS_SHAMAN,  403,   "Lightning Bolt",       Kind::Direct },
     { CLASS_SHAMAN,  331,   "Healing Wave",         Kind::Heal },
-    // Druid: Barkskin when hurt, Thorns at the start, Faerie Fire on a strong mob, Entangling Roots on a fleeing one (forms are not used)
+    // Druid: Cat Form (level 20) or Bear Form (level 10) with Bot.AI.Rotation.DruidForms: Rip / Ferocious Bite / Rake / Claw, or Maul / Swipe / Demoralizing Roar; unshifted: Thorns at the start, Moonfire, Wrath,
+    // Healing Touch (a bear that needs a heal leaves its form first). Barkskin works in every form.
+    { CLASS_DRUID,   768,   "Cat Form",             Kind::Shift },    // preferred once known (level 20); Bear Form until then
+    { CLASS_DRUID,   9634,  "Dire Bear Form",       Kind::Shift },    // level 40; Bear Form is the fallback below it. Only reached with Bot.AI.Rotation.DruidBear (Cat Form comes first otherwise)
+    { CLASS_DRUID,   5487,  "Bear Form",            Kind::Shift },
+    { CLASS_DRUID,   2637,  "Hibernate",            Kind::Control, 0, 0, { RC::EnemiesAtLeast, 2 }, FORM_NONE },
     { CLASS_DRUID,   22812, "Barkskin",             Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 50 } },
-    { CLASS_DRUID,   467,   "Thorns",               Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
-    { CLASS_DRUID,   770,   "Faerie Fire",          Kind::Debuff, 0, 0, { RC::TargetStrong, 2 } },
-    { CLASS_DRUID,   339,   "Entangling Roots",     Kind::Direct, 0, 0, { RC::TargetFleeing, 0 } },
-    { CLASS_DRUID,   8921,  "Moonfire",             Kind::Dot },
-    { CLASS_DRUID,   5176,  "Wrath",                Kind::Direct },
-    { CLASS_DRUID,   5185,  "Healing Touch",        Kind::Heal },
+    { CLASS_DRUID,   779,   "Swipe",                Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 }, FORM_BEAR_FORM },
+    { CLASS_DRUID,   99,    "Demoralizing Roar",    Kind::Debuff, 0, 0, { RC::EnemiesAtLeast, 2 }, FORM_BEAR_FORM },
+    { CLASS_DRUID,   6807,  "Maul",                 Kind::Direct, 0, 0, {}, FORM_BEAR_FORM },
+    { CLASS_DRUID,   5217,  "Tiger's Fury",         Kind::SelfBuff, 0, 0, { RC::TargetStrong, 2 }, FORM_CAT_FORM },
+    { CLASS_DRUID,   1079,  "Rip",                  Kind::Finisher, 0, 3, { RC::TargetHpAbove, 50 }, FORM_CAT_FORM },
+    { CLASS_DRUID,   22568, "Ferocious Bite",       Kind::Finisher, 0, 4, {}, FORM_CAT_FORM },
+    { CLASS_DRUID,   1822,  "Rake",                 Kind::Dot, 0, 0, { RC::TargetHpAbove, 40 }, FORM_CAT_FORM },
+    { CLASS_DRUID,   5221,  "Shred",                Kind::Direct, 0, 0, {}, FORM_CAT_FORM },   // needs a position behind the target: fails with NOT_BEHIND otherwise and the next row runs
+    { CLASS_DRUID,   1082,  "Claw",                 Kind::Direct, 0, 0, {}, FORM_CAT_FORM },
+    { CLASS_DRUID,   467,   "Thorns",               Kind::SelfBuff, 0, 0, { RC::Opener, 10 }, FORM_NONE },
+    { CLASS_DRUID,   770,   "Faerie Fire",          Kind::Debuff, 0, 0, { RC::TargetStrong, 2 }, FORM_NONE },
+    { CLASS_DRUID,   339,   "Entangling Roots",     Kind::Direct, 0, 0, { RC::TargetFleeing, 0 }, FORM_NONE },
+    { CLASS_DRUID,   8921,  "Moonfire",             Kind::Dot, 0, 0, {}, FORM_NONE },
+    { CLASS_DRUID,   5176,  "Wrath",                Kind::Direct, 0, 0, {}, FORM_NONE },
+    { CLASS_DRUID,   774,   "Rejuvenation",         Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 85 }, FORM_NONE },
+    { CLASS_DRUID,   5185,  "Healing Touch",        Kind::Heal, 0, 0, {}, FORM_NONE },
 };
 
 Role RoleOf(uint8 cls)
@@ -360,6 +407,7 @@ struct Resolved
 // fight scope: reset as a whole when a Combat engine period starts
 struct FightData
 {
+    std::vector<std::pair<ObjectGuid, uint32>> CcTried;   // crowd control attempts of this fight (target, AI ms), bounded
     bool InFight = false;
     uint32 StartMs = 0;
     ObjectGuid Target;
@@ -385,7 +433,7 @@ struct FightData
     uint32 IgnoredUntilMs = 0;
     uint32 Picked = 0, TargetsDead = 0, Casts = 0, CastFails = 0, Heals = 0;
     uint32 LastHealMs = 0;
-    uint32 LastBuffMs = 0;           // self buffs are not recast within 25 s (the aura id may differ from the spell id)
+    std::unordered_map<uint32, uint32> LastBuffMs;   // spell id -> time of the last cast: a self buff is not recast within 25 s (the aura id may differ from the spell id); per spell, so a stance never starves Battle Shout
     uint32 NoPowerSkips = 0;
     bool NoPowerLogged = false;
     bool NoTargetLogged = false;
@@ -439,6 +487,17 @@ public:
                 return &r;
         return nullptr;
     }
+    // The last known row of a kind in table order: for heals the higher level (quicker) spell after the first one.
+    Resolved const* FindLast(Kind kind) const
+    {
+        if (!Cfg().Rotation)
+            return Find(kind);   // rotation off: the old single heal
+        Resolved const* last = nullptr;
+        for (Resolved const& r : Spells)
+            if (r.Def->Type == kind)
+                last = &r;
+        return last;
+    }
 
 protected:
     // never recalculated through Get(); the value is used as a plain container
@@ -490,7 +549,7 @@ void BotCombatCtx::Resolve(Player* bot)
         // a ranged weapon attack never has a melee range, even when its DBC range entry resolves short
         if ((def.Type == Kind::AutoShot || def.Type == Kind::Wand) && r.MaxRange < 8.0f)
             r.MaxRange = def.Type == Kind::AutoShot ? 35.0f : 30.0f;
-        r.MeleeRange = def.Type != Kind::SelfBuff && def.Type != Kind::Heal && def.Type != Kind::Wand && def.Type != Kind::AutoShot && r.MaxRange <= 6.0f;
+        r.MeleeRange = def.Type != Kind::SelfBuff && def.Type != Kind::Shift && def.Type != Kind::Totem && def.Type != Kind::Heal && def.Type != Kind::Wand && def.Type != Kind::AutoShot && r.MaxRange <= 6.0f;
         Spells.push_back(r);
     }
 }
@@ -603,6 +662,21 @@ bool WeaponOk(Player* bot, SpellInfo const* si)
             return true;
     }
     return false;
+}
+
+// Totem tools: Earth Totem 5175 (Stoneskin), Fire Totem 5176 (Searing), Water Totem 5177 (Healing Stream); the item must be in the bags for the
+// cast. Gives one when it is missing (placeholder until the economy phase); the item must exist in the item template and be called a totem.
+void EnsureTotemTool(Player* bot, uint32 totemSpellRoot)
+{
+    if (!Cfg().FreeTotems)
+        return;
+    uint32 const item = totemSpellRoot == 8071 ? 5175 : totemSpellRoot == 3599 ? 5176 : totemSpellRoot == 5394 ? 5177 : 0;
+    if (!item || bot->HasItemCount(item, 1))
+        return;
+    ItemTemplate const* tpl = sObjectMgr->GetItemTemplate(item);
+    if (!tpl || !tpl->GetName(DEFAULT_LOCALE) || !strstr(tpl->GetName(DEFAULT_LOCALE), "Totem"))
+        return;
+    bot->StoreNewItemInBestSlots(item, 1, ItemContext::NONE);
 }
 
 // Free repair (placeholder until the economy phase): bots never visit a repairer, and a broken weapon makes every weapon
@@ -1041,18 +1115,21 @@ public:
                     StringFormat(R"("power":{},"cost":{},"spell":"{}")", bot->GetPower(bot->GetPowerType()), CostOf(bot, primary->Info), Json(SpellNameOf(primary->Info))));
             }
         }
-        if (ctx->BotRole != Role::Melee && !ctx->MeleeFallback && !ctx->RangedBroken)
+        // a druid in Bear or Cat Form fights like a melee class
+        ShapeshiftForm const shape = bot->GetShapeshiftForm();
+        Role const role = ctx->BotRole == Role::Caster && (shape == FORM_BEAR_FORM || shape == FORM_DIRE_BEAR_FORM || shape == FORM_CAT_FORM) ? Role::Melee : ctx->BotRole;
+        if (role != Role::Melee && !ctx->MeleeFallback && !ctx->RangedBroken)
         {
             if (Resolved const* primary = RangedPrimary(ctx))
             {
-                Resolved const* wand = ctx->BotRole == Role::Caster ? ctx->Find(Kind::Wand) : nullptr;
+                Resolved const* wand = role == Role::Caster ? ctx->Find(Kind::Wand) : nullptr;
                 if (!Affordable(bot, primary->Info) && wand && WeaponOk(bot, wand->Info))
                 {
                     // out of mana with a wand: stay at range and shoot (CastAction), no melee
                     wantRanged = true;
                     range = std::max(8.0f, wand->MaxRange * float(Cfg().CasterRangePct) / 100.0f);
                 }
-                else if (!Affordable(bot, primary->Info) && ctx->BotRole == Role::Caster)
+                else if (!Affordable(bot, primary->Info) && role == Role::Caster)
                 {
                     ctx->MeleeFallback = true;
                     ctx->FallbackClearable = true;
@@ -1065,7 +1142,7 @@ public:
                     range = std::max(8.0f, primary->MaxRange * float(Cfg().CasterRangePct) / 100.0f);
                 }
             }
-            else if (ctx->BotRole == Role::Caster)
+            else if (role == Role::Caster)
                 ctx->MeleeFallback = true; // no ranged spell known at all
         }
 
@@ -1343,7 +1420,13 @@ uint32 BuffRecastMs(BotCombatCtx* ctx, Resolved const& r)
     for (Resolved const& s : ctx->Spells)
         if (s.Def->ReqAura == r.Def->Root)
             return 3000;
-    return 25000;
+    return r.Def->Type == Kind::Totem ? 50000 : 25000;
+}
+
+bool BuffRecentlyCast(BotAI* ai, BotCombatCtx* ctx, Resolved const& r)
+{
+    auto it = ctx->LastBuffMs.find(r.Id);
+    return it != ctx->LastBuffMs.end() && ai->GetNowMs() - it->second < BuffRecastMs(ctx, r);
 }
 
 // Facts for the rotation conditions (BotRotation.h), read once per cast tick.
@@ -1409,6 +1492,52 @@ bool ThreatStep(BotAI* ai, Player* bot, BotCombatCtx* ctx, Unit* target)
     return false;
 }
 
+// Crowd control on one extra attacker: with two or more mobs on the bot and none controlled yet, a control spell goes on the strongest mob
+// that is not the fight target. Each mob is tried once per 20 s (a refused or resisted cast is not repeated every tick).
+bool TryControl(BotAI* ai, Player* bot, BotCombatCtx* ctx, Unit* fightTarget, BotRotation::Facts const& facts)
+{
+    Resolved const* spell = nullptr;
+    for (Resolved const& r : ctx->Spells)
+        if (r.Def->Type == Kind::Control && (r.Def->Form == FORM_ANY || r.Def->Form == uint8(bot->GetShapeshiftForm())) && BotRotation::Allowed(r.Def->When, facts) && Ready(bot, r) && Affordable(bot, r.Info))
+        {
+            spell = &r;
+            break;
+        }
+    if (!spell)
+        return false;
+    uint32 const now = ai->GetNowMs();
+    Unit* pick = nullptr;
+    for (Unit* a : bot->getAttackers())
+    {
+        if (!a || !a->IsAlive() || a->HasBreakableByDamageCrowdControlAura())
+        {
+            if (a && a->IsAlive() && a != fightTarget)
+                return false;   // one controlled mob at a time
+            continue;
+        }
+        if (a == fightTarget || !spell->Info->CheckTargetCreatureType(a) || bot->GetDistance(a) > spell->MaxRange - 1.0f || !bot->IsWithinLOSInMap(a))
+            continue;
+        bool tried = false;
+        for (auto const& t : ctx->CcTried)
+            if (t.first == a->GetGUID() && now - t.second < 20000)
+                tried = true;
+        if (tried)
+            continue;
+        if (!pick || a->GetLevel() > pick->GetLevel())
+            pick = a;
+    }
+    if (!pick)
+        return false;
+    if (ctx->CcTried.size() >= 8)
+        ctx->CcTried.erase(ctx->CcTried.begin());
+    ctx->CcTried.emplace_back(pick->GetGUID(), now);
+    bool const ok = TryCast(ai, bot, ctx, *spell, pick);
+    if (ok)
+        LogDecision(ai, bot, ctx, "CROWD_CONTROL", StringFormat("{} on {} (level {})", SpellNameOf(spell->Info), pick->GetName(), pick->GetLevel()),
+            StringFormat(R"("spell":{},"spell_name":"{}","target":{},"target_level":{},"enemies":{})", spell->Id, Json(SpellNameOf(spell->Info)), pick->GetEntry(), uint32(pick->GetLevel()), facts.EnemiesOnBot));
+    return ok;
+}
+
 class CastAction : public Action
 {
 public:
@@ -1435,25 +1564,36 @@ public:
         bool const inMelee = bot->IsWithinMeleeRange(target);
         bool const moving = bot->isMoving();
         bool skippedForPower = false;
+        uint8 const rawForm = uint8(bot->GetShapeshiftForm());
+        uint8 const form = rawForm == FORM_DIRE_BEAR_FORM ? uint8(FORM_BEAR_FORM) : rawForm;   // Dire Bear Form runs the Bear rows
         BotRotation::Facts const facts = RotationFacts(ai, bot, ctx, target);
+        if (Cfg().Rotation && Cfg().CrowdControl && facts.EnemiesOnBot >= 2 && !moving && TryControl(ai, bot, ctx, target, facts))
+            return true;
 
         for (Resolved const& r : ctx->Spells)
         {
             Kind const kind = r.Def->Type;
-            if (kind == Kind::Heal || kind == Kind::Threat || !BotRotation::Allowed(r.Def->When, facts))
+            if (kind == Kind::Heal || kind == Kind::Threat || kind == Kind::Control || !BotRotation::Allowed(r.Def->When, facts))
+                continue;
+            // the tank warrior of a group (Bot.AI.Roles.*) holds Defensive Stance: the Battle Stance row of the table must not undo it
+            if (kind == Kind::SelfBuff && r.Def->Root == 2457 && Cfg().GroupRoles && bot->HasAura(71))
+                continue;
+            if (kind == Kind::Shift ? (!Cfg().DruidForms || rawForm != uint8(FORM_NONE) || (Cfg().DruidBear && r.Def->Root == 768)) : (r.Def->Form != FORM_ANY && r.Def->Form != form))
                 continue;
             if (r.Id == ctx->BlockSpell && ai->GetNowMs() < ctx->BlockUntilMs)
             {
                 skippedForPower = skippedForPower || ctx->BlockPower;
                 continue;
             }
-            if (kind == Kind::SelfBuff)
+            if (kind == Kind::SelfBuff || kind == Kind::Shift || kind == Kind::Totem)
             {
-                if (bot->HasAura(r.Id) || !Ready(bot, r) || !Affordable(bot, r.Info) || (ctx->LastBuffMs && ai->GetNowMs() - ctx->LastBuffMs < BuffRecastMs(ctx, r)))
+                if (bot->HasAura(r.Id) || !Ready(bot, r) || !Affordable(bot, r.Info) || BuffRecentlyCast(ai, ctx, r))
                     continue;
+                if (kind == Kind::Totem)
+                    EnsureTotemTool(bot, r.Def->Root);
                 if (TryCast(ai, bot, ctx, r, nullptr))
                 {
-                    ctx->LastBuffMs = ai->GetNowMs();
+                    ctx->LastBuffMs[r.Id] = ai->GetNowMs();
                     return true;
                 }
                 continue;
@@ -1466,8 +1606,8 @@ public:
                 continue;
             if (kind == Kind::Debuff && target->HasAura(r.Id))
                 continue;
-            if (kind == Kind::Finisher && bot->HasAura(r.Id))
-                continue; // Slice and Dice: the aura is running
+            if (kind == Kind::Finisher && (bot->HasAura(r.Id) || target->HasAura(r.Id, bot->GetGUID())))
+                continue; // Slice and Dice / Rip: the aura is running
             if (kind == Kind::Wand && (!skippedForPower || ctx->MeleeFallback))
                 continue; // the wand only fills in for spells the bot cannot afford (this entry comes last in the class table)
             if (r.Info->EquippedItemClass >= 0 && !WeaponOk(bot, r.Info) && !(RepairIfBroken(ai, bot, ctx->Seq) && WeaponOk(bot, r.Info)))
@@ -1540,7 +1680,7 @@ public:
         BotCombatCtx* ctx = FightCtx(ai, bot);
         if (CastingNow(bot) || ai->GetNowMs() - ctx->LastHealMs < (Cfg().GroupRoles && bot->GetGroup() ? 1500u : 3000u) && ctx->Heals)
             return false;
-        Resolved const* heal = ctx->Find(Kind::Heal);
+        Resolved const* heal = ctx->FindLast(Kind::Heal);
         if (!heal || !Ready(bot, *heal) || !Affordable(bot, heal->Info))
             return false;
         float hpBefore = bot->GetHealthPct();
@@ -1558,6 +1698,8 @@ public:
             else if (bot->GetHealthPct() >= float(Cfg().HealBelowPct))
                 return false;   // somebody needs a heal but cannot be reached, and the bot itself is fine
         }
+        if (heal->Def->Form == FORM_NONE && bot->GetShapeshiftForm() != FORM_NONE)
+            bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);   // a bear or cat cannot cast Healing Touch: leave the form (Bear Form is cast again after its recast time)
         if (!TryCast(ai, bot, ctx, *heal, healTarget))
             return false;
         ctx->LastHealMs = ai->GetNowMs();
@@ -1676,6 +1818,145 @@ private:
     uint32 _lastSunderMs = 0;
 };
 
+// Pre-pull buffs (Bot.AI.Rotation.Enabled): out of combat the bot keeps its own long buffs up, so the fight starts with them. Self buffs only; the
+// buff comes from the highest known rank. Strategy "prebuff" (NonCombat), added to every bot while the rotation switch is on.
+struct PreBuffDef
+{
+    Classes Class;
+    uint32 Root;
+    char const* Name;
+    bool Party = false;    // also cast on group members that lack it
+    bool Pet = false;      // a pet summon: only without a pet
+    bool Stealth = false;  // only with an unaware hostile creature close by (stealthed travel is slow)
+};
+
+constexpr PreBuffDef PREBUFFS[] =
+{
+    { CLASS_PRIEST,  1243,  "Power Word: Fortitude", true },
+    { CLASS_PRIEST,  588,   "Inner Fire" },
+    { CLASS_MAGE,    1459,  "Arcane Intellect", true },
+    { CLASS_MAGE,    168,   "Frost Armor" },
+    { CLASS_DRUID,   1126,  "Mark of the Wild", true },
+    { CLASS_PALADIN, 19740, "Blessing of Might", true },
+    { CLASS_WARLOCK, 687,   "Demon Skin" },
+    { CLASS_WARLOCK, 697,   "Summon Voidwalker", false, true },   // needs a Soul Shard: without one the cast fails and the Imp row below runs
+    { CLASS_WARLOCK, 688,   "Summon Imp", false, true },
+    { CLASS_ROGUE,   1784,  "Stealth", false, false, true },
+    { CLASS_HUNTER,  13165, "Aspect of the Hawk" },
+    { CLASS_SHAMAN,  324,   "Lightning Shield" },
+};
+
+// An attackable, unaware creature that the bot could pull within `range` yards (not a critter, level at most 3 above the bot): the rogue sneaks up on it.
+bool HostileCloseBy(Player* bot, float range)
+{
+    std::list<Creature*> list;
+    bot->GetCreatureListWithEntryInGrid(list, 0, range);
+    for (Creature* c : list)
+        if (c && c->IsAlive() && !c->IsInCombat() && c->GetCreatureType() != CREATURE_TYPE_CRITTER && !c->IsTrigger() && bot->IsValidAttackTarget(c) &&
+            int32(c->GetLevel()) <= int32(bot->GetLevel()) + 3 && bot->CanSeeOrDetect(c))
+            return true;
+    return false;
+}
+
+class PreBuffAction : public Action
+{
+public:
+    explicit PreBuffAction(BotAI* ai) : Action(ai, "combat_prebuff", ACTION_FLAG_QUIET_LOG) { }
+    bool IsPossible() override
+    {
+        Player* bot = GetBot();
+        return Cfg().Rotation && bot->IsAlive() && !bot->IsInCombat() && !bot->IsMounted() && !CastingNow(bot) && bot->GetStandState() == UNIT_STAND_STATE_STAND &&
+            bot->GetShapeshiftForm() == FORM_NONE && !bot->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_CONFUSED | UNIT_STATE_FLEEING);
+    }
+    bool Execute() override
+    {
+        Player* bot = GetBot();
+        BotAI* ai = GetAI();
+        uint32 const now = ai->GetNowMs();
+        if (int32(now - _nextMs) < 0)
+            return false;
+        if (_lastMs.size() > 64)
+            _lastMs.clear();   // bounded: members come and go
+        for (size_t i = 0; i < std::size(PREBUFFS); ++i)
+        {
+            PreBuffDef const& def = PREBUFFS[i];
+            if (def.Class != bot->GetClass() || !bot->HasSpell(def.Root))
+                continue;
+            if (def.Pet && (bot->GetPet() || !bot->GetPetGUID().IsEmpty()))
+                continue;
+            uint32 id = def.Root;
+            for (uint32 guard = 0; guard < 16; ++guard)
+            {
+                uint32 const next = sSpellMgr->GetNextSpellInChain(id);
+                if (!next || !bot->HasSpell(next))
+                    break;
+                id = next;
+            }
+            SpellInfo const* si = sSpellMgr->GetSpellInfo(id, DIFFICULTY_NONE);
+            if (!si || !StringEqualI(SpellNameOf(sSpellMgr->GetSpellInfo(def.Root, DIFFICULTY_NONE)), def.Name))
+                continue;   // wrong id: the name does not match, never cast a stranger
+            if (bot->GetSpellHistory()->HasCooldown(si) || bot->GetSpellHistory()->HasGlobalCooldown(si) || bot->GetPower(bot->GetPowerType()) < CostOf(bot, si) ||
+                (!def.Stealth && bot->GetPowerPct(bot->GetPowerType()) < float(Cfg().PrePullManaPct)))
+                continue;
+            if (def.Stealth && !HostileCloseBy(bot, 25.0f))
+                continue;
+
+            std::vector<Unit*> targets;
+            targets.push_back(bot);
+            if (def.Party)
+                if (Group* group = bot->GetGroup())
+                    for (GroupReference const& ref : group->GetMembers())
+                    {
+                        Player* m = ref.GetSource();
+                        if (m && m != bot && m->IsInWorld() && m->IsAlive() && m->GetMap() == bot->GetMap() && bot->GetDistance(m) <= std::max(5.0f, si->GetMaxRange(true, bot) - 2.0f) &&
+                            bot->IsWithinLOSInMap(m))
+                            targets.push_back(m);
+                    }
+            for (Unit* t : targets)
+            {
+                if (t->HasAura(id) || t->HasAura(def.Root))
+                    continue;
+                uint64 const key = (uint64(t->GetGUID().GetCounter()) << 8) | uint64(i);
+                auto it = _lastMs.find(key);
+                if (it != _lastMs.end() && int32(now - it->second) < 30000)
+                    continue;
+                _lastMs[key] = now;
+                SpellCastResult const res = bot->CastSpell(t, id, CastSpellExtraArgs(TRIGGERED_NONE));
+                if (res == SPELL_CAST_OK)
+                {
+                    SetResult("PREBUFF", StringFormat("casts {} {}", SpellNameOf(si), t == bot ? "on itself" : "on a group member"),
+                        StringFormat(R"({{"spell":{},"spell_name":"{}","self":{}}})", id, Json(SpellNameOf(si)), t == bot ? "true" : "false"));
+                    _nextMs = now + 2000;
+                    return true;
+                }
+            }
+        }
+        _nextMs = now + 3000;
+        return false;
+    }
+private:
+    uint32 _nextMs = 0;
+    std::unordered_map<uint64, uint32> _lastMs;   // (target guid, table index) -> last cast
+};
+
+class PreBuffTrigger : public Trigger
+{
+public:
+    explicit PreBuffTrigger(BotAI* ai) : Trigger(ai, "prebuff_due", 3000) { }
+    bool IsActive() override { return Cfg().Rotation; }
+};
+
+class PreBuffStrategy : public Strategy
+{
+public:
+    PreBuffStrategy() : Strategy("prebuff") { }
+    void InitTriggers(std::vector<BotTriggerNode>& t) override
+    {
+        // above rest (35) so the bot buffs before it drinks; below the emergency bands
+        t.push_back({ "prebuff_due", { { "combat_prebuff", BotRelevance::Rest + 3.0f } } });
+    }
+};
+
 } // namespace
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1700,6 +1981,11 @@ int32 BotCombatFleeMode(Player const* bot)
     return bot ? FleeModeOf(bot) : Cfg().FleeMode;
 }
 
+bool BotCombatRotationEnabled()
+{
+    return Cfg().Rotation;
+}
+
 uint32 BotCombatPrePullManaPct()
 {
     return Cfg().PrePullManaPct;
@@ -1711,7 +1997,7 @@ char const* BotCombatHealUnit(Player* bot, Unit* target)
         return "CAST_FAILED";
     BotCombatCtx probe(nullptr);
     probe.Resolve(bot);
-    Resolved const* heal = probe.Find(Kind::Heal);
+    Resolved const* heal = probe.FindLast(Kind::Heal);
     if (!heal)
         return "NO_HEAL_SPELL";
     if (CastingNow(bot) || bot->isMoving())
@@ -1799,5 +2085,8 @@ void RegisterCombatBotObjects(BotRegistry& r)
             t.push_back({ "combat_engaged", { { "combat_engage", BotRelevance::Move }, { "combat_cast", BotRelevance::Normal }, { "combat_tank", BotRelevance::Move + 5.0f } } });
         }
     };
+    r.AddTrigger("prebuff_due", [](BotAI* ai) -> std::unique_ptr<Trigger> { return std::make_unique<PreBuffTrigger>(ai); });
+    r.AddAction("combat_prebuff", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<PreBuffAction>(ai); });
+    r.AddStrategy("prebuff", BotStateBit(BotState::NonCombat), []() -> std::unique_ptr<Strategy> { return std::make_unique<PreBuffStrategy>(); });
     r.AddStrategy("combat", BotStateBit(BotState::Combat), []() -> std::unique_ptr<Strategy> { return std::make_unique<CombatStrategy>(); });
 }

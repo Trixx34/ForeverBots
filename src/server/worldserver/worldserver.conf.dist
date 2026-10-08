@@ -4564,6 +4564,28 @@ Classic.GuildFinder = 0
 #        Default:     0 / decision,state_change,trace,cast,aura
 #
 #
+#    Bot.Population.Enabled
+#        Description: Dynamic bot population. The number of pool bots (not alts) online follows a target: Base plus PerPlayerTenths/10
+#                     bots per real player, scaled by the percentage of the hour in HourPct, clamped to Min..Max. Every IntervalSec the
+#                     population moves towards the target by at most StepUp logins or StepDown logouts (nothing within Hysteresis bots
+#                     of the target). Bots in combat or grouped with a real player are not logged out. New characters are created
+#                     when too few exist. Logged out with the reason LOGOUT_POPULATION.
+#        Default:     0 - Off
+#
+#    Bot.Population.Base / Bot.Population.PerPlayerTenths / Bot.Population.Min / Bot.Population.Max
+#        Description: Bots wanted with no player online / extra bots per player in tenths (10 = one per player) / lower and upper limit.
+#        Default:     100 / 0 / 0 / 200
+#
+#    Bot.Population.StepUp / Bot.Population.StepDown / Bot.Population.Hysteresis / Bot.Population.IntervalSec / Bot.Population.StartDelaySec
+#        Description: Most logins per check / most logouts per check / tolerated distance from the target / seconds between checks /
+#                     uptime before the first check.
+#        Default:     5 / 3 / 2 / 60 / 60
+#
+#    Bot.Population.HourPct
+#        Description: Up to 24 comma-separated percentages of the target for the hours 0-23 of server local time (missing hours repeat
+#                     the last value). Empty = 100 for every hour. Example: "40,40,40,40,40,50,60,80,100".
+#        Default:     ""
+#
 #    Bot.Login.MaxPerTick
 #        Description: Bot logins started per world update tick (spreads a large `bot spawn`).
 #        Default:     5
@@ -4686,6 +4708,11 @@ Classic.GuildFinder = 0
 #                     Bot.AI.Rest.DrinkBelowPct applies).
 #        Default:     40
 #
+#    Bot.AI.Combat.FreeTotems
+#        Description: With Bot.AI.Rotation.Enabled a shaman that casts a totem (Stoneskin, Searing, Healing Stream) gets the totem tool
+#                     (Earth, Fire, Water Totem) for free when the bags lack it. Placeholder until the economy phase.
+#        Default:     1 - On
+#
 #    Bot.AI.Combat.FreeRepair
 #        Description: A bot with a broken (0 durability) equipped item repairs everything for free (REPAIR_FREE) so
 #                     weapon spells (Heroic Strike, Raptor Strike, Auto Shot) do not fail with EQUIPPED_ITEM_CLASS.
@@ -4756,6 +4783,17 @@ Bot.Log.ProbeIntervalSec = 10
 Bot.Log.HotSplit = 0
 Bot.Log.HotTypes = "decision,state_change,trace,cast,aura"
 Bot.Login.MaxPerTick = 5
+Bot.Population.Enabled = 0
+Bot.Population.Base = 100
+Bot.Population.PerPlayerTenths = 0
+Bot.Population.Min = 0
+Bot.Population.Max = 200
+Bot.Population.StepUp = 5
+Bot.Population.StepDown = 3
+Bot.Population.Hysteresis = 2
+Bot.Population.HourPct = ""
+Bot.Population.IntervalSec = 60
+Bot.Population.StartDelaySec = 60
 Bot.AI.Enabled = 1
 Bot.AI.TickMs = 500
 Bot.AI.TestStrategy = 0
@@ -4870,6 +4908,46 @@ Bot.AI.Death.GiveUpSec = 300
 #    Bot.AI.Pet.RetrySec / Bot.AI.Pet.TameCooldownSec
 #        Description: Seconds between attempts to summon or revive a pet / pause after a failed tame attempt.
 #        Default:     8 / 300
+#
+#    Bot.AI.Consumables.Enabled
+#        Description: Bots drink healing and mana potions from their bags in a fight when health or mana is low and the class heal
+#                     cannot help (instant potions the bot can use; food and drink stay with the rest strategy). Adds the strategy
+#                     "consumables" to the Combat engine. Logged as POTION_HEALTH / POTION_MANA. Bots do not buy potions yet.
+#        Default:     0 - Off
+#
+#    Bot.AI.Consumables.HealthBelowPct / Bot.AI.Consumables.ManaBelowPct
+#        Description: Health percent / mana percent below which a potion is drunk in combat.
+#        Default:     35 / 20
+#
+#    Bot.AI.Watchdog.Enabled
+#        Description: Stall watchdog. A bot that makes no progress (no movement, xp, money or quest-log change; fighting, flying, being
+#                     dead and instance content count as busy) is recovered in steps: clear the goal, use the hearthstone, teleport to
+#                     the home bind. Adds the strategy "watchdog" to the NonCombat engine. Every step is logged (WATCHDOG_*).
+#        Default:     0 - Off
+#
+#    Bot.AI.Watchdog.StallSec / Bot.AI.Watchdog.HearthMul / Bot.AI.Watchdog.HomeMul
+#        Description: Seconds without progress before the goal is cleared / multiples of StallSec for the hearthstone and for the
+#                     home teleport.
+#        Default:     600 / 2 / 4
+#
+#    Bot.AI.Watchdog.Hearth / Bot.AI.Watchdog.Home
+#        Description: Allow the hearthstone step / the home teleport step (off: only logged).
+#        Default:     1 / 1
+#
+#    Bot.AI.Watchdog.MoveYards / Bot.AI.Watchdog.MaxPerHour
+#        Description: Yards moved that count as progress / hearthstone and home recoveries per bot and hour (beyond it only
+#                     WATCHDOG_EXHAUSTED is logged).
+#        Default:     10 / 6
+#
+#    Bot.Loot.Roll.Enabled
+#        Description: Bots vote in group loot rolls at once instead of leaving the roll to time out (60 s, which holds up the real
+#                     players): Need on a gear upgrade their class can use (class-role gear score) and on items for an active quest,
+#                     Greed on other items (see GreedOnOther), Pass when the bags are full. Needs no strategy.
+#        Default:     0 - Off
+#
+#    Bot.Loot.Roll.GreedOnOther
+#        Description: Greed on items the bot cannot use or does not need (it sells them later) instead of passing.
+#        Default:     1
 #
 #    Bot.AI.Move.Natural.Enabled
 #        Description: Natural-looking movement: smoother paths, human pacing, no repeated identical path requests, a step back or
@@ -5001,6 +5079,12 @@ Bot.AI.Death.GiveUpSec = 300
 #                     Logged as THREAT_REDUCE / THREAT_PAUSE.
 #        Default:     1
 #
+#    Bot.AI.Rotation.CrowdControl
+#        Description: With two or more mobs on the bot and none controlled yet, a control spell goes on the strongest mob that is not the
+#                     fight target: Polymorph (mage), Shackle Undead (priest), Hibernate (druid), Banish (warlock), Scare Beast (hunter).
+#                     Needs Bot.AI.Rotation.Enabled. Logged as CROWD_CONTROL.
+#        Default:     1
+#
 #    Bot.AI.Roles.Enabled
 #        Description: Group play in combat: a bot with a heal spell heals the group member who needs it most (an emergency first, then the
 #                     tank, then the lowest health), and bots other than the tank (the warrior of the group) attack the tank's target.
@@ -5018,6 +5102,33 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: Heal a group member below this health percent / the tank below this percent / below this percent a member is an
 #                     emergency and comes first.
 #        Default:     80 / 90 / 35
+#
+#
+#    Bot.AI.Rotation.DruidForms
+#        Description: Needs Bot.AI.Rotation.Enabled. Druids shift into Bear Form once they know it (level 10) and fight with Maul, Swipe and
+#                     Demoralizing Roar; a bear that needs a heal leaves the form for Healing Touch. Off: druids stay unshifted casters.
+#        Default:     0 - Off
+#
+#    Bot.AI.Rotation.DruidBear
+#        Description: With Bot.AI.Rotation.DruidForms the druid fights in Bear Form (Dire Bear Form from level 40) instead of Cat Form. Off: Cat
+#                     Form once known (level 20), Bear Form before that.
+#        Default:     0 - Off
+#
+#    Bot.AI.Dummy.Enabled
+#        Description: Training dummy mode: the chat verb "dummy [seconds]" makes a bot summon an immortal, harmless dummy of its own level and
+#                     fight it with its normal combat code; "dummy off" ends the run. The log gets DUMMY_START and DUMMY_SUMMARY (damage per
+#                     spell, dps, time to the first hit, longest gap without a hit). For tuning the class rotations (Bot.AI.Rotation.Enabled)
+#                     without a sim run. Needs sql/custom/world/2026_10_08_04_world_forever_bot_dummy.sql. See
+#                     docs/playerbots/feature-bot-dummy-20261008.md.
+#        Default:     0 - Off
+#
+#    Bot.AI.Dummy.Entry / Bot.AI.Dummy.DefaultSec / Bot.AI.Dummy.MaxSec
+#        Description: Creature entry of the dummy, run length without an argument, longest run a command may ask for (seconds).
+#        Default:     9900001 / 60 / 600
+#
+#    Bot.AI.Dummy.FullPower
+#        Description: Refill mana, energy and health every second during a run, so the numbers show the rotation and not the mana pool.
+#        Default:     1 - On
 #
 #    Bot.AI.Loot.Improved.Enabled
 #        Description: Improved chest loot task of the quest strategy: spawn choice by path cost, skip far spawns and recently deadly areas,
@@ -5046,6 +5157,18 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: Path queries per spawn choice (the nearest candidates are probed first).
 #        Default:     4
 #
+#    Bot.AI.Loot.Safety.Enabled
+#        Description: Guards of the chest loot task (independent of Bot.AI.Loot.Improved.Enabled): skip chests
+#                     (the camp danger check of the quest strategy is separate and unchanged), skip chests near a recent bot death, and skip spawns
+#                     that repeatedly failed bots for reasons that do not depend on the bot (no path, stalled approach, cannot interact).
+#                     Every guard only skips or delays a chest. Read once at startup.
+#        Default:     1 - On
+#
+#    Bot.AI.Loot.Safety.QuarantineStrikes / Bot.AI.Loot.Safety.QuarantineSec
+#        Description: Bot-independent failures of one chest spawn within 30 minutes before every bot skips it / how long (doubles on
+#                     repeats, up to 8 times).
+#        Default:     3 / 1200
+#
 
 Bot.AI.Pet.Enabled = 0
 Bot.AI.Pet.Feed = 1
@@ -5057,6 +5180,17 @@ Bot.AI.Pet.FeedBelowPct = 66
 Bot.AI.Pet.MendBelowPct = 60
 Bot.AI.Pet.RetrySec = 8
 Bot.AI.Pet.TameCooldownSec = 300
+Bot.AI.Consumables.Enabled = 0
+Bot.AI.Consumables.HealthBelowPct = 35
+Bot.AI.Consumables.ManaBelowPct = 20
+Bot.AI.Watchdog.Enabled = 0
+Bot.AI.Watchdog.StallSec = 600
+Bot.AI.Watchdog.HearthMul = 2
+Bot.AI.Watchdog.HomeMul = 4
+Bot.AI.Watchdog.Hearth = 1
+Bot.AI.Watchdog.Home = 1
+Bot.AI.Watchdog.MoveYards = 10
+Bot.AI.Watchdog.MaxPerHour = 6
 Bot.AI.Move.Natural.Enabled = 0
 Bot.AI.Move.Natural.Shortcut = 1
 Bot.AI.Move.Natural.RoundCorners = 1
@@ -5084,6 +5218,15 @@ Bot.AI.Ammo.LowCount = 60
 Bot.AI.Ammo.BuyTarget = 400
 Bot.AI.Ammo.CooldownSec = 300
 Bot.Talents.Premade.Enabled = 0
+Bot.AI.Rotation.DruidForms = 0
+Bot.AI.Rotation.DruidBear = 0
+Bot.AI.Combat.FreeTotems = 1
+Bot.AI.Dummy.Enabled = 0
+Bot.AI.Dummy.Entry = 9900001
+Bot.AI.Dummy.DefaultSec = 60
+Bot.AI.Dummy.MaxSec = 600
+Bot.AI.Dummy.FullPower = 1
+
 Bot.AI.Loot.Improved.Enabled = 0
 Bot.AI.Loot.Improved.MaxYards = 150
 Bot.AI.Loot.Improved.DeadlyRadius = 40
@@ -5091,6 +5234,9 @@ Bot.AI.Loot.Improved.DeadlySec = 600
 Bot.AI.Loot.Improved.BlacklistSec = 900
 Bot.AI.Loot.Improved.MinFreeSlots = 2
 Bot.AI.Loot.Improved.PathProbes = 4
+Bot.AI.Loot.Safety.Enabled = 1
+Bot.AI.Loot.Safety.QuarantineStrikes = 3
+Bot.AI.Loot.Safety.QuarantineSec = 1200
 #
 #    Bot.Chat.Enabled
 #        Description: Bots obey chat commands from the leader of their group (party, raid, whisper to a bot).
