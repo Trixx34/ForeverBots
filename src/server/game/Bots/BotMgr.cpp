@@ -21,6 +21,7 @@
 #include "BotAI.h"
 #include "BotAlts.h"
 #include "BotLogDatabase.h"
+#include "BotPet.h"
 #include "BotQuest.h"
 #include "BotQuestLog.h"
 #include "CharacterCache.h"
@@ -1360,6 +1361,7 @@ std::vector<BotInfo> BotMgr::ListBots()
 
 void BotMgr::StartLogin(BotInfo& bot)
 {
+    BotPet::EnsureIndex(); // world thread, once; beast spawns for taming
     BotQuest::EnsureIndex(); // world thread, once; static quest data for the quest strategy
     bot.Session = MakeBotSession(bot.AccountId, std::string(bot.AccountName));
     if (bot.Alt)

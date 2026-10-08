@@ -68,6 +68,8 @@ namespace BotQuest
         virtual bool ItemHasGameObjectSource(uint32 item) const = 0;
         virtual bool HasEnderRow(uint32 questId) const = 0;
         virtual bool HasEnderSpawn(uint32 questId) const = 0;
+        // a completion-event quest the bots can finish anyway (hunter taming). Default: none.
+        virtual bool EventQuestSupported(uint32 /*questId*/) const { return false; }
     };
 
     struct ClassifierResult

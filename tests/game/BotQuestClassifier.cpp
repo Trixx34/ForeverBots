@@ -39,7 +39,10 @@ struct FakeWorld final : QuestWorldLookup
     std::set<uint32> EnderRows;                          // quests with an ender row
     std::set<uint32> EnderSpawned;                       // quests whose ender has a spawn
 
+    std::set<uint32> EventOk;                            // completion-event quests the bots can finish
+
     bool HasSpawn(uint32 entry) const override { return Spawned.count(entry) != 0; }
+    bool EventQuestSupported(uint32 questId) const override { return EventOk.count(questId) != 0; }
 
     std::vector<uint32> KillEntries(uint32 credit) const override
     {
@@ -235,6 +238,22 @@ TEST_CASE("BotQuest classifier: NEEDS_EVENT", "[BotQuest]")
     QuestFacts q = MakeQuest(world);
     q.CompletionEvent = true;
     CHECK(IsCode(ClassifyQuest(q, world), "NEEDS_EVENT"));
+}
+
+TEST_CASE("BotQuest classifier: a supported completion-event quest is not blocked as NEEDS_EVENT", "[BotQuest]")
+{
+    FakeWorld world;
+    QuestFacts q = MakeQuest(world);
+    q.CompletionEvent = true;
+    world.EventOk.insert(q.QuestId);
+    CHECK_FALSE(IsCode(ClassifyQuest(q, world), "NEEDS_EVENT"));
+
+    // another quest id stays blocked
+    FakeWorld other;
+    QuestFacts q2 = MakeQuest(other);
+    q2.CompletionEvent = true;
+    other.EventOk.insert(q2.QuestId + 1);
+    CHECK(IsCode(ClassifyQuest(q2, other), "NEEDS_EVENT"));
 }
 
 TEST_CASE("BotQuest classifier: OBJECTIVE_UNSUPPORTED", "[BotQuest]")

@@ -148,8 +148,8 @@ constexpr SpellDef SPELLS[] =
     { CLASS_PALADIN, 20154, "Seal of Righteousness", Kind::SelfBuff },
     { CLASS_PALADIN, 20271, "Judgement",            Kind::Direct, 20154 },
     { CLASS_PALADIN, 635,   "Holy Light",           Kind::Heal },
-    // Hunter. Bots have no pet logic (no taming, calling, feeding): a pet would lose happiness (Pet.h HAPPINESS_*) and deal 75% damage
-    // once unhappy, so a hunter bot that ever owns a pet needs feeding support first.
+    // Hunter. Pet upkeep (calling, feeding, taming) is the separate "pet" strategy (BotPet.cpp, Bot.AI.Pet.*, off by default); without
+    // it a pet would lose happiness (Pet.h HAPPINESS_*) and deal 75% damage once unhappy.
     // Auto Shot first: it is only (re)started when not running, so it never waits behind the shots below
     { CLASS_HUNTER,  75,    "Auto Shot",            Kind::AutoShot },
     { CLASS_HUNTER,  1978,  "Serpent Sting",        Kind::Dot },

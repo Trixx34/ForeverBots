@@ -4774,6 +4774,109 @@ Bot.AI.Recover.MaxCorpseRunYards = 1200
 Bot.AI.Move.StuckSec = 8
 Bot.AI.Move.StuckRepaths = 3
 Bot.AI.Death.CorpseRunMaxFails = 3
+
+#
+#    Bot.AI.Pet.Enabled
+#        Description: Hunter bots look after their pet: summon, revive, dismiss on logout and map change, feed, assist, follow,
+#                     a basic ability set, and Taming the Beast quests. Adds the strategy "pet" to hunter bots.
+#        Default:     0 - Off
+#
+#    Bot.AI.Pet.Feed / Bot.AI.Pet.Abilities / Bot.AI.Pet.Taming / Bot.AI.Pet.TameFirstPet
+#        Description: Feed the pet by its happiness / set the autocast abilities of the pet / complete the Taming the Beast quests
+#                     (needs Bot.AI.Pet.Enabled) / tame a first pet with Tame Beast when the hunter has none.
+#        Default:     1 / 1 / 1 / 1
+#
+#    Bot.AI.Pet.MinLevel
+#        Description: Level from which a hunter bot is expected to have a pet.
+#        Default:     10
+#
+#    Bot.AI.Pet.FeedBelowPct / Bot.AI.Pet.MendBelowPct
+#        Description: Feed the pet below this happiness percentage / cast Mend Pet below this health percentage.
+#        Default:     66 / 60
+#
+#    Bot.AI.Pet.RetrySec / Bot.AI.Pet.TameCooldownSec
+#        Description: Seconds between attempts to summon or revive a pet / pause after a failed tame attempt.
+#        Default:     8 / 300
+#
+#    Bot.AI.Move.Natural.Enabled
+#        Description: Natural-looking movement: smoother paths, human pacing, no repeated identical path requests, a step back or
+#                     another route when stuck, light idling, and movement metrics. Adds the strategy "natural_idle".
+#        Default:     0 - Off
+#
+#    Bot.AI.Move.Natural.Shortcut / Bot.AI.Move.Natural.RoundCorners / Bot.AI.Move.Natural.MaxShortcutYards
+#        Description: Shorten paths where the walker can see straight ahead on solid ground / round sharp corners and use a smooth spline /
+#                     longest straight leg a shortcut may create, in yards (10-120).
+#        Default:     1 / 1 / 45
+#
+#    Bot.AI.Move.Natural.SpeedVariation / Bot.AI.Move.Natural.Pacing / Bot.AI.Move.Natural.Spread
+#        Description: Slow per-bot drift of the walking speed (about 5 percent) / short pauses at start, arrival, after combat, after
+#                     loot and at quest givers / a different approach point per bot and goal.
+#        Default:     1 / 1 / 1
+#
+#    Bot.AI.Move.Natural.Idle / Bot.AI.Move.Natural.IdleMaxStandSec
+#        Description: Look around, sit and wander a few yards while nothing else is to do / longest time a bot stands completely still (5-600).
+#        Default:     1 / 25
+#
+#    Bot.AI.Move.Natural.Metrics / Bot.AI.Move.Natural.MetricsSec
+#        Description: One decision row MOVE_METRICS per bot per window (turn rate, repeated legs, idle ratio, stuck count) / window length (10-3600).
+#        Default:     1 / 60
+#
+#    Bot.AI.Loot.Improved.Enabled
+#        Description: Improved chest loot task of the quest strategy: spawn choice by path cost, skip far spawns and recently deadly areas,
+#                     per-bot spawn blacklist, bag-space check with a planned vendor trip, loot exits never feed the quest quarantine.
+#                     Also: quest spawn index ignores pooled-out, phased, manual and other-difficulty spawns, quests that hand over their
+#                     own items are supplied, and fewer locks and allocations per tick. Read once at startup.
+#        Default:     0 - Off
+#
+#    Bot.AI.Loot.Improved.MaxYards
+#        Description: Spawns farther than this (straight line or by path) are skipped (20-1000).
+#        Default:     150
+#
+#    Bot.AI.Loot.Improved.DeadlyRadius / Bot.AI.Loot.Improved.DeadlySec
+#        Description: Spawns within this many yards of a recent bot death are skipped for this many seconds.
+#        Default:     40 / 600
+#
+#    Bot.AI.Loot.Improved.BlacklistSec
+#        Description: A spawn that gave a bot no progress is skipped by that bot for this long; repeats double it.
+#        Default:     900
+#
+#    Bot.AI.Loot.Improved.MinFreeSlots
+#        Description: Plan a vendor trip when fewer free bag slots than this would remain after the loot.
+#        Default:     2
+#
+#    Bot.AI.Loot.Improved.PathProbes
+#        Description: Path queries per spawn choice (the nearest candidates are probed first).
+#        Default:     4
+#
+
+Bot.AI.Pet.Enabled = 0
+Bot.AI.Pet.Feed = 1
+Bot.AI.Pet.Abilities = 1
+Bot.AI.Pet.Taming = 1
+Bot.AI.Pet.TameFirstPet = 1
+Bot.AI.Pet.MinLevel = 10
+Bot.AI.Pet.FeedBelowPct = 66
+Bot.AI.Pet.MendBelowPct = 60
+Bot.AI.Pet.RetrySec = 8
+Bot.AI.Pet.TameCooldownSec = 300
+Bot.AI.Move.Natural.Enabled = 0
+Bot.AI.Move.Natural.Shortcut = 1
+Bot.AI.Move.Natural.RoundCorners = 1
+Bot.AI.Move.Natural.MaxShortcutYards = 45
+Bot.AI.Move.Natural.SpeedVariation = 1
+Bot.AI.Move.Natural.Pacing = 1
+Bot.AI.Move.Natural.Spread = 1
+Bot.AI.Move.Natural.Idle = 1
+Bot.AI.Move.Natural.IdleMaxStandSec = 25
+Bot.AI.Move.Natural.Metrics = 1
+Bot.AI.Move.Natural.MetricsSec = 60
+Bot.AI.Loot.Improved.Enabled = 0
+Bot.AI.Loot.Improved.MaxYards = 150
+Bot.AI.Loot.Improved.DeadlyRadius = 40
+Bot.AI.Loot.Improved.DeadlySec = 600
+Bot.AI.Loot.Improved.BlacklistSec = 900
+Bot.AI.Loot.Improved.MinFreeSlots = 2
+Bot.AI.Loot.Improved.PathProbes = 4
 #
 #    Bot.Chat.Enabled
 #        Description: Bots obey chat commands from the leader of their group (party, raid, whisper to a bot).

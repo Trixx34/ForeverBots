@@ -48,6 +48,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <mutex>
+#include <atomic>
 
 namespace
 {
@@ -147,6 +149,17 @@ public:
     {
         SetResult("GOTO_STEP");
         return GetAI()->Motion().Step(GetAI(), GetBot()) != BotMotion::Result::Idle;
+    }
+};
+
+class NaturalIdleAction : public Action
+{
+public:
+    explicit NaturalIdleAction(BotAI* ai) : Action(ai, "natural_idle", ACTION_FLAG_MOVES | ACTION_FLAG_QUIET_LOG | ACTION_FLAG_NOISY) { }
+    bool Execute() override
+    {
+        SetResult("IDLE_STEP");
+        return GetAI()->Motion().IdleStep(GetAI(), GetBot());
     }
 };
 
@@ -885,6 +898,71 @@ void BotAggroLog(BotAI* ai, Player* bot, char const* action, BotAggroHit const& 
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// natural movement support
+// ---------------------------------------------------------------------------------------------------------------------
+namespace BotMove
+{
+NaturalConfig const& Natural()
+{
+    static NaturalConfig cfg;
+    static std::once_flag once;
+    std::call_once(once, []()
+    {
+        cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Move.Natural.Enabled", false);
+        cfg.Shortcut = sConfigMgr->GetBoolDefault("Bot.AI.Move.Natural.Shortcut", true);
+        cfg.RoundCorners = sConfigMgr->GetBoolDefault("Bot.AI.Move.Natural.RoundCorners", true);
+        cfg.SpeedVariation = sConfigMgr->GetBoolDefault("Bot.AI.Move.Natural.SpeedVariation", true);
+        cfg.Pacing = sConfigMgr->GetBoolDefault("Bot.AI.Move.Natural.Pacing", true);
+        cfg.Spread = sConfigMgr->GetBoolDefault("Bot.AI.Move.Natural.Spread", true);
+        cfg.Idle = sConfigMgr->GetBoolDefault("Bot.AI.Move.Natural.Idle", true);
+        cfg.Metrics = sConfigMgr->GetBoolDefault("Bot.AI.Move.Natural.Metrics", true);
+        cfg.MetricsSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.Natural.MetricsSec", 60), 10, 3600));
+        cfg.IdleMaxStandSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.Natural.IdleMaxStandSec", 25), 5, 600));
+        cfg.MaxShortcutYards = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.Natural.MaxShortcutYards", 45), 10, 120));
+    });
+    return cfg;
+}
+}
+
+namespace
+{
+std::atomic<BotDestinationVeto> s_destVeto{ nullptr };
+
+bool ShapedTag(char const* tag) { return std::strcmp(tag, "follow") && std::strcmp(tag, "aggro_retreat"); }  // follow goals retarget constantly
+bool PacedTag(char const* tag) { return !std::strcmp(tag, "quest") || !std::strcmp(tag, "goto"); }
+BotMove::Vec3 ToVec(G3D::Vector3 const& v) { return { v.x, v.y, v.z }; }
+
+// A straight walk from a to b: nothing blocks the line (terrain, models, doors) and the ground stays close to the straight line every
+// few yards, so a shortcut never cuts over a ledge or a gap. Heights come from the terrain and model floors, not from the navmesh.
+bool WalkLos(Player* bot, BotMove::Vec3 const& a, BotMove::Vec3 const& b)
+{
+    Map* map = bot->GetMap();
+    PhaseShift const& ps = bot->GetPhaseShift();
+    if (!map->isInLineOfSight(ps, a.x, a.y, a.z + 1.5f, b.x, b.y, b.z + 1.5f, LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
+        return false;
+    float const len = BotMove::Dist2D(a, b);
+    int32 const n = int32(len / 3.0f);
+    for (int32 i = 1; i <= n; ++i)
+    {
+        float const t = float(i) / float(n + 1);
+        float const x = a.x + (b.x - a.x) * t, y = a.y + (b.y - a.y) * t, z = a.z + (b.z - a.z) * t;
+        float const h = map->GetHeight(ps, x, y, z + 2.0f, true, 6.0f);
+        if (h <= INVALID_HEIGHT || std::fabs(h - z) > 2.0f)
+            return false;
+    }
+    return true;
+}
+}
+
+void BotSetDestinationVeto(BotDestinationVeto fn) { s_destVeto.store(fn, std::memory_order_release); }
+
+bool BotDestinationVetoed(Player* bot, float x, float y, float z)
+{
+    BotDestinationVeto fn = s_destVeto.load(std::memory_order_acquire);
+    return fn && fn(bot, bot->GetMapId(), x, y, z);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // BotMotion
 // ---------------------------------------------------------------------------------------------------------------------
 void BotMotion::SetGoal(uint32 mapId, float x, float y, float z, float arriveDist, char const* tag)
@@ -974,30 +1052,68 @@ BotPathInfo BotMotion::QueryPath(Player* bot, float x, float y, float z)
 
 // Computes the path with the core's PathGenerator (mmaps) and launches it as a spline; the same sequence MotionMaster uses.
 // A path that does not exist is never walked as a straight line (the core's MovePoint would do that).
-void BotMotion::Issue(Player* bot, uint32 now)
+BotMotion::Launch BotMotion::Issue(Player* bot, uint32 now)
 {
     _issueMs = now;
     ++_issues;
     if (bot->HasUnitState(UNIT_STATE_NOT_MOVE) || bot->IsMovementPreventedByCasting())
-        return; // rooted/stunned/casting: no progress will be made, the stuck detection reports it
+        return Launch::Skipped; // rooted/stunned/casting: no progress will be made, the stuck detection reports it
 
     if (bot->GetStandState() != UNIT_STAND_STATE_STAND && !bot->IsInCombat())
         bot->SetStandState(UNIT_STAND_STATE_STAND);
 
-    float const tx = _detour ? _dx : _x, ty = _detour ? _dy : _y, tz = _detour ? _dz : _z;
+    float tx = _x + _ox, ty = _y + _oy, tz = _z;
+    if (_detour)
+    {
+        tx = _dx; ty = _dy; tz = _dz;
+    }
+    else if (_sideOn)
+    {
+        tx = _sx; ty = _sy; tz = _sz;
+    }
     if (bot->GetExactDist(tx, ty, tz) < 1.0f)
-        return;
+        return Launch::Skipped;
 
     EnsureGrids(bot, tx, ty);
     PathGenerator path(bot);
     path.CalculatePath(tx, ty, tz, false);
     uint32 const type = uint32(path.GetPathType());
     if ((type & (PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH)) || path.GetPath().size() < 2)
-        return;
+        return Launch::NoPath;
+
+    BotMove::NaturalConfig const& nat = BotMove::Natural();
+    bool const shape = nat.Enabled && ShapedTag(_tag);
+    Movement::PointsArray pts = path.GetPath();
+    bool smooth = false;
+    if (shape && pts.size() >= 3 && (nat.Shortcut || nat.RoundCorners))
+    {
+        std::vector<BotMove::Vec3> v;
+        v.reserve(pts.size());
+        for (G3D::Vector3 const& p : pts)
+            v.push_back(ToVec(p));
+        BotMove::LosFn const los = [bot](BotMove::Vec3 const& a, BotMove::Vec3 const& b) { return WalkLos(bot, a, b); };
+        if (nat.Shortcut)
+        {
+            BotMove::ShortcutConfig sc;
+            sc.MaxSegment = float(nat.MaxShortcutYards);
+            v = BotMove::ShortcutPath(v, los, sc);
+        }
+        if (nat.RoundCorners)
+            v = BotMove::RoundCorners(v, los);
+        pts.clear();
+        for (BotMove::Vec3 const& p : v)
+            pts.emplace_back(p.x, p.y, p.z);
+        smooth = nat.RoundCorners && pts.size() >= 4;
+    }
 
     Movement::MoveSplineInit init(bot);
-    init.MovebyPath(path.GetPath());
+    init.MovebyPath(pts);
+    if (smooth)
+        init.SetSmooth();
+    if (shape && nat.SpeedVariation)
+        init.SetVelocity(bot->GetSpeed(bot->IsWalking() ? MOVE_WALK : MOVE_RUN) * BotMove::SpeedFactor(bot->GetGUID().GetCounter(), now, 0.05f));
     init.Launch();
+    return Launch::Launched;
 }
 
 bool BotMotion::RepeatFail(char const* reason, uint32 now)
@@ -1031,6 +1147,11 @@ BotMotion::Result BotMotion::Fail(BotAI* ai, Player* bot, char const* type, char
 {
     Halt(bot);
     _active = false;
+    _lastEndMs = ai->GetNowMs();
+    if (!std::strcmp(type, "path_fail"))
+        _metrics.NotePathFail();
+    if (!std::strcmp(_tag, "idle"))
+        return Result::Failed; // an idle wander that does not work is not worth a row
     if (RepeatFail(reason, ai->GetNowMs()))
         return Result::Failed;
     std::string const details = StringFormat(R"({{"tag":"{}","quest_id":{},"goal":{},"goal_map":{},"distance":{:.0f},"seconds":{},"issues":{},"path_us":{}{}}})",
@@ -1152,7 +1273,7 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
         return Result::Idle;
 
     uint32 const now = ai->GetNowMs();
-    bool const quiet = !std::strcmp(_tag, "follow") || !std::strcmp(_tag, "quest") || !std::strcmp(_tag, "aggro_retreat"); // quest legs are re-issued constantly (BotQuest logs its own decisions) // follow goals retarget constantly: only failures are logged
+    bool const quiet = !std::strcmp(_tag, "follow") || !std::strcmp(_tag, "quest") || !std::strcmp(_tag, "aggro_retreat") || !std::strcmp(_tag, "idle"); // quest legs are re-issued constantly (BotQuest logs its own decisions) // follow goals retarget constantly: only failures are logged
 
     if (bot->GetMapId() != _mapId)
         return Fail(ai, bot, "path_fail", "WRONG_MAP", "goal is on another map", StringFormat(R"("bot_map":{})", bot->GetMapId()));
@@ -1169,6 +1290,9 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
         _walkLogged = false;
         Halt(bot);
         _active = false;
+        _lastEndMs = now;
+        if (BotMove::Natural().Enabled && BotMove::Natural().Pacing && PacedTag(_tag))
+            Pause(now, BotMove::PauseMs(BotMove::Pause::Arrive, bot->GetGUID().GetCounter(), _issues));
         return Result::Arrived;
     }
 
@@ -1182,8 +1306,37 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
         _episodes = 0;
         _everMoved = false;
 
+        _ox = _oy = 0.0f;
+        _sideOn = false;
+        _waitUntilMs = 0;
+        _legFails = 0;
+        _trailN = 0;
+        _legs.Reset();
+        BotMove::NaturalConfig const& nat = BotMove::Natural();
+        if (nat.Enabled)
+        {
+            uint64 const botKey = bot->GetGUID().GetCounter();
+            if (_lastEndMs && now - _lastEndMs > 300000)
+                _fails.Clear();
+            // another approach point per bot and per goal, inside the arrival radius, on the side the bot comes from
+            if (nat.Spread && PacedTag(_tag) && _arrive >= 3.0f)
+            {
+                BotMove::ApproachParams ap;
+                ap.BotKey = botKey;
+                ap.TargetKey = BotMove::Mix(uint64(int32(_x)), uint64(int32(_y)), _mapId);
+                ap.Radius = std::min(2.5f, _arrive * 0.6f);
+                ap.BearingToBot = std::atan2(bot->GetPositionY() - _y, bot->GetPositionX() - _x);
+                BotMove::Vec3 const off = BotMove::ApproachOffset(ap);
+                _ox = off.x;
+                _oy = off.y;
+            }
+            // a real start (not the next leg of a running walk) begins with a short pause
+            if (nat.Pacing && PacedTag(_tag) && (!_lastEndMs || now - _lastEndMs > 8000))
+                Pause(now, BotMove::PauseMs(BotMove::Pause::StartDelay, botKey, uint32(_x)));
+        }
+
         auto const pathT0 = std::chrono::steady_clock::now();
-        BotPathInfo const pi = QueryPath(bot, _x, _y, _z);
+        BotPathInfo const pi = QueryPath(bot, _x + _ox, _y + _oy, _z);
         _pathUs = uint32(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - pathT0).count());
         if (quiet && _questId && !std::strcmp(_tag, "quest") && (!_lastWalkLogMs || now - _lastWalkLogMs >= 10000))
         {
@@ -1235,9 +1388,16 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
     {
         _bestDist = dist;
         _bestMs = now;
+        _legFails = 0;
     }
 
-    if (!moving && (_issueMs == 0 || now - _issueMs >= 2000))
+    bool const natural = BotMove::Natural().Enabled && ShapedTag(_tag);
+    if (natural)
+    {
+        if (std::optional<Result> r = NaturalReissue(ai, bot, now, moving))
+            return *r;
+    }
+    else if (!moving && (_issueMs == 0 || now - _issueMs >= 2000))
         Issue(bot, now ? now : 1);
 
     BotAIConfig const& cfg = BotAI::Config();
@@ -1253,10 +1413,218 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
             EmitMotion(ai, bot, "stuck", BOTLOG_WARN, "NO_PROGRESS", StringFormat("no progress to the {} goal for {} s", _tag, cfg.StuckSec),
                 StringFormat(R"({{"tag":"{}","quest_id":{},"goal":{},"distance":{:.0f},"path_us":{},{}}})", _tag, _questId, Pos3(_x, _y, _z), dist, _pathUs, info));
         _bestMs = now;
+        if (natural && NaturalStuck(ai, bot, now))
+            return Result::Moving;
         Halt(bot);
         Issue(bot, now);
     }
     return Result::Moving;
+}
+
+void BotMotion::StartSideRoute(Player* bot, uint32 now, float yards)
+{
+    float dx = _x + _ox - bot->GetPositionX(), dy = _y + _oy - bot->GetPositionY();
+    float const len = std::sqrt(dx * dx + dy * dy);
+    if (len < 1.0f)
+        return;
+    dx /= len;
+    dy /= len;
+    float const ahead = std::min(len, 10.0f) * 0.5f;
+    _sx = bot->GetPositionX() + dx * ahead - dy * yards;
+    _sy = bot->GetPositionY() + dy * ahead + dx * yards;
+    _sz = bot->GetPositionZ();
+    _sideOn = true;
+    _sideMs = now;
+    _issueMs = 0;
+}
+
+// Natural movement, the part that decides when a leg is issued: no new leg while paused or backing off, the same leg is never issued
+// again and again (a third identical leg within 8 s counts as a failure), a failed leg is followed by another route or a wait.
+std::optional<BotMotion::Result> BotMotion::NaturalReissue(BotAI* ai, Player* bot, uint32 now, bool moving)
+{
+    uint64 const botKey = bot->GetGUID().GetCounter();
+    if (_sideOn && (bot->GetExactDist2d(_sx, _sy) < 3.0f || now - _sideMs > 8000))
+    {
+        _sideOn = false;
+        _issueMs = 0;
+    }
+    if (moving)
+    {
+        if (!_trailMs || now - _trailMs >= 2000)
+        {
+            _trailMs = now ? now : 1;
+            for (uint32 i = std::min<uint32>(_trailN, 3); i > 0; --i)
+                _trail[i] = _trail[i - 1];
+            _trail[0] = { bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ() };
+            _trailN = std::min<uint32>(_trailN + 1, 4);
+        }
+        return std::nullopt;
+    }
+    if (IsPaused(now) || int32(_waitUntilMs - now) > 0)
+    {
+        _bestMs = now; // standing on purpose is not lack of progress
+        return Result::Moving;
+    }
+    if (_issueMs != 0 && now - _issueMs < 2000)
+        return std::nullopt;
+
+    BotMove::Vec3 const here{ bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ() };
+    BotMove::Vec3 const goal{ _x + _ox, _y + _oy, _z };
+    uint64 const key = BotMove::LegKey(here, goal);
+    if (_fails.Blocked(key, now))
+    {
+        _waitUntilMs = _fails.UntilMs(key);
+        _bestMs = now;
+        return Result::Moving;
+    }
+    uint32 const repeats = _legs.Issue(key, now);
+    if (repeats >= 1)
+        _metrics.NoteRepeatedLeg();
+
+    bool failed = repeats >= 2;
+    if (!failed && Issue(bot, now ? now : 1) == Launch::NoPath)
+        failed = true;
+    if (!failed)
+        return std::nullopt;
+
+    ++_legFails;
+    uint32 const wait = _fails.Fail(key, now, botKey);
+    switch (BotMove::AdviceFor(_legFails))
+    {
+        case BotMove::Reroute::Retry:
+        case BotMove::Reroute::Wait:
+            _waitUntilMs = now + wait;
+            _bestMs = now;
+            return Result::Moving;
+        case BotMove::Reroute::SideRoute:
+        {
+            float const side = BotMove::Range(BotMove::Mix(botKey, key), 6.0f, 12.0f) * (BotMove::Unit(BotMove::Mix(botKey, key, 7)) < 0.5f ? -1.0f : 1.0f);
+            StartSideRoute(bot, now, side);
+            Issue(bot, now ? now : 1);
+            return std::nullopt;
+        }
+        case BotMove::Reroute::GiveUp:
+            break;
+    }
+    return Fail(ai, bot, "path_fail", "ROUTE_GIVEUP", StringFormat("no usable route to the {} goal after {} attempts", _tag, _legFails),
+        StringFormat(R"("leg_fails":{},"repeated_legs":{})", _legFails, _legs.Repeats()));
+}
+
+// Natural movement, no progress for Bot.AI.Stuck.Sec: look around, step back along the way just walked, then try a different route.
+// Returns false when the plan is to give up (the caller then fails the goal as before).
+bool BotMotion::NaturalStuck(BotAI* /*ai*/, Player* bot, uint32 now)
+{
+    uint64 const botKey = bot->GetGUID().GetCounter();
+    BotMove::StuckPlan const plan = BotMove::PlanStuck(_episodes, botKey, now);
+    _metrics.NoteStuck();
+    if (plan.Act == BotMove::StuckAct::GiveUp)
+        return false;
+    Halt(bot);
+    bot->SetFacingTo(bot->GetOrientation() + plan.TurnRad);
+    uint32 pauseMs = plan.LookPauseMs;
+    if (plan.Act == BotMove::StuckAct::StepBack)
+    {
+        for (uint32 i = 0; i < _trailN; ++i)
+        {
+            float const d = std::sqrt(bot->GetExactDist2dSq(_trail[i].x, _trail[i].y));
+            if (d >= plan.StepYards * 0.6f || i + 1 == _trailN)
+            {
+                if (d > 1.0f && d < 15.0f)
+                {
+                    Movement::MoveSplineInit init(bot);
+                    init.MoveTo(_trail[i].x, _trail[i].y, _trail[i].z, false);
+                    init.SetWalk(true);
+                    init.Launch();
+                    pauseMs += uint32(d / 2.5f * 1000.0f);
+                }
+                break;
+            }
+        }
+    }
+    else
+        StartSideRoute(bot, now, plan.SideYards);
+    Pause(now, pauseMs);
+    _bestMs = now;
+    _issueMs = now; // the next leg follows the pause
+    return true;
+}
+
+// Once per AI tick (alive bots): movement metrics for the sim, written as MOVE_METRICS rows.
+void BotMotion::Tick(BotAI* ai, Player* bot)
+{
+    BotMove::NaturalConfig const& nat = BotMove::Natural();
+    if (!nat.Enabled || !nat.Metrics || !bot->IsAlive())
+        return;
+    uint32 const now = ai->GetNowMs();
+    _metrics.Sample(now, bot->GetPositionX(), bot->GetPositionY(), !bot->movespline->Finalized());
+    if (!_metrics.Due(now, nat.MetricsSec * 1000))
+        return;
+    BotMove::MetricsSnapshot const m = _metrics.Take(now);
+    if (!m.WindowMs)
+        return;
+    ai->EmitEvent(bot, "decision", BOTLOG_INFO, "MOVE_METRICS", "movement metrics of the last window",
+        StringFormat(R"({{"window_ms":{},"moving_ms":{},"idle_ms":{},"idle_ratio":{:.2f},"distance":{:.0f},"turn_rate_deg_s":{:.1f},"sharp_turns":{},"repeated_legs":{},"stuck":{},"path_fails":{},"longest_idle_ms":{}}})",
+            m.WindowMs, m.MovingMs, m.IdleMs, m.IdleRatio, m.DistanceYd, m.TurnRateDegPerSec, m.SharpTurns, m.RepeatedLegs, m.StuckEvents, m.PathFails, m.LongestIdleMs));
+}
+
+// Natural idling: runs when nothing else wants the bot. Looks around now and then, sits when hurt or drained, wanders a few yards, and
+// never stands still longer than IdleMaxStandSec.
+bool BotMotion::IdleStep(BotAI* ai, Player* bot)
+{
+    BotMove::NaturalConfig const& nat = BotMove::Natural();
+    uint32 const now = ai->GetNowMs();
+    if (!_idleStillSince || bot->GetExactDist2dSq(_idleX, _idleY) > 0.25f)
+    {
+        _idleX = bot->GetPositionX();
+        _idleY = bot->GetPositionY();
+        _idleStillSince = now ? now : 1;
+    }
+    BotAggroHit hit;
+    BotMove::IdleFacts f;
+    f.StillMs = now - _idleStillSince;
+    f.SinceActionMs = _idleLastAct ? now - _idleLastAct : 1000000;
+    f.Sitting = _idleSat && bot->GetStandState() == UNIT_STAND_STATE_SIT;
+    f.SittingMs = f.Sitting ? now - _idleSatMs : 0;
+    f.Threat = bot->IsInCombat() || BotAggroNear(ai, bot, 0, hit);
+    f.HurtOrDrained = bot->GetHealthPct() < 99.0f;
+    if (!f.HurtOrDrained && bot->GetMaxPower(POWER_MANA) > 0)
+        f.HurtOrDrained = bot->GetPower(POWER_MANA) * 100 < bot->GetMaxPower(POWER_MANA) * 99;
+    if (_idleSat && !f.Sitting)
+        _idleSat = false; // something stood the bot up
+    BotMove::IdleConfig cfg;
+    cfg.MaxStillMs = nat.IdleMaxStandSec * 1000;
+    BotMove::IdlePlan const p = BotMove::PlanIdle(f, cfg, bot->GetGUID().GetCounter(), now);
+    switch (p.Act)
+    {
+        case BotMove::IdleAct::Stay:
+            return false;
+        case BotMove::IdleAct::Look:
+            bot->SetFacingTo(bot->GetOrientation() + p.TurnRad);
+            break;
+        case BotMove::IdleAct::Sit:
+            bot->SetStandState(UNIT_STAND_STATE_SIT);
+            _idleSat = true;
+            _idleSatMs = now;
+            break;
+        case BotMove::IdleAct::StandUp:
+            bot->SetStandState(UNIT_STAND_STATE_STAND);
+            _idleSat = false;
+            break;
+        case BotMove::IdleAct::Wander:
+        {
+            float const x = bot->GetPositionX() + std::cos(p.WanderBearing) * p.WanderYards;
+            float const y = bot->GetPositionY() + std::sin(p.WanderBearing) * p.WanderYards;
+            float const h = bot->GetMap()->GetHeight(bot->GetPhaseShift(), x, y, bot->GetPositionZ() + 3.0f, true, 8.0f);
+            _idleLastAct = now ? now : 1;
+            if (h <= INVALID_HEIGHT || std::fabs(h - bot->GetPositionZ()) > 3.0f || BotDestinationVetoed(bot, x, y, h))
+                return true; // not here; the next try picks another bearing
+            _idleSat = false;
+            SetGoal(bot->GetMapId(), x, y, h, 1.5f, "idle");
+            return true;
+        }
+    }
+    _idleLastAct = now ? now : 1;
+    return true;
 }
 
 void BotEndRest(BotAI* ai, Player* bot, char const* reason, bool standUp)
@@ -1302,7 +1670,15 @@ void RegisterPhase3BotObjects(BotRegistry& r)
         return BotAggroNear(ai, bot, ai->Motion().QuestEntry(), hit) && hit.Dist < hit.Aggro;
     });
 
+    AddFnTrigger(r, "idle_natural", 1000, [](BotAI* ai, Player* bot)
+    {
+        BotMove::NaturalConfig const& nat = BotMove::Natural();
+        return nat.Enabled && nat.Idle && bot->IsAlive() && !bot->IsInCombat() && !ai->Motion().HasGoal() && ai->Motion().GetFollow().IsEmpty()
+            && !ai->Rest().Resting() && bot->movespline->Finalized() && !bot->IsNonMeleeSpellCast(false) && !bot->IsInFlight();
+    });
+
     // actions
+    r.AddAction("natural_idle", MakeAct<NaturalIdleAction>());
     r.AddAction("move_to_goal", MakeAct<MoveToGoalAction>());
     r.AddAction("follow_leader", MakeAct<FollowLeaderAction>());
     r.AddAction("stop_moving", MakeAct<StopMovingAction>());
@@ -1362,6 +1738,13 @@ void RegisterPhase3BotObjects(BotRegistry& r)
             t.push_back({ "resting", { { "rest_tick", BotRelevance::Rest - 1.0f } } });
             t.push_back({ "aggro_near", { { "aggro_retreat", BotRelevance::Rest + 1.0f } } });
             m.push_back("resting_hold");
+        });
+    });
+    r.AddStrategy("natural_idle", BotStateBit(BotState::NonCombat), []() -> std::unique_ptr<Strategy>
+    {
+        return std::make_unique<Fn>("natural_idle", [](std::vector<BotTriggerNode>& t, std::vector<std::string>&)
+        {
+            t.push_back({ "idle_natural", { { "natural_idle", BotRelevance::Default } } });
         });
     });
     r.AddStrategy("recover", BotStateBit(BotState::Dead), []() -> std::unique_ptr<Strategy>

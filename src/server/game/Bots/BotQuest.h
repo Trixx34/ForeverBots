@@ -41,6 +41,8 @@ namespace BotQuest
     TC_GAME_API std::string DescribeTask(BotAI* ai);
     // BotAI::OnLogout: gives back the resource claims the bot's quest task holds. Map thread.
     TC_GAME_API void OnLogout(BotAI* ai);
+    // BotAI::OnDying: remembers where a bot died, so the improved loot task (Bot.AI.Loot.Improved.*) keeps away from that area for a while.
+    TC_GAME_API void NoteDeath(Player* bot);
 }
 
 #endif
