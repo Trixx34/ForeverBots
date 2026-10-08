@@ -184,5 +184,6 @@ void RegisterBuiltinBotObjects(BotRegistry& r)
     RegisterQuestBotObjects(r);
     RegisterPetBotObjects(r);
     RegisterTravelBotObjects(r);
+    RegisterWatchdogBotObjects(r);
     RegisterDummyBotObjects(r);
 }
