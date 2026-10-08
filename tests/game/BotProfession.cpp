@@ -24,16 +24,15 @@ using namespace BotProfession;
 
 TEST_CASE("BotProfession plan covers first aid, cooking and two distinct gathering skills", "[BotProfession]")
 {
-    for (uint64 seed = 0; seed < 9; ++seed)
+    for (uint64 seed = 0; seed < 12; ++seed)
     {
         std::vector<uint32> plan = Plan(seed);
         REQUIRE(plan.size() == 5);
         CHECK(plan[4] == SKILL_FISHING);
         CHECK(plan[0] == SKILL_FIRST_AID);
         CHECK(plan[1] == SKILL_COOKING);
-        CHECK(plan[2] != plan[3]);
         CHECK(Find(plan[2])->Gathering);
-        CHECK(Find(plan[3])->Gathering);
+        CHECK_FALSE(Find(plan[3])->Gathering);
     }
 }
 
@@ -42,7 +41,8 @@ TEST_CASE("BotProfession plan is deterministic and uses all three pairs", "[BotP
     CHECK(Plan(7) == Plan(7));
     CHECK(Plan(0) != Plan(1));
     CHECK(Plan(1) != Plan(2));
-    CHECK(Plan(0) == Plan(3));
+    CHECK(Plan(2) != Plan(3));
+    CHECK(Plan(0) == Plan(4));
 }
 
 TEST_CASE("BotProfession next skill respects level and known skills", "[BotProfession]")
@@ -51,7 +51,8 @@ TEST_CASE("BotProfession next skill respects level and known skills", "[BotProfe
     CHECK(NextToLearn(plan, {}, 4) == 0);                              // too low to spend copper
     CHECK(NextToLearn(plan, {}, 5) == SKILL_FIRST_AID);
     CHECK(NextToLearn(plan, { SKILL_FIRST_AID }, 5) == SKILL_COOKING);
-    CHECK(NextToLearn(plan, { SKILL_FIRST_AID, SKILL_COOKING, SKILL_MINING }, 20) == SKILL_SKINNING);
+    CHECK(NextToLearn(plan, { SKILL_FIRST_AID, SKILL_COOKING, SKILL_MINING }, 20) == SKILL_BLACKSMITHING);
+    CHECK(NextToLearn(plan, { SKILL_FIRST_AID, SKILL_COOKING, SKILL_MINING }, 7) == SKILL_FISHING);
     CHECK(NextToLearn(plan, plan, 60) == 0);
     CHECK(Find(9999) == nullptr);
 }

@@ -29,6 +29,11 @@ namespace BotProfession
     // SkillLine ids (SkillLine.db2, same as the client)
     enum SkillId : uint32
     {
+        SKILL_BLACKSMITHING = 164,
+        SKILL_LEATHERWORKING = 165,
+        SKILL_ALCHEMY = 171,
+        SKILL_TAILORING = 197,
+        SKILL_ENGINEERING = 202,
         SKILL_FIRST_AID = 129,
         SKILL_HERBALISM = 182,
         SKILL_COOKING = 185,
@@ -49,7 +54,8 @@ namespace BotProfession
     TC_GAME_API Info const* Find(uint32 skill);
 
     // The professions a bot wants, in the order it learns them. Deterministic per bot (seed = guid counter): first aid and cooking
-    // for everyone, and two of the three gathering skills (mining+skinning, herbalism+skinning, mining+herbalism), then fishing.
+    // for everyone, one gathering skill plus the crafting profession that uses its materials (mining+blacksmithing, herbalism+alchemy,
+    // skinning+leatherworking, mining+engineering), then fishing.
     TC_GAME_API std::vector<uint32> Plan(uint64 seed);
 
     // First planned skill the bot does not have yet and may go to a trainer for at this level; 0 when there is none.

@@ -333,6 +333,7 @@ struct Index
     std::unordered_map<uint32, std::vector<SvcPt>> Trainers;
     std::vector<SvcPt> Vendors;
     std::vector<NodePt> Nodes;
+    std::unordered_map<uint32, std::vector<NodePt>> Focus;   // SpellFocusObject id -> spawned forges, anvils, cooking fires (Skill field holds the focus id)
     std::unordered_map<uint32, std::vector<BagOffer>> VendorBags;   // vendor entry -> plain bags it sells for gold
     std::unordered_map<uint32, std::vector<AmmoOffer>> VendorAmmo;  // vendor entry -> arrows/bullets it sells for gold (only filled with Bot.AI.Ammo.Enabled)
     uint32 NumTrainers = 0, NumProfTrainers = 0, NumBagVendors = 0, MinBagPrice = 0xFFFFFFFFu, NumAmmoVendors = 0;
@@ -780,6 +781,20 @@ void BuildIndex()
             if (nk == nodeKinds.end())
                 continue;
             g.Nodes.push_back({ data.mapId, data.spawnPoint.GetPositionX(), data.spawnPoint.GetPositionY(), data.spawnPoint.GetPositionZ(), data.id, nk->second.first, nk->second.second, spawnId });
+        }
+    }
+
+    // 8c. spell focus objects (forge, anvil, cooking fire): crafts that need one send the bot to the nearest
+    {
+        std::unordered_map<uint32, uint32> focusOf;   // go entry -> focus id
+        for (auto const& [goEntry, goTmpl] : sObjectMgr->GetGameObjectTemplates())
+            if (goTmpl.type == GAMEOBJECT_TYPE_SPELL_FOCUS && goTmpl.spellFocus.spellFocusType)
+                focusOf[goEntry] = goTmpl.spellFocus.spellFocusType;
+        for (auto const& [spawnId, data] : sObjectMgr->GetAllGameObjectData())
+        {
+            auto f = focusOf.find(data.id);
+            if (f != focusOf.end())
+                g.Focus[f->second].push_back({ data.mapId, data.spawnPoint.GetPositionX(), data.spawnPoint.GetPositionY(), data.spawnPoint.GetPositionZ(), data.id, f->second, 0, spawnId });
         }
     }
 
@@ -1321,6 +1336,8 @@ public:
     uint32 GatherNextMs = 0;               // next node check
     ObjectGuid GatherGuid;                 // node being opened
     uint32 GatherSinceMs = 0;
+    uint32 FocusArrivedMs = 0;             // when the bot last walked to a forge/fire; a failed craft right after it backs the skill off
+    uint32 FocusArrivedSkill = 0;
     uint32 CraftNextMs = 0;                // next craft attempt
     std::unordered_map<uint32, uint32> CraftBackoff;   // skill -> time before which crafting it is not retried (failed cast)
     ObjectGuid SkinGuid;                   // corpse being skinned
@@ -1643,17 +1660,19 @@ private:
         if (c.T.K == Kind::Service)
         {
             // E1/E4: the failure is reported under the service code, the movement code goes into the summary
-            c.SvcBlack[c.T.Svc == 3 ? (0x80000000u | uint32(c.T.NodeSpawn)) : c.T.NpcEntry] = now + 600 * 1000;
+            c.SvcBlack[(c.T.Svc == 3 || c.T.Svc == 5) ? (0x80000000u | uint32(c.T.NodeSpawn)) : c.T.NpcEntry] = now + 600 * 1000;
             if (c.T.Svc == 1)
                 c.TrainRetryMs = now + 300 * 1000;
             else if (c.T.Svc == 3)
                 c.GatherNextMs = now + 60 * 1000;
             else if (c.T.Svc == 4)
                 c.FishNextMs = now + 300 * 1000;
+            else if (c.T.Svc == 5)
+                c.CraftNextMs = now + 300 * 1000;
             else
                 c.NextVendorMs = now + 300 * 1000;
             summary = StringFormat("{} ({})", summary, code);
-            code = c.T.Svc == 1 ? "TRAIN_UNREACHABLE" : c.T.Svc == 3 ? "GATHER_UNREACHABLE" : c.T.Svc == 4 ? "FISH_UNREACHABLE" : "VENDOR_UNREACHABLE";
+            code = c.T.Svc == 1 ? "TRAIN_UNREACHABLE" : c.T.Svc == 3 ? "GATHER_UNREACHABLE" : c.T.Svc == 4 ? "FISH_UNREACHABLE" : c.T.Svc == 5 ? "WORKSHOP_UNREACHABLE" : "VENDOR_UNREACHABLE";
         }
         Blocked(ai, bot, c, questId, code, std::move(summary), std::move(details), entry);
         // a loot task that ends is not a failure of the quest itself (the chest may simply be elsewhere or gone): it never feeds the quarantine
@@ -2955,10 +2974,66 @@ private:
                     StringFormat(R"({{"skill":{},"spell":{},"skill_value":{}}})", info.Skill, spellId, skill));
                 return;
             }
+            if (res == SPELL_FAILED_REQUIRES_SPELL_FOCUS && !(c.FocusArrivedSkill == info.Skill && now - c.FocusArrivedMs < 60000))
+                if (SpellInfo const* si = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE))
+                    if (WorkshopTrip(ai, bot, c, now, info, si->RequiresSpellFocus))
+                        return;
             c.CraftBackoff[info.Skill] = now + 300000;
             Blocked(ai, bot, c, 0, "PROF_CRAFT_FAIL", StringFormat("cannot craft spell {} for {}: cast result {}", spellId, info.Name, uint32(res)),
                 StringFormat(R"({{"skill":{},"spell":{},"result":{}}})", info.Skill, spellId, uint32(res)), 0, false);
         }
+    }
+
+    // E2: the recipe needs a forge, anvil or fire nearby: walk to the closest one (same map, within 400 yd), then craft again.
+    bool WorkshopTrip(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, BotProfession::Info const& info, uint32 focusId)
+    {
+        auto fit = g.Focus.find(focusId);
+        if (fit == g.Focus.end())
+            return false;
+        NodePt const* best = nullptr;
+        float bd = 400.0f;
+        for (NodePt const& n : fit->second)
+        {
+            if (n.Map != bot->GetMapId())
+                continue;
+            float const d = Dist2D(n.X, n.Y, bot->GetPositionX(), bot->GetPositionY());
+            auto bl = c.SvcBlack.find(0x80000000u | uint32(n.SpawnId));
+            if (d < bd && (bl == c.SvcBlack.end() || now >= bl->second))
+            {
+                best = &n;
+                bd = d;
+            }
+        }
+        if (!best)
+            return false;
+        SvcPt pt;
+        pt.Map = best->Map; pt.X = best->X; pt.Y = best->Y; pt.Z = best->Z; pt.Entry = best->Entry;
+        StartService(bot, c, now, 5, pt, false, false);
+        c.T.NodeSpawn = best->SpawnId;
+        c.FocusArrivedSkill = info.Skill;
+        Decision(ai, bot, "WORKSHOP_TRIP", StringFormat("walking to a spell focus {} ({:.0f} yd) to craft {}", focusId, bd, info.Name), 0, best->Entry,
+            StringFormat(R"({{"skill":{},"focus":{},"dist":{:.0f}}})", info.Skill, focusId, bd));
+        return true;
+    }
+
+    bool RunWorkshop(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        Task& t = c.T;
+        if (now - t.SinceMs > 3 * 60 * 1000)
+        {
+            Drop(ai, bot, c, now, 0, "UNREACHABLE", "gave up walking to the workshop after 3 min", std::string(), t.NpcEntry, 0);
+            return true;
+        }
+        if (Dist2D(t.SvcX, t.SvcY, bot->GetPositionX(), bot->GetPositionY()) <= 3.5f)
+        {
+            StopMoving(ai, bot, c);
+            c.FocusArrivedMs = now;
+            c.CraftNextMs = now + 1000;   // craft right away, standing still
+            Finish(c, now);
+            return true;
+        }
+        Travel(ai, bot, c, now, t.SvcX, t.SvcY, t.SvcZ, 2.5f, t.NpcEntry);
+        return false;
     }
 
     // E2: one profession trainer trip at a time. A planned profession the bot lacks comes first, then ranks of the ones it has.
@@ -3186,6 +3261,8 @@ private:
             return RunGather(ai, bot, c, now);
         if (t.Svc == 4)
             return RunFish(ai, bot, c, now);
+        if (t.Svc == 5)
+            return RunWorkshop(ai, bot, c, now);
         Creature* npc = FindLiveNpc(bot, t.NpcEntry, 45.0f);
         if (npc && npc->IsAlive() && bot->IsWithinDistInMap(npc, 4.5f))
         {

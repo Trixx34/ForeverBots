@@ -31,6 +31,11 @@ std::vector<Info> const& All()
         { SKILL_HERBALISM, "Herbalism",  true,  5 },
         { SKILL_SKINNING,  "Skinning",   true,  5 },
         { SKILL_FISHING,   "Fishing",    true,  5 },
+        { SKILL_BLACKSMITHING,  "Blacksmithing",  false, 8 },
+        { SKILL_LEATHERWORKING, "Leatherworking", false, 8 },
+        { SKILL_ALCHEMY,        "Alchemy",        false, 8 },
+        { SKILL_TAILORING,      "Tailoring",      false, 8 },
+        { SKILL_ENGINEERING,    "Engineering",    false, 8 },
     };
     return table;
 }
@@ -45,8 +50,12 @@ Info const* Find(uint32 skill)
 
 std::vector<uint32> Plan(uint64 seed)
 {
-    static uint32 const pairs[3][2] = { { SKILL_MINING, SKILL_SKINNING }, { SKILL_HERBALISM, SKILL_SKINNING }, { SKILL_MINING, SKILL_HERBALISM } };
-    auto const& p = pairs[seed % 3];
+    static uint32 const pairs[4][2] =
+    {
+        { SKILL_MINING, SKILL_BLACKSMITHING }, { SKILL_HERBALISM, SKILL_ALCHEMY },
+        { SKILL_SKINNING, SKILL_LEATHERWORKING }, { SKILL_MINING, SKILL_ENGINEERING }
+    };
+    auto const& p = pairs[seed % 4];
     return { SKILL_FIRST_AID, SKILL_COOKING, p[0], p[1], SKILL_FISHING };
 }
 
