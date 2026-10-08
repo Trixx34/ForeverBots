@@ -4616,6 +4616,27 @@ Classic.GuildFinder = 0
 #                     flee_mode in every combat decision row and in COMBAT_SUMMARY.
 #        Default:     0
 #
+#    Bot.AI.Flee.AbPct / Bot.AI.Flee.AbMode
+#        Description: Flee A/B in one run. The bots whose guid counter modulo 100 is below AbPct run flee mode AbMode
+#                     (the experiment arm), all others run Bot.AI.Flee.Mode (the control). 0 = off, every bot runs
+#                     Flee.Mode. The per-bot mode is logged as flee_mode in every combat row. Protocol:
+#                     docs/playerbots/death-avoidance-20261008.md.
+#        Default:     0 / 1
+#
+#    Bot.AI.Avoid.Entries / Bot.AI.Avoid.MaxLevelGap
+#        Description: Creature entries that killed bots far above the expected rate (Defias Bandit 116, Young Forest
+#                     Bear 822, Shadowgale Ursera 250927, Narg 79). Quest and grind target choice skips them (and
+#                     skips targets standing next to them), and the combat target choice fights them last, unless
+#                     the creature is at most MaxLevelGap levels above the bot (plain level difference, -1 = list
+#                     off). Entries separated by comma, semicolon or space.
+#        Default:     "116,822,250927,79" / 1
+#
+#    Bot.AI.Pull.FirstStrikeMargin / Bot.AI.Pull.RangedMaxYd
+#        Description: Ranged classes (non-melee) open a quest or grind pull from the mob's own aggro radius plus
+#                     FirstStrikeMargin yards (capped at RangedMaxYd, never below the normal ranged pull distance), so
+#                     the mob does not get the first hit while the bot walks in. 0 = off. Melee classes are unchanged.
+#        Default:     2 / 28
+#
 #    Bot.AI.AggroAvoid.Enabled
 #        Description: Aggro awareness while a bot walks (goto/quest goals), stands idle or wants to eat/drink. Hostile
 #                     elites and mobs above the bot's level are kept clear of: the bot detours around them, waits
