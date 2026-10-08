@@ -161,6 +161,7 @@ BotAIConfig const& BotAI::Config()
         _config.StuckSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.StuckSec", 8), 2, 600));
         _config.StuckRepaths = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.StuckRepaths", 3), 1, 20));
         _config.CorpseRunMaxFails = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Death.CorpseRunMaxFails", 3), 1, 20));
+        _config.DeathGiveUpSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Death.GiveUpSec", 300), 0, 3600));
         _config.AggroAvoid = sConfigMgr->GetBoolDefault("Bot.AI.AggroAvoid.Enabled", true);
         _config.AggroMarginYd = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.AggroAvoid.MarginYards", 10), 0, 40));
         _config.AggroLevelDiff = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.AggroAvoid.MinLevelDiff", 1), -10, 20);

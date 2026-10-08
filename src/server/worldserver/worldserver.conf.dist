@@ -4704,6 +4704,13 @@ Classic.GuildFinder = 0
 #                     falls back to the spirit healer, and when that fails too the bot is resurrected where it stands
 #                     (decision CORPSE_RUN_GAVE_UP / SPIRIT_HEAL_GAVE_UP, logged once).
 #        Default:     3
+#
+#    Bot.AI.Death.GiveUpSec
+#        Description: Seconds a ghost may spend on the corpse run or the spirit healer walk (NO_PROGRESS /
+#                     UNREACHABLE_TARGET retries included) before it is resurrected at the closest graveyard
+#                     (decision CORPSE_RUN_TIMEOUT / SPIRIT_HEAL_TIMEOUT). The spirit healer give-up
+#                     (SPIRIT_HEAL_GAVE_UP) now also respawns at the graveyard instead of in place. 0 = no time cap.
+#        Default:     300
 
 Bot.Enabled = 1
 Bot.Log.PosIntervalSec = 5
@@ -4785,6 +4792,7 @@ Bot.AI.Recover.MaxCorpseRunYards = 1200
 Bot.AI.Move.StuckSec = 8
 Bot.AI.Move.StuckRepaths = 3
 Bot.AI.Death.CorpseRunMaxFails = 3
+Bot.AI.Death.GiveUpSec = 300
 
 #
 #    Bot.AI.Pet.Enabled
