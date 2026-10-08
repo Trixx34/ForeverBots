@@ -2345,6 +2345,9 @@ private:
             auto tl = g.Trainers.find(bot->GetClass());
             float d = 0.0f;
             SvcPt const* tp = tl == g.Trainers.end() ? nullptr : NearestSvc(bot, c, now, tl->second, false, false, 4000.0f, d);
+            // fallback: a friendly trainer of the class on the same map that is farther than 4000 yd (large continents) beats no training at all
+            if (!tp && tl != g.Trainers.end())
+                tp = NearestSvc(bot, c, now, tl->second, false, false, 15000.0f, d);
             if (!tp)
             {
                 c.TrainLevel = level;
@@ -2368,7 +2371,7 @@ private:
                         }
                     char const* why = tl == g.Trainers.end() ? "no_trainer_of_class_in_world" : !friendlyAny ? "no_friendly_trainer_for_race_in_world" :
                         !friendlyOnMap ? "no_friendly_trainer_on_map" : "friendly_trainers_blacklisted_or_far";
-                    Blocked(ai, bot, c, 0, "TRAIN_NO_TRAINER", StringFormat("no reachable class trainer on map {} within 4000 yd (class {}, race {}, level {}): {}", bot->GetMapId(), bot->GetClass(), bot->GetRace(), level, why),
+                    Blocked(ai, bot, c, 0, "TRAIN_NO_TRAINER", StringFormat("no reachable class trainer on map {} within 15000 yd (class {}, race {}, level {}): {}", bot->GetMapId(), bot->GetClass(), bot->GetRace(), level, why),
                         StringFormat(R"({{"map":{},"class":{},"race":{},"level":{},"x":{:.0f},"y":{:.0f},"why":"{}","on_map":{},"friendly_on_map":{},"friendly_any":{}}})", bot->GetMapId(), bot->GetClass(), bot->GetRace(), level, bot->GetPositionX(), bot->GetPositionY(), why, onMap, friendlyOnMap, friendlyAny), 0, false);
                     // no point re-checking every level when the world has no friendly trainer for this class and race
                     if (!friendlyAny)

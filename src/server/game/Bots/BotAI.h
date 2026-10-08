@@ -47,6 +47,7 @@ struct BotAIConfig
     uint32 StuckSec = 8;          // Bot.AI.Move.StuckSec: seconds without progress before a stuck episode
     uint32 TickStatsSec = 60;     // Bot.Log.AiTickStatsSec: AI_TICK_STATS row per bot every N s (0 = off)
     uint32 CorpseRunMaxFails = 3; // Bot.AI.Death.CorpseRunMaxFails: failed corpse runs (and spirit healer walks) before the bot gives up
+    uint32 DeathGiveUpSec = 300;  // Bot.AI.Death.GiveUpSec: seconds a ghost may spend on the corpse run / spirit healer before it respawns at the graveyard (0 = never)
     uint32 StuckRepaths = 3;      // Bot.AI.Move.StuckRepaths: episodes (each re-issues the path) before the goal is given up
     // aggro awareness while walking, idle or resting (BotBehavior.cpp)
     bool AggroAvoid = true;       // Bot.AI.AggroAvoid.Enabled
