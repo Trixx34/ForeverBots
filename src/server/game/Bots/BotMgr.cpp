@@ -448,6 +448,14 @@ void BotMgr::SetLogDatabaseAvailable(bool available)
     {
         int32 const minSeverity = sConfigMgr->GetIntDefault("BotLog.MinSeverity", BOTLOG_INFO);
         _logMinSeverity = uint8(std::clamp<int32>(minSeverity, BOTLOG_TRACE, BOTLOG_ERROR));
+        _logCategories = BotLogCat::Config();
+        {
+            std::vector<std::string> unknown;
+            BotLogCat::ParseCategories(sConfigMgr->GetStringDefault("Bot.Log.Categories", "all"), _logCategories, unknown);
+            BotLogCat::ParseSeverities(sConfigMgr->GetStringDefault("Bot.Log.CategoryMinSeverity", ""), _logCategories, unknown);
+            for (std::string const& u : unknown)
+                TC_LOG_WARN("server.worldserver", "Bot log: '{}' in Bot.Log.Categories / Bot.Log.CategoryMinSeverity is not understood, ignored", u);
+        }
         _logFlushIntervalMs = uint32(std::max<int32>(100, sConfigMgr->GetIntDefault("BotLog.FlushIntervalMs", 1000)));
         _logMaxBatch = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("BotLog.MaxBatch", 500)));
         _repeatCap = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.RepeatCap", 3), 0, 100000));
@@ -487,6 +495,17 @@ void BotMgr::SetLogDatabaseAvailable(bool available)
             }
         }
         TC_LOG_INFO("server.worldserver", "Bot position samples: {}", posSec ? Trinity::StringFormat("every {} s per moving bot ({} s above {} bots online)", posSec, posSlowSec, _posScaleBots) : std::string("off"));
+        {
+            std::string off, floors;
+            for (uint8 i = 0; i < BotLogCat::Count; ++i)
+            {
+                if (!_logCategories.Enabled[i])
+                    off += std::string(off.empty() ? "" : ",") + BotLogCat::kNames[i];
+                else if (_logCategories.MinSeverity[i])
+                    floors += Trinity::StringFormat("{}{}:{}", floors.empty() ? "" : ",", BotLogCat::kNames[i], uint32(_logCategories.MinSeverity[i]));
+            }
+            TC_LOG_INFO("server.worldserver", "Bot log categories: off [{}], severity floors [{}]", off.empty() ? "none" : off, floors.empty() ? "none" : floors);
+        }
         TC_LOG_INFO("server.worldserver", "Bot log enabled (min severity {}, flush every {} ms, batches of up to {} events, buffer cap {} events / {} positions, {} retries, hot split {})",
             _logMinSeverity, _logFlushIntervalMs, _logMaxBatch, _logBufferMax, _posBufferMax, _flushRetries, _hotSplit ? "on" : "off");
     }
@@ -658,6 +677,8 @@ void BotMgr::BeginLogSession(BotInfo& bot)
 void BotMgr::LogEvent(BotEvent&& event)
 {
     if (!IsLogDatabaseAvailable() || event.Severity < _logMinSeverity)
+        return;
+    if (!_logCategories.Allows(BotLogCat::Classify(event.Type, event.Reason), event.Severity))
         return;
 
     if (event.Timestamp == 0.0)

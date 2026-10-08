@@ -4517,6 +4517,22 @@ Classic.GuildFinder = 0
 #                     with large populations). Re-evaluated every world tick.
 #        Default:     15 / 500
 #
+#    Bot.Log.Categories
+#        Description: Which kinds of bot events are written to the bot log database. Comma list read left to right: "all", "none",
+#                     "name" (turn on), "-name" (turn off). A list starting with a plain name begins from none ("quest,dungeon"),
+#                     one starting with "-name" begins from all ("-combat,-movement"). Categories: lifecycle, ai, combat, dummy,
+#                     movement, travel, recovery, quest, progress, economy, pets, social, dungeon, other (an event no rule
+#                     matches). The category comes from the event reason code prefix (e.g. DUNGEON_, TRAVEL_, PET_, QUEST_), then
+#                     from the event type. Applies on top of BotLog.MinSeverity. Read once at startup.
+#        Example:     "-combat,-movement" - everything except fights and walking.
+#        Default:     all
+#
+#    Bot.Log.CategoryMinSeverity
+#        Description: Severity floor per category, "name:level" comma list, level 0 trace, 1 info, 2 warn, 3 error. Keeps warnings
+#                     and errors of a noisy category without its routine rows. Applies on top of BotLog.MinSeverity.
+#        Example:     "combat:2,movement:2"
+#        Default:     (empty, no floors)
+#
 #    Bot.Log.RepeatCap
 #        Description: Identical repeating rows (quest_blocked, NO_PROGRESS, UNREACHABLE_TARGET, TEST_IDLE, TEST_IDLE_NOTE; same bot,
 #                     type, reason, quest and target) written per login; the rest are counted and written as one LOG_SUPPRESSED row.

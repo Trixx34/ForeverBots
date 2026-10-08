@@ -30,6 +30,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include "BotLogCategory.h"
 #include "DatabaseEnvFwd.h"
 #include "Transaction.h"
 #include <unordered_map>
@@ -269,6 +270,7 @@ private:
 
     std::atomic<bool> _logAvailable{false};
     uint8 _logMinSeverity = BOTLOG_INFO;
+    BotLogCat::Config _logCategories;     // Bot.Log.Categories / Bot.Log.CategoryMinSeverity; written at startup only
     uint32 _logFlushIntervalMs = 1000;
     uint32 _logMaxBatch = 500;
     uint32 _logBufferMax = 200000;        // Bot.Log.BufferMax: events held while the database is slow; over it events are dropped and counted
