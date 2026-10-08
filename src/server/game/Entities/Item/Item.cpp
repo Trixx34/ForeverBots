@@ -1534,6 +1534,8 @@ void Item::SetEnchantment(EnchantmentSlot slot, uint32 id, uint32 duration, uint
     SetUpdateFieldValue(enchantmentField.ModifyValue(&UF::ItemEnchantment::Duration), duration);
     SetUpdateFieldValue(enchantmentField.ModifyValue(&UF::ItemEnchantment::Charges), charges);
     SetState(ITEM_CHANGED, owner);
+    if (slot == TEMP_ENCHANTMENT_SLOT && owner)
+        owner->RefreshVisibleItemEnchantment(this, true);
 }
 
 void Item::SetEnchantmentDuration(EnchantmentSlot slot, uint32 duration, Player* owner)
@@ -1565,7 +1567,10 @@ void Item::ClearEnchantment(EnchantmentSlot slot)
     SetUpdateFieldValue(enchantmentField.ModifyValue(&UF::ItemEnchantment::Duration), 0);
     SetUpdateFieldValue(enchantmentField.ModifyValue(&UF::ItemEnchantment::Charges), 0);
     SetUpdateFieldValue(enchantmentField.ModifyValue(&UF::ItemEnchantment::Inactive), 0);
-    SetState(ITEM_CHANGED, GetOwner());
+    Player* owner = GetOwner();
+    SetState(ITEM_CHANGED, owner);
+    if (slot == TEMP_ENCHANTMENT_SLOT && owner)
+        owner->RefreshVisibleItemEnchantment(this, true);
 }
 
 UF::SocketedGem const* Item::GetGem(uint16 slot) const
@@ -2604,7 +2609,16 @@ uint32 Item::GetVisibleEnchantmentId(Player const* owner) const
 
 uint16 Item::GetVisibleItemVisual(Player const* owner) const
 {
-    if (SpellItemEnchantmentEntry const* enchant = sSpellItemEnchantmentStore.LookupEntry(GetVisibleEnchantmentId(owner)))
+    return ResolveVisibleItemVisual(GetVisibleEnchantmentId(owner));
+}
+
+uint16 Item::ResolveVisibleItemVisual(uint32 visibleEnchantmentId) const
+{
+    if (SpellItemEnchantmentEntry const* enchant = sSpellItemEnchantmentStore.LookupEntry(visibleEnchantmentId))
+        if (enchant->ItemVisual)
+            return enchant->ItemVisual;
+
+    if (SpellItemEnchantmentEntry const* enchant = sSpellItemEnchantmentStore.LookupEntry(GetEnchantmentId(TEMP_ENCHANTMENT_SLOT)))
         return enchant->ItemVisual;
 
     return 0;

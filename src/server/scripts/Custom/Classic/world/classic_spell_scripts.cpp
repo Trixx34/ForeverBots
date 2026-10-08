@@ -19,11 +19,15 @@
 
 #include "ScriptMgr.h"
 #include "AreaTrigger.h"
+#include "CellImpl.h"
 #include "Creature.h"
+#include "GameObject.h"
+#include "GridNotifiersImpl.h"
 #include "Item.h"
 #include "ItemTemplate.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
+#include "QuestDef.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "SpellScript.h"
@@ -492,8 +496,78 @@ class classic_spell_warl_immolate : public SpellScript
     }
 };
 
+// 1259705 - Read Ley Line (Skyborne racial): the spell only triggers the 15 sec Energized (1270842). At a ley line (gameobjects
+// Ley Line 602735 / 613248, spell focus 2246) the official server also gives the 15 min Energized (1259691); sniff of the
+// Alliance Skyborne hunter: the cast away from a ley line got only 1270842, every cast at one got both. The 15 min buff also
+// completes "Reading the Ley Lines" (92597).
+class classic_spell_skyborne_read_ley_line : public SpellScript
+{
+    static constexpr uint32 SPELL_FOCUS_LEY_LINE = 2246;
+    static constexpr uint32 SPELL_ENERGIZED_LEY_LINE = 1259691;
+
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_ENERGIZED_LEY_LINE });
+    }
+
+    void HandleAfterCast()
+    {
+        Unit* caster = GetCaster();
+        GameObject* leyLine = nullptr;
+        Trinity::GameObjectFocusCheck check(caster, SPELL_FOCUS_LEY_LINE);
+        Trinity::GameObjectSearcher searcher(caster, leyLine, check);
+        Cell::VisitGridObjects(caster, searcher, 50.0f); // focus radius of the ley lines is 25
+        if (leyLine)
+            caster->CastSpell(caster, SPELL_ENERGIZED_LEY_LINE, CastSpellExtraArgs(TRIGGERED_FULL_MASK).SetTriggeringSpell(GetSpell()));
+    }
+
+    void Register() override
+    {
+        AfterCast += SpellCastFn(classic_spell_skyborne_read_ley_line::HandleAfterCast);
+    }
+};
+
+// 1319421 - Motivated (Executor's Motivator, undead quest Discipline 99134): a dummy aura on a Tirisfal Deathguard. The official
+// server credits the objective (Deathguard Cyrus 1746, 5 needed) for any of them, with an empty victim GUID (sniff of 2026-10-06:
+// QUEST_UPDATE_ADD_CREDIT 99134 / 1746, 1..5 of 5; Motivated was seen on 1496, 1652, 1735, 1738, 1742-1746, 2210, 5725, 272101).
+class classic_spell_executors_motivator : public AuraScript
+{
+    static constexpr uint32 QUEST_DISCIPLINE = 99134;
+    static constexpr uint32 NPC_DEATHGUARD_CYRUS = 1746;
+
+    static bool IsTirisfalDeathguard(uint32 entry)
+    {
+        switch (entry)
+        {
+            case 1495: case 1496: case 1519: case 1652: case 1735: case 1736: case 1737: case 1738: case 1739: case 1740:
+            case 1741: case 1742: case 1743: case 1744: case 1745: case 1746: case 2209: case 2210: case 5725:
+            case 251001: case 257655: case 272101: case 275103:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Player* player = Object::ToPlayer(GetCaster());
+        if (!player || !IsTirisfalDeathguard(GetTarget()->GetEntry()) || player->GetQuestStatus(QUEST_DISCIPLINE) != QUEST_STATUS_INCOMPLETE)
+            return;
+
+        std::function<bool(QuestObjective const*)> const isDiscipline = [](QuestObjective const* objective) { return objective->QuestID == QUEST_DISCIPLINE; };
+        player->UpdateQuestObjectiveProgress(QUEST_OBJECTIVE_MONSTER, NPC_DEATHGUARD_CYRUS, 1, ObjectGuid::Empty, nullptr, &isDiscipline);
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(classic_spell_executors_motivator::HandleApply, EFFECT_0, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
 void AddSC_classic_spell_scripts()
 {
+    RegisterSpellScript(classic_spell_executors_motivator);
+    RegisterSpellScript(classic_spell_skyborne_read_ley_line);
     RegisterSpellScript(classic_spell_warl_immolate);
     RegisterSpellScript(classic_spell_hun_taming_rod);
     RegisterSpellScript(classic_spell_hun_tame_beast_channel);

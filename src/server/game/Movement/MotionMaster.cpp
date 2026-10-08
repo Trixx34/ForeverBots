@@ -545,6 +545,11 @@ void MotionMaster::MoveIdle()
     Add(GetIdleMovementGenerator(), MOTION_SLOT_DEFAULT);
 }
 
+float MotionMaster::GetHomeFollowAngle(Unit const& owner)
+{
+    return owner.IsPet() ? owner.GetFollowAngle() : PET_FOLLOW_ANGLE;
+}
+
 void MotionMaster::MoveTargetedHome()
 {
     Creature* owner = _owner->ToCreature();
@@ -565,7 +570,7 @@ void MotionMaster::MoveTargetedHome()
     else
     {
         TC_LOG_DEBUG("movement.motionmaster", "MotionMaster::MoveTargetedHome: '{}', starts following '{}'", _owner->GetGUID(), target->GetGUID());
-        Add(new FollowMovementGenerator(target, PET_FOLLOW_DIST, PET_FOLLOW_ANGLE, {}));
+        Add(new FollowMovementGenerator(target, PET_FOLLOW_DIST, GetHomeFollowAngle(*owner), {}));
     }
 }
 

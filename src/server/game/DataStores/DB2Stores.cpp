@@ -2174,6 +2174,9 @@ ClassPowerTypes DB2Manager::GetPowerTypesByClass(uint32 classId)
 
 uint32 DB2Manager::GetPowerIndexByClass(Powers power, uint32 classId)
 {
+    if (uint32(power) >= MAX_POWERS)
+        return MAX_POWERS_PER_CLASS;
+
     return _powersByClass[classId].IndexByType[power];
 }
 
