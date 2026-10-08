@@ -17,6 +17,7 @@
 
 #include "BotAI.h"
 #include "BotCombat.h"
+#include "BotDummy.h"
 #include "BotPet.h"
 #include "BotTravel.h"
 #include "BotTravelPlan.h"
@@ -943,6 +944,7 @@ void BotAI::OnLogout(Player* bot, char const* reason)
     _fight = Fight();
     BotPet::OnLogout(this, bot); // dismisses the pet, drops a taming run
     BotTravel::OnLogout(this, bot); // drops a running trip
+    BotDummy::OnLogout(this, bot); // despawns the training dummy
     BotQuest::OnLogout(this); // releases the loot claim of the quest task
 }
 

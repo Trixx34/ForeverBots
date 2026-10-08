@@ -19,6 +19,7 @@
 #include "BotAI.h"
 #include "BotBehavior.h"
 #include "BotCombat.h"
+#include "BotDummy.h"
 #include "BotEngine.h"
 #include "BotMgr.h"
 #include "BotSocial.h"
@@ -72,6 +73,7 @@ char const* VerbName(Verb v)
         case Verb::Dismount: return "dismount";
         case Verb::Summon: return "summon";
         case Verb::Revive: return "revive";
+        case Verb::Dummy: return "dummy";
         default: return "?";
     }
 }
@@ -277,7 +279,7 @@ Verb ParseVerb(std::string_view t, bool orders)
     if (t.empty() || t.size() > 10)
         return Verb::None;
     static constexpr std::pair<char const*, Verb> verbs[] = { { "follow", Verb::Follow }, { "stay", Verb::Stay }, { "goto", Verb::Goto },
-        { "rest", Verb::Rest }, { "release", Verb::Release }, { "status", Verb::Status }, { "strategy", Verb::Strategy }, { "verbose", Verb::Verbose }, { "share", Verb::Share } };
+        { "rest", Verb::Rest }, { "release", Verb::Release }, { "status", Verb::Status }, { "strategy", Verb::Strategy }, { "verbose", Verb::Verbose }, { "share", Verb::Share }, { "dummy", Verb::Dummy } };
     static constexpr std::pair<char const*, Verb> orderVerbs[] = { { "stop", Verb::Stop }, { "aggressive", Verb::Aggressive }, { "passive", Verb::Passive },
         { "pull", Verb::Pull }, { "heal", Verb::Heal }, { "mount", Verb::Mount }, { "dismount", Verb::Dismount }, { "summon", Verb::Summon }, { "revive", Verb::Revive } };
     for (auto const& [name, v] : verbs)
@@ -471,6 +473,7 @@ struct Ctx
     uint32 QuestId = 0;                               // share
     RoleMasks Roles;                                  // role gate of pull / heal
     Unit* Target = nullptr;                           // pull, heal: the issuer's selected target (live during Handle only)
+    uint32 DummySec = 0;                              // dummy: run length, 0 = default
 };
 
 void Preflight(Ctx& c)
@@ -541,6 +544,23 @@ void Preflight(Ctx& c)
                 c.PreflightError = "BAD_ARGS";
             else
                 c.QuestId = *q;
+            break;
+        }
+        case Verb::Dummy:
+        {
+            // dummy [seconds] | dummy off: the bot fights a training dummy and logs DUMMY_SUMMARY
+            if (a.empty())
+                break;
+            if (EqI(a, "off"))
+            {
+                c.Off = true;
+                break;
+            }
+            Optional<uint32> sec = Trinity::StringTo<uint32>(NextToken(a));
+            if (!sec || !*sec || !NextToken(a).empty())
+                c.PreflightError = "BAD_ARGS";
+            else
+                c.DummySec = *sec;
             break;
         }
         case Verb::Release:
@@ -643,6 +663,8 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
             if (!alive)
                 return "DEAD";
             return BotSocial::ShareQuest(bot, c.QuestId, IsVerbose(issuer));
+        case Verb::Dummy:
+            return c.Off ? BotDummy::Stop(ai, bot) : BotDummy::Start(ai, bot, c.DummySec);
         case Verb::Release:
             if (alive)
                 return "NOT_DEAD";
