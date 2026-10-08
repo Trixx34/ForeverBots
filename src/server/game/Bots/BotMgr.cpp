@@ -22,6 +22,7 @@
 #include "BotAlts.h"
 #include "BotLogDatabase.h"
 #include "BotQuest.h"
+#include "BotQuestLog.h"
 #include "CharacterCache.h"
 #include "CharacterPackets.h"
 #include "Config.h"
@@ -1548,6 +1549,7 @@ void BotMgr::LogoutBot(BotInfo& bot, char const* reason)
     bot.Session->LogoutPlayer(true);
     delete bot.Session;
     bot.Session = nullptr;
+    BotQuestLog::OnLogout(bot.Guid); // quest accept times are only needed while the quest is in the log
     EraseLogState(bot.Guid); // after the last row of this session; BeginLogSession recreates it on the next login
 
     if (bot.State == BOT_ONLINE)
