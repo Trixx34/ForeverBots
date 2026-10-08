@@ -1044,9 +1044,9 @@ bool TryCast(BotAI* ai, Player* bot, BotCombatCtx* ctx, Resolved const& r, Unit*
         ctx->BlockPower = res == SPELL_FAILED_NO_POWER;
         ctx->BlockUntilMs = nowMs + (ctx->BlockPower ? 3000 : 60000);
     }
-    // Shoot: two failures (not a swing timer, range or equipment result) and the caster fights in melee until its mana is back
+    // Shoot: two failures (not a swing timer (NOT_READY or DONT_REPORT = ranged swing not ready, Spell::CheckCast), range or equipment result) and the caster fights in melee until its mana is back
     if (r.Def->Type == Kind::Wand && !ctx->MeleeFallback && res != SPELL_FAILED_NOT_READY && res != SPELL_FAILED_OUT_OF_RANGE &&
-        res != SPELL_FAILED_MOVING && res != SPELL_FAILED_SPELL_IN_PROGRESS && res != SPELL_FAILED_NO_AMMO && res != SPELL_FAILED_NEED_AMMO &&
+        res != SPELL_FAILED_MOVING && res != SPELL_FAILED_SPELL_IN_PROGRESS && res != SPELL_FAILED_DONT_REPORT && res != SPELL_FAILED_NO_AMMO && res != SPELL_FAILED_NEED_AMMO &&
         res != SPELL_FAILED_EQUIPPED_ITEM && res != SPELL_FAILED_EQUIPPED_ITEM_CLASS && res != SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND)
     {
         if (!ctx->WandFails || nowMs - ctx->WandFailMs >= 1000)
@@ -1076,7 +1076,7 @@ bool TryCast(BotAI* ai, Player* bot, BotCombatCtx* ctx, Resolved const& r, Unit*
     }
     // not-ready/range/moving results are the normal rhythm of a fight; the rest is worth a row (once per fight)
     bool const routine = res == SPELL_FAILED_NOT_READY || res == SPELL_FAILED_OUT_OF_RANGE || res == SPELL_FAILED_MOVING || res == SPELL_FAILED_SPELL_IN_PROGRESS ||
-        res == SPELL_FAILED_NO_POWER || res == SPELL_FAILED_UNIT_NOT_INFRONT || res == SPELL_FAILED_NOT_INFRONT || res == SPELL_FAILED_INTERRUPTED;
+        res == SPELL_FAILED_NO_POWER || res == SPELL_FAILED_DONT_REPORT || res == SPELL_FAILED_UNIT_NOT_INFRONT || res == SPELL_FAILED_NOT_INFRONT || res == SPELL_FAILED_INTERRUPTED;
     if (!ctx->FailSeen(r.Id, uint32(res)) && !(routine && res != SPELL_FAILED_OUT_OF_RANGE))
         LogDecision(ai, bot, ctx, "CAST_FAILED", StringFormat("{} failed: {}", SpellNameOf(r.Info), CastResultName(uint32(res))),
             StringFormat(R"("spell":{},"spell_name":"{}","result":{},"result_name":"{}","dist":{:.1f},"power":{},"target":{},"routine":{})", r.Id, Json(SpellNameOf(r.Info)),
@@ -1099,6 +1099,16 @@ bool HasRequiredAura(Player* bot, BotCombatCtx* ctx, uint32 root)
         if (s.Def->Root == root)
             return bot->HasAura(s.Id);
     return false;
+}
+
+// Minimum time between two casts of a self buff. A seal that another spell consumes (Judgement needs it and uses it up) is recast
+// quickly, otherwise the next Judgement waits for the 25 s throttle with no seal and fails with CASTER_AURASTATE.
+uint32 BuffRecastMs(BotCombatCtx* ctx, Resolved const& r)
+{
+    for (Resolved const& s : ctx->Spells)
+        if (s.Def->ReqAura == r.Def->Root)
+            return 3000;
+    return 25000;
 }
 
 class CastAction : public Action
@@ -1133,7 +1143,7 @@ public:
             }
             if (kind == Kind::SelfBuff)
             {
-                if (bot->HasAura(r.Id) || !Ready(bot, r) || !Affordable(bot, r.Info) || (ctx->LastBuffMs && ai->GetNowMs() - ctx->LastBuffMs < 25000))
+                if (bot->HasAura(r.Id) || !Ready(bot, r) || !Affordable(bot, r.Info) || (ctx->LastBuffMs && ai->GetNowMs() - ctx->LastBuffMs < BuffRecastMs(ctx, r)))
                     continue;
                 if (TryCast(ai, bot, ctx, r, nullptr))
                 {
