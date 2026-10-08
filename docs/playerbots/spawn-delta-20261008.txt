@@ -1,0 +1,17 @@
+# Spawn count change per entry, fc54d291 -> 3f3bbd53
+# file: sql/custom/world/2026_10_03_00_world_forever_sniff_maps.sql
+
+## creature: entries with spawns 181 -> 257, changed 95 (up 95, down 0), dropped to zero 0, quest-relevant changed 11
+creature entry 250282 map 0: 13 -> 26
+creature entry 250283 map 0: 7 -> 15
+creature entry 259433 map 0: 13 -> 23
+creature entry 259434 map 0: 12 -> 24
+creature entry 267006 map 0: 0 -> 2
+creature entry 267310 map 1: 0 -> 1
+creature entry 268682 map 1: 0 -> 1
+creature entry 268684 map 1: 0 -> 1
+creature entry 268701 map 1: 0 -> 1
+creature entry 275437 map 0: 0 -> 5
+creature entry 275954 map 0: 3 -> 5
+
+## gameobject: entries with spawns 467 -> 964, changed 507 (up 507, down 0), dropped to zero 0, quest-relevant changed 0

@@ -31,3 +31,19 @@ Read only; no concrete failure path found, so no guard was added to `BotCombat.c
   think Immolate is still up or stop it re-casting.
 - Residual risk: spell 1282590 itself is not readable here (see above). If its data had a hostile effect or an `SPELL_ATTR` that forces combat on
   a non-engaged target, the mob would still already be in combat from Immolate. Confirm with one warlock bot run (needs a running server).
+
+## 2. Spawn data (finding 2)
+
+Check: `check_spawn_delta.py` (read-only, run `python3 -I docs/playerbots/check_spawn_delta.py` from the repo root); output saved in
+`spawn-delta-20261008.txt`. It counts rows per (entry, map) in `2026_10_03_00_world_forever_sniff_maps.sql` at `fc54d291` and `3f3bbd53`.
+
+- No entry lost a spawn: creature 181 -> 257 entries with spawns, 95 changed, all up, none to zero; game object 467 -> 964, 507 changed, all up,
+  none to zero. The "removed and re-added" rows of the review were guid renumbering; per entry the file only gained spawns (about 1960 lines
+  now against 1082).
+- Quest-relevant changed entries (11 creatures; see the output file): 250282, 250283, 259433, 259434 and 275954 gained spawns;
+  267006, 267310, 268682, 268684, 268701 and 275437 went from 0 to 1-5 spawns in this file. No game object entry with a quest row changed.
+- So the import cannot create a new `NO_TARGET_SPAWN` from this file, and the Zephras Isle density cap named in the review does not show up as
+  a lowered count here. "Quest-relevant" only covers quest rows in `sql/custom/world` (starter/ender rows and monster/game object
+  objectives); quests whose rows live only in the base world database are not tagged.
+- The 0 -> N entries could turn earlier `NO_TARGET_SPAWN` blockers into plannable quests; only the blocker counts from a running server
+  (against `quest-coverage-20261007.md`) confirm that.
