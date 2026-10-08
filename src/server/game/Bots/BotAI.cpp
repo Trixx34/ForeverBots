@@ -18,6 +18,7 @@
 #include "BotAI.h"
 #include "BotCombat.h"
 #include "BotPet.h"
+#include "BotConsumables.h"
 #include "BotTravel.h"
 #include "BotTravelPlan.h"
 #include "BotQuest.h"
@@ -129,6 +130,8 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
     if (BotPet::Cfg().Enabled && bot && bot->GetClass() == CLASS_HUNTER && state != BotState::Dead
         && std::find(names.begin(), names.end(), "pet") == names.end())
         names.push_back("pet");
+    if (BotConsumable::Enabled() && bot && state == BotState::Combat && std::find(names.begin(), names.end(), "consumables") == names.end())
+        names.push_back("consumables");
     if (BotTravel::Cfg().Enabled && bot && state == BotState::NonCombat && !(bot->GetSession() && bot->GetSession()->IsAltBot())
         && std::find(names.begin(), names.end(), "travel") == names.end())
         names.push_back("travel");

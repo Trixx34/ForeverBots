@@ -245,6 +245,8 @@ void RegisterQuestBotObjects(BotRegistry& registry);
 // Defined in BotPet.cpp: hunter pet upkeep and taming (strategy "pet").
 void RegisterPetBotObjects(BotRegistry& registry);
 void RegisterTravelBotObjects(BotRegistry& registry);
+// Defined in BotConsumables.cpp: potions in a fight (strategy "consumables").
+void RegisterConsumableBotObjects(BotRegistry& registry);
 
 // One engine: the active strategies of one BotState, the merged trigger/action wiring and the action queue.
 class BotEngine
