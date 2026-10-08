@@ -32,6 +32,7 @@
 #include "BotLootPlan.h"
 #include "BotMgr.h"
 #include "BotPet.h"
+#include "BotTravel.h"
 #include "Config.h"
 #include "Creature.h"
 #include "CreatureData.h"
@@ -1470,6 +1471,11 @@ public:
         if (BotPet::Busy(ai)) // a taming run holds the bot
         {
             c.Why = "taming";
+            return false;
+        }
+        if (BotTravel::Busy(ai)) // a trip to the next leveling zone holds the bot
+        {
+            c.Why = "travel";
             return false;
         }
 
@@ -4211,6 +4217,36 @@ std::string DescribeTask(BotAI* ai)
     return StringFormat("task {} quest {} npc {} target {} kills {} scans {} raw {} ok {} seenlive {} toostrong {} wait {} chasing {} dist {:.1f} appr {} ign {} expect {} fails {} legs {} accepted {} rewarded {} blacklisted {} nextchoose {} calls {} hubtrips {} grinds {} hub {} why {}",
         KindName(t.K), t.Quest, t.NpcEntry, t.Target.IsEmpty() ? 0 : 1, t.Kills, t.Scans, t.ScanRaw, t.ScanOk, t.SeenLive, t.TooStrongSeen, t.WaitStartMs ? 1 : 0, t.Chasing ? 1 : 0, t.LastDist, t.Approaches, t.Ignored,
         cp->ExpectGoal ? 1 : 0, cp->GoalFails, t.LegIssues, cp->Accepted, cp->Rewarded, cp->Blacklist.size(), cp->NextChooseMs, cp->ExecCalls, cp->HubTrips, cp->Grinds, int64(t.HubId == 0xFFFFFFFFu ? -1 : int64(t.HubId)), cp->Why);
+}
+
+bool IsGrinding(BotAI* ai)
+{
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    return cp && cp->LastWasGrind;
+}
+
+// The nearest quest hub of the bot's map inside the zone whose quest levels fit the bot (same level window as the hub choice).
+bool FindHubInZone(Player* bot, uint32 zoneId, float& x, float& y, float& z)
+{
+    if (!g.Ready.load(std::memory_order_acquire) || !bot->GetMap())
+        return false;
+    int32 const lvl = int32(bot->GetLevel());
+    float best = 0.0f;
+    bool found = false;
+    for (Hub const& h : g.Hubs)
+    {
+        if (h.Map != bot->GetMapId() || (h.MinQ > 0 && h.MinQ > lvl + 2) || (h.MaxQ > 0 && h.MaxQ < lvl - 4))
+            continue;
+        float const d = Dist2D(h.X, h.Y, bot->GetPositionX(), bot->GetPositionY());
+        if (found && d >= best)
+            continue;
+        if (bot->GetMap()->GetZoneId(bot->GetPhaseShift(), h.X, h.Y, h.Z) != zoneId)
+            continue;
+        found = true;
+        best = d;
+        x = h.X; y = h.Y; z = h.Z;
+    }
+    return found;
 }
 
 void NoteDeath(Player* bot)

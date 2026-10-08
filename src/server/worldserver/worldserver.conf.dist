@@ -4899,6 +4899,33 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: Trip threshold (rounds), top-up target (rounds) and minimum seconds between ammo trips of one bot.
 #        Default:     60 / 400 / 300
 #
+#    Bot.AI.Travel.Enabled
+#        Description: Travel and leveling progression. A bot that has outgrown its zone (or has nothing left to quest for) picks the next
+#                     leveling zone for its level and faction, walks or flies there, and the quest strategy continues in the new zone.
+#                     Flight masters close by are learned once and used for long trips; the hearthstone is used when the way from home is
+#                     clearly shorter, and bots bind at inns they pass when that shortens the way back. Adds the strategy "travel".
+#                     Boats and zeppelins are ridden as a simulated trip between two docks (the Deeprun Tram is not used).
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+#
+#    Bot.AI.Travel.Zones / Bot.AI.Travel.Taxi / Bot.AI.Travel.Transport / Bot.AI.Travel.Hearth
+#        Description: Zone progression / flight paths (learn and use) / boats and zeppelins / hearthstone and inn binding. Each part can be
+#                     switched off alone.
+#        Default:     1 / 1 / 1 / 1
+#
+#    Bot.AI.Travel.CheckSec / Bot.AI.Travel.TripMinutes
+#        Description: Seconds between two "does the zone still fit" checks (2-600) / longest time of one trip before it is abandoned (2-240).
+#        Default:     10 / 25
+#
+#    Bot.AI.Travel.MaxRouteSteps / Bot.AI.Travel.RecentZones / Bot.AI.Travel.LeaveMarginLevels
+#        Description: Longest planned route in legs (1-20) / zones a bot remembers so it does not bounce back (1-20) / levels above the
+#                     zone's band before the bot leaves (0-10).
+#        Default:     8 / 4 / 0
+#
+#    Bot.AI.Travel.DiscoverRadius
+#        Description: Yards around a bot within which it visits flight masters it does not know yet (50-5000).
+#        Default:     500
+#
 #    Bot.Talents.Premade.Enabled
 #        Description: On level-up, learn a configured talent per tier for the bot's class (this fork has tiered talents: one pick per tier).
 #                     Bot.Talents.Premade.Class.<classId> = comma list of Talent.db2 ids (first id of a tier wins, tiers that already hold a
@@ -4966,6 +4993,17 @@ Bot.AI.Move.Natural.Idle = 1
 Bot.AI.Move.Natural.IdleMaxStandSec = 25
 Bot.AI.Move.Natural.Metrics = 1
 Bot.AI.Move.Natural.MetricsSec = 60
+Bot.AI.Travel.Enabled = 0
+Bot.AI.Travel.Zones = 1
+Bot.AI.Travel.Taxi = 1
+Bot.AI.Travel.Transport = 1
+Bot.AI.Travel.Hearth = 1
+Bot.AI.Travel.CheckSec = 10
+Bot.AI.Travel.TripMinutes = 25
+Bot.AI.Travel.MaxRouteSteps = 8
+Bot.AI.Travel.RecentZones = 4
+Bot.AI.Travel.LeaveMarginLevels = 0
+Bot.AI.Travel.DiscoverRadius = 500
 Bot.AI.Ammo.Enabled = 0
 Bot.AI.Ammo.LowCount = 60
 Bot.AI.Ammo.BuyTarget = 400

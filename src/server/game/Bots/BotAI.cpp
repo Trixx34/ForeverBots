@@ -17,6 +17,8 @@
 
 #include "BotAI.h"
 #include "BotPet.h"
+#include "BotTravel.h"
+#include "BotTravelPlan.h"
 #include "BotQuest.h"
 #include "CellImpl.h"
 #include "Config.h"
@@ -126,6 +128,9 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
     if (BotPet::Cfg().Enabled && bot && bot->GetClass() == CLASS_HUNTER && state != BotState::Dead
         && std::find(names.begin(), names.end(), "pet") == names.end())
         names.push_back("pet");
+    if (BotTravel::Cfg().Enabled && bot && state == BotState::NonCombat && !(bot->GetSession() && bot->GetSession()->IsAltBot())
+        && std::find(names.begin(), names.end(), "travel") == names.end())
+        names.push_back("travel");
     if (BotAI::Config().TestStrategy)
     {
         switch (state)
@@ -930,6 +935,7 @@ void BotAI::OnLogout(Player* bot, char const* reason)
         EmitFightEnd(bot, reason && !strcmp(reason, "LOGOUT_COMMAND") ? "despawned" : "logout", _nowMs);
     _fight = Fight();
     BotPet::OnLogout(this, bot); // dismisses the pet, drops a taming run
+    BotTravel::OnLogout(this, bot); // drops a running trip
     BotQuest::OnLogout(this); // releases the loot claim of the quest task
 }
 
