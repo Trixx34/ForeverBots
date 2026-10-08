@@ -4913,6 +4913,16 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: Wipes after which the run is given up / minutes after which a bot-led run is given up.
 #        Default:     3 / 90
 #
+#    Bot.AI.Dungeon.Map / Bot.AI.Dungeon.MaxLevel
+#        Description: Map id of the dungeon the bots run (its entrance trigger is looked up in the area trigger table) / highest bot level
+#                     taken along. One group runs at a time.
+#        Default:     36 (Deadmines) / 25
+#
+#    Bot.AI.Dungeon.IntervalSec / Bot.AI.Dungeon.StartCooldownSec / Bot.AI.Dungeon.PackTimeoutSec
+#        Description: Seconds between run updates / between two attempts to form a group / after which a pack that is not cleared is
+#                     written off.
+#        Default:     5 / 120 / 240
+#
 #    Bot.AI.Ammo.Enabled
 #        Description: Ranged ammo upkeep of the quest strategy's vendor layer: a bot with a bow, crossbow or gun equipped counts its arrows or
 #                     bullets; below Bot.AI.Ammo.LowCount it logs AMMO_LOW, plans a vendor trip to a vendor that sells the right ammo and

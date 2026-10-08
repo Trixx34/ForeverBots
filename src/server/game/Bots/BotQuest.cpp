@@ -29,6 +29,7 @@
 #include "BotAuction.h"
 #include "BotBehavior.h"
 #include "BotCombat.h"
+#include "BotDungeonRun.h"
 #include "BotEngine.h"
 #include "BotLootPlan.h"
 #include "BotGear.h"
@@ -1600,6 +1601,12 @@ public:
         if (BotPet::Busy(ai)) // a taming run holds the bot
         {
             c.Why = "taming";
+            return false;
+        }
+
+        if (BotDungeonRun::Busy(ai)) // the dungeon group moves the bot
+        {
+            c.Why = "dungeon";
             return false;
         }
 
