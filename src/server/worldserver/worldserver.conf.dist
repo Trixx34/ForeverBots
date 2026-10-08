@@ -4858,6 +4858,14 @@ Bot.AI.Death.GiveUpSec = 300
 #                     Class ids: 1 warrior, 2 paladin, 3 hunter, 4 rogue, 5 priest, 7 shaman, 8 mage, 9 warlock, 11 druid. Empty = no-op.
 #        Default:     0 - (Disabled)
 #
+#    Bot.AI.Rotation.Enabled
+#        Description: Full class rotations: the conditional rows of the class spell table in BotCombat.cpp (Charge, Execute, Thunder
+#                     Clap, Kick, Counterspell, Frost Nova, Power Word: Shield, Flame Shock, Life Tap, Hunter's Mark and more) are cast
+#                     when their condition holds (area attacks against several mobs, interrupts, emergency cooldowns, no damage over
+#                     time on a dying mob). Off: the bots cast the old fixed spells only. See
+#                     docs/playerbots/feature-bot-class-rotations-20261008.md.
+#        Default:     0 - Off
+#
 #    Bot.AI.Loot.Improved.Enabled
 #        Description: Improved chest loot task of the quest strategy: spawn choice by path cost, skip far spawns and recently deadly areas,
 #                     per-bot spawn blacklist, bag-space check with a planned vendor trip, loot exits never feed the quest quarantine.
