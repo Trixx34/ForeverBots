@@ -5024,6 +5024,33 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: Spawns closer than this many yards (3D, chained) form one pack / larger packs without a boss are cut up.
 #        Default:     14 / 6
 #
+#    Bot.AI.Dungeon.PlayerLed.Enabled
+#        Description: Dungeon runs led by a player: bots of the player's group that follow the player (chat order `follow`) come into a
+#                     five-man dungeon after the player, join the player when stuck far behind, are raised after a fight and leave with
+#                     the player; the player is told which bots need a rest. Independent of Bot.AI.Dungeon.Enabled (bot-led runs).
+#                     See docs/playerbots/feature-bot-player-led-dungeon-20261008.md.
+#        Default:     0 - Off
+#
+#    Bot.AI.Dungeon.PlayerLed.IntervalSec / Bot.AI.Dungeon.PlayerLed.EnterDelaySec / Bot.AI.Dungeon.PlayerLed.ActCooldownSec
+#        Description: Seconds between checks (1-30) / the player has been on its map this long before bots are brought along (0-60) /
+#                     minimum time between two moves or raises of one bot (1-600).
+#        Default:     2 / 3 / 15
+#
+#    Bot.AI.Dungeon.PlayerLed.CatchUpYards / Bot.AI.Dungeon.PlayerLed.CatchUpSec
+#        Description: Inside a dungeon a bot farther than this from the player (20-300) for this long (5-600), outside of combat, is
+#                     moved next to the player.
+#        Default:     60 / 20
+#
+#    Bot.AI.Dungeon.PlayerLed.RaiseDelaySec
+#        Description: Seconds after which a dead bot is raised next to the player once the fight is over (the stand-in for a healer's
+#                     resurrection and the corpse run); 0 = dead bots stay dead (chat order `revive` still works).
+#        Default:     10
+#
+#    Bot.AI.Dungeon.PlayerLed.Notify / Bot.AI.Dungeon.PlayerLed.NoticeRepeatSec
+#        Description: Tell the player which bots are not ready for the next pull (dead, away, health or mana below the
+#                     Bot.AI.Dungeon.Min*Pct limits), and again when they are ready / seconds before the same notice is repeated (10-3600).
+#        Default:     1 / 60
+#
 #    Bot.AI.Ammo.Enabled
 #        Description: Ranged ammo upkeep of the quest strategy's vendor layer: a bot with a bow, crossbow or gun equipped counts its arrows or
 #                     bullets; below Bot.AI.Ammo.LowCount it logs AMMO_LOW, plans a vendor trip to a vendor that sells the right ammo and
