@@ -5039,6 +5039,18 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: Path queries per spawn choice (the nearest candidates are probed first).
 #        Default:     4
 #
+#    Bot.AI.Loot.Safety.Enabled
+#        Description: Guards of the chest loot task (independent of Bot.AI.Loot.Improved.Enabled): skip chests
+#                     (the camp danger check of the quest strategy is separate and unchanged), skip chests near a recent bot death, and skip spawns
+#                     that repeatedly failed bots for reasons that do not depend on the bot (no path, stalled approach, cannot interact).
+#                     Every guard only skips or delays a chest. Read once at startup.
+#        Default:     1 - On
+#
+#    Bot.AI.Loot.Safety.QuarantineStrikes / Bot.AI.Loot.Safety.QuarantineSec
+#        Description: Bot-independent failures of one chest spawn within 30 minutes before every bot skips it / how long (doubles on
+#                     repeats, up to 8 times).
+#        Default:     3 / 1200
+#
 
 Bot.AI.Pet.Enabled = 0
 Bot.AI.Pet.Feed = 1
@@ -5084,6 +5096,9 @@ Bot.AI.Loot.Improved.DeadlySec = 600
 Bot.AI.Loot.Improved.BlacklistSec = 900
 Bot.AI.Loot.Improved.MinFreeSlots = 2
 Bot.AI.Loot.Improved.PathProbes = 4
+Bot.AI.Loot.Safety.Enabled = 1
+Bot.AI.Loot.Safety.QuarantineStrikes = 3
+Bot.AI.Loot.Safety.QuarantineSec = 1200
 #
 #    Bot.Chat.Enabled
 #        Description: Bots obey chat commands from the leader of their group (party, raid, whisper to a bot).
