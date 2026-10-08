@@ -72,7 +72,7 @@ namespace BotLogCat
         { "QUEST_", Quest }, { "POLE_", Quest }, { "XP_", Progress }, { "LEVEL_UP", Progress }, { "TALENTS_", Progress },
         { "SPELLS_", Progress }, { "AH_", Economy }, { "TRADE_", Economy },
         { "VENDOR_", Economy }, { "SOLD_", Economy }, { "TRAIN_", Economy }, { "BAG_", Economy }, { "GEAR_", Economy },
-        { "LOOT_", Economy }, { "PROF_", Economy }, { "GATHER_", Economy }, { "FISH_", Economy }, { "AMMO_", Economy },
+        { "LOOT_", Economy }, { "PROF_", Economy }, { "GATHER_", Economy }, { "FISH_", Economy }, { "FOOD_", Economy }, { "AMMO_", Economy },
         { "POTION_", Economy }, { "EAT_", Economy }, { "DRINK_", Economy }, { "BANK_", Economy }, { "MAIL_", Economy },
         { "PET_", Pets }, { "ALT_", Social }, { "INVITE_", Social }, { "GROUP_", Social }, { "PARTY_", Social }, { "DUNGEON_", Dungeon }
     };

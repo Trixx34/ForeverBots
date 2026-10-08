@@ -167,6 +167,8 @@ TEST_CASE("BotChat verbs", "[BotChat]")
     CHECK(ParseVerb("follow", false) == Verb::Follow);
     CHECK(ParseVerb("FOLLOW", true) == Verb::Follow);
     CHECK(ParseVerb("release", false) == Verb::Release);
+    CHECK(ParseVerb("food", false) == Verb::Food);
+    CHECK(ParseVerb("FOOD", true) == Verb::Food);
     CHECK(ParseVerb("hello", true) == Verb::None);
     CHECK(ParseVerb("", true) == Verb::None);
 

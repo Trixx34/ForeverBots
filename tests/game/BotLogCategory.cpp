@@ -29,6 +29,7 @@ TEST_CASE("Reason prefixes pick the category", "[BotLogCategory]")
     CHECK(Classify("decision", "PET_TAME_OK") == Pets);
     CHECK(Classify("decision", "AH_POSTED") == Economy);
     CHECK(Classify("decision", "BANK_DEPOSIT") == Economy);
+    CHECK(Classify("decision", "FOOD_COOK") == Economy);
     CHECK(Classify("decision", "MAIL_SENT") == Economy);
     CHECK(Classify("decision", "PARTY_FORMED") == Social);
     CHECK(Classify("decision", "TOWN_IDLE_GO") == Movement);

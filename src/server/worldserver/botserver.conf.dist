@@ -1112,6 +1112,56 @@ Bot.AI.Consumables.HealthBelowPct = 35
 Bot.AI.Consumables.ManaBelowPct = 20
 
 #
+#    Bot.AI.Cooking.Enabled
+#        Description: Bots with the cooking skill keep a stock of food and buff food ("Well Fed") for the players
+#                     they travel with. They cook what they caught or carry until the stock targets below are met,
+#                     even when the recipes no longer raise the skill, and walk to a cooking fire when a recipe needs
+#                     one. Buff food is cooked first. Logged as FOOD_COOK. Cooking for skill-ups works as before
+#                     whatever this says.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Cooking.Enabled = 0
+
+#
+#    Bot.AI.Cooking.StockPlain
+#        Description: Plain food (health only) the bot cooks up to.
+#        Default:     20
+#        Values:      whole number 0 to 200 (items)
+Bot.AI.Cooking.StockPlain = 20
+
+#
+#    Bot.AI.Cooking.StockBuff
+#        Description: Buff food the bot cooks up to.
+#        Default:     10
+#        Values:      whole number 0 to 200 (items)
+Bot.AI.Cooking.StockBuff = 10
+
+#
+#    Bot.AI.Cooking.MinFreeSlots
+#        Description: The bot stops cooking for the stock when fewer bag slots than this are free.
+#        Default:     4
+#        Values:      whole number 1 to 20 (slots)
+Bot.AI.Cooking.MinFreeSlots = 4
+
+#
+#    Bot.Chat.Food.Enabled
+#        Description: The chat verb "food" (also with a selector, for example "healers food", or whispered to one
+#                     bot). Every member of the bot's group may use it. Each bot that carries food the player can
+#                     use whispers it as item links, buff food first, and tells the player to open a trade. Handing
+#                     the food over uses Bot.Trade.Link.Enabled. Needs Bot.Chat.Enabled. Off: the word is ordinary
+#                     chat.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Chat.Food.Enabled = 0
+
+#
+#    Bot.Chat.Food.MaxListed
+#        Description: Foods in the whispered list.
+#        Default:     12
+#        Values:      whole number 1 to 30 (items)
+Bot.Chat.Food.MaxListed = 12
+
+#
 #    Bot.AI.Watchdog.Enabled
 #        Description: Stall watchdog. A bot that makes no progress (no movement, xp, money or quest-log change;
 #                     fighting, flying, being dead and instance content count as busy) is recovered in steps:

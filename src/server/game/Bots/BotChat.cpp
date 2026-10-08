@@ -19,6 +19,7 @@
 #include "BotAI.h"
 #include "BotBehavior.h"
 #include "BotCombat.h"
+#include "BotCooking.h"
 #include "BotDummy.h"
 #include "BotEngine.h"
 #include "BotMgr.h"
@@ -74,6 +75,7 @@ char const* VerbName(Verb v)
         case Verb::Summon: return "summon";
         case Verb::Revive: return "revive";
         case Verb::Dummy: return "dummy";
+        case Verb::Food: return "food";
         default: return "?";
     }
 }
@@ -279,7 +281,7 @@ Verb ParseVerb(std::string_view t, bool orders)
     if (t.empty() || t.size() > 10)
         return Verb::None;
     static constexpr std::pair<char const*, Verb> verbs[] = { { "follow", Verb::Follow }, { "stay", Verb::Stay }, { "goto", Verb::Goto },
-        { "rest", Verb::Rest }, { "release", Verb::Release }, { "status", Verb::Status }, { "strategy", Verb::Strategy }, { "verbose", Verb::Verbose }, { "share", Verb::Share }, { "dummy", Verb::Dummy } };
+        { "rest", Verb::Rest }, { "release", Verb::Release }, { "status", Verb::Status }, { "strategy", Verb::Strategy }, { "verbose", Verb::Verbose }, { "share", Verb::Share }, { "dummy", Verb::Dummy }, { "food", Verb::Food } };
     static constexpr std::pair<char const*, Verb> orderVerbs[] = { { "stop", Verb::Stop }, { "aggressive", Verb::Aggressive }, { "passive", Verb::Passive },
         { "pull", Verb::Pull }, { "heal", Verb::Heal }, { "mount", Verb::Mount }, { "dismount", Verb::Dismount }, { "summon", Verb::Summon }, { "revive", Verb::Revive } };
     for (auto const& [name, v] : verbs)
@@ -565,6 +567,7 @@ void Preflight(Ctx& c)
         }
         case Verb::Release:
         case Verb::Status:
+        case Verb::Food:
             if (!a.empty())
                 c.PreflightError = "BAD_ARGS";
             break;
@@ -663,6 +666,8 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
             if (!alive)
                 return "DEAD";
             return BotSocial::ShareQuest(bot, c.QuestId, IsVerbose(issuer));
+        case Verb::Food:
+            return BotCooking::OfferFood(bot, issuer);
         case Verb::Dummy:
             return c.Off ? BotDummy::Stop(ai, bot) : BotDummy::Start(ai, bot, c.DummySec);
         case Verb::Release:
@@ -912,8 +917,10 @@ bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whis
     if (verb == Verb::None)
         return false;
     std::string_view const args = Trim(rest);
+    if (verb == Verb::Food && !BotCooking::ChatEnabled())
+        return false;
 
-    // 2. authorization: only the leader of the bot's group
+    // 2. authorization: only the leader of the bot's group; asking for food is open to every member
     Group* group = channel == Channel::Whisper ? whisperTarget->GetGroup() : issuer->GetGroup();
     if (!group && channel != Channel::Whisper)
         return false;
@@ -921,7 +928,7 @@ bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whis
     if (!logBot)
         return false;   // a group without bots is none of our business
 
-    if (!group || !group->IsLeader(issuer->GetGUID()))
+    if (!group || !(group->IsLeader(issuer->GetGUID()) || (verb == Verb::Food && group->IsMember(issuer->GetGUID()))))
     {
         char const* reason = group ? "UNAUTHORIZED" : "NOT_IN_GROUP";
         if (s_unauth.size() >= ISSUER_MAP_CAP && !s_unauth.contains(issuer->GetGUID().GetCounter()))

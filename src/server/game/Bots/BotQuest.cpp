@@ -30,6 +30,7 @@
 #include "BotBank.h"
 #include "BotBehavior.h"
 #include "BotCombat.h"
+#include "BotCooking.h"
 #include "BotDungeonRun.h"
 #include "BotParty.h"
 #include "BotEngine.h"
@@ -3076,9 +3077,11 @@ private:
             if (back != c.CraftBackoff.end() && now < back->second)
                 continue;
             int32 const skill = int32(bot->GetSkillValue(info.Skill));
-            if (skill >= int32(bot->GetMaxSkillValue(info.Skill)))
+            bool const stockCook = info.Skill == BotProfession::SKILL_COOKING && BotCooking::Enabled();
+            if (skill >= int32(bot->GetMaxSkillValue(info.Skill)) && !stockCook)
                 continue;
             std::vector<BotProfession::Recipe> craftable;
+            std::vector<BotCook::Recipe> foods;   // cooking only: what the stock needs, skill-up or not
             for (auto const& [spellId, ps] : bot->GetSpellMap())
             {
                 if (ps.state == PLAYERSPELL_REMOVED || !ps.active || ps.disabled)
@@ -3103,16 +3106,42 @@ private:
                 if (!any || !haveAll || bot->GetFreeInventorySlotCount() == 0)
                     continue;
                 craftable.push_back({ spellId, (ab->TrivialSkillLineRankHigh + ab->TrivialSkillLineRankLow) / 2, ab->TrivialSkillLineRankHigh });
+                BotCook::Recipe food;
+                if (stockCook && BotCooking::Describe(bot, si, food))
+                {
+                    food.SpellId = spellId;
+                    food.Yellow = craftable.back().Yellow;
+                    food.Grey = craftable.back().Grey;
+                    foods.push_back(food);
+                }
             }
-            int const pick = BotProfession::PickRecipe(skill, craftable);
-            if (pick < 0)
+            // stock first: food and buff food for the players the bot travels with; a skill-up recipe otherwise
+            uint32 spellId = 0;
+            bool forStock = false;
+            if (stockCook && !BotCook::BagsTooFull(bot->GetFreeInventorySlotCount(), BotCooking::Cfg()))
+            {
+                int const sp = BotCook::PickStock(skill, BotCooking::CountStock(bot), BotCooking::Cfg(), foods);
+                if (sp >= 0)
+                {
+                    spellId = foods[size_t(sp)].SpellId;
+                    forStock = true;
+                }
+            }
+            if (!spellId && skill < int32(bot->GetMaxSkillValue(info.Skill)))
+            {
+                int const pick = BotProfession::PickRecipe(skill, craftable);
+                if (pick >= 0)
+                    spellId = craftable[size_t(pick)].SpellId;
+            }
+            if (!spellId)
                 continue;
-            uint32 const spellId = craftable[pick].SpellId;
             SpellCastResult const res = bot->CastSpell(bot, spellId, CastSpellExtraArgs(TRIGGERED_NONE));
             if (res == SPELL_CAST_OK)
             {
-                Decision(ai, bot, "PROF_CRAFT", StringFormat("crafting spell {} for {} (skill {})", spellId, info.Name, skill), 0, 0,
-                    StringFormat(R"({{"skill":{},"spell":{},"skill_value":{}}})", info.Skill, spellId, skill));
+                if (forStock)
+                    c.CraftNextMs = now + 4000;   // a stock is many casts: keep going once the cast is over
+                Decision(ai, bot, forStock ? "FOOD_COOK" : "PROF_CRAFT", StringFormat("crafting spell {} for {} (skill {}{})", spellId, info.Name, skill, forStock ? ", for the food stock" : ""), 0, 0,
+                    StringFormat(R"({{"skill":{},"spell":{},"skill_value":{},"stock":{}}})", info.Skill, spellId, skill, forStock ? 1 : 0));
                 return;
             }
             if (res == SPELL_FAILED_REQUIRES_SPELL_FOCUS && !(c.FocusArrivedSkill == info.Skill && now - c.FocusArrivedMs < 60000))
