@@ -19,7 +19,6 @@
 #include "AccountMgr.h"
 #include "Channel.h"
 #include "ChannelMgr.h"
-#include "BotChat.h"
 #include "Chat.h"
 #include "ChatPackets.h"
 #include "Common.h"
@@ -344,7 +343,6 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
                 sender->AddWhisperWhiteList(receiver->GetGUID());
 
             GetPlayer()->Whisper(msg, lang, receiver);
-            BotChat::Handle(GetPlayer(), BotChat::Channel::Whisper, msg, receiver);
             break;
         }
         case CHAT_MSG_PARTY:
@@ -365,7 +363,6 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
             WorldPackets::Chat::Chat packet;
             packet.Initialize(ChatMsg(type), lang, sender, nullptr, msg);
             group->BroadcastPacket(packet.Write(), false, group->GetMemberGroup(GetPlayer()->GetGUID()));
-            BotChat::Handle(GetPlayer(), BotChat::Channel::Party, msg);
             break;
         }
         case CHAT_MSG_GUILD:
@@ -408,7 +405,6 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
             WorldPackets::Chat::Chat packet;
             packet.Initialize(ChatMsg(type), lang, sender, nullptr, msg);
             group->BroadcastPacket(packet.Write(), false);
-            BotChat::Handle(GetPlayer(), BotChat::Channel::Raid, msg);
             break;
         }
         case CHAT_MSG_RAID_WARNING:

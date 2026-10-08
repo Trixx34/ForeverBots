@@ -28,18 +28,18 @@ Battlenet::WorldserverServiceDispatcher::WorldserverServiceDispatcher()
     AddService<Services::ClubService>();
     AddService<WorldserverService<connection::v1::ConnectionService>>();
     AddService<WorldserverService<friends::v1::FriendsService>>();
-    AddService<Services::FriendsService>();
+    AddService<WorldserverService<friends::v2::client::FriendsService>>();
     AddService<WorldserverService<game_utilities::v1::GameUtilitiesService>>();
     AddService<Services::GameUtilitiesService>();
     AddService<WorldserverService<notification::v1::NotificationService>>();
     AddService<WorldserverService<notification::v2::client::NotificationService>>();
     AddService<WorldserverService<presence::v1::PresenceService>>();
-    AddService<Services::PresenceService>();
+    AddService<WorldserverService<presence::v2::client::PresenceService>>();
     AddService<WorldserverService<report::v1::ReportService>>();
     AddService<WorldserverService<report::v2::ReportService>>();
     AddService<WorldserverService<report::v3::client::ReportService>>();
-    AddService<WorldserverService<resources::v1::ResourcesService>>(); // Classic: Services::ResourcesService (fake content handle) made the client wait on 'Retrieving character list'
-    AddService<Services::WhisperService>();
+    AddService<WorldserverService<resources::v1::ResourcesService>>();
+    AddService<WorldserverService<whisper::v2::client::WhisperService>>();
 }
 
 void Battlenet::WorldserverServiceDispatcher::Dispatch(WorldSession* session, uint32 serviceHash, uint32 token, uint32 methodId, MessageBuffer buffer)
@@ -48,7 +48,7 @@ void Battlenet::WorldserverServiceDispatcher::Dispatch(WorldSession* session, ui
     if (itr != _dispatchers.end())
         itr->second(session, token, methodId, std::move(buffer));
     else
-        TC_LOG_INFO("network.rpc", "{} tried to call invalid service 0x{:X} method {}", session->GetPlayerInfo(), serviceHash, methodId);
+        TC_LOG_DEBUG("session.rpc", "{} tried to call invalid service 0x{:X}", session->GetPlayerInfo(), serviceHash);
 }
 
 Battlenet::WorldserverServiceDispatcher& Battlenet::WorldserverServiceDispatcher::Instance()

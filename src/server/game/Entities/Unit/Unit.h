@@ -207,8 +207,6 @@ enum UnitMods
     UNIT_MOD_ALTERNATE_QUEST,
     UNIT_MOD_ALTERNATE_ENCOUNTER,
     UNIT_MOD_ALTERNATE_MOUNT,
-    UNIT_MOD_UNUSED_26,
-    UNIT_MOD_HAPPINESS,
     UNIT_MOD_ARMOR,                                         // UNIT_MOD_ARMOR..UNIT_MOD_RESISTANCE_ARCANE must be in existed order, it's accessed by index values of SpellSchools enum.
     UNIT_MOD_RESISTANCE_HOLY,
     UNIT_MOD_RESISTANCE_FIRE,
@@ -226,7 +224,7 @@ enum UnitMods
     UNIT_MOD_RESISTANCE_START = UNIT_MOD_ARMOR,
     UNIT_MOD_RESISTANCE_END = UNIT_MOD_RESISTANCE_ARCANE + 1,
     UNIT_MOD_POWER_START = UNIT_MOD_MANA,
-    UNIT_MOD_POWER_END = UNIT_MOD_HAPPINESS + 1
+    UNIT_MOD_POWER_END = UNIT_MOD_ALTERNATE_MOUNT + 1
 };
 
 static_assert(UNIT_MOD_STAT_END - UNIT_MOD_STAT_START == MAX_STATS, "UnitMods stats section does not match Stats enum!");
@@ -1827,11 +1825,6 @@ class TC_GAME_API Unit : public WorldObject
         float GetHoverOffset() const { return HasUnitMovementFlag(MOVEMENTFLAG_HOVER) ? *m_unitData->HoverHeight : 0.0f; }
 
         int32 RewardRage(uint32 baseRage);
-        // Classic 1.60 (vanilla) combat: rage from damage, weapon / defense skill of the attack table, blocked amount
-        int32 RewardClassicRage(uint32 damage, bool attacker);
-        int32 GetClassicWeaponSkill(WeaponAttackType attType, Unit const* victim) const;
-        int32 GetClassicDefenseSkill(Unit const* attacker) const;
-        virtual uint32 GetClassicShieldBlockValue() const { return GetLevel() / 2 + uint32(std::max(0.0f, GetStat(STAT_STRENGTH)) / 20.0f); }
 
         virtual float GetFollowAngle() const { return static_cast<float>(M_PI/2); }
 

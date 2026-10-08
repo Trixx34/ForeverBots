@@ -39,7 +39,6 @@
 #include <unordered_map>
 
 class BlackMarketEntry;
-class BotAI;
 class CollectionMgr;
 class Creature;
 class InstanceLock;
@@ -197,7 +196,6 @@ namespace WorldPackets
     namespace Battlenet
     {
         class ChangeRealmTicket;
-        class GenerateSsoToken;
         class Request;
     }
 
@@ -752,7 +750,6 @@ namespace WorldPackets
         class UpdateMissileTrajectory;
         class UpdateAuraVisual;
         class TradeSkillSetFavorite;
-        class ShowTradeSkill;
         class KeyboundOverride;
         class SetEmpowerMinHoldStagePercent;
         class SpellEmpowerRelease;
@@ -993,19 +990,6 @@ class TC_GAME_API WorldSession
         bool PlayerLogoutWithSave() const { return m_playerLogout && m_playerSave; }
         bool PlayerRecentlyLoggedOut() const { return m_playerRecentlyLogout; }
         bool PlayerDisconnected() const;
-
-        // Player bots (see BotMgr): a session without any socket, owned by BotMgr and never added to World's session list.
-        bool IsBot() const { return _isBot; }
-        void SetBot() { _isBot = true; }
-        // A player's alt logged in as a bot (BotAlts): its account has other, real characters, so logout must not mark them offline.
-        bool IsAltBot() const { return _isAltBot; }
-        void SetAltBot() { _isAltBot = true; }
-        // The bot's AI (engine), owned by the session so it dies with it; see Bots/BotAI.h. Null for real players.
-        BotAI* GetBotAI() const { return _botAI; }
-        void SetBotAI(BotAI* ai);   // takes ownership, deletes the previous one
-        // Loads permissions and queues the character load; BotMgr polls ProcessBotLoginCallbacks() until the player is in world.
-        void BeginBotLogin(ObjectGuid guid);
-        void ProcessBotLoginCallbacks();
 
         bool IsAddonRegistered(std::string_view prefix) const;
 
@@ -1253,10 +1237,6 @@ class TC_GAME_API WorldSession
     public:                                                 // opcodes handlers
 
         void Handle_NULL(WorldPackets::Null& null);          // not used
-        void HandleClubFinderProbe(WorldPackets::Null& packet);  // Classic 1.60 Guild Finder
-        void HandleLfgListProbe(WorldPackets::Null& packet);    // Classic 1.60 Group Finder: layouts still being worked out
-        void HandleRecentAllyProbe(WorldPackets::Null& packet); // Classic 1.60 Social window: Recent Allies tab (RecentAllies.cpp)
-        void HandleGetLastCatalogFetch(WorldPackets::Null& null);   // Classic 1.60 catalog shop
         void Handle_EarlyProccess(WorldPackets::Null& null); // just mark packets processed in WorldSocket::ReadDataHandler
         void LogUnprocessedTail(WorldPacket const* packet);
 
@@ -1272,7 +1252,6 @@ class TC_GAME_API WorldSession
         void AbortLogin(WorldPackets::Character::LoginFailureReason reason);
         void HandleLoadScreenOpcode(WorldPackets::Character::LoadingScreenNotify& loadingScreenNotify);
         void HandlePlayerLogin(LoginQueryHolder const& holder);
-        void HandleBotPlayerLogin(LoginQueryHolder const& holder);
         void HandleCheckCharacterNameAvailability(WorldPackets::Character::CheckCharacterNameAvailability& checkCharacterNameAvailability);
         void HandleCharRenameOpcode(WorldPackets::Character::CharacterRenameRequest& request);
         void HandleCharRenameCallBack(std::shared_ptr<WorldPackets::Character::CharacterRenameInfo> renameInfo, PreparedQueryResult result);
@@ -1576,7 +1555,6 @@ class TC_GAME_API WorldSession
 
         void HandleSplitItemOpcode(WorldPackets::Item::SplitItem& splitItem);
         void HandleSwapInvItemOpcode(WorldPackets::Item::SwapInvItem& swapInvItem);
-        void HandleSetAmmo(WorldPackets::Null& packet);
         void HandleDestroyItemOpcode(WorldPackets::Item::DestroyItem& destroyItem);
         void HandleAutoEquipItemOpcode(WorldPackets::Item::AutoEquipItem& autoEquipItem);
         void HandleSellItemOpcode(WorldPackets::Item::SellItem const& sellItem);
@@ -1623,7 +1601,6 @@ class TC_GAME_API WorldSession
         void HandleConfirmRespecWipeOpcode(WorldPackets::Talent::ConfirmRespecWipe& confirmRespecWipe);
         void HandleUnlearnSkillOpcode(WorldPackets::Spells::UnlearnSkill& packet);
         void HandleTradeSkillSetFavorite(WorldPackets::Spells::TradeSkillSetFavorite const& tradeSkillSetFavorite);
-        void HandleShowTradeSkill(WorldPackets::Spells::ShowTradeSkill& packet);
 
         void HandleTraitsCommitConfig(WorldPackets::Traits::TraitsCommitConfig const& traitsCommitConfig);
         void HandleClassTalentsRequestNewConfig(WorldPackets::Traits::ClassTalentsRequestNewConfig& classTalentsRequestNewConfig);
@@ -1909,9 +1886,6 @@ class TC_GAME_API WorldSession
         // Battlenet
         void HandleBattlenetChangeRealmTicket(WorldPackets::Battlenet::ChangeRealmTicket& changeRealmTicket);
         void HandleBattlenetRequest(WorldPackets::Battlenet::Request& request);
-        void HandleGenerateSsoToken(WorldPackets::Battlenet::GenerateSsoToken& generateSsoToken);
-        static constexpr time_t SsoTokenDuration = 4 * HOUR;
-        std::string CreateSsoToken(time_t issued, time_t expires);
 
         void SendBattlenetResponse(uint32 serviceHash, uint32 methodId, uint32 token, pb::Message const* response);
         void SendBattlenetResponse(uint32 serviceHash, uint32 methodId, uint32 token, uint32 status);
@@ -1968,10 +1942,6 @@ class TC_GAME_API WorldSession
         void ProcessQueryCallbacks();
 
         QueryCallbackProcessor _queryProcessor;
-
-        // Classic 1.60: SMSG_REGIONWIDE_CHARACTER_MAIL_DATA waits until the character list is shown (HandleCharEnum)
-        std::unique_ptr<WorldPacket> _classicCharacterMailData;
-        uint32 _classicCharacterMailDataTimer = 0;
         AsyncCallbackProcessor<TransactionCallback> _transactionCallbacks;
         AsyncCallbackProcessor<SQLQueryHolderCallback> _queryHolderProcessor;
 
@@ -2073,9 +2043,6 @@ class TC_GAME_API WorldSession
         rbac::RBACData* _RBACData;
         uint32 expireTime;
         bool forceExit;
-        bool _isBot = false;
-        bool _isAltBot = false;
-        BotAI* _botAI = nullptr;
 
         std::unique_ptr<boost::circular_buffer<std::pair<int64, uint32>>> _timeSyncClockDeltaQueue; // first member: clockDelta. Second member: latency of the packet exchange that was used to compute that clockDelta.
         int64 _timeSyncClockDelta;

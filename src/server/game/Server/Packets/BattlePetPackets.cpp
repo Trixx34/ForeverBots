@@ -55,7 +55,6 @@ ByteBuffer& operator<<(ByteBuffer& data, BattlePet const& pet)
     data << uint32(pet.MaxHealth);
     data << uint32(pet.Speed);
     data << uint8(pet.Quality);
-    data << int64(pet.ClassicUnknown);
     data << SizedString::BitsSize<7>(pet.Name);
     data << OptionalInit(pet.OwnerInfo);
     data << Bits<1>(pet.NoRename);

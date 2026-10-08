@@ -269,7 +269,6 @@ public:
     int32 CalcValueAsInt(WorldObject const* caster = nullptr, SpellEffectValue const* basePoints = nullptr, Unit const* target = nullptr, float* variance = nullptr, uint32 castItemId = 0, int32 itemLevel = -1) const;
     SpellEffectValue CalcValue(WorldObject const* caster = nullptr, SpellEffectValue const* basePoints = nullptr, Unit const* target = nullptr, float* variance = nullptr, uint32 castItemId = 0, int32 itemLevel = -1) const;
     SpellEffectValue CalcBaseValue(WorldObject const* caster, Unit const* target, uint32 itemId, int32 itemLevel) const;
-    static bool UsesClassicFlatBasePoints(WorldObject const* caster);
     float CalcValueMultiplier(WorldObject* caster, Spell* spell = nullptr) const;
     float CalcDamageMultiplier(WorldObject* caster, Spell* spell = nullptr) const;
 
@@ -320,10 +319,6 @@ struct SpellPowerCost
     Powers Power;
     int32 Amount;
 };
-
-// Classic 1.60: paladin seals (vanilla family flags differ from retail) and the judgement each one unleashes (seal effect 2 points)
-TC_GAME_API bool IsClassicPaladinSeal(uint32 spellId);
-TC_GAME_API uint32 GetClassicSealJudgement(uint32 sealSpellId);
 
 class TC_GAME_API SpellInfo
 {

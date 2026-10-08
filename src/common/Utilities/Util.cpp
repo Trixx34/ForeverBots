@@ -763,26 +763,8 @@ bool Utf8ToUpperOnlyLatin(std::string& utf8String)
 #if TRINITY_PLATFORM == TRINITY_PLATFORM_WINDOWS
 bool ReadWinConsole(std::string& str, size_t size /*= 256*/)
 {
-    HANDLE hConsole = GetStdHandle(STD_INPUT_HANDLE);
-    DWORD mode = 0;
-    if (!GetConsoleMode(hConsole, &mode))
-    {
-        // stdin is a pipe or file (headless host): read one UTF-8 line byte by byte
-        str.clear();
-        char ch = 0;
-        DWORD got = 0;
-        while (str.size() < size && ReadFile(hConsole, &ch, 1, &got, nullptr) && got == 1)
-        {
-            str.push_back(ch);
-            if (ch == '\n')
-                return true;
-        }
-        if (str.empty())
-            Sleep(250); // EOF or broken pipe: do not spin the CLI thread
-        return !str.empty();
-    }
-
     wchar_t* commandbuf = new wchar_t[size + 1];
+    HANDLE hConsole = GetStdHandle(STD_INPUT_HANDLE);
     DWORD read = 0;
 
     if (!ReadConsoleW(hConsole, commandbuf, size, &read, nullptr) || read == 0)
@@ -800,15 +782,6 @@ bool ReadWinConsole(std::string& str, size_t size /*= 256*/)
 
 bool WriteWinConsole(std::string_view str, bool error /*= false*/)
 {
-    HANDLE hOut = GetStdHandle(error ? STD_ERROR_HANDLE : STD_OUTPUT_HANDLE);
-    DWORD outMode = 0;
-    if (!GetConsoleMode(hOut, &outMode))
-    {
-        // redirected output: write the UTF-8 bytes as they are
-        DWORD written = 0;
-        return WriteFile(hOut, str.data(), static_cast<DWORD>(str.size()), &written, nullptr) != 0;
-    }
-
     std::wstring wstr;
     wstr.reserve(str.length());
     if (!Utf8toWStr(str, wstr))

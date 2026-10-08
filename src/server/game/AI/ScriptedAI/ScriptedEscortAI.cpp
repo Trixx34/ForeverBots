@@ -16,7 +16,6 @@
  */
 
 #include "ScriptedEscortAI.h"
-#include "BotQuestLog.h"
 #include "Creature.h"
 #include "Group.h"
 #include "Log.h"
@@ -57,7 +56,6 @@ void EscortAI::JustDied(Unit* /*killer*/)
     if (!HasEscortState(STATE_ESCORT_ESCORTING) || !_playerGUID || !_escortQuest)
         return;
 
-    BotQuestLog::Scope escortScope("escort_failed");
     if (Player* player = GetPlayerForEscort())
     {
         if (Group* group = player->GetGroup())

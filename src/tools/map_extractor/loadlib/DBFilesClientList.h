@@ -145,14 +145,6 @@ constexpr DB2FileInfo DBFilesClientList[] =
     { .FileDataId = 6841377, .Name = "Cfg_GameRules.db2" },
     { .FileDataId = 1082876, .Name = "Cfg_Regions.db2" },
     { .FileDataId = 3055692, .Name = "Cfg_TimeEventRegionGroup.db2" },
-    // Classic (1.60+) super districts ("gameplay rulesets")
-    { .FileDataId = 7928017, .Name = "Cfg_DatacenterLocality.db2" },
-    { .FileDataId = 7929271, .Name = "Cfg_SuperDistrict.db2" },
-    { .FileDataId = 8208798, .Name = "AvailableSuperDistrict.db2" },
-    { .FileDataId = 8279681, .Name = "SuperDistrictSet.db2" },
-    { .FileDataId = 8279682, .Name = "SuperDistrictSetCollection.db2" },
-    { .FileDataId = 8279874, .Name = "SuperDistrictTransfer.db2" },
-    { .FileDataId = 8281618, .Name = "SuperDistrictSetXAvailableSD.db2" },
     { .FileDataId = 2965645, .Name = "ChallengeModeItemBonusOverride.db2" },
     { .FileDataId = 6982016, .Name = "ChallengeModeReward.db2" },
     { .FileDataId = 6984186, .Name = "ChallengeModeXReward.db2" },
@@ -604,7 +596,6 @@ constexpr DB2FileInfo DBFilesClientList[] =
     { .FileDataId = 1339818, .Name = "LfgDungeonsGroupingMap.db2" },
     { .FileDataId = 1375579, .Name = "Light.db2" },
     { .FileDataId = 1375580, .Name = "LightData.db2" },
-    { .FileDataId = 7492879, .Name = "LightDataGlobalVolumeFog.db2" },  // Classic 1.60 (WowB 70205 DB2 metadata)
     { .FileDataId = 1334669, .Name = "LightParams.db2" },
     { .FileDataId = 5350588, .Name = "LightParamsLightShaft.db2" },
     { .FileDataId = 5350589, .Name = "LightShaft.db2" },

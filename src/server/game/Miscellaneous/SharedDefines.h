@@ -318,9 +318,7 @@ enum Powers : int8
     POWER_ALTERNATE_QUEST               = 23, // TITLE Alternate (Quest)
     POWER_ALTERNATE_ENCOUNTER           = 24, // TITLE Alternate (Encounter)
     POWER_ALTERNATE_MOUNT               = 25, // TITLE Alternate (Mount)
-    POWER_UNUSED_26                     = 26, // TITLE Unused
-    POWER_HAPPINESS                     = 27, // TITLE Happiness (Classic 1.60 hunter pets, PowerType.db2 27, max 1000000)
-    MAX_POWERS                          = 28  // SKIP
+    MAX_POWERS                          = 26  // SKIP
 };
 
 #define MAX_POWERS_PER_CLASS            10
@@ -1705,7 +1703,6 @@ enum SpellEffects
     SPELL_EFFECT_357                                = 357, // MiscValue[0] = ItemBonusList
     SPELL_EFFECT_358                                = 358, // MiscValue[0] = ItemBonusList
     SPELL_EFFECT_359                                = 359,
-    SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY_2           = 360, // Classic 1.60: temporary weapon enchant of poisons and shaman imbues, MiscValue[0] = SpellItemEnchantment; without an item target the main hand weapon
     TOTAL_SPELL_EFFECTS
 };
 

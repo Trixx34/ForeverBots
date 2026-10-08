@@ -20,7 +20,6 @@
 */
 
 #include "World.h"
-#include "DeathRecap.h"
 #include "AccountMgr.h"
 #include "AchievementMgr.h"
 #include "AreaTriggerDataStore.h"
@@ -33,7 +32,6 @@
 #include "BattlegroundMgr.h"
 #include "BattlenetRpcErrorCodes.h"
 #include "BlackMarketMgr.h"
-#include "BotMgr.h"
 #include "CalendarMgr.h"
 #include "ChannelMgr.h"
 #include "CharacterCache.h"
@@ -695,7 +693,6 @@ void World::LoadConfigSettings(bool reload)
         { .Name = "AllowLoggingIPAddressesInDatabase"sv, .DefaultValue = true, .Index = CONFIG_ALLOW_LOGGING_IP_ADDRESSES_IN_DATABASE },
         { .Name = "Loot.EnableAELoot"sv, .DefaultValue = true, .Index = CONFIG_ENABLE_AE_LOOT },
         { .Name = "Load.Locales"sv, .DefaultValue = true, .Index = CONFIG_LOAD_LOCALES },
-        { .Name = "Bot.Enabled"sv, .DefaultValue = true, .Index = CONFIG_BOT_ENABLED },
     } };
 
     static constexpr ConfigOptionLoadDefinitionArray<uint32, INT_CONFIG_VALUE_COUNT> ints =
@@ -1204,28 +1201,11 @@ void World::LoadConfigSettings(bool reload)
     if (m_int_configs[CONFIG_PACKET_SPOOF_BANMODE] == BAN_CHARACTER)
         m_int_configs[CONFIG_PACKET_SPOOF_BANMODE] = BAN_ACCOUNT;
 
-    // Classic 1.60: the game rules the official beta sends (SMSG_FEATURE_SYSTEM_STATUS, ymir sniffs of build 70124) switch Classic
-    // behaviour on in the client, e.g. rule 177 makes the ammo slot (Lua slot 0) valid: without it GetInventoryItemID("player", 0)
-    // returns nothing and the slot shows no ammo. Realm launch rules (3, 5, 8: character reservations, launch time) are left out.
-    _gameRules.clear();
-    for (auto [rule, value] : std::initializer_list<std::pair<int32, int32>>{
-        { 213, 1 }, { 216, 2 }, { 174, 1 }, { 206, 1 }, { 109, 1 }, { 114, 1 }, { 211, 1 }, { 112, 1 }, { 173, 1 }, { 154, 0 },
-        { 180, 0 }, { 181, 1 }, { 182, 1 }, { 195, 1 }, { 23, 1 }, { 98, 0 }, { 93, 2 }, { 102, 1 }, { 42, 1 }, { 40, 0 },
-        { 157, 1 }, { 190, 0 }, { 162, 1 }, { 209, 1 }, { 89, 1 }, { 177, 1 }, { 197, 1 }, { 199, -5 }, { 63, 1 }, { 90, 1 },
-        { 244, 1 }, { 33, 20 }, { 129, 0 }, { 228, 1 }, { 241, 1 }, { 243, 1 }, { 101, 1 }, { 237, 0 },
-        // official 70205 and 70235 sniffs also send these (not in 70124); 242 / 247 are suspected to switch on the new Social window tabs
-        { 70, 1 }, { 242, 1 }, { 247, 1 } })
-        _gameRules.push_back({ .Rule = ::GameRule(rule), .Value = value });
-    _gameRules.push_back({ .Rule = ::GameRule(200), .Value = 0.5f });
-
-    // Classic 1.60 Hardcore ruleset realm: C_GameRules.IsHardcoreActive() drives the client's Hardcore UI
-    if (sConfigMgr->GetBoolDefault("Classic.Hardcore", false))
-        _gameRules.push_back({ .Rule = ::GameRule::HardcoreRuleset, .Value = true });
-
-    // PremadeGroupFinderStyle (93) = 2 is in the list above: the client loads its "Vanilla style" group finder
-    // (Blizzard_GroupFinder_VanillaStyle) for it
-
-    DeathRecap::LoadConfig();
+    _gameRules =
+    {
+        { .Rule = ::GameRule::TransmogEnabled, .Value = true },
+        { .Rule = ::GameRule::HousingEnabled, .Value = true }
+    };
 
     if (reload)
     {
@@ -1527,10 +1507,6 @@ bool World::SetInitialWorldSettings()
 
     TC_LOG_INFO("server.loading", "Loading Creature templates...");
     sObjectMgr->LoadCreatureTemplates();
-
-    TC_LOG_INFO("server.loading", "Loading Classic creature levels...");
-    sObjectMgr->LoadCreatureClassicLevels();
-    sObjectMgr->LoadItemClassicBlock();
 
     TC_LOG_INFO("server.loading", "Loading Equipment templates...");           // must be after LoadCreatureTemplates
     sObjectMgr->LoadEquipmentTemplates();
@@ -2273,10 +2249,6 @@ void World::Update(uint32 diff)
         sAuctionBot->Update();
         m_timers[WUPDATE_AHBOT].Reset();
     }
-
-    /// <li> Handle player-bot operations (Phase 0 scaffold, see docs/playerbots/implementation-plan.md)
-    if (m_bool_configs[CONFIG_BOT_ENABLED])
-        sBotMgr->Update(diff);
 
     /// Synchronize all scripts with their ids before updating the sScriptReloadMgr
     sScriptMgr->SyncScripts();

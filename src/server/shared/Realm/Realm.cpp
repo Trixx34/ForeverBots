@@ -47,30 +47,6 @@ boost::asio::ip::address Realm::GetAddressForClient(boost::asio::ip::address con
     return Addresses[0];
 }
 
-uint32 GetClassicSuperDistrictForContentSet(uint32 contentSetId)
-{
-    switch (contentSetId)
-    {
-        case 136: return 1; // PvP
-        case 137: return 2; // Normal
-        case 138: return 3; // Roleplay
-        case 140: return 4; // Hardcore
-        default:  return 0;
-    }
-}
-
-uint32 GetClassicContentSetForSuperDistrict(uint32 superDistrictId)
-{
-    switch (superDistrictId)
-    {
-        case 1: return 136; // PvP
-        case 2: return 137; // Normal
-        case 3: return 138; // Roleplay
-        case 4: return 140; // Hardcore
-        default: return 0;
-    }
-}
-
 uint32 Realm::GetConfigId() const
 {
     return ConfigIdByType[Type];
@@ -88,6 +64,5 @@ std::string Battlenet::RealmHandle::GetAddressString() const
 
 std::string Battlenet::RealmHandle::GetSubRegionAddress() const
 {
-    // Classic (1.60+) "super realm" clients use the full realm address as sub-region (hard-coded 70-1-70)
-    return Trinity::StringFormat("{}-{}-{}", Region, Site, Realm);
+    return Trinity::StringFormat("{}-{}-0", Region, Site);
 }

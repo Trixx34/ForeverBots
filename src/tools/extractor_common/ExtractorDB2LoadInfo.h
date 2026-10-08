@@ -294,8 +294,7 @@ struct LiquidTypeLoadInfo
 
 struct MapLoadInfo
 {
-    // Classic 1.60.1 layout (retail 0x75863E23 lacks OceanLiquidTypeID)
-    static constexpr DB2MetaField MetaFields[26] =
+    static constexpr DB2MetaField MetaFields[25] =
     {
         { .Type = FT_STRING_NOT_LOCALIZED, .ArraySize =  1, .IsSigned =  true },
         { .Type = FT_STRING,               .ArraySize =  1, .IsSigned =  true },
@@ -321,7 +320,6 @@ struct MapLoadInfo
         { .Type = FT_INT,                  .ArraySize =  1, .IsSigned =  true },
         { .Type = FT_INT,                  .ArraySize =  1, .IsSigned =  true },
         { .Type = FT_INT,                  .ArraySize =  1, .IsSigned =  true },
-        { .Type = FT_INT,                  .ArraySize =  1, .IsSigned =  true },
         { .Type = FT_INT,                  .ArraySize =  3, .IsSigned =  true },
     };
 
@@ -330,13 +328,13 @@ struct MapLoadInfo
         .FileDataId         = 1349477,
         .IndexField         = -1,
         .ParentIndexField   = -1,
-        .FieldCount         = 26,
-        .FileFieldCount     = 26,
-        .LayoutHash         = 0xD43AFAC3,
+        .FieldCount         = 25,
+        .FileFieldCount     = 25,
+        .LayoutHash         = 0x75863E23,
         .Fields             = MetaFields
     };
 
-    static constexpr DB2FieldMeta Fields[30] =
+    static constexpr DB2FieldMeta Fields[29] =
     {
         { .IsSigned = false, .Type = FT_INT, .Name = "ID" },
         { .IsSigned = false, .Type = FT_STRING_NOT_LOCALIZED, .Name = "Directory" },
@@ -362,7 +360,6 @@ struct MapLoadInfo
         { .IsSigned = true, .Type = FT_SHORT, .Name = "WindSettingsID" },
         { .IsSigned = true, .Type = FT_INT, .Name = "ZmpFileDataID" },
         { .IsSigned = true, .Type = FT_INT, .Name = "WdtFileDataID" },
-        { .IsSigned = true, .Type = FT_INT, .Name = "OceanLiquidTypeID" },
         { .IsSigned = true, .Type = FT_INT, .Name = "NavigationMaxDistance" },
         { .IsSigned = true, .Type = FT_INT, .Name = "PreloadFileDataID" },
         { .IsSigned = true, .Type = FT_INT, .Name = "Flags1" },
@@ -370,7 +367,7 @@ struct MapLoadInfo
         { .IsSigned = true, .Type = FT_INT, .Name = "Flags3" },
     };
 
-    static constexpr DB2FileLoadInfo Instance{ Fields, 30, &MetaInstance };
+    static constexpr DB2FileLoadInfo Instance{ Fields, 29, &MetaInstance };
 };
 
 #endif // TRINITYCORE_EXTRACTOR_DB2_LOAD_INFO_H

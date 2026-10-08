@@ -16,8 +16,6 @@
  */
 
 #include "Unit.h"
-#include "DeathRecap.h"
-#include "BotAI.h"
 #include "AbstractFollower.h"
 #include "Battlefield.h"
 #include "BattlefieldMgr.h"
@@ -73,7 +71,6 @@
 #include "Player.h"
 #include "PlayerAI.h"
 #include "QuestDef.h"
-#include "RecentAllies.h"
 #include "Spell.h"
 #include "ScheduledChangeAI.h"
 #include "SpellAuraEffects.h"
@@ -375,8 +372,6 @@ Unit::Unit(bool isWorldObject) :
     m_baseSpellCritChance = 5.0f;
 
     m_speed_rate.fill(1.0f);
-    m_advFlyingSpeed.fill(0.0f);   // Classic 1.60 has no default flight capability, so UpdateAdvFlyingSpeed never sets these; uninitialized values
-                                   // (sometimes inf/NaN) sent in the create movement block made the client reject the object (disconnect)
     SetFlightCapabilityID(0, false);
 
     // remove aurastates allowing special moves
@@ -922,10 +917,6 @@ bool Unit::HasBreakableByDamageCrowdControlAura(Unit const* excludeCasterChannel
     if (!damageDone)
         return 0;
 
-    // Classic 1.60 (vanilla): rage from damage taken
-    if (attacker && attacker != victim && damagetype != NODAMAGE && damageTaken && victim->GetTypeId() == TYPEID_PLAYER && victim->GetPowerType() == POWER_RAGE)
-        victim->RewardClassicRage(damageTaken, false);
-
     uint32 health = victim->GetHealth();
 
     // duel ends when player has 1 or less hp
@@ -1078,18 +1069,6 @@ bool Unit::HasBreakableByDamageCrowdControlAura(Unit const* excludeCasterChannel
 
     if (spellProto && spellProto->HasAttribute(SPELL_ATTR3_NO_DURABILITY_LOSS))
         durabilityLoss = false;
-
-    // bot telemetry (cheap ring-buffer appends, see Bots/BotAI.cpp)
-    if (damagetype != NODAMAGE)
-    {
-        if (Player* botVictim = victim->ToPlayer())
-            if (BotAI* botAI = botVictim->GetSession()->GetBotAI())
-                botAI->OnDamageTaken(botVictim, attacker, damageTaken, health, uint8(damagetype), spellProto);
-        if (attacker && attacker != victim)
-            if (Player* botAttacker = attacker->ToPlayer())
-                if (BotAI* botAI = botAttacker->GetSession()->GetBotAI())
-                    botAI->OnDamageDealt(botAttacker, victim, damageTaken, spellProto);
-    }
 
     if (killed)
         Unit::Kill(attacker, victim, durabilityLoss, skipSettingDeathState);
@@ -1261,16 +1240,15 @@ void Unit::CalculateSpellDamageTaken(SpellNonMeleeDamage* damageInfo, int32 dama
                 // Spell weapon based damage CAN BE crit & blocked at same time
                 if (blocked)
                 {
-                    // Classic 1.60 (vanilla): weapon based spells are blocked by the flat shield block value like melee hits (retail: a
-                    // share of the damage; Player::GetBlockPercent gave a fraction that truncated to 0, so players blocked nothing)
-                    float value = float(victim->GetClassicShieldBlockValue());
+                    // double blocked amount if block is critical
+                    uint32 value = victim->GetBlockPercent(GetLevel());
                     if (victim->IsBlockCritical())
                     {
-                        value *= 2; // double blocked amount if block is critical
+                        value *= 2; // double blocked percent
                         value *= GetTotalAuraMultiplier(SPELL_AURA_MOD_CRITICAL_BLOCK_AMOUNT);
                     }
 
-                    damageInfo->blocked = uint32(value);
+                    damageInfo->blocked = CalculatePct(damage, value);
                     if (damage <= int32(damageInfo->blocked))
                     {
                         damageInfo->blocked = uint32(damage);
@@ -1482,16 +1460,14 @@ void Unit::CalculateMeleeDamage(Unit* victim, CalcDamageInfo* damageInfo, Weapon
         case MELEE_HIT_BLOCK:
             damageInfo->TargetState = VICTIMSTATE_HIT;
             damageInfo->HitInfo    |= HITINFO_BLOCK;
-            // Classic 1.60 (vanilla): the block value is blocked, not a share of the damage (retail: 30%)
-            damageInfo->Blocked = std::min(damageInfo->Damage, damageInfo->Target->GetClassicShieldBlockValue());
+            // 30% damage blocked, double blocked amount if block is critical
+            damageInfo->Blocked = CalculatePct(damageInfo->Damage, damageInfo->Target->GetBlockPercent(GetLevel()));
             if (damageInfo->Target->IsBlockCritical())
             {
                 damageInfo->Blocked *= 2;
                 damageInfo->Blocked *= GetTotalAuraMultiplier(SPELL_AURA_MOD_CRITICAL_BLOCK_AMOUNT);
             }
 
-            // a critical block must not subtract more than the incoming damage (unsigned, it would wrap)
-            damageInfo->Blocked = std::min(damageInfo->Blocked, damageInfo->Damage);
             damageInfo->OriginalDamage = damageInfo->Damage;
             damageInfo->Damage      -= damageInfo->Blocked;
             damageInfo->CleanDamage += damageInfo->Blocked;
@@ -1500,22 +1476,12 @@ void Unit::CalculateMeleeDamage(Unit* victim, CalcDamageInfo* damageInfo, Weapon
         {
             damageInfo->HitInfo     |= HITINFO_GLANCING;
             damageInfo->TargetState  = VICTIMSTATE_HIT;
-            // Classic 1.60 (vanilla, VMaNGOS): Baeza formula on the defense / weapon skill difference, casters glance harder
-            int32 const skillDiff = victim->GetClassicDefenseSkill(this) - GetClassicWeaponSkill(damageInfo->AttackType, victim);
-            float low = 1.3f - 0.05f * skillDiff;
-            float high = 1.2f - 0.03f * skillDiff;
-            float lowCap = 0.91f;
-            if (GetClassMask() & CLASSMASK_WAND_USERS)
-            {
-                low -= 0.7f;
-                high -= 0.3f;
-                lowCap = 0.6f;
-            }
-            low = std::clamp(low, 0.01f, lowCap);
-            high = std::clamp(high, 0.2f, 0.99f);
+            int32 leveldif = int32(victim->GetLevel()) - int32(GetLevel());
+            if (leveldif > 3)
+                leveldif = 3;
 
             damageInfo->OriginalDamage = damageInfo->Damage;
-            float reducePercent = frand(std::min(low, high), std::max(low, high));
+            float reducePercent = 1.f - leveldif * 0.1f;
             damageInfo->CleanDamage += damageInfo->Damage - uint32(reducePercent * damageInfo->Damage);
             damageInfo->Damage = uint32(reducePercent * damageInfo->Damage);
             break;
@@ -1808,10 +1774,7 @@ void Unit::HandleEmoteCommand(Emote emoteId, Player* target /*=nullptr*/, Trinit
         return damage;
 
     float mitigation = std::min(armor / (armor + armorConstant), 0.85f);
-    // Classic 1.60 (vanilla): rounded, and armor never takes a hit below 1 damage (retail truncated: 1 damage hits became 0)
-    if (!damage)
-        return 0;
-    return std::max<uint32>(uint32(damage * (1.0f - mitigation) + 0.5f), 1);
+    return uint32(std::max(damage * (1.0f - mitigation), 0.0f));
 }
 
 /*static*/ uint32 Unit::CalcSpellResistedDamage(Unit const* attacker, Unit* victim, uint32 damage, SpellSchoolMask schoolMask, SpellInfo const* spellInfo)
@@ -1882,7 +1845,6 @@ void Unit::HandleEmoteCommand(Emote emoteId, Player* target /*=nullptr*/, Trinit
         {
             victimResistance += float(player->GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_TARGET_RESISTANCE, schoolMask));
             victimResistance -= float(player->GetSpellPenetrationItemMod());
-            victimResistance -= float(player->GetClassicSpellPenetration(schoolMask));
         }
         else if (Unit const* unitCaster = caster->ToUnit())
             victimResistance += float(unitCaster->GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_TARGET_RESISTANCE, schoolMask));
@@ -1898,19 +1860,7 @@ void Unit::HandleEmoteCommand(Emote emoteId, Player* target /*=nullptr*/, Trinit
 
     victimResistance = std::max(victimResistance, 0.0f);
 
-    // Classic 1.60: the caller (CalcSpellResistedDamage) wants the average resisted fraction, retail returns the raw resistance
-    // (creatures have none there): with 1 point of resistance every spell was fully resisted. Vanilla formula: resistance
-    // * 0.75 / (5 * caster level), at most 75%; creatures above the caster's level resist 8 more per level (not binary spells).
-    uint32 casterLevel = 1;
-    if (caster && caster->ToUnit())
-    {
-        casterLevel = std::max<uint32>(caster->ToUnit()->GetLevelForTarget(victim), 1);
-        int32 levelDiff = int32(victim->GetLevelForTarget(caster)) - int32(casterLevel);
-        if (levelDiff > 0 && victim->GetTypeId() == TYPEID_UNIT && !(spellInfo && spellInfo->HasAttribute(SPELL_ATTR0_CU_BINARY_SPELL)))
-            victimResistance += float(levelDiff * 8);
-    }
-
-    return std::min(victimResistance * 0.75f / (5.0f * casterLevel), 0.75f);
+    return victimResistance;
 }
 
 /*static*/ void Unit::CalcAbsorbResist(DamageInfo& damageInfo, Spell* spell /*= nullptr*/)
@@ -2286,7 +2236,7 @@ void Unit::DoMeleeAttackIfReady()
 }
 
 // Calculates the normalized rage amount per weapon swing
-[[maybe_unused]] static uint32 CalcMeleeAttackRageGain(Unit const* attacker, WeaponAttackType attType)
+static uint32 CalcMeleeAttackRageGain(Unit const* attacker, WeaponAttackType attType)
 {
     if (!attacker || (attType != BASE_ATTACK && attType != OFF_ATTACK))
         return 0;
@@ -2366,15 +2316,13 @@ void Unit::AttackerStateUpdate(Unit* victim, WeaponAttackType attType, bool extr
                     damageInfo.HitInfo |= HITINFO_FAKE_DAMAGE;
             }
 
-            // Classic 1.60 (vanilla): rage from the damage dealt, 75% of the damage on a dodge / parry (retail: per weapon speed)
+            // Rage reward
             if (this != victim && damageInfo.HitOutCome != MELEE_HIT_MISS && GetPowerType() == POWER_RAGE)
             {
-                uint32 rageDamage = (damageInfo.HitOutCome == MELEE_HIT_DODGE || damageInfo.HitOutCome == MELEE_HIT_PARRY)
-                    ? uint32(damageInfo.CleanDamage * 0.75f) : damageInfo.Damage + damageInfo.Absorb;
-                if (rageDamage)
+                if (uint32 rageReward = CalcMeleeAttackRageGain(this, attType))
                 {
                     damageInfo.HitInfo |= HITINFO_RAGE_GAIN;
-                    damageInfo.RageGained = RewardClassicRage(rageDamage, true);
+                    damageInfo.RageGained = RewardRage(rageReward);
                 }
             }
 
@@ -2495,13 +2443,12 @@ MeleeHitOutcome Unit::RollMeleeOutcomeAgainst(Unit const* victim, WeaponAttackTy
 
     // 4. GLANCING
     // Max 40% chance to score a glancing blow against mobs that are higher level (can do only players and pets and not with ranged weapon)
-    // Classic 1.60 (vanilla, VMaNGOS): players / pets against creatures, 10% + 2% per point of the victim's defense above the
-    // attacker's capped weapon skill, at most 40%
     if ((GetTypeId() == TYPEID_PLAYER || IsPet()) &&
-        victim->GetTypeId() != TYPEID_PLAYER && !victim->IsPet() && attType != RANGED_ATTACK)
+        victim->GetTypeId() != TYPEID_PLAYER && !victim->IsPet() &&
+        attackerLevel + 3 < victimLevel)
     {
-        int32 const skill = std::min(GetClassicWeaponSkill(attType, victim), int32(GetMaxSkillValueForLevel(victim)));
-        tmp = std::clamp((10 + (victim->GetClassicDefenseSkill(this) - skill) * 2) * 100, 0, 4000);
+        // cap possible value (with bonuses > max skill)
+        tmp = (10 + 10 * (victimLevel - attackerLevel)) * 100;
         if (tmp > 0 && roll < (sum += tmp))
             return MELEE_HIT_GLANCING;
     }
@@ -2522,16 +2469,13 @@ MeleeHitOutcome Unit::RollMeleeOutcomeAgainst(Unit const* victim, WeaponAttackTy
 
     // 7. CRUSHING
     // mobs can score crushing blows if they're 4 or more levels above victim
-    // Classic 1.60 (vanilla, VMaNGOS): creatures whose maximum skill is 15+ above the victim's (capped) defense: 2% per point - 15%
-    // (retail: an operator precedence bug made the chance always negative)
-    if (GetTypeId() == TYPEID_UNIT && !IsControlledByPlayer() && attType != RANGED_ATTACK &&
-        !(ToCreature()->GetCreatureTemplate()->flags_extra & CREATURE_FLAG_EXTRA_NO_CRUSHING_BLOWS))
-        tmp = int32(GetMaxSkillValueForLevel(victim)) - std::min(victim->GetClassicDefenseSkill(this), int32(victim->GetMaxSkillValueForLevel(this)));
-    else
-        tmp = 0;
-    if (tmp >= 15)
+    if (attackerLevel >= victimLevel + 4 &&
+        // can be from by creature (if can) or from controlled player that considered as creature
+        !IsControlledByPlayer() &&
+        !(GetTypeId() == TYPEID_UNIT && ToCreature()->GetCreatureTemplate()->flags_extra & CREATURE_FLAG_EXTRA_NO_CRUSHING_BLOWS))
     {
-        tmp = tmp * 200 - 1500;
+        // add 2% chance per level, min. is 15%
+        tmp = attackerLevel - victimLevel * 1000 - 1500;
         if (roll < (sum += tmp))
         {
             TC_LOG_DEBUG("entities.unit", "RollMeleeOutcomeAgainst: CRUSHING <{}, {})", sum-tmp, sum);
@@ -2592,9 +2536,7 @@ uint32 Unit::CalculateDamage(WeaponAttackType attType, bool normalized, bool add
     if (minDamage > maxDamage)
         std::swap(minDamage, maxDamage);
 
-    // Classic 1.60: roll inside the real range and round (truncating min and max took up to 1 damage off every hit: a level 1
-    // creature doing 1.2 - 1.6 always hit for 1, then 0 after armor)
-    return uint32(frand(minDamage, maxDamage) + 0.5f);
+    return urand(uint32(minDamage), uint32(maxDamage));
 }
 
 void Unit::SendMeleeAttackStart(Unit* victim)
@@ -2806,24 +2748,25 @@ SpellMissInfo Unit::MeleeSpellHitResult(Unit* victim, SpellInfo const* spellInfo
 
 float Unit::GetUnitDodgeChance(WeaponAttackType attType, Unit const* victim) const
 {
+    int32 const levelDiff = victim->GetLevelForTarget(this) - GetLevelForTarget(victim);
+
     float chance = 0.0f;
+    float levelBonus = 0.0f;
     if (Player const* playerVictim = victim->ToPlayer())
         chance = playerVictim->m_activePlayerData->DodgePercentage;
     else
     {
         if (!victim->IsTotem())
         {
-            chance = 5.0f;  // Classic 1.60 (vanilla): creatures 5% (retail 3% + 1.5% per level above)
+            chance = 3.0f;
             chance += victim->GetTotalAuraModifier(SPELL_AURA_MOD_DODGE_PERCENT);
+
+            if (levelDiff > 0)
+                levelBonus = 1.5f * levelDiff;
         }
     }
 
-    // Classic 1.60 (vanilla): 0.1% (players: 0.04%) per point of weapon skill above / below the victim's maximum defense,
-    // creatures below level 10 dodge less
-    int32 const skillDiff = GetClassicWeaponSkill(attType, victim) - int32(victim->GetMaxSkillValueForLevel(this));
-    chance -= skillDiff * (victim->GetTypeId() == TYPEID_PLAYER ? 0.04f : 0.1f);
-    if (victim->GetTypeId() != TYPEID_PLAYER && victim->GetLevel() < 10)
-        chance *= victim->GetLevel() / 10.0f;
+    chance += levelBonus;
 
     // Reduce enemy dodge chance by SPELL_AURA_MOD_COMBAT_RESULT_CHANCE
     chance += GetTotalAuraModifierByMiscValue(SPELL_AURA_MOD_COMBAT_RESULT_CHANCE, VICTIMSTATE_DODGE);
@@ -2841,7 +2784,10 @@ float Unit::GetUnitDodgeChance(WeaponAttackType attType, Unit const* victim) con
 
 float Unit::GetUnitParryChance(WeaponAttackType attType, Unit const* victim) const
 {
+    int32 const levelDiff = victim->GetLevelForTarget(this) - GetLevelForTarget(victim);
+
     float chance = 0.0f;
+    float levelBonus = 0.0f;
     if (Player const* playerVictim = victim->ToPlayer())
     {
         if (playerVictim->CanParry())
@@ -2858,27 +2804,15 @@ float Unit::GetUnitParryChance(WeaponAttackType attType, Unit const* victim) con
     {
         if (!victim->IsTotem() && !(victim->ToCreature()->GetCreatureTemplate()->flags_extra & CREATURE_FLAG_EXTRA_NO_PARRY))
         {
-            chance = 5.0f;  // Classic 1.60 (vanilla): creatures 5% (retail 6% + 1.5% per level above)
+            chance = 6.0f;
             chance += victim->GetTotalAuraModifier(SPELL_AURA_MOD_PARRY_PERCENT);
+
+            if (levelDiff > 0)
+                levelBonus = 1.5f * levelDiff;
         }
     }
 
-    // Classic 1.60 (vanilla): players 0.04% per point of weapon skill difference; creatures 0.2% per point of the capped skill
-    // difference, 0.6% when more than 10 below; creatures below level 10 parry less
-    if (chance > 0.0f)
-    {
-        int32 const weaponSkill = GetClassicWeaponSkill(attType, victim);
-        int32 const victimMaxSkill = int32(victim->GetMaxSkillValueForLevel(this));
-        if (victim->GetTypeId() == TYPEID_PLAYER)
-            chance -= (weaponSkill - victimMaxSkill) * 0.04f;
-        else
-        {
-            int32 const cappedDiff = std::min(int32(GetMaxSkillValueForLevel(victim)), weaponSkill) - victimMaxSkill;
-            chance -= cappedDiff * (cappedDiff < -10 ? 0.6f : 0.2f);
-            if (victim->GetLevel() < 10)
-                chance *= victim->GetLevel() / 10.0f;
-        }
-    }
+    chance += levelBonus;
 
     // Reduce parry chance by attacker expertise rating
     if (GetTypeId() == TYPEID_PLAYER)
@@ -2895,9 +2829,12 @@ float Unit::GetUnitMissChance() const
     return miss_chance;
 }
 
-float Unit::GetUnitBlockChance(WeaponAttackType attType, Unit const* victim) const
+float Unit::GetUnitBlockChance(WeaponAttackType /*attType*/, Unit const* victim) const
 {
+    int32 const levelDiff = victim->GetLevelForTarget(this) - GetLevelForTarget(victim);
+
     float chance = 0.0f;
+    float levelBonus = 0.0f;
     if (Player const* playerVictim = victim->ToPlayer())
     {
         if (playerVictim->CanBlock())
@@ -2911,25 +2848,15 @@ float Unit::GetUnitBlockChance(WeaponAttackType attType, Unit const* victim) con
     {
         if (!victim->IsTotem() && !(victim->ToCreature()->GetCreatureTemplate()->flags_extra & CREATURE_FLAG_EXTRA_NO_BLOCK))
         {
-            chance = 5.0f;  // Classic 1.60 (vanilla): creatures 5% (retail 3% + 1.5% per level above)
+            chance = 3.0f;
             chance += victim->GetTotalAuraModifier(SPELL_AURA_MOD_BLOCK_PERCENT);
+
+            if (levelDiff > 0)
+                levelBonus = 1.5f * levelDiff;
         }
     }
 
-    // Classic 1.60 (vanilla): 0.1% (players: 0.04%) per point of weapon skill difference; creatures block at most 5% and less
-    // below level 10
-    if (chance > 0.0f)
-    {
-        int32 const skillDiff = GetClassicWeaponSkill(attType, victim) - int32(victim->GetMaxSkillValueForLevel(this));
-        chance -= skillDiff * (victim->GetTypeId() == TYPEID_PLAYER ? 0.04f : 0.1f);
-        if (victim->GetTypeId() != TYPEID_PLAYER)
-        {
-            chance = std::min(chance, 5.0f);
-            if (victim->GetLevel() < 10)
-                chance *= victim->GetLevel() / 10.0f;
-        }
-    }
-
+    chance += levelBonus;
     return std::max(chance, 0.0f);
 }
 
@@ -3002,16 +2929,6 @@ float Unit::GetUnitCriticalChanceTaken(Unit const* attacker, WeaponAttackType at
 float Unit::GetUnitCriticalChanceAgainst(WeaponAttackType attackType, Unit const* victim) const
 {
     float chance = GetUnitCriticalChanceDone(attackType);
-
-    // Classic 1.60 (vanilla): 0.04% crit per point of weapon skill above / below the victim's defense; against creatures with
-    // more defense than the attacker's (capped) skill 0.2% per point
-    int32 const weaponSkill = GetClassicWeaponSkill(attackType, victim);
-    int32 const defense = victim->GetClassicDefenseSkill(this);
-    int32 const skillDiff = weaponSkill - defense;
-    int32 const cappedDiff = std::min(int32(GetMaxSkillValueForLevel(victim)), weaponSkill) - defense;
-    chance += (victim->GetTypeId() == TYPEID_PLAYER || skillDiff > 0) ? skillDiff * 0.04f : cappedDiff * 0.2f;
-    chance = std::max(chance, 0.0f);
-
     return victim->GetUnitCriticalChanceTaken(this, attackType, chance);
 }
 
@@ -3696,11 +3613,6 @@ void Unit::_ApplyAura(AuraApplication* aurApp, uint32 effMask)
         player->FailCriteria(CriteriaFailEvent::GainAura, aura->GetId());
         player->StartCriteria(CriteriaStartEvent::GainAura, aura->GetId());
         player->UpdateCriteria(CriteriaType::GainAura, aura->GetId(), 0, 0, caster);
-
-        // bot telemetry: aura applied
-        if (player->GetSession() && !aurApp->GetRemoveMode())
-            if (BotAI* botAI = player->GetSession()->GetBotAI())
-                botAI->OnAuraChange(player, aurApp, true);
     }
 }
 
@@ -3792,11 +3704,6 @@ void Unit::_UnapplyAura(AuraApplicationMap::iterator& i, AuraRemoveMode removeMo
             player->UpdateVisibleObjectInteractions(false, true, false, false);
 
         player->FailCriteria(CriteriaFailEvent::LoseAura, aurApp->GetBase()->GetId());
-
-        // bot telemetry: aura removed
-        if (player->GetSession())
-            if (BotAI* botAI = player->GetSession()->GetBotAI())
-                botAI->OnAuraChange(player, aurApp, false);
     }
 
     i = m_appliedAuras.begin();
@@ -5399,9 +5306,7 @@ void Unit::UpdateStatBuffModForClient(Stats stat)
 void Unit::SetCreateStat(Stats stat, float val)
 {
     UnitMods const unitMod = static_cast<UnitMods>(UNIT_MOD_STAT_START + AsUnderlyingType(stat));
-    // Classic 1.60: set, not add. Player::GiveLevel calls this with the new level's base stats, so adding stacked every level's
-    // stats on top of each other (a level 2 paladin had 47 stamina instead of 24). Gear and auras use TOTAL_VALUE.
-    SetStatFlatModifier(unitMod, BASE_VALUE, val);
+    HandleStatFlatModifier(unitMod, BASE_VALUE, val, true);
 }
 
 float Unit::GetCreateStat(Stats stat) const
@@ -5653,8 +5558,6 @@ void Unit::ExitAllAreaTriggers()
 
 void Unit::SendSpellNonMeleeDamageLog(SpellNonMeleeDamage const* log)
 {
-    DeathRecap::RecordSpellDamage(log);
-
     WorldPackets::CombatLog::SpellNonMeleeDamageLog packet;
     packet.Me = log->target->GetGUID();
     packet.CasterGUID = Object::GetGUID(log->attacker);
@@ -5791,36 +5694,6 @@ void Unit::SendAttackStateUpdate(CalcDamageInfo* damageInfo)
         packet.ContentTuning = contentTuningParams;
 
     SendCombatLogMessage(&packet);
-
-    // Classic 1.60: the official server follows every swing with SMSG_ATTACK_SWING_LANDED_LOG to the players in it (sniff 70205:
-    // uint32 0, then the same swing with the victim's log data); the client's combat log swing events use it
-    if (damageInfo->Attacker->GetTypeId() == TYPEID_PLAYER || damageInfo->Target->GetTypeId() == TYPEID_PLAYER)
-    {
-        WorldPackets::CombatLog::AttackerStateUpdate landed;
-        landed.Flags = packet.Flags;
-        landed.AttackerGUID = packet.AttackerGUID;
-        landed.VictimGUID = packet.VictimGUID;
-        landed.Damage = packet.Damage;
-        landed.OriginalDamage = packet.OriginalDamage;
-        landed.OverDamage = packet.OverDamage;
-        landed.SubDmg = packet.SubDmg;
-        landed.VictimState = packet.VictimState;
-        landed.BlockAmount = packet.BlockAmount;
-        landed.RageGained = packet.RageGained;
-        landed.ContentTuning = packet.ContentTuning;
-        landed.LogData.Initialize(damageInfo->Target);
-        landed.Write();
-
-        WorldPacket const* round = landed.GetFullLogPacket();
-        WorldPacket landedLog(SMSG_ATTACK_SWING_LANDED_LOG, 4 + round->size());
-        landedLog << uint32(0);
-        landedLog.append(round->data(), round->size());
-        for (Unit* unit : { damageInfo->Attacker, damageInfo->Target })
-            if (Player* player = unit->ToPlayer())
-                player->SendDirectMessage(&landedLog);
-    }
-
-    DeathRecap::RecordMelee(damageInfo);
 }
 
 void Unit::SendAttackStateUpdate(uint32 HitInfo, Unit* target, uint8 /*SwingType*/, SpellSchoolMask damageSchoolMask, uint32 Damage, uint32 AbsorbDamage, uint32 Resist, VictimState TargetState, uint32 BlockedAmount, uint32 RageGained)
@@ -6988,9 +6861,6 @@ int32 Unit::SpellDamageBonusDone(Unit* victim, SpellInfo const* spellProto, int3
     int32 DoneAdvertisedBenefit  = SpellBaseDamageBonusDone(spellProto->GetSchoolMask());
     // modify spell power by victim's SPELL_AURA_MOD_DAMAGE_TAKEN auras (eg Amplify/Dampen Magic)
     DoneAdvertisedBenefit += victim->GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_DAMAGE_TAKEN, spellProto->GetSchoolMask());
-    // Classic 1.60 item stats: spell damage versus a creature type
-    if (Player const* thisPlayer = ToPlayer())
-        DoneAdvertisedBenefit += thisPlayer->GetClassicSpellDamageVersus(victim->GetCreatureTypeMask());
 
     // Pets just add their bonus damage to their spell damage
     // note that their spell damage is just gain of their own auras
@@ -7072,10 +6942,6 @@ float Unit::SpellDamagePctDone(Unit* victim, SpellInfo const* spellProto, Damage
     // Pet damage?
     if (GetTypeId() == TYPEID_UNIT && !IsPet())
         DoneTotalMod *= ToCreature()->GetSpellDamageMod(ToCreature()->GetCreatureTemplate()->Classification);
-
-    // Classic 1.60: a hunter pet's mood (unhappy 75%, content 100%, happy 125%)
-    if (Pet const* pet = ToPet())
-        DoneTotalMod *= pet->GetHappinessDamageMod();
 
     // Versatility
     if (Player* modOwner = GetSpellModOwner())
@@ -7251,10 +7117,8 @@ int32 Unit::SpellBaseDamageBonusDone(SpellSchoolMask schoolMask) const
         // Base value
         DoneAdvertisedBenefit += thisPlayer->GetBaseSpellPowerBonus();
 
-        // Classic 1.60 item stats: damage done of one school
-        DoneAdvertisedBenefit += thisPlayer->GetClassicSpellDamageDone(schoolMask);
-
-        // Classic 1.60: intellect gives mana (Player::GetManaBonusFromIntellect), no spell power (retail: 1 per point)
+        if (thisPlayer->GetPrimaryStat() == STAT_INTELLECT)
+            DoneAdvertisedBenefit += std::max(0, int32(GetStat(STAT_INTELLECT)));  // spellpower from intellect
 
         // Damage bonus from stats
         AuraEffectList const& mDamageDoneOfStatPercent = GetAuraEffectsByType(SPELL_AURA_MOD_SPELL_DAMAGE_OF_STAT_PERCENT);
@@ -7382,10 +7246,8 @@ float Unit::SpellCritChanceTaken(Unit const* caster, Spell* spell, AuraEffect co
                 // Spell crit suppression
                 if (GetTypeId() == TYPEID_UNIT)
                 {
-                    // Classic 1.60: only higher level targets lower the chance; a level 60 on a level 3 mob gained +57% crit
                     int32 const levelDiff = static_cast<int32>(GetLevelForTarget(caster)) - caster->GetLevel();
-                    if (levelDiff > 0)
-                        crit_chance -= levelDiff * 1.0f;
+                    crit_chance -= levelDiff * 1.0f;
                 }
             }
             break;
@@ -7437,8 +7299,7 @@ float Unit::SpellCritChanceTaken(Unit const* caster, Spell* spell, AuraEffect co
 /*static*/ uint32 Unit::SpellCriticalDamageBonus(Unit const* caster, SpellInfo const* spellProto, uint32 damage, Unit* victim)
 {
     // Calculate critical bonus
-    // Classic 1.60 (vanilla): spell crits do 150% damage (retail 200%); talents such as Ice Shards or Ruin add to the 50% bonus below
-    int32 crit_bonus = damage + damage / 2;
+    int32 crit_bonus = damage * 2;
     float crit_mod = 0.0f;
 
     if (caster)
@@ -7760,7 +7621,9 @@ int32 Unit::SpellBaseHealingBonusDone(SpellSchoolMask schoolMask) const
         // Base value
         advertisedBenefit += ToPlayer()->GetBaseSpellPowerBonus();
 
-        // Classic 1.60: intellect gives mana (Player::GetManaBonusFromIntellect), no healing power (retail: 1 per point)
+        // Check if we are ever using mana - PaperDollFrame.lua
+        if (GetPowerIndex(POWER_MANA) < MAX_POWERS_PER_CLASS)
+            advertisedBenefit += std::max(0, int32(GetStat(STAT_INTELLECT)));  // spellpower from intellect
 
         // Healing bonus from stats
         AuraEffectList const& mHealingDoneOfStatPercent = GetAuraEffectsByType(SPELL_AURA_MOD_SPELL_HEALING_OF_STAT_PERCENT);
@@ -8208,22 +8071,14 @@ int32 Unit::MeleeDamageBonusDone(Unit* pVictim, int32 damage, WeaponAttackType a
         APbonus += GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_MELEE_ATTACK_POWER_VERSUS, creatureTypeMask);
     }
 
-    // Classic 1.60 item stats: attack power versus a creature type (melee and ranged)
-    if (Player const* thisPlayer = ToPlayer())
-        APbonus += thisPlayer->GetClassicAttackPowerVersus(creatureTypeMask);
-
     if (APbonus != 0)                                       // Can be negative
     {
         bool const normalized = spellProto && spellProto->HasEffect(SPELL_EFFECT_NORMALIZED_WEAPON_DMG);
-        DoneFlatBenefit += int32(APbonus / 14.0f * GetAPMultiplier(attType, normalized));   // Classic 1.60: vanilla 14 attack power per 1 dps (also creatures)
+        DoneFlatBenefit += int32(APbonus / 3.5f * GetAPMultiplier(attType, normalized));
     }
 
     // Done total percent damage auras
     float DoneTotalMod = 1.0f;
-
-    // Classic 1.60: a hunter pet's mood (unhappy 75%, content 100%, happy 125%)
-    if (Pet const* pet = ToPet())
-        DoneTotalMod *= pet->GetHappinessDamageMod();
 
     SpellSchoolMask schoolMask = spellProto ? spellProto->GetSchoolMask() : damageSchoolMask;
 
@@ -8291,7 +8146,7 @@ int32 Unit::MeleeDamageBonusDone(Unit* pVictim, int32 damage, WeaponAttackType a
             modOwner->ApplySpellMod(spellProto, damagetype == DOT ? SpellModOp::PeriodicHealingAndDamage : SpellModOp::HealingAndDamage, damageF);
 
     // bonus result can be negative
-    return int32(std::max(damageF, 0.0f) + 0.5f);   // Classic 1.60: rounded, not truncated
+    return int32(std::max(damageF, 0.0f));
 }
 
 int32 Unit::MeleeDamageBonusTaken(Unit* attacker, int32 pdamage, WeaponAttackType attType, DamageEffectType damagetype, SpellInfo const* spellProto /*= nullptr*/, SpellSchoolMask damageSchoolMask /*= SPELL_SCHOOL_MASK_NORMAL*/)
@@ -8400,7 +8255,7 @@ int32 Unit::MeleeDamageBonusTaken(Unit* attacker, int32 pdamage, WeaponAttackTyp
     }
 
     float tmpDamage = float(pdamage + TakenFlatBenefit) * TakenTotalMod;
-    return int32(std::max(tmpDamage, 0.0f) + 0.5f);   // Classic 1.60: rounded, not truncated
+    return int32(std::max(tmpDamage, 0.0f));
 }
 
 void Unit::ApplySpellImmune(uint32 spellId, SpellImmunity op, uint32 type, bool apply)
@@ -9190,9 +9045,7 @@ void Unit::UpdateAdvFlyingSpeed(AdvFlyingRateTypeSingle speedType, bool clientUp
 {
     FlightCapabilityEntry const* flightCapabilityEntry = sFlightCapabilityStore.LookupEntry(GetFlightCapabilityID());
     if (!flightCapabilityEntry)
-        flightCapabilityEntry = sFlightCapabilityStore.LookupEntry(1);
-    if (!flightCapabilityEntry) // Classic 1.60 data has no default flight capability (no skyriding)
-        return;
+        flightCapabilityEntry = sFlightCapabilityStore.AssertEntry(1);
 
     auto [opcode, newValue, rateAura] = [&]
     {
@@ -9253,9 +9106,7 @@ void Unit::UpdateAdvFlyingSpeed(AdvFlyingRateTypeRange speedType, bool clientUpd
 {
     FlightCapabilityEntry const* flightCapabilityEntry = sFlightCapabilityStore.LookupEntry(GetFlightCapabilityID());
     if (!flightCapabilityEntry)
-        flightCapabilityEntry = sFlightCapabilityStore.LookupEntry(1);
-    if (!flightCapabilityEntry) // Classic 1.60 data has no default flight capability (no skyriding)
-        return;
+        flightCapabilityEntry = sFlightCapabilityStore.AssertEntry(1);
 
     auto [opcode, min, max, rateAura] = [&]
     {
@@ -9973,10 +9824,6 @@ void Unit::UpdateDamageDoneMods(WeaponAttackType attackType, int32 /*skipEnchant
 
         return CheckAttackFitToAuraRequirement(attackType, aurEff);
     });
-
-    // Classic 1.60 item stats: physical damage done (vanilla "+N Weapon Damage")
-    if (Player const* thisPlayer = ToPlayer())
-        amount += thisPlayer->GetClassicSpellDamageDone(SPELL_SCHOOL_MASK_NORMAL);
 
     SetStatFlatModifier(unitMod, TOTAL_VALUE, amount);
 }
@@ -10699,7 +10546,7 @@ ProcFlagsHit createProcHitMask(SpellNonMeleeDamage* damageInfo, SpellMissInfo mi
     return hitMask;
 }
 
-void Unit::ProcSkillsAndReactives(bool isVictim, Unit* procTarget, ProcFlagsInit const& typeMask, ProcFlagsHit hitMask, WeaponAttackType attType)
+void Unit::ProcSkillsAndReactives(bool isVictim, Unit* procTarget, ProcFlagsInit const& typeMask, ProcFlagsHit hitMask, WeaponAttackType /*attType*/)
 {
     // Player is loaded now - do not allow passive spell casts to proc
     if (GetTypeId() == TYPEID_PLAYER && ToPlayer()->GetSession()->PlayerLoading())
@@ -10708,18 +10555,6 @@ void Unit::ProcSkillsAndReactives(bool isVictim, Unit* procTarget, ProcFlagsInit
     // For melee/ranged based attack need update skills and set some Aura states if victim present
     if (typeMask & MELEE_BASED_TRIGGER_MASK && procTarget)
     {
-        // Classic 1.60: weapon skill of the attacker, defense of the victim (not against players or critters)
-        if (Player* player = ToPlayer())
-        {
-            if (procTarget->GetTypeId() != TYPEID_PLAYER && !procTarget->IsCritter())
-            {
-                if (hitMask & (PROC_HIT_NORMAL | PROC_HIT_CRITICAL | PROC_HIT_MISS | PROC_HIT_FULL_RESIST))
-                    player->UpdateCombatSkills(procTarget, attType, isVictim);
-                else if (isVictim && hitMask & (PROC_HIT_DODGE | PROC_HIT_PARRY | PROC_HIT_BLOCK))
-                    player->UpdateCombatSkills(procTarget, attType, true);
-            }
-        }
-
         // If exist crit/parry/dodge/block need update aura state (for victim and attacker)
         if (hitMask & (PROC_HIT_CRITICAL | PROC_HIT_PARRY | PROC_HIT_DODGE | PROC_HIT_BLOCK))
         {
@@ -11372,13 +11207,6 @@ bool Unit::InitTamedPet(Pet* pet, uint8 level, uint32 spell_id)
     pet->GetCharmInfo()->SetPetNumber(sObjectMgr->GeneratePetNumber(), true);
     // this enables pet details window (Shift+P)
     pet->InitPetCreateSpells();
-
-    // Classic 1.60: a freshly tamed beast is unhappy until it is fed
-    if (pet->HasHappiness())
-    {
-        pet->SetMaxPower(POWER_HAPPINESS, Pet::HAPPINESS_MAX);
-        pet->SetPower(POWER_HAPPINESS, Pet::HAPPINESS_TAMED);
-    }
     //pet->InitLevelupSpellsForLevel();
     pet->SetFullHealth();
 
@@ -11466,15 +11294,6 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
     if (!victim->GetHealth())
         return;
 
-    // bot telemetry: snapshot before the death state strips auras, power and combat references
-    if (Player* botVictim = victim->ToPlayer())
-        if (BotAI* botAI = botVictim->GetSession()->GetBotAI())
-            botAI->OnDying(botVictim, attacker);
-    if (attacker && attacker != victim)
-        if (Player* botKiller = attacker->ToPlayer())
-            if (BotAI* botAI = botKiller->GetSession()->GetBotAI())
-                botAI->OnKilled(botKiller, victim);
-
     if (attacker && !attacker->IsInMap(victim))
         attacker = nullptr;
 
@@ -11499,10 +11318,6 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
         if (!creature->CanHaveLoot())
             isRewardAllowed = false;
     }
-
-    // Classic 1.60 Social window, Allies tab: players who fought this creature together
-    if (creature)
-        RecentAllies::OnCreatureKill(creature);
 
     // Exploit fix
     if (creature && creature->IsPet() && creature->GetOwnerGUID().IsPlayer())
@@ -12693,23 +12508,10 @@ float Unit::MeleeSpellMissChance(Unit const* victim, WeaponAttackType attType, S
     //calculate miss chance
     float missChance = victim->GetUnitMissChance();
 
-    // Classic 1.60 (vanilla, VMaNGOS): 0.1% less miss per point of weapon skill above the victim's defense (0.2% when more than
-    // 10 below, 0.04% against players), creatures below level 10 are missed less
-    int32 const classicSkillDiff = GetClassicWeaponSkill(attType, victim) - victim->GetClassicDefenseSkill(this);
-
     // melee attacks while dual wielding have +19% chance to miss
     if (!spellInfo && haveOffhandWeapon() && attType != RANGED_ATTACK && !m_currentSpells[CURRENT_MELEE_SPELL]
         && !IsInFeralForm() && !HasAuraType(SPELL_AURA_IGNORE_DUAL_WIELD_HIT_PENALTY))
         missChance += 19.0f;
-
-    if (victim->GetTypeId() == TYPEID_PLAYER)
-        missChance -= classicSkillDiff * 0.04f;
-    else if (classicSkillDiff < -10)
-        missChance -= classicSkillDiff * 0.2f;
-    else
-        missChance -= classicSkillDiff * 0.1f;
-    if (victim->GetTypeId() != TYPEID_PLAYER && victim->GetLevel() < 10)
-        missChance *= victim->GetLevel() / 10.0f;
 
     // Spellmod from SpellModOp::HitChance
     float resistMissChance = 100.0f;
@@ -12837,10 +12639,7 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form, uint32 spellId) const
                     if (ShapeshiftForm(artifactAppearance->OverrideShapeshiftFormID) == form)
                         return artifactAppearance->OverrideShapeshiftDisplayID;
 
-        ShapeshiftFormModelData const* formModelData = sDB2Manager.GetShapeshiftFormModelData(GetRace(), player->GetNativeGender(), form);
-        if (!formModelData && form == FORM_DIRE_BEAR_FORM)  // Classic 1.60: Dire Bear Form has no appearance options of its own, it looks like Bear Form
-            formModelData = sDB2Manager.GetShapeshiftFormModelData(GetRace(), player->GetNativeGender(), FORM_BEAR_FORM);
-        if (formModelData)
+        if (ShapeshiftFormModelData const* formModelData = sDB2Manager.GetShapeshiftFormModelData(GetRace(), player->GetNativeGender(), form))
         {
             bool useRandom = false;
             switch (form)
@@ -12887,17 +12686,6 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form, uint32 spellId) const
                     if (choiceItr != formModelData->Choices->end())
                         if (ChrCustomizationDisplayInfoEntry const* displayInfo = formModelData->Displays[std::distance(formModelData->Choices->begin(), choiceItr)])
                             return displayInfo->DisplayID;
-                }
-
-                // Classic 1.60: no form appearance chosen - the first one made for this race and class (sniffs of the official beta:
-                // Skyborne druids without a choice are bear 144331, cat 144330, travel form 145284)
-                for (std::size_t i = 0; i < formModelData->Choices->size(); ++i)
-                {
-                    ChrCustomizationReqEntry const* req = sChrCustomizationReqStore.LookupEntry((*formModelData->Choices)[i]->ChrCustomizationReqID);
-                    if (!formModelData->Displays[i] || !req || req->RaceMask.IsEmpty() || req->RaceMask == RACEMASK_ALL_v<int32, 2>)
-                        continue;
-                    if (req->RaceMask.HasRace(GetRace()) && (!req->ClassMask || req->ClassMask & (1 << (GetClass() - 1))))
-                        return formModelData->Displays[i]->DisplayID;
                 }
             }
         }
@@ -13381,48 +13169,6 @@ void Unit::UpdateHeight(float newZ)
     Relocate(GetPositionX(), GetPositionY(), newZ);
     if (IsVehicle())
         GetVehicleKit()->RelocatePassengers();
-}
-
-// Classic 1.60 (vanilla, VMaNGOS): rage = damage / conversion(level) * 7.5 when dealing, * 2.5 when taking damage
-int32 Unit::RewardClassicRage(uint32 damage, bool attacker)
-{
-    float level = float(GetLevel());
-    float conversion = 0.0091107836f * level * level + 3.225598133f * level + 4.2652911f;
-    float addRage = float(damage) / conversion * (attacker ? 7.5f : 2.5f);
-    if (attacker)
-        AddPct(addRage, GetTotalAuraModifier(SPELL_AURA_MOD_RAGE_FROM_DAMAGE_DEALT));
-    addRage *= sWorld->getRate(RATE_POWER_RAGE_INCOME);
-    return ModifyPower(POWER_RAGE, int32(addRage * 10), false);
-}
-
-// Classic 1.60 (vanilla) combat table: weapon skill of an attack. Players: skill of the weapon (with bonuses), feral forms and
-// creatures: the maximum for the level (5 per level)
-int32 Unit::GetClassicWeaponSkill(WeaponAttackType attType, Unit const* victim) const
-{
-    if (Player const* player = ToPlayer())
-    {
-        if (player->IsInFeralForm())
-            return GetMaxSkillValueForLevel(victim);
-
-        uint32 skill = SKILL_UNARMED;
-        if (Item const* weapon = player->GetWeaponForAttack(attType, true))
-            skill = weapon->GetTemplate()->GetSkill();
-        else if (attType != BASE_ATTACK)
-            return GetMaxSkillValueForLevel(victim);
-
-        if (int32 value = player->GetSkillValue(skill))
-            return value;
-    }
-    return GetMaxSkillValueForLevel(victim);
-}
-
-// Classic 1.60 (vanilla) combat table: defense skill (players: with bonuses, creatures: 5 per level)
-int32 Unit::GetClassicDefenseSkill(Unit const* attacker) const
-{
-    if (Player const* player = ToPlayer())
-        if (int32 value = player->GetSkillValue(SKILL_DEFENSE))
-            return value;
-    return GetMaxSkillValueForLevel(attacker);
 }
 
 // baseRage means damage taken when attacker = false

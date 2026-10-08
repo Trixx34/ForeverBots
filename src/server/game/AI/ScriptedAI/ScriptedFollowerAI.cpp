@@ -16,7 +16,6 @@
  */
 
 #include "ScriptedFollowerAI.h"
-#include "BotQuestLog.h"
 #include "Creature.h"
 #include "Group.h"
 #include "Log.h"
@@ -48,7 +47,6 @@ void FollowerAI::JustDied(Unit* /*killer*/)
         return;
 
     /// @todo need a better check for quests with time limit.
-    BotQuestLog::Scope escortScope("escort_failed");
     if (Player* player = GetLeaderForFollower())
     {
         if (Group* group = player->GetGroup())

@@ -16,13 +16,10 @@
  */
 
 #include "WorldSession.h"
-#include "BotChat.h"
-#include "BotQuestLog.h"
 #include "Account.h"
 #include "AccountMgr.h"
 #include "AuthenticationPackets.h"
 #include "Bag.h"
-#include "BotAI.h"
 #include "BattlePetMgr.h"
 #include "BattlegroundMgr.h"
 #include "BattlenetPackets.h"
@@ -31,7 +28,6 @@
 #include "ClientConfigPackets.h"
 #include "Containers.h"
 #include "DatabaseEnv.h"
-#include "FriendsService.h"
 #include "DB2Stores.h"
 #include "GameTime.h"
 #include "Group.h"
@@ -165,21 +161,11 @@ WorldSession::WorldSession(uint32 id, std::string&& name, uint32 battlenetAccoun
 }
 
 /// WorldSession destructor
-void WorldSession::SetBotAI(BotAI* ai)
-{
-    delete _botAI;
-    _botAI = ai;
-}
-
 WorldSession::~WorldSession()
 {
     ///- unload player if not unloaded
     if (_player)
         LogoutPlayer (true);
-
-    // bot AI dies with the session (after the Player is gone, the AI never touches it on destruction)
-    delete _botAI;
-    _botAI = nullptr;
 
     /// - If have unclosed socket, close it
     for (uint8 i = 0; i < 2; ++i)
@@ -203,9 +189,6 @@ WorldSession::~WorldSession()
 
 bool WorldSession::PlayerDisconnected() const
 {
-    if (_isBot)
-        return false;
-
     return !(m_Socket[CONNECTION_TYPE_REALM] && m_Socket[CONNECTION_TYPE_REALM]->IsOpen() &&
              m_Socket[CONNECTION_TYPE_INSTANCE] && m_Socket[CONNECTION_TYPE_INSTANCE]->IsOpen());
 }
@@ -239,10 +222,6 @@ std::string WorldSession::GetPlayerInfo() const
 /// Send a packet to the client
 void WorldSession::SendPacket(WorldPacket const* packet, bool forced /*= false*/)
 {
-    // Player bots have no client: drop packets silently instead of logging one error per packet
-    if (_isBot)
-        return;
-
     if (!opcodeTable.IsValid(static_cast<OpcodeServer>(packet->GetOpcode())))
     {
         char const* specialName = packet->GetOpcode() == UNKNOWN_OPCODE ? "UNKNOWN_OPCODE" : "INVALID_OPCODE";
@@ -377,19 +356,6 @@ bool WorldSession::Update(uint32 diff, PacketFilter& updater)
     /// (or they've been idling in character select)
     if (IsConnectionIdle() && !HasPermission(rbac::RBAC_PERM_IGNORE_IDLE_CONNECTION))
         m_Socket[CONNECTION_TYPE_REALM]->CloseSocket();
-
-    // Classic 1.60: character list mail data, sent once the character list is shown (see HandleCharEnum)
-    if (_classicCharacterMailData && updater.ProcessUnsafe())
-    {
-        if (_classicCharacterMailDataTimer <= diff)
-        {
-            if (!_player)
-                SendPacket(_classicCharacterMailData.get());
-            _classicCharacterMailData.reset();
-        }
-        else
-            _classicCharacterMailDataTimer -= diff;
-    }
 
     ///- Retrieve packets from the receive queue and call the appropriate handlers
     /// not process packets if socket already closed
@@ -599,7 +565,6 @@ void WorldSession::LogoutPlayer(bool save)
 
     if (_player)
     {
-        BotChat::OnPlayerLogout(_player->GetGUID().GetCounter());
         if (!_player->GetLootGUID().IsEmpty())
             DoLootReleaseAll();
 
@@ -660,10 +625,7 @@ void WorldSession::LogoutPlayer(bool save)
         ///- Clear whisper whitelist
         _player->ClearWhisperWhiteList();
 
-        {
-            BotQuestLog::Scope scope("logout");
-            _player->FailQuestsWithFlag(QUEST_FLAGS_FAIL_ON_LOGOUT);
-        }
+        _player->FailQuestsWithFlag(QUEST_FLAGS_FAIL_ON_LOGOUT);
 
         // exit areatriggers before saving to remove auras applied by them
         _player->ExitAllAreaTriggers();
@@ -704,9 +666,6 @@ void WorldSession::LogoutPlayer(bool save)
         //! Call script hook before deletion
         sScriptMgr->OnPlayerLogout(_player);
 
-        // Battle.net friends see us go offline
-        BattlenetPresence::OnLogout(this);
-
         TC_METRIC_EVENT("player_events", "Logout", _player->GetName());
 
         //! Remove the player from the world
@@ -722,7 +681,6 @@ void WorldSession::LogoutPlayer(bool save)
         if (Map* _map = _player->FindMap())
             _map->RemovePlayerFromMap(_player, true);
 
-        uint64 const altLowGuid = _isAltBot ? _player->GetGUID().GetCounter() : 0;
         SetPlayer(nullptr); //! Pointer already deleted during RemovePlayerFromMap
 
         //! Send the 'logout complete' packet to the client
@@ -731,14 +689,9 @@ void WorldSession::LogoutPlayer(bool save)
         TC_LOG_DEBUG("network", "SESSION: Sent SMSG_LOGOUT_COMPLETE Message");
 
         //! Since each account can only have one online character at any given time, ensure all characters for active account are marked as offline
-        if (_isAltBot) // other characters of this account may be online as real players: only this one goes offline
-            CharacterDatabase.PExecute("UPDATE characters SET online = 0 WHERE guid = {}", altLowGuid);
-        else
-        {
-            CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ACCOUNT_ONLINE);
-            stmt->setUInt32(0, GetAccountId());
-            CharacterDatabase.Execute(stmt);
-        }
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ACCOUNT_ONLINE);
+        stmt->setUInt32(0, GetAccountId());
+        CharacterDatabase.Execute(stmt);
     }
 
     if (m_Socket[CONNECTION_TYPE_INSTANCE])
@@ -847,8 +800,7 @@ void WorldSession::ResetTimeOutTime(bool onlyActive)
 
 bool WorldSession::IsConnectionIdle() const
 {
-    // bots never time out (and have no socket to close)
-    return !_isBot && m_timeOutTime < GameTime::GetGameTime() && !m_inQueue;
+    return m_timeOutTime < GameTime::GetGameTime() && !m_inQueue;
 }
 
 void WorldSession::Handle_NULL(WorldPackets::Null& null)
@@ -1517,27 +1469,7 @@ void WorldSession::InitializeSessionCallback(LoginDatabaseQueryHolder const& hol
 
     WorldPackets::Battlenet::ConnectionStatus bnetConnected;
     bnetConnected.State = 1;
-    bnetConnected.SuppressNotification = false;     // Classic 1.60: as the official server (0x40), the client then uses its Battle.net friends
     SendPacket(bnetConnected.Write());
-
-    // Classic 1.60: the official server then sends, unasked (token 0, object 0), the friends v2 and block list Subscribe results; only
-    // after these does the client ask for its friends and invitations (sniff 70235: method 0x40000001, block list data 0A 00 = empty list)
-    {
-        WorldPackets::Battlenet::Response friendsSubscribed;
-        friendsSubscribed.BnetStatus = ERROR_OK;
-        friendsSubscribed.Method.Type = MAKE_PAIR64(0x40000001, 0x5869BE8C);     // friends.v2.client.FriendsService.Subscribe
-        friendsSubscribed.Method.ObjectId = 0;
-        friendsSubscribed.Method.Token = 0;
-        SendPacket(friendsSubscribed.Write());
-
-        WorldPackets::Battlenet::Response blockListSubscribed;
-        blockListSubscribed.BnetStatus = ERROR_OK;
-        blockListSubscribed.Method.Type = MAKE_PAIR64(0x40000001, 0x8E8F5FB0);   // block_list.v1.client.BlockListService.Subscribe
-        blockListSubscribed.Method.ObjectId = 0;
-        blockListSubscribed.Method.Token = 0;
-        blockListSubscribed.Data << uint8(0x0A) << uint8(0x00);
-        SendPacket(blockListSubscribed.Write());
-    }
 
     _battlePetMgr->LoadFromDB(holder.GetPreparedResult(AccountInfoQueryHolder::BATTLE_PETS),
                               holder.GetPreparedResult(AccountInfoQueryHolder::BATTLE_PET_SLOTS));

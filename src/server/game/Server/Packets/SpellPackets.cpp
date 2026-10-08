@@ -65,9 +65,6 @@ WorldPacket const* SendKnownSpells::Write()
 WorldPacket const* UpdateActionButtons::Write()
 {
     _worldPacket.append(ActionButtons.data(), ActionButtons.size());
-    // Classic 1.60.1.70009 has 360 saved action buttons (decoder asserts datasize == 8 * 360 + 1), pad the unused ones
-    for (std::size_t i = ActionButtons.size(); i < ClassicNumActionButtons; ++i)
-        _worldPacket << uint64(0);
     _worldPacket << Reason;
 
     return &_worldPacket;
@@ -75,11 +72,8 @@ WorldPacket const* UpdateActionButtons::Write()
 
 void SetActionButton::Read()
 {
-    // Classic 1.60.1.70009: uint16 button index (360 buttons); indices past 255 are clamped (the handler ignores >= MAX_ACTION_BUTTONS)
-    uint16 index = 0;
     _worldPacket >> Action;
-    _worldPacket >> index;
-    Index = uint8(std::min<uint16>(index, 255));
+    _worldPacket >> Index;
 }
 
 WorldPacket const* SendUnlearnSpells::Write()
@@ -1184,36 +1178,6 @@ void TradeSkillSetFavorite::Read()
 {
     _worldPacket >> RecipeID;
     _worldPacket >> Bits<1>(IsFavorite);
-}
-
-void ShowTradeSkill::Read()
-{
-    _worldPacket >> PlayerGUID;
-    _worldPacket >> SpellID;
-    _worldPacket >> SkillLineID;
-}
-
-WorldPacket const* ShowTradeSkillResponse::Write()
-{
-    _worldPacket << PlayerGUID;
-    _worldPacket << int32(SpellID);
-    _worldPacket << Size<uint32>(SkillLineIDs);
-    _worldPacket << Size<uint32>(SkillRanks);
-    _worldPacket << Size<uint32>(SkillMaxRanks);
-    _worldPacket << Size<uint32>(KnownAbilitySpellIDs);
-    _worldPacket << uint32(0);                  // three more counts in Classic, 0 in every sniffed response
-    _worldPacket << uint32(0);
-    _worldPacket << uint32(0);
-    for (int32 id : SkillLineIDs)
-        _worldPacket << int32(id);
-    for (int32 rank : SkillRanks)
-        _worldPacket << int32(rank);
-    for (int32 rank : SkillMaxRanks)
-        _worldPacket << int32(rank);
-    for (int32 spellId : KnownAbilitySpellIDs)
-        _worldPacket << int32(spellId);
-
-    return &_worldPacket;
 }
 
 void KeyboundOverride::Read()

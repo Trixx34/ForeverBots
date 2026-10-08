@@ -16,7 +16,6 @@
  */
 
 #include "Player.h"
-#include "DeathRecap.h"
 #include "AreaTrigger.h"
 #include "Account.h"
 #include "AccountMgr.h"
@@ -29,8 +28,6 @@
 #include "Battlefield.h"
 #include "BattlefieldMgr.h"
 #include "Battleground.h"
-#include "BotAI.h"
-#include "BotQuestLog.h"
 #include "BattlegroundMgr.h"
 #include "BattlegroundPackets.h"
 #include "BattlegroundScore.h"
@@ -44,7 +41,6 @@
 #include "CharacterPackets.h"
 #include "CharmInfo.h"
 #include "Chat.h"
-#include "Config.h"
 #include "ChatPackets.h"
 #include "ChatTextBuilder.h"
 #include "CinematicMgr.h"
@@ -61,7 +57,6 @@
 #include "DuelPackets.h"
 #include "EquipmentSetPackets.h"
 #include "Formulas.h"
-#include "FriendsService.h"
 #include "GameEventMgr.h"
 #include "GameEventSender.h"
 #include "GameObjectAI.h"
@@ -94,7 +89,6 @@
 #include "MailPackets.h"
 #include "MapManager.h"
 #include "MapUtils.h"
-#include "Memory.h"
 #include "MiscPackets.h"
 #include "MotionMaster.h"
 #include "MovementPackets.h"
@@ -118,7 +112,6 @@
 #include "QuestObjectiveCriteriaMgr.h"
 #include "QuestPackets.h"
 #include "RealmList.h"
-#include "RecentAllies.h"
 #include "ReputationMgr.h"
 #include "RestMgr.h"
 #include "Scenario.h"
@@ -662,9 +655,6 @@ uint32 Player::EnvironmentalDamage(EnviromentalDamage type, uint32 damage)
     packet.Absorbed = absorb;
     packet.Resisted = resist;
 
-    if (BotAI* botAI = GetSession()->GetBotAI())
-        botAI->SetPendingEnv(uint8(type)); // bot death telemetry: DealDamage only sees attacker == victim
-
     uint32 final_damage = Unit::DealDamage(this, this, damage, nullptr, SELF_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
 
     packet.LogData.Initialize(this);
@@ -952,14 +942,8 @@ void Player::Update(uint32 p_time)
 
     //used to implement delayed far teleport
     SetCanDelayTeleport(true);
-    // player bots: tick the bot AI here so its teleports are delayed like spell teleports (cheap pointer check for real players)
-    if (BotAI* botAI = GetSession()->GetBotAI())
-        botAI->Update(this, p_time);
     Unit::Update(p_time);
     SetCanDelayTeleport(false);
-
-    DeathRecap::RecordFrame(this, p_time);
-    DeathRecap::UpdateViewer(this);
 
     // Unit::Update updates the spell history and spell states. We can now check if we can launch another pending cast.
     if (CanExecutePendingSpellCastRequest())
@@ -1013,10 +997,7 @@ void Player::Update(uint32 p_time)
             {
                 uint32 quest_id  = *iter;
                 ++iter;                                     // current iter will be removed in FailQuest
-                {
-                    BotQuestLog::Scope scope("timeout");
-                    FailQuest(quest_id);
-                }
+                FailQuest(quest_id);
             }
             else
             {
@@ -1187,12 +1168,6 @@ void Player::setDeathState(DeathState s)
     }
 
     Unit::setDeathState(s);
-
-    if (s == JUST_DIED && oldIsAlive)
-    {
-        DeathRecap::Stop(this, nullptr);
-        DeathRecap::OnPlayerDeath(this);
-    }
 
     if (IsAlive() && !oldIsAlive)
         //clear aura case after resurrection by another way (spells will be applied before next death)
@@ -1560,8 +1535,6 @@ void Player::RemoveFromWorld()
     // cleanup
     if (IsInWorld())
     {
-        DeathRecap::OnRemoveFromWorld(this);
-
         ///- Release charmed creatures, unsummon totems and remove pets/guardians
         StopCastingCharm();
         StopCastingBindSight();
@@ -1786,8 +1759,10 @@ void Player::RegenerateHealth()
 
         if (!IsInCombat())
         {
-            // Classic 1.60 (vanilla): health per tick from spirit (retail: 1.5% of max health)
-            addValue = OCTRegenHPPerSpirit() * HealthIncreaseRate;
+            if (GetLevel() < 15)
+                addValue = (0.20f * ((float)GetMaxHealth()) / GetLevel() * HealthIncreaseRate);
+            else
+                addValue = 0.015f * ((float)GetMaxHealth()) * HealthIncreaseRate;
 
             addValue *= GetTotalAuraMultiplier(SPELL_AURA_MOD_HEALTH_REGEN_PERCENT);
 
@@ -2220,9 +2195,6 @@ void Player::GiveXP(uint32 xp, Unit* victim, float group_rate)
     }
 
     SetXP(newXP);
-
-    if (BotAI* botAI = GetSession()->GetBotAI())
-        botAI->OnXpGain(this, xp, bonus_xp, victim);
 }
 
 // Update player to next level
@@ -2244,7 +2216,7 @@ void Player::GiveLevel(uint8 level)
 
     WorldPackets::Misc::LevelUpInfo packet;
     packet.Level = level;
-    packet.HealthDelta = int32(info.baseHealth) - int32(GetCreateHealth());
+    packet.HealthDelta = 0;
 
     /// @todo find some better solution
     // for (int i = 0; i < MAX_STORED_POWERS; ++i)
@@ -2281,8 +2253,7 @@ void Player::GiveLevel(uint8 level)
     for (uint8 i = STAT_STRENGTH; i < MAX_STATS; ++i)
         SetCreateStat(Stats(i), info.stats[i]);
 
-    // Classic 1.60 (vanilla): class base health per level (retail: 0, all health from stamina)
-    SetCreateHealth(info.baseHealth);
+    SetCreateHealth(0);
     SetCreateMana(basemana);
 
     InitTalentForLevel();
@@ -2324,70 +2295,7 @@ void Player::GiveLevel(uint8 level)
 
     PushQuests();
 
-    UpdateClassicLegacyUnlock();
-
     sScriptMgr->OnPlayerLevelChanged(this, oldLevel);
-
-    if (BotAI* botAI = GetSession()->GetBotAI())
-        botAI->OnLevelUp(this, oldLevel, level);
-    BattlenetPresence::OnCharacterChanged(this);
-}
-
-// Classic 1.60 (WoW Forever): the first character bank tab is free (BankTab.db2: BankType 0, OrderIndex 0, Cost 0) and every character
-// has it without buying it (official beta sniff 70170: items stored in bank bag 63 slot 0 with no tab purchase). Without a tab the
-// bank has no slots ("bank is full").
-void Player::GrantClassicFreeBankTab()
-{
-    if (GetCharacterBankTabCount() > 0)
-        return;
-
-    uint16 pos = 0;
-    if (CanEquipNewItem(BANK_SLOT_BAG_START, pos, ITEM_CHARACTER_BANK_TAB_BAG, false) != EQUIP_ERR_OK)
-        return;
-
-    if (!EquipNewItem(pos, ITEM_CHARACTER_BANK_TAB_BAG, ItemContext::NONE, true))
-        return;
-
-    SetCharacterBankTabCount(1);
-    SetCharacterBankTabSettings(0, ChatHandler(GetSession()).PGetParseString(LANG_BANK_TAB_NAME, 1), "", "", BagSlotFlags::None);
-}
-
-void Player::UpdateClassicLegacyUnlock()
-{
-    // Classic 1.60: the Legacy system (micro menu "Legacy", LegacyMicroButtonMixin:IsLegacySystemUnlocked) opens with renown level 1
-    // of the Legacy reward track faction 2802; renown level = quantity of its renown currency 3485. The client says it unlocks at level 25.
-    static constexpr uint32 LegacyRenownCurrencyID = 3485;
-    static constexpr uint32 LegacyRewardTrackFactionID = 2802;
-    static constexpr uint32 LegacyPointsTraitCurrencyID = 4225;
-    static constexpr uint32 LegacyTraitSystemID = 45;               // Legacy trees 1187 Professions, 1188 Adventure, 1189 Progression
-    static constexpr uint32 SpellCreateLegacyTraitConfig = 1282612; // SPELL_EFFECT_CREATE_TRAIT_TREE_CONFIG, tree 1188
-    static constexpr uint8 LegacyUnlockLevel = 25;
-
-    // every Legacy page asks for the trait config of the Legacy trees (C_Traits.GetConfigIDByTreeID); without it the window errors
-    if (!m_activePlayerData->TraitConfigs.FindIf([](UF::TraitConfig const& config)
-    {
-        return static_cast<TraitConfigType>(*config.Type) == TraitConfigType::Generic && config.TraitSystemID == int32(LegacyTraitSystemID);
-    }).first)
-        CastSpell(this, SpellCreateLegacyTraitConfig, true);
-
-    // Renown on the Legacy reward track = Legacy Points earned: the challenges ("Reach level 25/45/60 for the first time on <class>")
-    // are TraitCurrencySource rows of currency 4225. Rows still tied to another ruleset (SuperDistrictSetID != 0 after the
-    // 2026_09_30_00 hotfix) belong to the other copy of each challenge and are not counted. The first point comes at level 25.
-    int32 earnedLegacyPoints = 0;
-    for (TraitCurrencySourceEntry const* source : sTraitCurrencySourceStore)
-        if (source->TraitCurrencyID == LegacyPointsTraitCurrencyID && !source->SuperDistrictSetID && source->AchievementID && HasAchieved(source->AchievementID))
-            earnedLegacyPoints += source->Amount;
-
-    int32 renown = int32(GetCurrencyQuantity(LegacyRenownCurrencyID));
-    if (earnedLegacyPoints > renown)
-        ModifyCurrency(LegacyRenownCurrencyID, earnedLegacyPoints - renown);
-
-    if (!earnedLegacyPoints && GetLevel() < LegacyUnlockLevel)
-        return;
-
-    // the reward track shows the progress towards the next renown level from the faction's reputation, so the client must know it
-    if (FactionEntry const* legacyFaction = sFactionStore.LookupEntry(LegacyRewardTrackFactionID))
-        GetReputationMgr().SetVisible(legacyFaction);
 }
 
 bool Player::IsMaxLevel() const
@@ -2474,8 +2382,7 @@ void Player::InitStatsForLevel(bool reapplyMods)
     for (uint8 i = STAT_STRENGTH; i < MAX_STATS; ++i)
         SetStat(Stats(i), info.stats[i]);
 
-    // Classic 1.60 (vanilla): class base health per level (retail: 0, all health from stamina)
-    SetCreateHealth(info.baseHealth);
+    SetCreateHealth(0);
 
     //set create powers
     SetCreateMana(basemana);
@@ -3066,11 +2973,6 @@ bool Player::AddSpell(uint32 spellId, bool active, bool learning, bool dependent
             if (skill_value < spellLearnSkill->value)
                 skill_value = spellLearnSkill->value;
 
-            // Classic 1.60: vanilla trainers teach profession ranks (e.g. First Aid 3273) directly instead of casting them, so
-            // the skill starts here; value 0 would mean "no skill" (Spell::EffectSkill uses at least 1 too)
-            if (!skill_value)
-                skill_value = 1;
-
             uint16 new_skill_max_value = spellLearnSkill->maxvalue;
 
             if (new_skill_max_value == 0)
@@ -3591,17 +3493,6 @@ bool Player::ResetTalents(bool involuntarily /*= false*/)
         RemoveTalent(talentInfo);
     }
 
-    // Classic 1.60: talents are a trait config (C_ClassTalents); drop every purchased rank of the active combat config
-    // and keep only ranks the tree grants for free
-    if (UF::TraitConfig const* activeConfig = GetTraitConfig(m_activePlayerData->ActiveCombatTraitConfigID))
-    {
-        WorldPackets::Traits::TraitConfig resetConfig(*activeConfig);
-        std::erase_if(resetConfig.Entries, [](WorldPackets::Traits::TraitEntry const& entry) { return entry.GrantedRanks == 0; });
-        for (WorldPackets::Traits::TraitEntry& entry : resetConfig.Entries)
-            entry.Rank = 0;
-        UpdateTraitConfig(std::move(resetConfig), 0, false);
-    }
-
     CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
     _SaveTalents(trans);
     _SaveSpells(trans);
@@ -3647,9 +3538,7 @@ void Player::BuildCreateUpdateBlockForPlayer(UpdateData* data, Player* target) c
 UF::UpdateFieldFlag Player::GetUpdateFieldFlagsFor(Player const* target) const
 {
     UF::UpdateFieldFlag flags = Unit::GetUpdateFieldFlagsFor(target);
-    // Classic 1.60: the party member fields (quest log, quest session, quest id map) only for the player himself for now - sent to
-    // other group members they crashed both clients on joining a group (client JamVectorDeltaType assert, size 0x17FFFFFF)
-    if (target == this)
+    if (IsInSameRaidWith(target))
         flags |= UF::UpdateFieldFlag::PartyMember;
 
     return flags;
@@ -4371,10 +4260,7 @@ void Player::BuildPlayerRepop()
         CastSpell(this, 20584, true);
     CastSpell(this, 8326, true);
 
-    {
-        BotQuestLog::Scope scope("died");
-        FailQuestsWithFlag(QUEST_FLAGS_COMPLETION_NO_DEATH);
-    }
+    FailQuestsWithFlag(QUEST_FLAGS_COMPLETION_NO_DEATH);
 
     RemoveAurasWithInterruptFlags(SpellAuraInterruptFlags::Release);
 
@@ -4422,22 +4308,8 @@ void Player::BuildPlayerRepop()
     sScriptMgr->OnPlayerRepop(this);
 }
 
-bool Player::RefuseHardcoreResurrect()
-{
-    // Classic 1.60 Hardcore ruleset realm (Classic.Hardcore = 1): death is permanent, no spirit healer, corpse run or resurrection spell
-    // brings the character back, also not on game master accounts. Only staff using the .revive command can (SetHardcoreReviveAllowed).
-    if (IsAlive() || m_hardcoreReviveAllowed || !sConfigMgr->GetBoolDefault("Classic.Hardcore", false))
-        return false;
-
-    ChatHandler(GetSession()).SendSysMessage("Hardcore: this character has fallen. Death is permanent on this realm.");
-    return true;
-}
-
 void Player::ResurrectPlayer(float restore_percent, bool applySickness)
 {
-    if (RefuseHardcoreResurrect())
-        return;
-
     SetAreaSpiritHealer(nullptr);
 
     WorldPackets::Misc::DeathReleaseLoc packet;
@@ -5156,53 +5028,57 @@ float Player::GetTotalBaseModValue(BaseModGroup modGroup) const
     return m_auraBaseFlatMod[modGroup] * m_auraBasePctMod[modGroup];
 }
 
-// Classic 1.60 (vanilla, VMaNGOS / TrinityCoreClassic): agility per 1% of crit and dodge, between the class rates of level 1 and 60
-static float ClassicAgilityRate(Player const* player, bool dodge)
+void Player::GetDodgeFromAgility(float &/*diminishing*/, float &/*nondiminishing*/) const
 {
-    float level1, level60;
-    switch (player->GetClass())
-    {
-        case CLASS_ROGUE:   level1 = dodge ? 1.1f : 2.2f;  level60 = dodge ? 14.5f : 29.0f; break;
-        case CLASS_HUNTER:  level1 = dodge ? 1.8f : 3.5f;  level60 = dodge ? 26.5f : 53.0f; break;
-        case CLASS_MAGE:    level1 = 12.9f; level60 = 20.0f; break;
-        case CLASS_PRIEST:  level1 = 11.0f; level60 = 20.0f; break;
-        case CLASS_WARLOCK: level1 = 8.4f;  level60 = 20.0f; break;
-        case CLASS_WARRIOR: level1 = 3.9f;  level60 = 20.0f; break;
-        default:            level1 = 4.6f;  level60 = 20.0f; break;  // paladin, shaman, druid
-    }
-    float level = float(std::min<uint8>(player->GetLevel(), 60));
-    return level1 * (60.0f - level) / 59.0f + level60 * (level - 1.0f) / 59.0f;
-}
+    //// Table for base dodge values
+    //const float dodge_base[MAX_CLASSES] =
+    //{
+    //     0.037580f, // Warrior
+    //     0.036520f, // Paladin
+    //    -0.054500f, // Hunter
+    //    -0.005900f, // Rogue
+    //     0.031830f, // Priest
+    //     0.036640f, // DK
+    //     0.016750f, // Shaman
+    //     0.034575f, // Mage
+    //     0.020350f, // Warlock
+    //     0.0f,      // ??
+    //     0.049510f  // Druid
+    //};
+    //// Crit/agility to dodge/agility coefficient multipliers; 3.2.0 increased required agility by 15%
+    //const float crit_to_dodge[MAX_CLASSES] =
+    //{
+    //     0.85f/1.15f,    // Warrior
+    //     1.00f/1.15f,    // Paladin
+    //     1.11f/1.15f,    // Hunter
+    //     2.00f/1.15f,    // Rogue
+    //     1.00f/1.15f,    // Priest
+    //     0.85f/1.15f,    // DK
+    //     1.60f/1.15f,    // Shaman
+    //     1.00f/1.15f,    // Mage
+    //     0.97f/1.15f,    // Warlock (?)
+    //     0.0f,           // ??
+    //     2.00f/1.15f     // Druid
+    //};
 
-float Player::GetMeleeCritFromAgility() const
-{
-    return std::max(0.0f, GetStat(STAT_AGILITY)) / ClassicAgilityRate(this, false);
-}
+    //uint8 level = getLevel();
+    //uint32 pclass = getClass();
 
-void Player::GetDodgeFromAgility(float& diminishing, float& nondiminishing) const
-{
-    diminishing = 0.0f;
-    nondiminishing = std::max(0.0f, GetStat(STAT_AGILITY)) / ClassicAgilityRate(this, true);
-}
+    //if (level >= sGtChanceToMeleeCritStore.GetTableRowCount())
+    //    level = sGtChanceToMeleeCritStore.GetTableRowCount() - 1;
 
-// Classic 1.60 (vanilla): base spell crit and intellect per 1% of spell crit at level 60 per class; lower levels need less
-float Player::GetSpellCritFromIntellect() const
-{
-    float base, rate60;
-    switch (GetClass())
-    {
-        case CLASS_MAGE:    base = 0.2f; rate60 = 59.5f; break;
-        case CLASS_PRIEST:  base = 0.8f; rate60 = 59.2f; break;
-        case CLASS_WARLOCK: base = 1.7f; rate60 = 60.6f; break;
-        case CLASS_DRUID:   base = 1.8f; rate60 = 60.0f; break;
-        case CLASS_SHAMAN:  base = 2.3f; rate60 = 59.5f; break;
-        case CLASS_PALADIN: base = 3.5f; rate60 = 54.0f; break;
-        case CLASS_HUNTER:  base = 3.6f; rate60 = 60.0f; break;
-        default:            return 0.0f;                    // warrior, rogue
-    }
-    float level = float(std::min<uint8>(GetLevel(), 60));
-    float rate = rate60 * (0.2f + 0.8f * (level - 1.0f) / 59.0f);
-    return base + std::max(0.0f, GetStat(STAT_INTELLECT)) / rate;
+    //// Dodge per agility is proportional to crit per agility, which is available from DBC files
+    //GtChanceToMeleeCritEntry  const* dodgeRatio = sGtChanceToMeleeCritStore.EvaluateTable(level - 1, pclass - 1);
+    //if (dodgeRatio == nullptr || pclass > MAX_CLASSES)
+    //    return;
+
+    ///// @todo research if talents/effects that increase total agility by x% should increase non-diminishing part
+    //float base_agility = GetCreateStat(STAT_AGILITY) * GetPctModifierValue(UnitMods(UNIT_MOD_STAT_START + STAT_AGILITY), BASE_PCT);
+    //float bonus_agility = GetStat(STAT_AGILITY) - base_agility;
+
+    //// calculate diminishing (green in char screen) and non-diminishing (white) contribution
+    //diminishing = 100.0f * bonus_agility * dodgeRatio->ratio * crit_to_dodge[pclass-1];
+    //nondiminishing = 100.0f * (dodge_base[pclass-1] + base_agility * dodgeRatio->ratio * crit_to_dodge[pclass-1]);
 }
 
 inline float GetGameTableColumnForCombatRating(GtCombatRatingsEntry const* row, uint32 rating)
@@ -5566,20 +5442,18 @@ bool Player::UpdateCraftSkill(SpellInfo const* spellInfo)
     {
         if (_spell_idx->second->SkillupSkillLineID)
         {
-            // Classic 1.60: skill-ups go to the profession itself (the recipe data points at the expansion child line)
-            uint32 skillupSkill = GetClassicProfessionSkill(_spell_idx->second->SkillupSkillLineID);
-            uint32 SkillValue = GetPureSkillValue(skillupSkill);
+            uint32 SkillValue = GetPureSkillValue(_spell_idx->second->SkillupSkillLineID);
 
             // Alchemy Discoveries here
             if (spellInfo->Mechanic == MECHANIC_DISCOVERY)
             {
-                if (uint32 discoveredSpell = GetSkillDiscoverySpell(skillupSkill, spellInfo->Id, this))
+                if (uint32 discoveredSpell = GetSkillDiscoverySpell(_spell_idx->second->SkillupSkillLineID, spellInfo->Id, this))
                     LearnSpell(discoveredSpell, false);
             }
 
             uint32 craft_skill_gain = _spell_idx->second->NumSkillUps * sWorld->getIntConfig(CONFIG_SKILL_GAIN_CRAFTING);
 
-            return UpdateSkillPro(skillupSkill, SkillGainChance(SkillValue,
+            return UpdateSkillPro(_spell_idx->second->SkillupSkillLineID, SkillGainChance(SkillValue,
                 _spell_idx->second->TrivialSkillLineRankHigh,
                 (_spell_idx->second->TrivialSkillLineRankHigh + _spell_idx->second->TrivialSkillLineRankLow)/2,
                 _spell_idx->second->TrivialSkillLineRankLow),
@@ -5617,8 +5491,7 @@ bool Player::UpdateGatherSkill(uint32 skillId, uint32 skillValue, uint32 redLeve
     }
 
     // For skinning and Mining chance decrease with level. 1-74 - no decrease, 75-149 - 2 times, 225-299 - 8 times
-    // Classic 1.60: gathering levels the profession itself (Herbalism 182, Mining 186, Skinning 393), which has no parent line
-    switch (skillEntry->ParentSkillLineID ? skillEntry->ParentSkillLineID : skillEntry->ID)
+    switch (skillEntry->ParentSkillLineID)
     {
         case SKILL_HERBALISM:
             return UpdateSkillPro(skillId, SkillGainChance(skillValue, grayLevel, greenLevel, yellowLevel) * multiplicator, gatheringSkillGain);
@@ -5675,79 +5548,6 @@ bool Player::UpdateFishingSkill(int32 expansion)
     return false;
 }
 
-// Classic 1.60: retail has no weapon / defense skill gains; vanilla rules (as in MaNGOS / TrinityCore 3.3.5)
-void Player::UpdateCombatSkills(Unit const* victim, WeaponAttackType attType, bool defense)
-{
-    uint8 playerLevel = GetLevel();
-    uint8 grayLevel = Trinity::XP::GetGrayLevel(playerLevel);
-    uint8 victimLevel = victim->GetLevelForTarget(this);
-    if (victimLevel < grayLevel)
-        return;
-
-    if (victimLevel > playerLevel + 5)
-        victimLevel = playerLevel + 5;
-
-    uint8 levelDiff = std::max<uint8>(victimLevel - grayLevel, 3);
-
-    uint32 skill;
-    if (defense)
-        skill = SKILL_DEFENSE;
-    else
-    {
-        Item const* weapon = GetWeaponForAttack(attType, true);
-        if (weapon)
-            skill = weapon->GetTemplate()->GetSkill();
-        else if (attType == BASE_ATTACK)
-            skill = SKILL_UNARMED;
-        else
-            return;
-    }
-
-    int32 skillDiff = int32(GetMaxSkillValueForLevel()) - int32(GetPureSkillValue(skill));
-    if (skillDiff <= 0)
-        return;
-
-    float chance = float(3 * levelDiff * skillDiff) / playerLevel;
-    if (!defense && (GetClass() == CLASS_WARRIOR || GetClass() == CLASS_ROGUE))
-        chance += chance * 0.02f * GetStat(STAT_INTELLECT);
-
-    if (roll_chance(std::max(chance, 1.0f)))
-    {
-        if (defense)
-            UpdateDefenseSkill();
-        else
-            UpdateWeaponSkill(attType);
-    }
-}
-
-void Player::UpdateWeaponSkill(WeaponAttackType attType)
-{
-    if (IsInFeralForm())
-        return;                                             // no weapon skill gain in cat / bear form
-
-    uint32 skill = SKILL_UNARMED;
-    if (Item const* weapon = GetWeaponForAttack(attType, true))
-    {
-        if (weapon->GetTemplate()->GetSubClass() == ITEM_SUBCLASS_WEAPON_FISHING_POLE)
-            return;
-        skill = weapon->GetTemplate()->GetSkill();
-    }
-    else if (attType != BASE_ATTACK)
-        return;
-
-    UpdateSkillPro(skill, 1000, 1);
-}
-
-void Player::UpdateDefenseSkill()
-{
-    if (UpdateSkillPro(SKILL_DEFENSE, 1000, 1))
-    {
-        UpdateDodgePercentage();
-        UpdateParryPercentage();
-        UpdateBlockPercentage();
-    }
-}
-
 bool Player::UpdateSkillPro(uint16 skillId, int32 chance, uint32 step)
 {
     // levels sync. with spell requirement for skill levels to learn
@@ -5791,8 +5591,6 @@ bool Player::UpdateSkillPro(uint16 skillId, int32 chance, uint32 step)
     SetSkillRank(itr->second.pos, new_value);
     if (itr->second.uState != SKILL_NEW)
         itr->second.uState = SKILL_CHANGED;
-
-    SyncClassicProfessionChildSkills(skillId);
 
     for (uint32 bsl : bonusSkillLevels)
     {
@@ -5842,10 +5640,6 @@ void Player::UpdateSkillsForLevel()
         if (!rcEntry)
             continue;
 
-        // Classic 1.60: profession child lines copy their profession, their cap does not follow the character level
-        if (IsClassicProfessionChildSkill(sSkillLineStore.LookupEntry(pskill)))
-            continue;
-
         if (GetSkillRangeType(rcEntry) == SKILL_RANGE_LEVEL)
         {
             if (rcEntry->Flags & SKILL_FLAG_ALWAYS_MAX_VALUE)
@@ -5881,7 +5675,6 @@ void Player::InitializeSkillFields()
 // To "remove" a skill line, set it's values to zero
 void Player::SetSkill(uint32 id, uint16 step, uint16 newVal, uint16 maxVal)
 {
-
     SkillLineEntry const* skillEntry = sSkillLineStore.LookupEntry(id);
     if (!skillEntry)
     {
@@ -5889,28 +5682,6 @@ void Player::SetSkill(uint32 id, uint16 step, uint16 newVal, uint16 maxVal)
             id, GetName(), GetGUID().ToString());
         return;
     }
-
-    // Classic 1.60: profession child lines copy the profession (SyncClassicProfessionChildSkills), they never change it
-    bool const classicProfessionChild = IsClassicProfessionChildSkill(skillEntry);
-    if (classicProfessionChild && newVal)
-    {
-        SkillStatusMap::const_iterator parent = mSkillStatus.find(skillEntry->ParentSkillLineID);
-        if (parent == mSkillStatus.end() || parent->second.uState == SKILL_DELETED || !GetSkillRankByPos(parent->second.pos))
-            step = newVal = maxVal = 0;
-        else
-        {
-            step = GetSkillStepByPos(parent->second.pos);
-            newVal = GetSkillRankByPos(parent->second.pos);
-            maxVal = GetSkillMaxRankByPos(parent->second.pos);
-        }
-    }
-
-    // after the profession itself changed, its child lines are updated to match (see the end of this function)
-    auto syncChildren = Trinity::make_unique_ptr_with_deleter(this, [id, classicProfessionChild](Player* player)
-    {
-        if (!classicProfessionChild)
-            player->SyncClassicProfessionChildSkills(id);
-    });
 
     uint16 currVal;
     SkillStatusMap::iterator itr = mSkillStatus.find(id);
@@ -5941,8 +5712,7 @@ void Player::SetSkill(uint32 id, uint16 step, uint16 newVal, uint16 maxVal)
         if (newVal)
         {
             // enable parent skill line if missing
-            // Classic 1.60: profession child lines must not set the parent's rank, Classic ranks come from the rank spells
-            if (skillEntry->ParentSkillLineID && !classicProfessionChild && skillEntry->ParentTierIndex > 0 && GetSkillStep(skillEntry->ParentSkillLineID) < skillEntry->ParentTierIndex)
+            if (skillEntry->ParentSkillLineID && skillEntry->ParentTierIndex > 0 && GetSkillStep(skillEntry->ParentSkillLineID) < skillEntry->ParentTierIndex)
                 if (SkillRaceClassInfoEntry const* rcEntry = sDB2Manager.GetSkillRaceClassInfo(skillEntry->ParentSkillLineID, GetRace(), GetClass()))
                     if (SkillTiersEntry const* tier = sObjectMgr->GetSkillTier(rcEntry->SkillTierID))
                         SetSkill(skillEntry->ParentSkillLineID, skillEntry->ParentTierIndex, std::max<uint16>(GetPureSkillValue(skillEntry->ParentSkillLineID), 1), tier->GetValueForTierIndex(skillEntry->ParentTierIndex - 1));
@@ -6069,9 +5839,7 @@ void Player::SetSkill(uint32 id, uint16 step, uint16 newVal, uint16 maxVal)
 
         if (skillEntry->ParentSkillLineID)
         {
-            // Classic 1.60: profession child lines (e.g. First Aid 129 -> 2942) must not set the parent's rank,
-            // Classic ranks come from the rank spells (First Aid became 1/300 instead of 1/75)
-            if (skillEntry->ParentTierIndex > 0 && !classicProfessionChild)
+            if (skillEntry->ParentTierIndex > 0)
             {
                 if (SkillRaceClassInfoEntry const* rcEntry = sDB2Manager.GetSkillRaceClassInfo(skillEntry->ParentSkillLineID, GetRace(), GetClass()))
                 {
@@ -6124,49 +5892,11 @@ void Player::SetSkill(uint32 id, uint16 step, uint16 newVal, uint16 maxVal)
     }
 }
 
-bool Player::IsClassicProfessionChildSkill(SkillLineEntry const* skillEntry)
-{
-    if (!skillEntry || !skillEntry->ParentSkillLineID)
-        return false;
-
-    SkillLineEntry const* parent = sSkillLineStore.LookupEntry(skillEntry->ParentSkillLineID);
-    return parent && (parent->CategoryID == SKILL_CATEGORY_PROFESSION || parent->CategoryID == SKILL_CATEGORY_SECONDARY);
-}
-
-void Player::SyncClassicProfessionChildSkills(uint32 skill)
-{
-    SkillLineEntry const* skillEntry = sSkillLineStore.LookupEntry(skill);
-    if (!skillEntry || skillEntry->ParentSkillLineID || (skillEntry->CategoryID != SKILL_CATEGORY_PROFESSION && skillEntry->CategoryID != SKILL_CATEGORY_SECONDARY))
-        return;
-
-    std::vector<SkillLineEntry const*> const* childSkillLines = sDB2Manager.GetSkillLinesForParentSkill(skill);
-    if (!childSkillLines)
-        return;
-
-    // the profession window lists recipes and shows the rank of the child line, so it must equal the profession itself
-    uint16 value = GetPureSkillValue(skill);
-    uint16 maxValue = GetPureMaxSkillValue(skill);
-    uint16 step = GetSkillStep(skill);
-    for (SkillLineEntry const* childSkillLine : *childSkillLines)
-        if (GetPureSkillValue(childSkillLine->ID) != value || GetPureMaxSkillValue(childSkillLine->ID) != maxValue || GetSkillStep(childSkillLine->ID) != step)
-            SetSkill(childSkillLine->ID, step, value, maxValue);
-}
-
-uint32 Player::GetClassicProfessionSkill(uint32 skill)
-{
-    SkillLineEntry const* skillEntry = sSkillLineStore.LookupEntry(skill);
-    return IsClassicProfessionChildSkill(skillEntry) ? skillEntry->ParentSkillLineID : skill;
-}
-
 uint32 Player::GetProfessionSkillForExp(uint32 skill, int32 expansion) const
 {
     SkillLineEntry const* skillEntry = sSkillLineStore.LookupEntry(skill);
     if (!skillEntry)
         return 0;
-
-    // Classic 1.60: fishing, gathering etc. level the profession itself, not an expansion child line
-    if (!skillEntry->ParentSkillLineID && (skillEntry->CategoryID == SKILL_CATEGORY_PROFESSION || skillEntry->CategoryID == SKILL_CATEGORY_SECONDARY))
-        return skillEntry->ID;
 
     if (skillEntry->ParentSkillLineID || (skillEntry->CategoryID != SKILL_CATEGORY_PROFESSION && skillEntry->CategoryID != SKILL_CATEGORY_SECONDARY))
         return 0;
@@ -6534,18 +6264,15 @@ void Player::CheckAreaExplore()
 
         UpdateCriteria(CriteriaType::RevealWorldMapOverlay, GetAreaId());
 
-        // Classic 1.60: AreaTable has no ContentTuningID, the area level is ExplorationLevel; every new area is announced ("Discovered",
-        // sound), with 0 experience at max level or in areas without a level (sniffs of the official beta: level 6 area 55 XP, level 0 area 0)
-        Optional<ContentTuningLevels> areaLevels = sDB2Manager.GetContentTuningData(areaEntry->ContentTuningID, m_playerData->CtrOptions->ConditionalFlags);
-        int16 explorationLevel = areaLevels ? std::min(std::max(int16(GetLevel()), areaLevels->MinLevel), areaLevels->MaxLevel) : int16(areaEntry->ExplorationLevel);
+        if (Optional<ContentTuningLevels> areaLevels = sDB2Manager.GetContentTuningData(areaEntry->ContentTuningID, m_playerData->CtrOptions->ConditionalFlags))
         {
-            if (IsMaxLevel() || explorationLevel <= 0)
+            if (IsMaxLevel())
             {
                 SendExplorationExperience(areaId, 0);
             }
             else
             {
-                int16 areaLevel = explorationLevel;
+                int16 areaLevel = std::min(std::max(int16(GetLevel()), areaLevels->MinLevel), areaLevels->MaxLevel);
                 int32 diff = int32(GetLevel()) - areaLevel;
                 uint32 XP;
                 if (diff < -5)
@@ -6573,8 +6300,6 @@ void Player::CheckAreaExplore()
 
                 XP += XP * GetTotalAuraMultiplier(SPELL_AURA_MOD_EXPLORATION_EXPERIENCE);
 
-                if (BotAI* botAI = GetSession()->GetBotAI())
-                    botAI->NoteXpSource("explore");
                 GiveXP(XP, nullptr);
                 SendExplorationExperience(areaId, XP);
             }
@@ -6894,11 +6619,6 @@ void Player::RewardReputation(Quest const* quest)
 
         FactionEntry const* factionEntry = sFactionStore.LookupEntry(quest->RewardFactionId[i]);
         if (!factionEntry)
-            continue;
-
-        // Classic 1.60: the Zephras quests reward both the Windshapers (Horde) and the High Order (Alliance); the official beta only
-        // raised the player's side (sniff 70205: a Horde player got the Windshapers' +50s only)
-        if (GetReputationMgr().IsOtherSideFaction(factionEntry))
             continue;
 
         int32 rep = 0;
@@ -7806,7 +7526,6 @@ void Player::UpdateZone(uint32 newZone, uint32 newArea)
     {
         sOutdoorPvPMgr->HandlePlayerLeaveZone(this, oldZone);
         sBattlefieldMgr->HandlePlayerLeaveZone(this, oldZone);
-        BattlenetPresence::OnCharacterChanged(this);    // Battle.net friends see the new zone
     }
 
     // group update
@@ -8415,13 +8134,6 @@ void Player::_ApplyItemBonuses(Item* item, uint8 slot, bool apply)
                 UpdateStatBuffMod(STAT_STRENGTH);
                 UpdateStatBuffMod(STAT_INTELLECT);
                 break;
-            case ITEM_MOD_BLOCK_VALUE:                      // Classic 1.60: added to the shield block value
-                m_classicBlockValueBonus += apply ? int32(val) : -int32(val);
-                break;
-            default:
-                if (statType >= ITEM_MOD_CLASSIC_PHYSICAL_DAMAGE_DONE && statType < ITEM_MOD_CLASSIC_END)
-                    _ApplyClassicItemMod(statType, int32(val), apply);
-                break;
         }
     }
 
@@ -8429,102 +8141,12 @@ void Player::_ApplyItemBonuses(Item* item, uint8 slot, bool apply)
     {
         HandleStatFlatModifier(UNIT_MOD_ARMOR, TOTAL_VALUE, float(armor), apply);
         if (proto->GetClass() == ITEM_CLASS_ARMOR && proto->GetSubClass() == ITEM_SUBCLASS_ARMOR_SHIELD)
-            SetUpdateFieldValue(m_values.ModifyValue(&Player::m_activePlayerData).ModifyValue(&UF::ActivePlayerData::ShieldBlock), apply ? int32(GetClassicShieldBlockValue()) : 0);
+            SetUpdateFieldValue(m_values.ModifyValue(&Player::m_activePlayerData).ModifyValue(&UF::ActivePlayerData::ShieldBlock), apply ? int32(armor * 2.5f) : 0);
     }
 
     WeaponAttackType attType = Player::GetAttackBySlot(slot, proto->GetInventoryType());
     if (attType != MAX_ATTACK)
         _ApplyWeaponDamage(slot, item, apply);
-}
-
-// Classic 1.60: skills of ITEM_MOD_CLASSIC_TWOHANDED_AXES .. ITEM_MOD_CLASSIC_TAILORING
-static constexpr uint32 ClassicItemModSkills[] =
-{
-    SKILL_TWO_HANDED_AXES, SKILL_TWO_HANDED_MACES, SKILL_TWO_HANDED_SWORDS, SKILL_AXES, SKILL_BOWS, SKILL_CROSSBOWS, SKILL_DAGGERS,
-    SKILL_DUAL_WIELD, SKILL_FIST_WEAPONS, SKILL_GUNS, SKILL_MACES, SKILL_POLEARMS, SKILL_STAVES, SKILL_SWORDS, 176 /*Thrown*/, SKILL_WANDS,
-    SKILL_ALCHEMY, SKILL_BLACKSMITHING, SKILL_ENCHANTING, SKILL_ENGINEERING, SKILL_JEWELCRAFTING, SKILL_LEATHERWORKING, SKILL_HERBALISM,
-    SKILL_MINING, SKILL_SKINNING, SKILL_COOKING, 129 /*First Aid*/, SKILL_FISHING, SKILL_TAILORING
-};
-static_assert(std::size(ClassicItemModSkills) == ITEM_MOD_CLASSIC_TAILORING - ITEM_MOD_CLASSIC_TWOHANDED_AXES + 1);
-
-// Classic 1.60: schools of ITEM_MOD_CLASSIC_FIRE_PENETRATION .. ITEM_MOD_CLASSIC_ARCANE_PENETRATION
-static constexpr SpellSchools ClassicItemModPenetrationSchools[] =
-{
-    SPELL_SCHOOL_FIRE, SPELL_SCHOOL_NATURE, SPELL_SCHOOL_FROST, SPELL_SCHOOL_SHADOW, SPELL_SCHOOL_ARCANE
-};
-
-// Classic 1.60: creature types of ITEM_MOD_CLASSIC_ATTACK_POWER_VS_* (and, without mechanical, ITEM_MOD_CLASSIC_SPELL_DAMAGE_VS_*)
-static constexpr CreatureType ClassicItemModCreatureTypes[] =
-{
-    CREATURE_TYPE_HUMANOID, CREATURE_TYPE_ELEMENTAL, CREATURE_TYPE_DEMON, CREATURE_TYPE_UNDEAD, CREATURE_TYPE_DRAGONKIN,
-    CREATURE_TYPE_GIANT, CREATURE_TYPE_BEAST, CREATURE_TYPE_MECHANICAL
-};
-
-void Player::_ApplyClassicItemMod(int32 statType, int32 val, bool apply)
-{
-    m_classicItemMods[statType - ITEM_MOD_CLASSIC_PHYSICAL_DAMAGE_DONE] += apply ? val : -val;
-
-    if (statType == ITEM_MOD_CLASSIC_PHYSICAL_DAMAGE_DONE)
-        UpdateAllDamageDoneMods();
-    else if (statType <= ITEM_MOD_CLASSIC_ARCANE_DAMAGE_DONE)
-        UpdateSpellDamageAndHealingBonus();
-    else if (statType <= ITEM_MOD_CLASSIC_TAILORING)
-        ModifySkillBonus(ClassicItemModSkills[statType - ITEM_MOD_CLASSIC_TWOHANDED_AXES], apply ? val : -val, false);
-    else if (statType == ITEM_MOD_CLASSIC_RESISTANCE_ALL_SCHOOLS)
-        for (UnitMods mod : { UNIT_MOD_RESISTANCE_FIRE, UNIT_MOD_RESISTANCE_NATURE, UNIT_MOD_RESISTANCE_FROST, UNIT_MOD_RESISTANCE_SHADOW, UNIT_MOD_RESISTANCE_ARCANE })
-            HandleStatFlatModifier(mod, BASE_VALUE, float(val), apply);
-    // penetration and the creature type bonuses are read when dealing damage
-}
-
-int32 Player::GetClassicSpellDamageDone(uint32 schoolMask) const
-{
-    int32 best = 0;
-    for (uint32 school = SPELL_SCHOOL_NORMAL; school < MAX_SPELL_SCHOOL; ++school)
-        if (schoolMask & (1 << school))
-            best = std::max(best, m_classicItemMods[school]); // 83 + school
-    return best;
-}
-
-int32 Player::GetClassicSpellPenetration(uint32 schoolMask) const
-{
-    int32 best = 0;
-    for (std::size_t i = 0; i < std::size(ClassicItemModPenetrationSchools); ++i)
-        if (schoolMask & (1 << ClassicItemModPenetrationSchools[i]))
-            best = std::max(best, m_classicItemMods[ITEM_MOD_CLASSIC_FIRE_PENETRATION + i - ITEM_MOD_CLASSIC_PHYSICAL_DAMAGE_DONE]);
-    return best;
-}
-
-int32 Player::GetClassicAttackPowerVersus(uint32 creatureTypeMask) const
-{
-    int32 best = 0;
-    for (std::size_t i = 0; i < std::size(ClassicItemModCreatureTypes); ++i)
-        if (creatureTypeMask & (1 << (ClassicItemModCreatureTypes[i] - 1)))
-            best = std::max(best, m_classicItemMods[ITEM_MOD_CLASSIC_ATTACK_POWER_VS_HUMANOID + i - ITEM_MOD_CLASSIC_PHYSICAL_DAMAGE_DONE]);
-    return best;
-}
-
-// Classic 1.60 (vanilla, VMaNGOS): shield block value (item_classic_block) + block value of the gear + strength / 20 - 1
-uint32 Player::GetClassicShieldBlockValue() const
-{
-    float value = 0.0f;
-    if (Item const* shield = GetUseableItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
-        if (shield->GetTemplate()->GetInventoryType() == INVTYPE_SHIELD)
-            value = float(sObjectMgr->GetItemClassicBlock(shield->GetEntry()));
-
-    value += float(m_classicBlockValueBonus);
-    value += float(GetTotalAuraModifier(SPELL_AURA_MOD_BLOCK_VALUE_FLAT));
-    value += GetStat(STAT_STRENGTH) / 20.0f - 1.0f;
-    AddPct(value, float(GetTotalAuraModifier(SPELL_AURA_MOD_SHIELD_BLOCKVALUE_PCT) + GetTotalAuraModifier(SPELL_AURA_MOD_BLOCK_VALUE_PCT)));
-    return uint32(std::max(0.0f, value));
-}
-
-int32 Player::GetClassicSpellDamageVersus(uint32 creatureTypeMask) const
-{
-    int32 best = 0;
-    for (std::size_t i = 0; i < std::size(ClassicItemModCreatureTypes) - 1; ++i) // no mechanical
-        if (creatureTypeMask & (1 << (ClassicItemModCreatureTypes[i] - 1)))
-            best = std::max(best, m_classicItemMods[ITEM_MOD_CLASSIC_SPELL_DAMAGE_VS_HUMANOID + i - ITEM_MOD_CLASSIC_PHYSICAL_DAMAGE_DONE]);
-    return best;
 }
 
 void Player::_ApplyWeaponDamage(uint8 slot, Item* item, bool apply)
@@ -8555,8 +8177,7 @@ void Player::_ApplyWeaponDamage(uint8 slot, Item* item, bool apply)
     if (proto->GetDelay() && !(shapeshift && shapeshift->CombatRoundTime))
         SetBaseAttackTime(attType, apply ? proto->GetDelay() : BASE_ATTACK_TIME);
 
-    // Classic 1.60: no weapon based attack power (retail adds weapon dps * 6 to the attack power of abilities)
-    int32 weaponBasedAttackPower = 0;
+    int32 weaponBasedAttackPower = apply ? int32(proto->GetDPS(itemLevel) * 6.0f) : 0;
     switch (attType)
     {
         case BASE_ATTACK:
@@ -9650,8 +9271,7 @@ uint8 Player::FindEquipSlot(Item const* item, uint8 slot, bool swap) const
             slots[0] = EQUIPMENT_SLOT_OFFHAND;
             break;
         case INVTYPE_RANGED:
-        case INVTYPE_THROWN:
-            slots[0] = EQUIPMENT_SLOT_RANGED;               // Classic: bows, guns, crossbows, wands and thrown have their own slot
+            slots[0] = EQUIPMENT_SLOT_MAINHAND;
             break;
         case INVTYPE_2HWEAPON:
             slots[0] = EQUIPMENT_SLOT_MAINHAND;
@@ -9671,7 +9291,7 @@ uint8 Player::FindEquipSlot(Item const* item, uint8 slot, bool swap) const
             slots[0] = EQUIPMENT_SLOT_OFFHAND;
             break;
         case INVTYPE_RANGEDRIGHT:
-            slots[0] = EQUIPMENT_SLOT_RANGED;
+            slots[0] = EQUIPMENT_SLOT_MAINHAND;
             break;
         case INVTYPE_BAG:
             if (item->GetTemplate()->GetId() == ITEM_ACCOUNT_BANK_TAB_BAG)
@@ -9976,75 +9596,6 @@ Bag* Player::GetBagByPos(uint8 bag) const
     return nullptr;
 }
 
-bool Player::NeedsAmmo() const
-{
-    Item const* ranged = GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
-    if (!ranged)
-        return false;
-    switch (ranged->GetTemplate()->GetSubClass())
-    {
-        case ITEM_SUBCLASS_WEAPON_BOW:
-        case ITEM_SUBCLASS_WEAPON_GUN:
-        case ITEM_SUBCLASS_WEAPON_CROSSBOW:
-            return ranged->GetTemplate()->GetClass() == ITEM_CLASS_WEAPON;
-        default:
-            return false;
-    }
-}
-
-// Arrows for bows and crossbows, bullets for guns; without a ranged weapon any ammo can be chosen.
-bool Player::IsAmmoUsableWithRangedWeapon(ItemTemplate const* proto) const
-{
-    if (!proto || proto->GetClass() != ITEM_CLASS_PROJECTILE)
-        return false;
-    if (!NeedsAmmo())
-        return true;
-    uint32 weapon = GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED)->GetTemplate()->GetSubClass();
-    return weapon == ITEM_SUBCLASS_WEAPON_GUN ? proto->GetSubClass() == ITEM_SUBCLASS_BULLET : proto->GetSubClass() == ITEM_SUBCLASS_ARROW;
-}
-
-bool Player::SetAmmo(uint32 itemId)
-{
-    if (itemId)
-    {
-        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
-        if (!proto || proto->GetClass() != ITEM_CLASS_PROJECTILE || !HasItemCount(itemId) || CanUseItem(proto) != EQUIP_ERR_OK)
-            return false;
-    }
-    SetUpdateFieldValue(m_values.ModifyValue(&Player::m_activePlayerData).ModifyValue(&UF::ActivePlayerData::PvpMedals), itemId);
-    return true;
-}
-
-void Player::AutoSelectAmmo()
-{
-    if (uint32 current = GetAmmoId())
-        if (HasItemCount(current) && IsAmmoUsableWithRangedWeapon(sObjectMgr->GetItemTemplate(current)))
-            return;
-
-    uint32 found = 0;
-    ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
-    {
-        ItemTemplate const* proto = item->GetTemplate();
-        if (proto->GetClass() == ITEM_CLASS_PROJECTILE && IsAmmoUsableWithRangedWeapon(proto) && CanUseItem(proto) == EQUIP_ERR_OK)
-        {
-            found = item->GetEntry();
-            return ItemSearchCallbackResult::Stop;
-        }
-        return ItemSearchCallbackResult::Continue;
-    });
-    SetAmmo(found);
-}
-
-void Player::TakeAmmo()
-{
-    uint32 ammo = GetAmmoId();
-    if (!ammo)
-        return;
-    DestroyItemCount(ammo, 1, true);
-    if (!HasItemCount(ammo))
-        AutoSelectAmmo();
-}
-
 Item* Player::GetWeaponForAttack(WeaponAttackType attackType, bool useable /*= false*/) const
 {
     uint8 slot;
@@ -10052,7 +9603,7 @@ Item* Player::GetWeaponForAttack(WeaponAttackType attackType, bool useable /*= f
     {
         case BASE_ATTACK:   slot = EQUIPMENT_SLOT_MAINHAND; break;
         case OFF_ATTACK:    slot = EQUIPMENT_SLOT_OFFHAND;  break;
-        case RANGED_ATTACK: slot = EQUIPMENT_SLOT_RANGED;   break;
+        case RANGED_ATTACK: slot = EQUIPMENT_SLOT_MAINHAND;   break;
         default: return nullptr;
     }
 
@@ -10118,7 +9669,6 @@ WeaponAttackType Player::GetAttackBySlot(uint8 slot, InventoryType inventoryType
     {
         case EQUIPMENT_SLOT_MAINHAND: return inventoryType != INVTYPE_RANGED && inventoryType != INVTYPE_RANGEDRIGHT ? BASE_ATTACK : RANGED_ATTACK;
         case EQUIPMENT_SLOT_OFFHAND:  return OFF_ATTACK;
-        case EQUIPMENT_SLOT_RANGED:   return RANGED_ATTACK;
         default:                      return MAX_ATTACK;
     }
 }
@@ -11829,10 +11379,6 @@ Item* Player::StoreNewItem(ItemPosCountVec const& pos, uint32 itemId, bool updat
 
         if (item->GetTemplate()->GetInventoryType() != INVTYPE_NON_EQUIP)
             UpdateAverageItemLevelTotal();
-
-        // Classic 1.60: new ammo goes to the ammo slot when it is empty
-        if (item->GetTemplate()->GetClass() == ITEM_CLASS_PROJECTILE && !GetAmmoId())
-            AutoSelectAmmo();
     }
 
     return item;
@@ -12086,10 +11632,6 @@ Item* Player::EquipItem(uint16 pos, Item* pItem, bool update)
 
     if (slot == EQUIPMENT_SLOT_MAINHAND || slot == EQUIPMENT_SLOT_OFFHAND)
         CheckTitanGripPenalty();
-
-    // Classic 1.60: a new bow, gun or crossbow needs the matching ammo (arrows or bullets)
-    if (bag == INVENTORY_SLOT_BAG_0 && slot == EQUIPMENT_SLOT_RANGED)
-        AutoSelectAmmo();
 
     // only for full equip instead adding to stack
     UpdateCriteria(CriteriaType::EquipItem, pItem->GetEntry());
@@ -14361,10 +13903,6 @@ void Player::SendNewItem(Item* item, uint32 quantity, bool pushed, bool created,
 /***                    GOSSIP SYSTEM                  ***/
 /*********************************************************/
 
-// Classic 1.60: gossip option ids of the trainer / vendor options added to menus that lack them (never used by DB options)
-static constexpr int32 CLASSIC_GOSSIP_OPTION_AUTO_TRAINER = 2146000001;
-static constexpr int32 CLASSIC_GOSSIP_OPTION_AUTO_VENDOR  = 2146000002;
-
 void Player::PrepareGossipMenu(WorldObject* source, uint32 menuId, bool showQuests /*= false*/)
 {
     PlayerTalkClass->ClearMenus();
@@ -14461,38 +13999,8 @@ void Player::PrepareGossipMenu(WorldObject* source, uint32 menuId, bool showQues
             }
         }
 
-        // Classic 1.60 dual spec purchase: class trainers of the player's class, from level 10, until bought
-        if (IsClassicDualSpecGossipOption(gossipMenuItem.GossipOptionID))
-        {
-            Creature* creature = source->ToCreature();
-            if (!creature || !creature->CanResetTalents(this) || GetClassicSpecGroupConfig(true))
-                canTalk = false;
-        }
-
         if (canTalk)
             PlayerTalkClass->GetGossipMenu().AddMenuItem(gossipMenuItem, gossipMenuItem.MenuID, gossipMenuItem.OrderIndex);
-    }
-
-    // Classic 1.60: the client opens trainers and vendors only through a gossip option. NPCs whose menu (vanilla data, sniffed
-    // menus) lacks the option for a service they have get it added here.
-    if (Creature* creature = source->ToCreature())
-    {
-        GossipMenu& menu = PlayerTalkClass->GetGossipMenu();
-        auto hasOption = [&](GossipOptionNpc optionNpc)
-        {
-            for (GossipMenuItem const& item : menu.GetMenuItems())
-                if (item.OptionNpc == optionNpc)
-                    return true;
-            return false;
-        };
-
-        if (creature->HasNpcFlag(UNIT_NPC_FLAG_TRAINER) && creature->GetTrainerId() && !hasOption(GossipOptionNpc::Trainer))
-            menu.AddMenuItem(CLASSIC_GOSSIP_OPTION_AUTO_TRAINER, menu.GetMenuItemCount(), GossipOptionNpc::Trainer, "Train me.", 0,
-                GossipOptionFlags::None, {}, 0, 0, false, 0, "", {}, {}, menuId, menu.GetMenuItemCount());
-
-        if (creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR) && creature->GetVendorItems() && !hasOption(GossipOptionNpc::Vendor))
-            menu.AddMenuItem(CLASSIC_GOSSIP_OPTION_AUTO_VENDOR, menu.GetMenuItemCount(), GossipOptionNpc::Vendor, "Let me browse your goods.", 0,
-                GossipOptionFlags::None, {}, 0, 0, false, 0, "", {}, {}, menuId, menu.GetMenuItemCount());
     }
 }
 
@@ -14569,13 +14077,6 @@ void Player::OnGossipSelect(WorldObject* source, int32 gossipOptionId, uint32 me
     switch (gossipOptionNpc)
     {
         case GossipOptionNpc::None:
-            if (IsClassicDualSpecGossipOption(item->GossipOptionID))
-            {
-                PlayerTalkClass->SendCloseGossip();
-                Creature* creature = source->ToCreature();
-                if (!creature || !creature->CanResetTalents(this) || !PurchaseClassicDualSpec())
-                    return;                                 // not charged
-            }
             break;
         case GossipOptionNpc::Vendor:
             GetSession()->SendListInventory(guid);
@@ -14584,16 +14085,8 @@ void Player::OnGossipSelect(WorldObject* source, int32 gossipOptionId, uint32 me
             GetSession()->SendTaxiMenu(source->ToCreature());
             break;
         case GossipOptionNpc::Trainer:
-        {
-            // Classic 1.60: vanilla menus point at sniffed trainers (and the added "Train me." option has no creature_trainer
-            // row): fall back to the creature's trainer
-            uint32 trainerId = sObjectMgr->GetCreatureTrainerForGossipOption(source->GetEntry(), menuId, item->OrderIndex);
-            if (!trainerId)
-                if (Creature* trainerCreature = source->ToCreature())
-                    trainerId = trainerCreature->GetTrainerId();
-            GetSession()->SendTrainerList(source->ToCreature(), trainerId);
+            GetSession()->SendTrainerList(source->ToCreature(), sObjectMgr->GetCreatureTrainerForGossipOption(source->GetEntry(), menuId, item->OrderIndex));
             break;
-        }
         case GossipOptionNpc::SpiritHealer:
             source->CastSpell(source->ToCreature(), 17251, CastSpellExtraArgs(TRIGGERED_FULL_MASK).SetOriginalCaster(GetGUID()));
             handled = false;
@@ -14816,10 +14309,6 @@ uint32 Player::GetGossipMenuForSource(WorldObject const* source) const
 
 int32 Player::GetQuestMinLevel(Quest const* quest) const
 {
-    // Classic 1.60: quests have a fixed minimum level (quest_classic_level), their ContentTuning does not limit them
-    if (quest->GetClassicMinLevel() > 0)
-        return quest->GetClassicMinLevel();
-
     return GetQuestMinLevel(quest->GetContentTuningId());
 }
 
@@ -14843,10 +14332,6 @@ int32 Player::GetQuestLevel(Quest const* quest) const
 {
     if (!quest)
         return 0;
-
-    // Classic 1.60: quests have a fixed level (quest_template_classic_level, official beta sniffs); most of them have no ContentTuning
-    if (quest->GetClassicQuestLevel() > 0)
-        return quest->GetClassicQuestLevel();
 
     return GetQuestLevel(quest->GetContentTuningId());
 }
@@ -15423,9 +14908,6 @@ void Player::AddQuest(Quest const* quest, Object* questGiver)
     if (updateVisibility)
         UpdateObjectVisibility();
 
-    if (GetSession()->IsBot())
-        BotQuestLog::OnAccepted(this, quest, questGiver);
-
     sScriptMgr->OnQuestStatusChange(this, quest_id);
     sScriptMgr->OnQuestStatusChange(this, quest, oldStatus, questStatusData.Status);
 }
@@ -15436,11 +14918,7 @@ void Player::CompleteQuest(uint32 quest_id)
     {
         SendForceSpawnTrackingUpdate(quest_id);
 
-        bool const botNewlyComplete = GetSession()->IsBot() && GetQuestStatus(quest_id) != QUEST_STATUS_COMPLETE;
         SetQuestStatus(quest_id, QUEST_STATUS_COMPLETE);
-        if (botNewlyComplete)
-            if (Quest const* botQuest = sObjectMgr->GetQuestTemplate(quest_id))
-                BotQuestLog::OnComplete(this, botQuest);
 
         if (QuestStatusData const* questStatus = Trinity::Containers::MapGetValuePtr(m_QuestStatus, quest_id))
             SetQuestSlotState(questStatus->Slot, QUEST_STATE_COMPLETE);
@@ -15724,11 +15202,7 @@ void Player::RewardQuest(Quest const* quest, LootItemType rewardType, uint32 rew
 
     int32 moneyRew = 0;
     if (!IsMaxLevel())
-    {
-        if (BotAI* botAI = GetSession()->GetBotAI())
-            botAI->NoteXpSource("quest", quest->GetQuestId());
         GiveXP(XP, nullptr);
-    }
     else
         moneyRew = int32(quest->GetRewMoneyMaxLevel() * sWorld->getRate(RATE_DROP_MONEY));
 
@@ -15844,9 +15318,6 @@ void Player::RewardQuest(Quest const* quest, LootItemType rewardType, uint32 rew
             goQGiver->AI()->OnQuestReward(this, quest, rewardType, rewardId);
     }
 
-    if (GetSession()->IsBot())
-        BotQuestLog::OnRewarded(this, quest, rewardType, rewardId, questGiver, XP, moneyRew);
-
     sScriptMgr->OnQuestStatusChange(this, quest_id);
     sScriptMgr->OnQuestStatusChange(this, quest, oldStatus, QUEST_STATUS_REWARDED);
 
@@ -15877,8 +15348,6 @@ void Player::FailQuest(uint32 questId)
         }
 
         SetQuestStatus(questId, QUEST_STATUS_FAILED);
-        if (GetSession()->IsBot())
-            BotQuestLog::OnFailed(this, quest);
 
         uint16 log_slot = FindQuestSlot(questId);
 
@@ -15930,9 +15399,6 @@ void Player::AbandonQuest(uint32 questId)
 {
     if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
     {
-        if (GetSession()->IsBot())
-            BotQuestLog::OnAbandoned(this, quest);
-
         // Destroy quest items on quest abandon.
         for (QuestObjective const& obj : quest->GetObjectives())
             if (obj.Type == QUEST_OBJECTIVE_ITEM)
@@ -17650,11 +17116,7 @@ void Player::SetQuestObjectiveData(QuestObjective const& objective, int32 data)
         RemoveQuestSlotObjectiveFlag(status.Slot, objective.StorageIndex);
 
     if (Quest const* quest = sObjectMgr->GetQuestTemplate(objective.QuestID))
-    {
-        if (GetSession()->IsBot())
-            BotQuestLog::OnObjectiveChange(this, quest, objective, oldData, data);
         sScriptMgr->OnQuestObjectiveChange(this, quest, objective, oldData, data);
-    }
 }
 
 bool Player::IsQuestObjectiveCompletable(uint16 slot, Quest const* quest, QuestObjective const& objective) const
@@ -19225,9 +18687,6 @@ bool Player::LoadFromDB(ObjectGuid guid, CharacterDatabaseQueryHolder const& hol
         holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_AZERITE_UNLOCKED_ESSENCES),
         holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_AZERITE_EMPOWERED),
         time_diff);
-
-    // Classic 1.60: the ammo choice is not saved; pick the ammo for the ranged weapon from the bags (new hunters: their arrows)
-    AutoSelectAmmo();
 
     // update items with duration and realtime
     UpdateItemDuration(time_diff, true);
@@ -21151,19 +20610,7 @@ void Player::SaveToDB(LoginDatabaseTransaction loginTransaction, CharacterDataba
         stmt->setUInt32(index++, m_playerData->PlayerFlags);
         stmt->setUInt32(index++, m_playerData->PlayerFlagsEx);
 
-        if (m_deathRecapReturn)
-        {
-            stmt->setUInt16(index++, (uint16)m_deathRecapReturn->GetMapId());
-            stmt->setUInt32(index++, (uint32)0);
-            stmt->setUInt8(index++, uint8(GetDungeonDifficultyID()));
-            stmt->setUInt8(index++, uint8(GetRaidDifficultyID()));
-            stmt->setUInt8(index++, uint8(GetLegacyRaidDifficultyID()));
-            stmt->setFloat(index++, finiteAlways(m_deathRecapReturn->GetPositionX()));
-            stmt->setFloat(index++, finiteAlways(m_deathRecapReturn->GetPositionY()));
-            stmt->setFloat(index++, finiteAlways(m_deathRecapReturn->GetPositionZ()));
-            stmt->setFloat(index++, finiteAlways(m_deathRecapReturn->GetOrientation()));
-        }
-        else if (!IsBeingTeleported())
+        if (!IsBeingTeleported())
         {
             stmt->setUInt16(index++, (uint16)GetMapId());
             stmt->setUInt32(index++, (uint32)GetInstanceId());
@@ -21334,13 +20781,9 @@ void Player::SaveToDB(LoginDatabaseTransaction loginTransaction, CharacterDataba
         _SaveStats(trans);
 
     // TODO: Move this out
-    // (bots have no battle.net account: their account-wide data would violate the foreign keys, so it is not saved)
-    if (!GetSession()->IsBot())
-    {
-        GetSession()->GetCollectionMgr()->SaveToDB(loginTransaction);
-        GetSession()->GetBattlePetMgr()->SaveToDB(loginTransaction);
-        GetSession()->SavePlayerDataAccount(loginTransaction);
-    }
+    GetSession()->GetCollectionMgr()->SaveToDB(loginTransaction);
+    GetSession()->GetBattlePetMgr()->SaveToDB(loginTransaction);
+    GetSession()->SavePlayerDataAccount(loginTransaction);
 
     Battlenet::RealmHandle currentRealmId = sRealmList->GetCurrentRealmId();
 
@@ -22924,8 +22367,6 @@ void Player::Whisper(std::string_view text, Language language, Player* target, b
 
     packet.Initialize(CHAT_MSG_WHISPER_INFORM, language, target, target, _text);
     SendDirectMessage(packet.Write());
-
-    RecentAllies::OnWhisper(this, target);
 
     if (!isAcceptWhispers() && !IsGameMaster() && !target->IsGameMaster())
     {
@@ -25993,9 +25434,7 @@ void Player::LearnSkillRewardedSpells(uint32 skillId, uint32 skillValue, Races r
         }
 
         // Check race if set
-        // Classic 1.60: Riding teaches every race's riding spell (Horse Riding, Mechanostrider Piloting... dummies under skill 762):
-        // the mount items require that spell (ItemSparse.RequiredAbility), and any race may use any mount here (MountCapability hotfix)
-        if (!ability->RaceMask.IsEmpty() && !ability->RaceMask.HasRace(race) && skillId != SKILL_RIDING)
+        if (!ability->RaceMask.IsEmpty() && !ability->RaceMask.HasRace(race))
             continue;
 
         // Check class if set
@@ -26747,10 +26186,6 @@ bool Player::HasItemFitToSpellRequirements(SpellInfo const* spellInfo, Item cons
                 if (item != ignoreItem && item->IsFitToSpellRequirements(spellInfo))
                     return true;
             if (Item* item = GetUseableItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
-                if (item != ignoreItem && item->IsFitToSpellRequirements(spellInfo))
-                    return true;
-            // Classic: bows, guns, crossbows, wands and thrown weapons are in the ranged slot
-            if (Item* item = GetUseableItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
                 if (item != ignoreItem && item->IsFitToSpellRequirements(spellInfo))
                     return true;
             break;
@@ -28707,101 +28142,7 @@ void Player::SendTalentsInfoData()
             packet.Info.TalentGroups.push_back(groupInfoPkt);
     }
 
-    // Classic 1.60 dual spec: the client's spec group count (GetNumSpecGroups) is the number of talent groups sent here.
-    // Classic classes have a single specialization; a second group exists once the character owns a combat trait config
-    // flagged SecondarySpec (bought from a class trainer). Talents themselves live in the trait configs.
-    if (ChrSpecializationEntry const* spec = sDB2Manager.GetChrSpecializationByIndex(GetClass(), 0);
-        spec && !sDB2Manager.GetChrSpecializationByIndex(GetClass(), 1))
-    {
-        if (packet.Info.TalentGroups.empty())
-        {
-            packet.Info.TalentGroups.emplace_back();
-            packet.Info.TalentGroups.back().SpecID = spec->ID;
-        }
-        packet.Info.TalentGroups.resize(1);
-        packet.Info.ActiveGroup = 0;
-        if (GetClassicSpecGroupConfig(true))
-        {
-            WorldPackets::Talent::TalentGroupInfo secondaryGroup;
-            secondaryGroup.SpecID = spec->ID;
-            packet.Info.TalentGroups.push_back(secondaryGroup);
-            packet.Info.ActiveGroup = GetActiveTalentGroup() == 1 ? 1 : 0;
-        }
-    }
-
     SendDirectMessage(packet.Write());
-}
-
-// Classic 1.60 dual spec: combat trait config of spec group 0 (ActiveForSpec) or 1 (SecondarySpec) for the current spec
-UF::TraitConfig const* Player::GetClassicSpecGroupConfig(bool secondary) const
-{
-    TraitCombatConfigFlags flag = secondary ? TraitCombatConfigFlags::SecondarySpec : TraitCombatConfigFlags::ActiveForSpec;
-    return m_activePlayerData->TraitConfigs.FindIf([&](UF::TraitConfig const& traitConfig)
-    {
-        return traitConfig.Type == AsUnderlyingType(TraitConfigType::Combat)
-            && traitConfig.ChrSpecializationID == int32(GetPrimarySpecialization())
-            && traitConfig.CombatConfigFlags & AsUnderlyingType(flag);
-    }).second;
-}
-
-// Classic 1.60 dual spec: bought from class trainers (gossip options 95000000 + menu, sql/custom/world 2026_09_28_20)
-bool Player::IsClassicDualSpecGossipOption(int32 gossipOptionId)
-{
-    return gossipOptionId >= 95000000 && gossipOptionId < 96000000;
-}
-
-bool Player::PurchaseClassicDualSpec()
-{
-    if (GetClassicSpecGroupConfig(true))
-        return false;
-
-    UF::TraitConfig const* primary = GetClassicSpecGroupConfig(false);
-    if (!primary)
-        return false;
-
-    int32 localIdentifier = 1;
-    while (m_activePlayerData->TraitConfigs.FindIf([&](UF::TraitConfig const& traitConfig)
-    {
-        return traitConfig.Type == AsUnderlyingType(TraitConfigType::Combat) && traitConfig.LocalIdentifier == localIdentifier;
-    }).first)
-        ++localIdentifier;
-
-    WorldPackets::Traits::TraitConfig traitConfig;
-    traitConfig.Type = TraitConfigType::Combat;
-    traitConfig.ChrSpecializationID = primary->ChrSpecializationID;
-    traitConfig.CombatConfigFlags = TraitCombatConfigFlags::SecondarySpec;
-    traitConfig.LocalIdentifier = localIdentifier;
-    traitConfig.Name = *primary->Name;
-    CreateTraitConfig(traitConfig);
-
-    SendTalentsInfoData();
-    return true;
-}
-
-// Classic 1.60 dual spec: "Activate Primary/Secondary Spec" (spells 63645/63644). Swaps the applied talents, the action bars
-// (stored per talent group) and tells the client the new active group.
-bool Player::ActivateClassicSpecGroup(bool secondary)
-{
-    UF::TraitConfig const* target = GetClassicSpecGroupConfig(secondary);
-    if (!target)
-        return false;
-
-    int32 targetId = target->ID;
-    int32 currentId = *m_activePlayerData->ActiveCombatTraitConfigID;
-    if (targetId == currentId)
-        return true;
-
-    CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
-    _SaveActions(trans);
-    CharacterDatabase.CommitTransaction(trans);
-
-    ApplyTraitConfig(currentId, false);
-    SetActiveTalentGroup(secondary ? 1 : 0);
-    SetActiveCombatTraitConfigID(targetId);
-    ApplyTraitConfig(targetId, true);
-
-    StartLoadingActionButtons([this]() { SendTalentsInfoData(); });
-    return true;
 }
 
 void Player::SendEquipmentSetList()
@@ -29294,15 +28635,6 @@ void Player::_LoadTraits(PreparedQueryResult configsResult, PreparedQueryResult 
             && traitConfig.ChrSpecializationID == int32(GetPrimarySpecialization())
             && traitConfig.CombatConfigFlags & AsUnderlyingType(TraitCombatConfigFlags::ActiveForSpec);
     }).second;
-
-    // Classic 1.60 dual spec: talent group 1 is the config flagged SecondarySpec
-    if (GetActiveTalentGroup() == 1)
-    {
-        if (UF::TraitConfig const* secondaryConfig = GetClassicSpecGroupConfig(true))
-            activeTraitConfig = secondaryConfig;
-        else
-            SetActiveTalentGroup(0);
-    }
 
     if (activeTraitConfig)
     {
@@ -31523,7 +30855,6 @@ static bool ForEachEquipmentSlot(InventoryType inventoryType, bool canDualWield,
             return true;
         case INVTYPE_RANGED:
         case INVTYPE_RANGEDRIGHT:
-        case INVTYPE_THROWN: callback(EQUIPMENT_SLOT_RANGED); return true;
         case INVTYPE_WEAPONMAINHAND: callback(EQUIPMENT_SLOT_MAINHAND); return true;
         case INVTYPE_SHIELD:
         case INVTYPE_HOLDABLE:
@@ -31533,6 +30864,7 @@ static bool ForEachEquipmentSlot(InventoryType inventoryType, bool canDualWield,
         case INVTYPE_BAG:
         case INVTYPE_TABARD:
         case INVTYPE_AMMO:
+        case INVTYPE_THROWN:
         case INVTYPE_QUIVER:
         case INVTYPE_RELIC:
         default:

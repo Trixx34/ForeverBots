@@ -26,13 +26,11 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "SocialMgr.h"
-#include "RecentAllies.h"
 #include "Spell.h"
 #include "SpellMgr.h"
 #include "TradeData.h"
 #include "TradePackets.h"
 #include "World.h"
-#include "BotSocial.h"
 
 void WorldSession::SendTradeStatus(WorldPackets::Trade::TradeStatus& info)
 {
@@ -49,14 +47,6 @@ void WorldSession::HandleIgnoreTradeOpcode(WorldPackets::Trade::IgnoreTrade& /*i
 
 void WorldSession::HandleBusyTradeOpcode(WorldPackets::Trade::BusyTrade& /*busyTrade*/)
 {
-    // Classic 1.60: the proposer's client answers its own TRADE_STATUS_PROPOSED with this (sniff of the official beta: initiate,
-    // proposed, busy, initiated); the official server ignores it
-    if (TradeData* myTrade = _player->GetTradeData(); myTrade && myTrade->IsAwaitingProposerBusy())
-    {
-        myTrade->SetAwaitingProposerBusy(false);
-        return;
-    }
-
     _player->TradeCancel(true, TRADE_STATUS_PLAYER_IGNORED);
 }
 
@@ -492,8 +482,6 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPackets::Trade::AcceptTrade& acc
             return;
         }
 
-        BotSocial::OnTradeExecuting(_player, trader);
-
         // execute trade: 1. remove
         for (uint8 i = 0; i < TRADE_SLOT_TRADED_COUNT; ++i)
         {
@@ -560,17 +548,11 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPackets::Trade::AcceptTrade& acc
         info.Status = TRADE_STATUS_COMPLETE;
         trader->GetSession()->SendTradeStatus(info);
         SendTradeStatus(info);
-
-        RecentAllies::OnTrade(_player, trader);
     }
     else
     {
         info.Status = TRADE_STATUS_ACCEPTED;
         trader->GetSession()->SendTradeStatus(info);
-
-        // bot trader: it accepts too (must stay the last statement, a completed trade frees both TradeData)
-        if (trader->GetSession()->IsBot())
-            BotSocial::OnTradePlayerAccepted(_player, trader);
     }
 }
 
@@ -729,17 +711,7 @@ void WorldSession::HandleInitiateTradeOpcode(WorldPackets::Trade::InitiateTrade&
 
     info.Status = TRADE_STATUS_PROPOSED;
     info.Partner = _player->GetGUID();
-    info.PartnerAccount = GetBattlenetAccountGUID();
     pOther->GetSession()->SendTradeStatus(info);
-
-    // Classic 1.60: the proposer gets it too, naming the other player (sniff of the official beta)
-    _player->m_trade->SetAwaitingProposerBusy(true);
-    info.Partner = pOther->GetGUID();
-    info.PartnerAccount = pOther->GetSession()->GetBattlenetAccountGUID();
-    SendTradeStatus(info);
-
-    if (pOther->GetSession()->IsBot())
-        BotSocial::OnTradeInitiated(_player, pOther);
 }
 
 void WorldSession::HandleSetTradeGoldOpcode(WorldPackets::Trade::SetTradeGold& setTradeGold)

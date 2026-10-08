@@ -134,7 +134,7 @@ WorldPacket const* FeatureSystemStatus::Write()
     _worldPacket << uint32(RAFSystem.RewardsVersion);
 
     _worldPacket << uint32(CommercePricePollTimeSeconds);
-    // Classic 1.60.1.70009 (client reader rva 0x7F9200): no KioskSessionDurationMinutes
+    _worldPacket << uint32(KioskSessionDurationMinutes);
     _worldPacket << QuickJoinConfig;
     _worldPacket << int64(RedeemForBalanceAmount);
 
@@ -143,9 +143,6 @@ WorldPacket const* FeatureSystemStatus::Write()
 
     _worldPacket << Squelch;
 
-    // Classic 1.60: the social restriction comes first, then the content set (every official sniff, 70170-70235: 0, then 137 / 136).
-    // In the other order the client 70235 took the content set for a restriction: "Verify your age" and no whispers or chat.
-    _worldPacket << int32(SocialRestriction);   // 2 = age verification popup
     _worldPacket << int32(ContentSetID);
     _worldPacket << Size<uint32>(DisabledGameModes);
     _worldPacket << Size<uint32>(GameRules);
@@ -222,7 +219,7 @@ WorldPacket const* FeatureSystemStatus::Write()
     _worldPacket << Bits<1>(GuildEventsEditsEnabled);
 
     _worldPacket << Bits<1>(GuildTradeSkillsEnabled);
-    _worldPacket << Bits<10>(ClassicFlagBits10);
+    _worldPacket << SizedString::BitsSize<10>(Unknown1027);
     _worldPacket << Bits<1>(IsAccountCurrencyTransferEnabled);
     _worldPacket << Bits<1>(NetEaseChatTelemetryEnabled);
     _worldPacket << Bits<1>(LobbyMatchmakerQueueFromMainlineEnabled);
@@ -241,44 +238,11 @@ WorldPacket const* FeatureSystemStatus::Write()
     if (SessionAlert)
         _worldPacket << *SessionAlert;
 
-    return &_worldPacket;
-}
-
-WorldPacket const* FeatureSystemStatusGlueScreen::Write()
-{
-    // WoW Classic 1.60.1.70009 layout, from the client's reader (0x7F9E70): 6 bytes of flags (their order differs from retail and is not
-    // mapped yet, so all flags are sent as off), no KioskSessionDurationMinutes, array elements directly after the counts.
-    // Retail flags misread by the Classic client enabled the Timerunning (Remix) UI and disabled character creation.
-    for (int32 i = 0; i < 6; ++i)
-        _worldPacket << uint8(0);
-
-    _worldPacket << uint32(CommercePricePollTimeSeconds);
-    _worldPacket << int64(RedeemForBalanceAmount);
-    _worldPacket << int32(MaxCharactersOnThisRealm);
-    _worldPacket << uint32(0);                              // LiveRegionCharacterCopySourceRegions
-    _worldPacket << int32(ActiveBoostType);
-    _worldPacket << int32(TrialBoostType);
-    _worldPacket << int32(MinimumExpansionLevel);
-    _worldPacket << int32(MaximumExpansionLevel);
-    _worldPacket << int32(ContentSetID);
-    _worldPacket << uint32(0);                              // DisabledGameModes
-    _worldPacket << uint32(0);                              // GameRules
-    _worldPacket << uint32(0);                              // AvailableGameModeIDs
-    _worldPacket << int32(0);                               // ActiveTimerunningSeasonID
-    _worldPacket << int32(0);                               // RemainingTimerunningSeasonSeconds
-    _worldPacket << TimerunningConversionMinCharacterAge;
-    _worldPacket << int32(TimerunningConversionMaxSeasonID);
-    _worldPacket << int16(MaxPlayerGuidLookupsPerRequest);
-    _worldPacket << int16(NameLookupTelemetryInterval);
-    _worldPacket << NotFoundCacheTimeSeconds;
-    _worldPacket << uint32(0);                              // DebugTimeEvents
-    _worldPacket << int32(MostRecentTimeEventID);
-    _worldPacket << uint32(EventRealmQueues);
+    _worldPacket << SizedString::Data(Unknown1027);
 
     return &_worldPacket;
 }
 
-#if 0 // retail 12.1 layout, kept for reference
 WorldPacket const* FeatureSystemStatusGlueScreen::Write()
 {
     _worldPacket << Bits<1>(BpayStoreAvailable);
@@ -372,7 +336,6 @@ WorldPacket const* FeatureSystemStatusGlueScreen::Write()
 
     return &_worldPacket;
 }
-#endif
 
 ByteBuffer& operator<<(ByteBuffer& data, MirrorVarSingle const& variable)
 {

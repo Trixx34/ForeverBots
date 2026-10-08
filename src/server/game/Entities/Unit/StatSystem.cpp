@@ -129,7 +129,6 @@ bool Player::UpdateStats(Stats stat)
             UpdateMaxHealth();
             break;
         case STAT_INTELLECT:
-            UpdateMaxPower(POWER_MANA);
             UpdateSpellCritChance();
             break;
         default:
@@ -259,7 +258,6 @@ void Player::UpdateArmor()
 
     float value = GetFlatModifierValue(unitMod, BASE_VALUE);    // base armor
     value *= GetPctModifierValue(unitMod, BASE_PCT);            // armor percent
-    value += GetStat(STAT_AGILITY) * 2.0f;                      // Classic 1.60 (vanilla): 2 armor per agility
 
     // SPELL_AURA_MOD_ARMOR_PCT_FROM_STAT counts as base armor
     GetTotalAuraModifier(SPELL_AURA_MOD_ARMOR_PCT_FROM_STAT, [this, &value](AuraEffect const* aurEff) {
@@ -286,10 +284,14 @@ void Player::UpdateArmor()
 
 float Player::GetHealthBonusFromStamina() const
 {
-    // Classic 1.60 (vanilla): the first 20 points of stamina give 1 health each, every further point 10
+    // Taken from PaperDollFrame.lua - 6.0.3.19085
+    float ratio = 10.0f;
+    if (GtHpPerStaEntry const* hpBase = sHpPerStaGameTable.GetRow(GetLevel()))
+        ratio = hpBase->Health;
+
     float stamina = GetStat(STAT_STAMINA);
-    float baseStamina = std::min(20.0f, stamina);
-    return baseStamina + std::max(0.0f, stamina - baseStamina) * 10.0f;
+
+    return stamina * ratio;
 }
 
 Stats Player::GetPrimaryStat() const
@@ -344,80 +346,9 @@ void Player::UpdateMaxPower(Powers power)
     float value = GetFlatModifierValue(unitMod, BASE_VALUE) + GetCreatePowerValue(power);
     value *= GetPctModifierValue(unitMod, BASE_PCT);
     value += GetFlatModifierValue(unitMod, TOTAL_VALUE);
-    if (power == POWER_MANA)
-        value += GetManaBonusFromIntellect();
     value *= GetPctModifierValue(unitMod, TOTAL_PCT);
 
     SetMaxPower(power, (int32)std::lroundf(value));
-}
-
-// Classic 1.60 (vanilla): the first 20 points of intellect give 1 mana each, every further point 15 (retail: none)
-float Player::GetManaBonusFromIntellect() const
-{
-    float intellect = GetStat(STAT_INTELLECT);
-    float baseIntellect = std::min(20.0f, intellect);
-    return baseIntellect + std::max(0.0f, intellect - baseIntellect) * 15.0f;
-}
-
-// Classic 1.60 (vanilla, VMaNGOS "Nostalrius: base dodge per class"): base melee crit and dodge of the class
-float Player::GetClassicBaseCritAndDodge() const
-{
-    switch (GetClass())
-    {
-        case CLASS_DRUID:   return 0.9f;
-        case CLASS_MAGE:    return 3.2f;
-        case CLASS_PALADIN: return 0.7f;
-        case CLASS_PRIEST:  return 3.0f;
-        case CLASS_SHAMAN:  return 1.7f;
-        case CLASS_WARLOCK: return 2.0f;
-        default:            return 0.0f;    // warrior, rogue, hunter
-    }
-}
-
-// Classic 1.60 (vanilla): dodge / parry / block change by 0.04% per point of defense skill above or below the level maximum
-float Player::GetClassicDefenseSkillBonus() const
-{
-    return (int32(GetSkillValue(SKILL_DEFENSE)) - int32(GetMaxSkillValueForLevel())) * 0.04f;
-}
-
-// Classic 1.60 (vanilla, VMaNGOS / TrinityCoreClassic): mana per second from spirit (the values are per 2 second tick)
-float Player::OCTRegenMPPerSpirit() const
-{
-    float spirit = GetStat(STAT_SPIRIT);
-    float perTick;
-    switch (GetClass())
-    {
-        case CLASS_MAGE:
-        case CLASS_PRIEST:  perTick = spirit / 4.0f + 12.5f; break;
-        case CLASS_SHAMAN:  perTick = spirit / 5.0f + 17.0f; break;
-        case CLASS_DRUID:
-        case CLASS_HUNTER:
-        case CLASS_PALADIN:
-        case CLASS_WARLOCK: perTick = spirit / 5.0f + 15.0f; break;
-        default:            return 0.0f;
-    }
-    return perTick / 2.0f;
-}
-
-// Classic 1.60 (vanilla, VMaNGOS / TrinityCoreClassic): health per 2 second tick from spirit, out of combat
-float Player::OCTRegenHPPerSpirit() const
-{
-    float spirit = GetStat(STAT_SPIRIT);
-    float regen;
-    switch (GetClass())
-    {
-        case CLASS_DRUID:
-        case CLASS_MAGE:    regen = spirit * 0.11f + 1.0f; break;
-        case CLASS_HUNTER:  regen = spirit * 0.43f - 5.5f; break;
-        case CLASS_PALADIN: regen = spirit * 0.25f; break;
-        case CLASS_PRIEST:  regen = spirit * 0.15f + 1.4f; break;
-        case CLASS_ROGUE:   regen = spirit * 0.84f - 13.0f; break;
-        case CLASS_SHAMAN:  regen = spirit * 0.28f - 3.6f; break;
-        case CLASS_WARLOCK: regen = spirit * 0.12f + 1.5f; break;
-        case CLASS_WARRIOR: regen = spirit * 1.26f - 22.6f; break;
-        default:            regen = 0.0f; break;
-    }
-    return std::max(0.0f, regen);
 }
 
 void Player::UpdateAttackPowerAndDamage(bool ranged)
@@ -425,58 +356,25 @@ void Player::UpdateAttackPowerAndDamage(bool ranged)
     float val2 = 0.0f;
     float level = float(GetLevel());
 
+    ChrClassesEntry const* entry = sChrClassesStore.AssertEntry(GetClass());
     AttackPowerModIndex unitMod = ranged ? AttackPowerModIndex::Ranged : AttackPowerModIndex::Melee;
 
     if (!HasAuraType(SPELL_AURA_OVERRIDE_ATTACK_POWER_BY_SP_PCT))
     {
-        // Classic 1.60: vanilla attack power per class (VMaNGOS / TrinityCoreClassic), not the retail ChrClasses ratios
-        float strength = GetStat(STAT_STRENGTH);
-        float agility = GetStat(STAT_AGILITY);
         if (!ranged)
         {
-            switch (GetClass())
-            {
-                case CLASS_WARRIOR:
-                case CLASS_PALADIN:
-                    val2 = level * 3.0f + strength * 2.0f - 20.0f;
-                    break;
-                case CLASS_ROGUE:
-                case CLASS_HUNTER:
-                    val2 = level * 2.0f + strength + agility - 20.0f;
-                    break;
-                case CLASS_SHAMAN:
-                    val2 = level * 2.0f + strength * 2.0f - 20.0f;
-                    break;
-                case CLASS_DRUID:
-                    val2 = strength * 2.0f - 20.0f;
-                    if (GetShapeshiftForm() == FORM_CAT_FORM)
-                        val2 += agility;
-                    break;
-                default:    // mage, priest, warlock
-                    val2 = strength - 10.0f;
-                    break;
-            }
+            float strengthValue = std::max(GetStat(STAT_STRENGTH) * entry->AttackPowerPerStrength, 0.0f);
+            float agilityValue = std::max(GetStat(STAT_AGILITY) * entry->AttackPowerPerAgility, 0.0f);
+
+            SpellShapeshiftFormEntry const* form = sSpellShapeshiftFormStore.LookupEntry(GetShapeshiftForm());
+            // Directly taken from client, SHAPESHIFT_FLAG_AP_FROM_STRENGTH ?
+            if (form && form->Flags & 0x20)
+                agilityValue += std::max(GetStat(STAT_AGILITY) * entry->AttackPowerPerStrength, 0.0f);
+
+            val2 = strengthValue + agilityValue;
         }
         else
-        {
-            switch (GetClass())
-            {
-                case CLASS_HUNTER:
-                    val2 = level * 2.0f + agility - 10.0f;
-                    break;
-                case CLASS_ROGUE:
-                case CLASS_WARRIOR:
-                    val2 = level + agility - 10.0f;
-                    break;
-                case CLASS_DRUID:
-                    val2 = IsInFeralForm() ? 0.0f : agility - 10.0f;
-                    break;
-                default:
-                    val2 = agility - 10.0f;
-                    break;
-            }
-        }
-        val2 = std::max(val2, 0.0f);
+            val2 = (level + std::max(GetStat(STAT_AGILITY), 0.0f)) * entry->RangedAttackPowerPerAgility;
     }
     else
     {
@@ -554,8 +452,7 @@ void Player::CalculateMinMaxDamage(WeaponAttackType attType, bool normalized, bo
 
     float attackPowerMod = std::max(GetAPMultiplier(attType, normalized), 0.25f);
 
-    // Classic 1.60: vanilla 14 attack power per 1 damage per second (retail 3.5 made a level 1 hunter hit for 37)
-    float baseValue  = GetFlatModifierValue(unitMod, BASE_VALUE) + GetTotalAttackPowerValue(attType, false) / 14.0f * attackPowerMod;
+    float baseValue  = GetFlatModifierValue(unitMod, BASE_VALUE) + GetTotalAttackPowerValue(attType, false) / 3.5f * attackPowerMod;
     float basePct    = GetPctModifierValue(unitMod, BASE_PCT);
     float totalValue = GetFlatModifierValue(unitMod, TOTAL_VALUE);
     float totalPct   = addTotalPct ? GetPctModifierValue(unitMod, TOTAL_PCT) : 1.0f;
@@ -598,8 +495,6 @@ void Player::UpdateBlockPercentage()
     {
         // Base value
         value = 5.0f;
-        // Classic 1.60: 0.04% per point of defense skill above / below the level maximum
-        value += GetClassicDefenseSkillBonus();
         // Increase from SPELL_AURA_MOD_BLOCK_PERCENT aura
         value += GetTotalAuraModifier(SPELL_AURA_MOD_BLOCK_PERCENT);
         // Increase from rating
@@ -640,8 +535,7 @@ void Player::UpdateCritPercentage(WeaponAttackType attType)
 
 void Player::UpdateAllCritPercentages()
 {
-    // Classic 1.60 (vanilla, VMaNGOS): base melee crit of the class + crit from agility (retail: flat 5%)
-    float value = GetClassicBaseCritAndDodge() + GetMeleeCritFromAgility();
+    float value = 5.0f;
 
     SetBaseModPctValue(CRIT_PERCENTAGE, value);
     SetBaseModPctValue(OFFHAND_CRIT_PERCENTAGE, value);
@@ -768,8 +662,6 @@ void Player::UpdateParryPercentage()
     if (CanParry() && parry_cap[pclass] > 0.0f)
     {
         float nondiminishing  = 5.0f;
-        // Classic 1.60: 0.04% per point of defense skill above / below the level maximum
-        nondiminishing += GetClassicDefenseSkillBonus();
         // Parry from rating
         float diminishing = GetRatingBonusValue(CR_PARRY);
         // Parry from SPELL_AURA_MOD_PARRY_PERCENT aura
@@ -808,10 +700,6 @@ void Player::UpdateDodgePercentage()
 {
     float diminishing = 0.0f, nondiminishing = 0.0f;
     GetDodgeFromAgility(diminishing, nondiminishing);
-    // Classic 1.60 (vanilla, VMaNGOS): base dodge of the class
-    nondiminishing += GetClassicBaseCritAndDodge();
-    // Classic 1.60: 0.04% per point of defense skill above / below the level maximum
-    nondiminishing += GetClassicDefenseSkillBonus();
     // Dodge from SPELL_AURA_MOD_DODGE_PERCENT aura
     nondiminishing += GetTotalAuraModifier(SPELL_AURA_MOD_DODGE_PERCENT);
     // Dodge from rating
@@ -828,8 +716,7 @@ void Player::UpdateDodgePercentage()
 
 void Player::UpdateSpellCritChance()
 {
-    // Classic 1.60 (vanilla): base spell crit of the class + crit from intellect (retail: flat 5%)
-    float crit = GetSpellCritFromIntellect();
+    float crit = 5.0f;
     // Increase crit from SPELL_AURA_MOD_SPELL_CRIT_CHANCE
     crit += GetTotalAuraModifier(SPELL_AURA_MOD_SPELL_CRIT_CHANCE);
     // Increase crit from SPELL_AURA_MOD_CRIT_PCT
@@ -985,13 +872,15 @@ void Player::UpdatePowerRegen(Powers power)
     {
         case POWER_MANA:
         {
-            // Classic 1.60 (vanilla): mana per second from spirit, nothing while casting (5 second rule) except the share of
-            // SPELL_AURA_MOD_MANA_REGEN_INTERRUPT (retail: 1% of base mana per second, in and out of combat)
-            float spiritRegen           = OCTRegenMPPerSpirit() * GetTotalAuraMultiplier(SPELL_AURA_MOD_MANA_REGEN_PCT);
-            int32 regenWhileCasting     = std::min<int32>(100, int32(GetTotalAuraModifier(SPELL_AURA_MOD_MANA_REGEN_INTERRUPT)));
+            // Get base of Mana Pool in sBaseMPGameTable
+            uint32 basemana = 0;
+            sObjectMgr->GetPlayerClassLevelInfo(GetClass(), GetLevel(), basemana);
+            float base_regen            = float(basemana) / 100.f;
 
-            result_regen                = spiritRegen;
-            result_regen_interrupted    = CalculatePct(spiritRegen, regenWhileCasting);
+            base_regen                  *= GetTotalAuraMultiplier(SPELL_AURA_MOD_MANA_REGEN_PCT);
+
+            result_regen                += base_regen;
+            result_regen_interrupted    += base_regen;
             break;
         }
         case POWER_RUNES:
@@ -1082,10 +971,6 @@ void Player::_RemoveAllStatBonuses()
 
 int32 Creature::GetCreatePowerValue(Powers power) const
 {
-    // Classic 1.60: hunter pet happiness, 0..1000000
-    if (power == POWER_HAPPINESS)
-        return IsPet() && ToPet()->HasHappiness() ? Pet::HAPPINESS_MAX : 0;
-
     if (PowerTypeEntry const* powerType = sDB2Manager.GetPowerTypeEntry(power))
         if (!powerType->GetFlags().HasFlag(PowerTypeFlags::IsUsedByNPCs))
             return 0;
@@ -1141,10 +1026,6 @@ uint32 Creature::GetPowerIndex(Powers power) const
             return 4;
         case POWER_ALTERNATE_MOUNT:
             return 5;
-        case POWER_HAPPINESS:           // Classic 1.60: hunter pets only, power slot 6 (sniffs of the official beta)
-            if (IsPet() && ToPet()->getPetType() == HUNTER_PET)
-                return 6;
-            break;
         default:
             break;
     }
@@ -1256,10 +1137,7 @@ void Creature::CalculateMinMaxDamage(WeaponAttackType attType, bool normalized, 
 
     float attackPower      = GetTotalAttackPowerValue(attType, false);
     float attackSpeedMulti = GetAPMultiplier(attType, normalized);
-    // Classic 1.60 (vanilla): the base damage already holds the creature's own attack power; only attack power changes from
-    // auras (Battle Shout, Demoralizing Shout...) count, at the vanilla 14 attack power per 1 damage per second
-    float baseAttackPower  = attType == RANGED_ATTACK ? m_baseRangedAttackPower : m_baseAttackPower;
-    float baseValue        = GetFlatModifierValue(unitMod, BASE_VALUE) + ((attackPower - baseAttackPower) / 14.0f) * variance;
+    float baseValue        = GetFlatModifierValue(unitMod, BASE_VALUE) + (attackPower / 3.5f) * variance;
     float basePct          = GetPctModifierValue(unitMod, BASE_PCT) * attackSpeedMulti;
     float totalValue       = GetFlatModifierValue(unitMod, TOTAL_VALUE);
     float totalPct         = addTotalPct ? GetPctModifierValue(unitMod, TOTAL_PCT) : 1.0f;
@@ -1540,8 +1418,7 @@ void Guardian::UpdateDamagePhysical(WeaponAttackType attType)
 
     float att_speed = float(GetBaseAttackTime(BASE_ATTACK))/1000.0f;
 
-    // Classic 1.60: vanilla 14 attack power per 1 damage per second
-    float base_value  = GetFlatModifierValue(unitMod, BASE_VALUE) + GetTotalAttackPowerValue(attType, false) / 14.0f * att_speed + bonusDamage;
+    float base_value  = GetFlatModifierValue(unitMod, BASE_VALUE) + GetTotalAttackPowerValue(attType, false) / 3.5f * att_speed + bonusDamage;
     float base_pct    = GetPctModifierValue(unitMod, BASE_PCT);
     float total_value = GetFlatModifierValue(unitMod, TOTAL_VALUE);
     float total_pct   = GetPctModifierValue(unitMod, TOTAL_PCT);

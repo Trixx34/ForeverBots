@@ -50,9 +50,7 @@
 #include "PhasingHandler.h"
 #include "PoolMgr.h"
 #include "QueryPackets.h"
-#include "Spell.h"
 #include "SpellAuras.h"
-#include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Transport.h"
 #include "Util.h"
@@ -187,10 +185,6 @@ public:
             _pathProgress = 0;
             _stateChangeProgress = 0;
         }
-
-        // Classic 1.60: the client elevator constructor asserts when the create block has no PathProgress (GameObject_C.cpp, type 11),
-        // so send it from the start, also for elevators without animation data or that have not moved yet
-        _owner.SetPathProgressForClient(float(_pathProgress) / float(GetTransportPeriod()));
 
         _positionUpdateTimer.Reset(PositionUpdateInterval);
     }
@@ -1433,15 +1427,9 @@ void GameObject::Update(uint32 diff)
                                 Unit* caster = GetOwner();
                                 if (caster && caster->GetTypeId() == TYPEID_PLAYER)
                                 {
-                                    uint32 fishingSpellId = GetSpellId();
                                     caster->ToPlayer()->RemoveGameObject(this, false);
 
                                     caster->ToPlayer()->SendDirectMessage(WorldPackets::GameObject::FishEscaped().Write());
-
-                                    // Classic 1.60: the fish got away, stop fishing (the channel lasts longer than the bobber)
-                                    if (Spell const* channel = caster->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
-                                        if (channel->GetSpellInfo()->Id == fishingSpellId)
-                                            caster->FinishSpell(CURRENT_CHANNELED_SPELL);
                                 }
                                 // can be delete
                                 m_lootState = GO_JUST_DEACTIVATED;
@@ -1648,11 +1636,7 @@ void GameObject::Update(uint32 diff)
                         // Some traps do not have a spell but should be triggered
                         CastSpellExtraArgs args;
                         args.SetOriginalCaster(GetOwnerGUID());
-                        // playerCast: the unit that triggered the trap casts the spell on itself (e.g. Classic 1.60 Elemental Convergence
-                        // 1271953, a self buff: cast by the trap it would land on the trap)
-                        if (goInfo->trap.spell && goInfo->trap.playerCast)
-                            target->CastSpell(target, goInfo->trap.spell, CastSpellExtraArgs(TRIGGERED_FULL_MASK));
-                        else if (goInfo->trap.spell)
+                        if (goInfo->trap.spell)
                             CastSpell(target, goInfo->trap.spell, args);
 
                         // Template value or 4 seconds
@@ -2029,14 +2013,6 @@ bool GameObject::LoadFromDB(ObjectGuid::LowType spawnId, Map* map, bool addToMap
     uint32 animprogress = data->animprogress;
     GOState go_state = data->goState;
     uint32 artKit = data->artKit;
-
-    // Classic 1.60.1.70009: spawns imported from client recordings have no height (position_z = -15000); use the ground below
-    if (data->spawnPoint.GetPositionZ() <= -14999.0f)
-    {
-        float z = map->GetClassicSpawnHeight(PhaseShift(), data->spawnPoint.GetPositionX(), data->spawnPoint.GetPositionY());
-        if (z > INVALID_HEIGHT)
-            const_cast<GameObjectData*>(data)->spawnPoint.m_positionZ = z;
-    }
 
     m_spawnId = spawnId;
     m_respawnCompatibilityMode = ((data->spawnGroupData->flags & SPAWNGROUP_FLAG_COMPATIBILITY_MODE) != 0);
@@ -2790,9 +2766,7 @@ void GameObject::Use(Unit* user, bool ignoreCastInProgress /*= false*/)
         case GAMEOBJECT_TYPE_TRAP:                          //6
         {
             GameObjectTemplate const* goInfo = GetGOInfo();
-            if (goInfo->trap.spell && goInfo->trap.playerCast)
-                user->CastSpell(user, goInfo->trap.spell, CastSpellExtraArgs(TRIGGERED_FULL_MASK));
-            else if (goInfo->trap.spell)
+            if (goInfo->trap.spell)
                 CastSpell(user, goInfo->trap.spell);
 
             m_cooldownTime = GameTime::GetGameTimeMS() + (goInfo->trap.cooldown ? goInfo->trap.cooldown :  uint32(4)) * IN_MILLISECONDS;   // template or 4 seconds
@@ -3004,21 +2978,20 @@ void GameObject::Use(Unit* user, bool ignoreCastInProgress /*= false*/)
                     {
                         TC_LOG_ERROR("entities.gameobject", "Gameobject '{}' ({}) spawned in unknown area (x: {} y: {} z: {} map: {})",
                             GetEntry(), GetGUID().ToString(), GetPositionX(), GetPositionY(), GetPositionZ(), GetMapId());
-                        SetLootState(GO_JUST_DEACTIVATED); // no loot: do not leave the bobber in the water
                         break;
                     }
 
                     // Update the correct fishing skill according to the area's ContentTuning
-                    // Classic 1.60: many areas (Zephras Isle...) have no ContentTuning: Classic fishing, do not stop here without loot
                     ContentTuningEntry const* areaContentTuning = DB2Manager::GetContentTuningForArea(areaEntry);
-                    int32 fishingExpansion = areaContentTuning ? areaContentTuning->ExpansionID : 0;
+                    if (!areaContentTuning)
+                        break;
 
-                    player->UpdateFishingSkill(fishingExpansion);
+                    player->UpdateFishingSkill(areaContentTuning->ExpansionID);
 
                     // Send loot
                     int32 areaFishingLevel = sObjectMgr->GetFishingBaseSkillLevel(areaEntry);
 
-                    uint32 playerFishingSkill = player->GetProfessionSkillForExp(SKILL_FISHING, fishingExpansion);
+                    uint32 playerFishingSkill = player->GetProfessionSkillForExp(SKILL_FISHING, areaContentTuning->ExpansionID);
                     int32 playerFishingLevel = player->GetSkillValue(playerFishingSkill);
 
                     int32 roll = irand(1, 100);

@@ -23,7 +23,7 @@ void LoginDatabaseConnection::DoPrepareStatements()
     if (!m_reconnecting)
         m_stmts.resize(MAX_LOGINDATABASE_STATEMENTS);
 
-    PrepareStatement(LOGIN_SEL_REALMLIST, "SELECT id, name, address, localAddress, address3, address4, port, icon, flag, timezone, allowedSecurityLevel, population, gamebuild, Region, Battlegroup, contentSetId FROM realmlist WHERE flag <> 3 ORDER BY name", CONNECTION_SYNCH);
+    PrepareStatement(LOGIN_SEL_REALMLIST, "SELECT id, name, address, localAddress, address3, address4, port, icon, flag, timezone, allowedSecurityLevel, population, gamebuild, Region, Battlegroup FROM realmlist WHERE flag <> 3 ORDER BY name", CONNECTION_SYNCH);
     PrepareStatement(LOGIN_UPD_REALM_POPULATION, "UPDATE realmlist SET population = ? WHERE id = ?", CONNECTION_ASYNC);
     PrepareStatement(LOGIN_DEL_EXPIRED_IP_BANS, "DELETE FROM ip_banned WHERE unbandate<>bandate AND unbandate<=UNIX_TIMESTAMP()", CONNECTION_ASYNC);
     PrepareStatement(LOGIN_UPD_EXPIRED_ACCOUNT_BANS, "UPDATE account_banned SET active = 0 WHERE active = 1 AND unbandate<>bandate AND unbandate<=UNIX_TIMESTAMP()", CONNECTION_ASYNC);
@@ -117,10 +117,10 @@ void LoginDatabaseConnection::DoPrepareStatements()
     PrepareStatement(LOGIN_SEL_ACCOUNT_TOTP_SECRET, "SELECT totp_secret FROM account WHERE id = ?", CONNECTION_SYNCH);
     PrepareStatement(LOGIN_UPD_ACCOUNT_TOTP_SECRET, "UPDATE account SET totp_secret = ? WHERE id = ?", CONNECTION_ASYNC);
 
-#define BnetAccountInfo "ba.id AS bnet_account_id, UPPER(ba.email), ba.locked, ba.lock_country, ba.last_ip, ba.LoginTicketExpiry, bab.unbandate > UNIX_TIMESTAMP() OR bab.unbandate = bab.bandate AS is_bnet_banned, bab.unbandate = bab.bandate AS is_bnet_permanently_banned, ba.battle_tag"
+#define BnetAccountInfo "ba.id AS bnet_account_id, UPPER(ba.email), ba.locked, ba.lock_country, ba.last_ip, ba.LoginTicketExpiry, bab.unbandate > UNIX_TIMESTAMP() OR bab.unbandate = bab.bandate AS is_bnet_banned, bab.unbandate = bab.bandate AS is_bnet_permanently_banned"
 #define BnetGameAccountInfo "a.id AS account_id, a.username, ab.bandate, ab.unbandate AS account_unbandate, ab.unbandate = ab.bandate AS is_banned, aa.SecurityLevel"
 
-    PrepareStatement(LOGIN_SEL_BNET_AUTHENTICATION, "SELECT ba.id, ba.srp_version, COALESCE(ba.salt, 0x0000000000000000000000000000000000000000000000000000000000000000), ba.verifier, ba.failed_logins, ba.LoginTicket, ba.LoginTicketExpiry, bab.unbandate > UNIX_TIMESTAMP() OR bab.unbandate = bab.bandate, ba.authenticator_secret FROM battlenet_accounts ba LEFT JOIN battlenet_account_bans bab ON ba.id = bab.id WHERE email = ?", CONNECTION_ASYNC);
+    PrepareStatement(LOGIN_SEL_BNET_AUTHENTICATION, "SELECT ba.id, ba.srp_version, COALESCE(ba.salt, 0x0000000000000000000000000000000000000000000000000000000000000000), ba.verifier, ba.failed_logins, ba.LoginTicket, ba.LoginTicketExpiry, bab.unbandate > UNIX_TIMESTAMP() OR bab.unbandate = bab.bandate FROM battlenet_accounts ba LEFT JOIN battlenet_account_bans bab ON ba.id = bab.id WHERE email = ?", CONNECTION_ASYNC);
     PrepareStatement(LOGIN_UPD_BNET_AUTHENTICATION, "UPDATE battlenet_accounts SET LoginTicket = ?, LoginTicketExpiry = ? WHERE id = ?", CONNECTION_ASYNC);
     PrepareStatement(LOGIN_SEL_BNET_EXISTING_AUTHENTICATION, "SELECT LoginTicketExpiry FROM battlenet_accounts WHERE LoginTicket = ?", CONNECTION_ASYNC);
     PrepareStatement(LOGIN_SEL_BNET_EXISTING_AUTHENTICATION_BY_ID, "SELECT LoginTicket FROM battlenet_accounts WHERE id = ?", CONNECTION_ASYNC);
@@ -205,9 +205,6 @@ void LoginDatabaseConnection::DoPrepareStatements()
     PrepareStatement(LOGIN_SEL_BNET_PLAYER_DATA_FLAGS_ACCOUNT, "SELECT storageIndex, mask FROM battlenet_account_player_data_flag WHERE battlenetAccountId = ?", CONNECTION_ASYNC);
     PrepareStatement(LOGIN_DEL_BNET_PLAYER_DATA_FLAGS_ACCOUNT, "DELETE FROM battlenet_account_player_data_flag WHERE battlenetAccountId = ? AND storageIndex = ?", CONNECTION_ASYNC);
     PrepareStatement(LOGIN_INS_BNET_PLAYER_DATA_FLAGS_ACCOUNT, "INSERT INTO battlenet_account_player_data_flag (battlenetAccountId, storageIndex, mask) VALUES (?, ?, ?)", CONNECTION_ASYNC);
-
-    PrepareStatement(LOGIN_DEL_BNET_SSO_TOKENS_EXPIRED, "DELETE FROM battlenet_sso_tokens WHERE expires < UNIX_TIMESTAMP()", CONNECTION_ASYNC);
-    PrepareStatement(LOGIN_INS_BNET_SSO_TOKEN, "INSERT INTO battlenet_sso_tokens (token, battlenetAccountId, accountId, realmId, characterGuid, issued, expires, ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
 }
 
 LoginDatabaseConnection::LoginDatabaseConnection(MySQLConnectionInfo& connInfo, ConnectionFlags connectionFlags) : MySQLConnection(connInfo, connectionFlags)

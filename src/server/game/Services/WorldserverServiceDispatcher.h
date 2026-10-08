@@ -35,7 +35,6 @@
 #include "Client/connection_service.pb.h"
 #include "Client/friends_service.pb.h"
 #include "Client/api/client/v2/friends_service.pb.h"
-#include "FriendsService.h"
 #include "WorldserverGameUtilitiesService.h"
 #include "Client/notification_service.pb.h"
 #include "Client/api/client/v2/notification_listener.pb.h"
@@ -46,7 +45,7 @@
 #include "Client/report_service.pb.h"
 #include "Client/api/client/v2/report_service.pb.h"
 #include "Client/api/client/v3/report_service.pb.h"
-#include "WorldserverResourcesService.h"
+#include "Client/resource_service.pb.h"
 #include "Client/api/client/v2/whisper_listener.pb.h"
 #include "Client/api/client/v2/whisper_service.pb.h"
 

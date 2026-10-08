@@ -16,7 +16,6 @@
  */
 
 #include "WorldSession.h"
-#include "DeathRecap.h"
 #include "AreaTrigger.h"
 #include "AreaTriggerPackets.h"
 #include "CollectionMgr.h"
@@ -466,16 +465,6 @@ void WorldSession::HandleSpellClick(WorldPackets::Spells::SpellClick& spellClick
 void WorldSession::HandleMirrorImageDataRequest(WorldPackets::Spells::GetMirrorImageData& getMirrorImageData)
 {
     ObjectGuid guid = getMirrorImageData.UnitGUID;
-
-    // death recap actors: the appearance recorded when the player died
-    {
-        WorldPackets::Spells::MirrorImageComponentedData recapLook;
-        if (DeathRecap::BuildMirrorImage(guid, recapLook))
-        {
-            SendPacket(recapLook.Write());
-            return;
-        }
-    }
 
     // Get unit for which data is needed by client
     Unit* unit = ObjectAccessor::GetUnit(*_player, guid);

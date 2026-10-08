@@ -16,10 +16,8 @@
  */
 
 #include "Spell.h"
-#include "DeathRecap.h"
 #include "AzeriteEmpoweredItem.h"
 #include "Battlefield.h"
-#include "BotAI.h"
 #include "BattlefieldMgr.h"
 #include "Battleground.h"
 #include "BattlePetMgr.h"
@@ -623,12 +621,6 @@ Spell::~Spell()
 void Spell::InitExplicitTargets(SpellCastTargets const& targets)
 {
     m_targets = targets;
-
-    // Classic 1.60: shaman weapon imbues (Rockbiter, Flametongue, ...) enchant the main hand weapon without an item target
-    if (!m_targets.GetItemTarget() && m_spellInfo->HasEffect(SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY_2))
-        if (Player* player = m_caster->ToPlayer())
-            if (Item* weapon = player->GetWeaponForAttack(BASE_ATTACK))
-                m_targets.SetItemTarget(weapon);
 
     // this function tries to correct spell explicit targets for spell
     // client doesn't send explicit targets correctly sometimes - we need to fix such spells serverside
@@ -3876,23 +3868,6 @@ void Spell::_cast(bool skipCheck)
     if (!(_triggeredCastFlags & TRIGGERED_IGNORE_POWER_COST))
         TakePower();
 
-    // bot telemetry: per-spell casts and power spent (COMBAT_SUMMARY breakdown)
-    if (Player* botCaster = m_caster->ToPlayer())
-        if (BotAI* botAI = botCaster->GetSession()->GetBotAI())
-        {
-            uint32 spent = 0;
-            for (SpellPowerCost const& cost : m_powerCost)
-                if (cost.Amount > 0 && cost.Power != POWER_RUNES && cost.Power != POWER_HEALTH)
-                    spent += uint32(cost.Amount);
-            botAI->OnSpellCast(botCaster, m_spellInfo, spent, m_targets.GetUnitTarget(), IsTriggered());
-        }
-
-    // Classic 1.60: every shot of a bow, gun or crossbow uses one arrow or bullet
-    if (Player* player = m_caster->ToPlayer())
-        if (m_spellInfo->HasAttribute(SPELL_ATTR0_USES_RANGED_SLOT) && player->NeedsAmmo()
-            && (!(_triggeredCastFlags & TRIGGERED_IGNORE_POWER_COST) || m_spellInfo->IsAutoRepeatRangedSpell()))
-            player->TakeAmmo();
-
     if (!(_triggeredCastFlags & TRIGGERED_IGNORE_REAGENT_COST))
         TakeReagents();                                         // we must remove reagents before HandleEffects to allow place crafted item in same slot
     else if (Item* targetItem = m_targets.GetItemTarget())
@@ -4796,9 +4771,6 @@ void Spell::SendSpellStart()
         UpdateSpellHealPrediction(castData.Predict, false);
 
     m_caster->SendMessageToSet(packet.Write(), true);
-
-    DeathRecap::RecordCast(m_caster, true, m_spellInfo->Id, m_SpellVisual.SpellXSpellVisualID, m_SpellVisual.ScriptVisualID, m_casttime, castFlags,
-        m_targets.GetUnitTargetGUID());
 }
 
 void Spell::SendSpellGo()
@@ -4890,9 +4862,6 @@ void Spell::SendSpellGo()
     packet.LogData.Initialize(this);
 
     m_caster->SendCombatLogMessage(&packet);
-
-    DeathRecap::RecordCast(m_caster, false, m_spellInfo->Id, m_SpellVisual.SpellXSpellVisualID, m_SpellVisual.ScriptVisualID, 0, castFlags,
-        !castData.HitTargets.empty() ? castData.HitTargets.front() : m_targets.GetUnitTargetGUID());
 }
 
 /// Writes miss and hit targets for a SMSG_SPELL_GO packet
@@ -4920,19 +4889,11 @@ void Spell::UpdateSpellCastDataTargets(WorldPackets::Spells::SpellCastData& data
         }
     }
 
-    // every hit target needs its hit status: the Classic 1.60 client reads HitStatus[i] for each HitTargets[i] and asserts
-    // (BC_ASSERT n < m_size) when gameobject targets, e.g. a gathered quest crystal, have none
     for (GOTargetInfo const& targetInfo : m_UniqueGOTargetInfo)
-    {
         data.HitTargets.push_back(targetInfo.TargetGUID); // Always hits
-        data.HitStatus.emplace_back(SPELL_MISS_NONE);
-    }
 
     for (CorpseTargetInfo const& targetInfo : m_UniqueCorpseTargetInfo)
-    {
         data.HitTargets.push_back(targetInfo.TargetGUID); // Always hits
-        data.HitStatus.emplace_back(SPELL_MISS_NONE);
-    }
 
     // Reset m_needAliveTargetMask for non channeled spell
     if (!m_spellInfo->IsChanneled())
@@ -4952,13 +4913,6 @@ int32 Spell::GetSpellCastDataAmmo()
             ammoInventoryType = pItem->GetTemplate()->GetInventoryType();
             if (ammoInventoryType == INVTYPE_THROWN)
                 ammoDisplayID = pItem->GetDisplayId(playerCaster);
-            else if (ItemTemplate const* ammo = sObjectMgr->GetItemTemplate(playerCaster->GetAmmoId()))   // Classic 1.60 ammo slot
-            {
-                if (ItemModifiedAppearanceEntry const* modifiedAppearance = TransmogMgr::GetItemModifiedAppearance(ammo->GetId(), 0))
-                    if (ItemAppearanceEntry const* itemAppearance = sItemAppearanceStore.LookupEntry(modifiedAppearance->ItemAppearanceID))
-                        ammoDisplayID = itemAppearance->ItemDisplayInfoID;
-                ammoInventoryType = INVTYPE_AMMO;
-            }
             else if (playerCaster->HasAura(46699))      // Requires No Ammo
             {
                 ammoDisplayID = 5996;                   // normal arrow
@@ -6323,10 +6277,6 @@ SpellCastResult Spell::CheckCast(bool strict, int32* param1 /*= nullptr*/, int32
                 if (foodItem->GetTemplate()->GetBaseItemLevel() + 30 <= pet->GetLevel())
                    return SPELL_FAILED_FOOD_LOWLEVEL;
 
-                // Classic 1.60: food more than 14 levels below the pet gives no happiness
-                if (pet->HasHappiness() && !Pet::GetFoodBenefit(pet->GetLevel(), foodItem->GetTemplate()->GetBaseItemLevel()))
-                   return SPELL_FAILED_FOOD_LOWLEVEL;
-
                 if (m_caster->ToPlayer()->IsInCombat() || pet->IsInCombat())
                     return SPELL_FAILED_AFFECTING_COMBAT;
 
@@ -6676,17 +6626,6 @@ SpellCastResult Spell::CheckCast(bool strict, int32* param1 /*= nullptr*/, int32
                 Player* player = m_caster->ToPlayer();
                 if (!player)
                     return SPELL_FAILED_TARGET_NOT_PLAYER;
-
-                // Classic 1.60 dual spec: Activate Secondary Spec (63644) / Activate Primary Spec (63645) switch spec groups
-                if (m_spellInfo->Id == 63644 || m_spellInfo->Id == 63645)
-                {
-                    if (!player->GetClassicSpecGroupConfig(m_spellInfo->Id == 63644))
-                        return SPELL_FAILED_NO_SPEC;
-                    if (Battleground const* bg = player->GetBattleground())
-                        if (bg->GetStatus() == STATUS_IN_PROGRESS)
-                            return SPELL_FAILED_NOT_IN_BATTLEGROUND;
-                    break;
-                }
 
                 if (!spec || (spec->ClassID != player->GetClass() && !spec->IsPetSpecialization()))
                     return SPELL_FAILED_NO_SPEC;
@@ -7500,14 +7439,6 @@ SpellCastResult Spell::CheckItems(int32* param1 /*= nullptr*/, int32* param2 /*=
     if (!player)
         return SPELL_CAST_OK;
 
-    // Classic 1.60: bows, guns and crossbows shoot the ammo named in the ammo slot
-    if (m_spellInfo->HasAttribute(SPELL_ATTR0_USES_RANGED_SLOT) && player->NeedsAmmo())
-    {
-        uint32 ammo = player->GetAmmoId();
-        if (!ammo || !player->HasItemCount(ammo))
-            return SPELL_FAILED_NO_AMMO;
-    }
-
     if (!m_CastItem)
     {
         if (!m_castItemGUID.IsEmpty())
@@ -7830,7 +7761,6 @@ SpellCastResult Spell::CheckItems(int32* param1 /*= nullptr*/, int32* param2 /*=
                 break;
             }
             case SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY:
-            case SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY_2:
             {
                 Item* item = m_targets.GetItemTarget();
                 if (!item)

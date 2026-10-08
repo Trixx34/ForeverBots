@@ -16,7 +16,6 @@
  */
 
 #include "WorldSession.h"
-#include "DeathRecap.h"
 #include "Common.h"
 #include "Corpse.h"
 #include "DatabaseEnv.h"
@@ -72,42 +71,30 @@ void WorldSession::SendQueryTimeResponse()
 /// Only _static_ data is sent in this packet !!!
 void WorldSession::HandleCreatureQuery(WorldPackets::Query::QueryCreature& packet)
 {
-    for (uint32 creatureId : packet.CreatureIDs)
+    if (CreatureTemplate const* ci = sObjectMgr->GetCreatureTemplate(packet.CreatureID))
     {
-        {
-            WorldPackets::Query::QueryCreatureResponse recapActor;
-            if (DeathRecap::BuildCreatureQuery(creatureId, recapActor))
-            {
-                SendPacket(recapActor.Write());
-                continue;
-            }
-        }
+        TC_LOG_DEBUG("network", "WORLD: CMSG_QUERY_CREATURE '{}' - Entry: {}.", ci->Name, packet.CreatureID);
 
-        if (CreatureTemplate const* ci = sObjectMgr->GetCreatureTemplate(creatureId))
-        {
-            TC_LOG_DEBUG("network", "WORLD: CMSG_QUERY_CREATURE '{}' - Entry: {}.", ci->Name, creatureId);
+        Difficulty difficulty = _player->GetMap()->GetDifficultyID();
 
-            Difficulty difficulty = _player->GetMap()->GetDifficultyID();
-
-            // Cache only exists for difficulty base
-            if (ci->QueryData && difficulty == DIFFICULTY_NONE)
-                SendPacket(&ci->QueryData[static_cast<uint32>(GetSessionDbLocaleIndex())]);
-            else
-            {
-                WorldPacket response = ci->BuildQueryData(GetSessionDbLocaleIndex(), difficulty);
-                SendPacket(&response);
-            }
-            TC_LOG_DEBUG("network", "WORLD: Sent SMSG_QUERY_CREATURE_RESPONSE");
-        }
+        // Cache only exists for difficulty base
+        if (ci->QueryData && difficulty == DIFFICULTY_NONE)
+            SendPacket(&ci->QueryData[static_cast<uint32>(GetSessionDbLocaleIndex())]);
         else
         {
-            TC_LOG_DEBUG("network", "WORLD: CMSG_QUERY_CREATURE - NO CREATURE INFO! (ENTRY: {})", creatureId);
-
-            WorldPackets::Query::QueryCreatureResponse response;
-            response.CreatureID = creatureId;
-            SendPacket(response.Write());
-            TC_LOG_DEBUG("network", "WORLD: Sent SMSG_QUERY_CREATURE_RESPONSE");
+            WorldPacket response = ci->BuildQueryData(GetSessionDbLocaleIndex(), difficulty);
+            SendPacket(&response);
         }
+        TC_LOG_DEBUG("network", "WORLD: Sent SMSG_QUERY_CREATURE_RESPONSE");
+    }
+    else
+    {
+        TC_LOG_DEBUG("network", "WORLD: CMSG_QUERY_CREATURE - NO CREATURE INFO! (ENTRY: {})", packet.CreatureID);
+
+        WorldPackets::Query::QueryCreatureResponse response;
+        response.CreatureID = packet.CreatureID;
+        SendPacket(response.Write());
+        TC_LOG_DEBUG("network", "WORLD: Sent SMSG_QUERY_CREATURE_RESPONSE");
     }
 }
 

@@ -32,14 +32,17 @@ PlayerTaxi::~PlayerTaxi() = default;
 
 void PlayerTaxi::InitTaxiNodesForLevel(uint32 race, uint32 chrClass, uint8 level)
 {
-    // Classic 1.60 (WoW Forever): every character knows all flight points of its faction on Kalimdor and the Eastern Kingdoms
-    // (official beta sniff, build 70170: a level 15 Skyborne opening the Thunder Bluff flight master already knew Orgrimmar,
-    // Crossroads, Gadgetzan, Everlook, ... and in the Eastern Kingdoms Undercity, Tarren Mill, Booty Bay, Stonard, ...).
-    // Retail gives this only to death knights.
-    (void)chrClass;
+    // class specific initial known nodes
     TaxiMask const& factionMask = Player::TeamForRace(race) == HORDE ? sHordeTaxiNodesMask : sAllianceTaxiNodesMask;
-    for (std::size_t i = 0; i < m_taximask.size(); ++i)
-        m_taximask[i] |= sOldContinentsNodesMask[i] & factionMask[i];
+    switch (chrClass)
+    {
+        case CLASS_DEATH_KNIGHT:
+        {
+            for (std::size_t i = 0; i < m_taximask.size(); ++i)
+                m_taximask[i] |= sOldContinentsNodesMask[i] & factionMask[i];
+            break;
+        }
+    }
 
     // race specific initial known nodes: capital and taxi hub masks
     switch (race)

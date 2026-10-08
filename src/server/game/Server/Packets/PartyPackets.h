@@ -42,7 +42,6 @@ namespace WorldPackets
             WorldPacket const* Write() override;
 
             std::string Name;
-            std::string Surname;                // Classic 1.60
             uint8 Command = 0u;
             uint8 Result = 0u;
             uint32 ResultData = 0u;
@@ -57,8 +56,7 @@ namespace WorldPackets
             void Read() override;
 
             Optional<uint8> PartyIndex;
-            uint32 ProposedRoles = 0;           // not sent by the Classic 1.60 client
-            uint32 TargetRealmAddress = 0;      // Classic 1.60: where retail has ProposedRoles (0 for invites by name; Battle.net friend invites: 70-1-70)
+            uint32 ProposedRoles = 0;
             std::string TargetName;
             std::string TargetRealm;
             ObjectGuid TargetGUID;
@@ -86,7 +84,6 @@ namespace WorldPackets
             ObjectGuid InviterGUID;
             ObjectGuid InviterBNetAccountId;
             std::string InviterName;
-            std::string InviterSurname;         // Classic 1.60
 
             // Realm
             bool IsXRealm = false;

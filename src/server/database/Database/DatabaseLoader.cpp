@@ -19,7 +19,6 @@
 #include "Config.h"
 #include "DatabaseEnv.h"
 #include "DBUpdater.h"
-#include "Implementation/BotLogDatabase.h"
 #include "Log.h"
 
 #include <mysqld_error.h>
@@ -188,5 +187,3 @@ template TC_DATABASE_API
 DatabaseLoader& DatabaseLoader::AddDatabase<WorldDatabaseConnection>(DatabaseWorkerPool<WorldDatabaseConnection>&, std::string const&);
 template TC_DATABASE_API
 DatabaseLoader& DatabaseLoader::AddDatabase<HotfixDatabaseConnection>(DatabaseWorkerPool<HotfixDatabaseConnection>&, std::string const&);
-template TC_DATABASE_API
-DatabaseLoader& DatabaseLoader::AddDatabase<BotLogDatabaseConnection>(DatabaseWorkerPool<BotLogDatabaseConnection>&, std::string const&);

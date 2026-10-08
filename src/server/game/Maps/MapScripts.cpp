@@ -16,7 +16,6 @@
  */
 
 #include "Map.h"
-#include "BotQuestLog.h"
 #include "CellImpl.h"
 #include "GameTime.h"
 #include "GossipDef.h"
@@ -532,10 +531,7 @@ void Map::ScriptsProcess()
                     (step.script->QuestExplored.Distance == 0 || worldObject->IsWithinDistInMap(player, float(step.script->QuestExplored.Distance))))
                     player->AreaExploredOrEventHappens(step.script->QuestExplored.QuestID);
                 else
-                {
-                    BotQuestLog::Scope scope("event_failed");
                     player->FailQuest(step.script->QuestExplored.QuestID);
-                }
 
                 break;
             }

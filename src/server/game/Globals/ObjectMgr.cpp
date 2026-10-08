@@ -604,71 +604,6 @@ void ObjectMgr::LoadCreatureTemplateSpells()
     TC_LOG_INFO("server.loading", ">> Loaded {} creature template spells in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
 }
 
-// Classic 1.60.1.70009: fixed vanilla creature levels (imported from VMaNGOS), used instead of ContentTuning level scaling
-void ObjectMgr::LoadCreatureClassicLevels()
-{
-    uint32 oldMSTime = getMSTime();
-
-    _creatureClassicLevelStore.clear();
-
-    //                                               0      1          2
-    QueryResult result = WorldDatabase.Query("SELECT entry, level_min, level_max FROM creature_classic_level");
-    if (!result)
-    {
-        TC_LOG_INFO("server.loading", ">> Loaded 0 classic creature levels. DB table `creature_classic_level` is empty.");
-        return;
-    }
-
-    do
-    {
-        Field* fields = result->Fetch();
-        uint32 entry = fields[0].GetUInt32();
-        uint8 levelMin = std::max<uint8>(fields[1].GetUInt8(), 1);
-        uint8 levelMax = std::max<uint8>(fields[2].GetUInt8(), levelMin);
-        if (!GetCreatureTemplate(entry))
-            continue;
-
-        _creatureClassicLevelStore[entry] = { levelMin, levelMax };
-    } while (result->NextRow());
-
-    TC_LOG_INFO("server.loading", ">> Loaded {} classic creature levels in {} ms", _creatureClassicLevelStore.size(), GetMSTimeDiffToNow(oldMSTime));
-}
-
-std::pair<uint8, uint8> const* ObjectMgr::GetCreatureClassicLevel(uint32 entry) const
-{
-    return Trinity::Containers::MapGetValuePtr(_creatureClassicLevelStore, entry);
-}
-
-// Classic 1.60: vanilla block value of shields (the Classic client data has none), see Player::GetShieldBlockValue
-void ObjectMgr::LoadItemClassicBlock()
-{
-    uint32 oldMSTime = getMSTime();
-
-    _itemClassicBlockStore.clear();
-
-    //                                               0      1
-    QueryResult result = WorldDatabase.Query("SELECT entry, block FROM item_classic_block");
-    if (!result)
-    {
-        TC_LOG_INFO("server.loading", ">> Loaded 0 classic shield block values. DB table `item_classic_block` is empty.");
-        return;
-    }
-
-    do
-    {
-        Field* fields = result->Fetch();
-        _itemClassicBlockStore[fields[0].GetUInt32()] = fields[1].GetUInt32();
-    } while (result->NextRow());
-
-    TC_LOG_INFO("server.loading", ">> Loaded {} classic shield block values in {} ms", _itemClassicBlockStore.size(), GetMSTimeDiffToNow(oldMSTime));
-}
-
-uint32 ObjectMgr::GetItemClassicBlock(uint32 entry) const
-{
-    uint32 const* block = Trinity::Containers::MapGetValuePtr(_itemClassicBlockStore, entry);
-    return block ? *block : 0;
-}
-
 void ObjectMgr::LoadCreatureTemplateModels()
 {
     uint32 oldMSTime = getMSTime();
@@ -4355,8 +4290,8 @@ void ObjectMgr::LoadPlayerInfo()
 
         } while (raceStatsResult->NextRow());
 
-        //                                                  0      1     2    3    4    5    6    7
-        QueryResult result  = WorldDatabase.Query("SELECT class, level, str, agi, sta, inte, spi, basehp FROM player_classlevelstats");
+        //                                                  0      1     2    3    4    5    6
+        QueryResult result  = WorldDatabase.Query("SELECT class, level, str, agi, sta, inte, spi FROM player_classlevelstats");
 
         if (!result)
         {
@@ -4398,7 +4333,6 @@ void ObjectMgr::LoadPlayerInfo()
                     PlayerLevelInfo& levelInfo = playerInfo->levelInfo[current_level - 1];
                     for (uint8 i = 0; i < MAX_STATS; ++i)
                         levelInfo.stats[i] = fields[i + 2].GetInt32() + raceStats.StatModifier[i];
-                    levelInfo.baseHealth = fields[7].GetUInt32();
                 }
             }
 
@@ -5424,38 +5358,6 @@ void ObjectMgr::LoadQuests()
     for (ParagonReputationEntry const* paragonReputation : sParagonReputationStore)
         if (Quest const* quest = GetQuestTemplate(paragonReputation->QuestID))
             const_cast<Quest*>(quest)->SetSpecialFlag(QUEST_SPECIAL_FLAGS_REPEATABLE);
-
-    // Classic 1.60: quest levels for the quest log
-    if (QueryResult result = WorldDatabase.Query("SELECT ID, LevelType, QuestLevel FROM quest_template_classic_level"))
-    {
-        uint32 count = 0;
-        do
-        {
-            Field* fields = result->Fetch();
-            if (Quest* quest = Trinity::Containers::MapGetValuePtr(_questTemplates, fields[0].GetUInt32()))
-            {
-                quest->SetClassicQuestLevel(fields[1].GetInt32(), fields[2].GetInt32());
-                ++count;
-            }
-        } while (result->NextRow());
-        TC_LOG_INFO("server.loading", ">> Loaded {} Classic quest levels", count);
-    }
-
-    // Classic 1.60: level range in which a quest is offered (vanilla data and the Forever quests)
-    if (QueryResult result = WorldDatabase.Query("SELECT ID, MinLevel, MaxLevel FROM quest_classic_level"))
-    {
-        uint32 count = 0;
-        do
-        {
-            Field* fields = result->Fetch();
-            if (Quest* quest = Trinity::Containers::MapGetValuePtr(_questTemplates, fields[0].GetUInt32()))
-            {
-                quest->SetClassicLevelRange(fields[1].GetUInt8(), fields[2].GetUInt8());
-                ++count;
-            }
-        } while (result->NextRow());
-        TC_LOG_INFO("server.loading", ">> Loaded {} Classic quest level ranges", count);
-    }
 
     TC_LOG_INFO("server.loading", ">> Loaded {} quests definitions in {} ms", _questTemplates.size(), GetMSTimeDiffToNow(oldMSTime));
 }
