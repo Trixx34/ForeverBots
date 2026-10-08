@@ -4923,6 +4923,16 @@ Bot.AI.Death.GiveUpSec = 300
 #                     written off.
 #        Default:     5 / 120 / 240
 #
+#    Bot.AI.Dungeon.ResurrectDelaySec / Bot.AI.Dungeon.FreeRepair
+#        Description: Seconds after which dead members of a run are raised next to the tank once the fight is over (at once for a wipe,
+#                     they come back at the entrance) / repair the group's gear when the run ends. Map = 0 picks the dungeon that fits the
+#                     middle level of the online bots (raise Bot.AI.Dungeon.MaxLevel for that).
+#        Default:     8 / 1
+#
+#    Bot.AI.Dungeon.PackLinkYards / Bot.AI.Dungeon.PackMaxMobs
+#        Description: Spawns closer than this many yards (3D, chained) form one pack / larger packs without a boss are cut up.
+#        Default:     14 / 6
+#
 #    Bot.AI.Ammo.Enabled
 #        Description: Ranged ammo upkeep of the quest strategy's vendor layer: a bot with a bow, crossbow or gun equipped counts its arrows or
 #                     bullets; below Bot.AI.Ammo.LowCount it logs AMMO_LOW, plans a vendor trip to a vendor that sells the right ammo and
