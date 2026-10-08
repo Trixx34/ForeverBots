@@ -5057,6 +5057,18 @@ Bot.Chat.Role.Dps = "rogue,mage,warlock,hunter"
 #        Description: Seconds a trade opened towards an alt bot may stay open before the bot cancels it (10-600).
 #        Default:     90
 #
+#    Bot.Trade.Link.Enabled
+#        Description: Trading items with the bots of your group by whisper. After a trade window opens, the bot whispers
+#                     the items it can give (tradable stacks of its bags: never equipped, soulbound or quest items) as
+#                     item links. Whisper it the links of the ones you want and it puts the largest stack of each in the
+#                     window; confirm and the bot accepts. World bots of your own group may trade this way too (otherwise
+#                     they refuse every trade); alt bots stay limited to their owner account. Needs Bot.Trade.Enabled.
+#        Default:     0 - Disabled
+#
+#    Bot.Trade.Link.MaxListed
+#        Description: Items in the bot's whispered list (1-40); the best quality and the largest stacks come first.
+#        Default:     15
+#
 #    Bot.Social.QuestShare.LogEach
 #        Description: Log one quest_share bot_event per receiver of a bot's quest share. Off: one summary row per share
 #                     command (accepted count, refused count per reason); "verbose on" of the issuer also logs each receiver.
@@ -5069,6 +5081,8 @@ Bot.Alt.Default.NonCombat = "rest,follow,goto"
 Bot.Invite.Enabled = 1
 Bot.Trade.Enabled = 1
 Bot.Trade.TimeoutSeconds = 90
+Bot.Trade.Link.Enabled = 0
+Bot.Trade.Link.MaxListed = 15
 Bot.Social.QuestShare.LogEach = 0
 #
 ###################################################################################################
