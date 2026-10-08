@@ -21,6 +21,7 @@
 #include "Define.h"
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <future>
 #include <list>
 #include <map>
@@ -140,6 +141,10 @@ public:
 
     // Called once per world update tick (see World::Update). Counts ticks and flushes the log buffer.
     void Update(uint32 diff);
+
+    // Thread-safe. Queues a task for the world thread (run at the start of the next Update). Map-thread bot code uses it for work that
+    // touches global state or session handlers that the core runs on the world thread (auction house, mail).
+    void PostWorldTask(std::function<void()> task);
 
     // Status line: ticks, bots known/online, log state.
     std::string GetStatus() const;
@@ -271,6 +276,8 @@ private:
         InFlight(TransactionCallback&& cb) : Callback(std::move(cb)) { }
     };
     std::list<InFlight> _inFlight;        // world thread only
+    std::mutex _worldTaskLock;
+    std::vector<std::function<void()>> _worldTasks;
     // Reachability probe (Bot.Log.ProbeIntervalSec): a TCP connect to the bot log host on a helper thread, polled by the world thread.
     // The core DB layer aborts the process when a reconnect fails, so rows must not be submitted while the server is unreachable.
     std::string _probeHost, _probePort;

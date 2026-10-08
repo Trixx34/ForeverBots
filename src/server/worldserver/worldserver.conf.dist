@@ -4796,6 +4796,31 @@ Bot.Quest.HubScanSec = 20
 Bot.Quest.HubFailGlobalSec = 1800
 Bot.Quest.HubMaxDist = 2500
 Bot.Quest.MaxActive = 12
+
+#
+#    Bot.AH.Enabled
+#        Description: Bots list surplus non-stackable gear (green or better, not bound, no use to them) at an auctioneer and collect
+#                     the mail (sold gold, returned items) at a mailbox. Auction calls run on the world thread.
+#        Default:     0 - (Disabled)
+#
+#    Bot.AH.MaxListingsPerBot / Bot.AH.MaxListingsTotal
+#        Description: Listings one bot may have at once / listings the house may hold before bots stop adding.
+#        Default:     5 / 2000
+#
+#    Bot.AH.UndercutPct
+#        Description: Price is 1.5 x the vendor sell price minus this percent, never below the sell price.
+#        Default:     5
+#
+#    Bot.AH.VisitCooldownSec
+#        Description: Seconds between two auction house or mailbox visits of one bot.
+#        Default:     900
+#
+
+Bot.AH.Enabled = 0
+Bot.AH.MaxListingsPerBot = 5
+Bot.AH.MaxListingsTotal = 2000
+Bot.AH.UndercutPct = 5
+Bot.AH.VisitCooldownSec = 900
 Bot.Quest.StallSec = 240
 Bot.Quest.MaxMobLevelDiff = 2
 Bot.Quest.SelectRadius = 350
