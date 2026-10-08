@@ -4871,6 +4871,17 @@ Bot.AI.Death.GiveUpSec = 300
 #        Description: Seconds between attempts to summon or revive a pet / pause after a failed tame attempt.
 #        Default:     8 / 300
 #
+#    Bot.AI.Buffs.Enabled
+#        Description: Buffing classes keep their group buffs up out of combat, on themselves and on group members near them: Power Word:
+#                     Fortitude and Divine Spirit (priest), Arcane Intellect (mage), Mark of the Wild (druid), Blessing of Might and
+#                     Wisdom (paladin, one per target). Adds the strategy "buffs" to the NonCombat engine. Logged as BUFF_CAST / BUFF_FAILED.
+#        Default:     0 - Off
+#
+#    Bot.AI.Buffs.RangeYards / Bot.AI.Buffs.MinManaPct / Bot.AI.Buffs.RetrySec
+#        Description: Group members farther away are not buffed / buffs need this mana percent / seconds before the same buff is tried
+#                     again on the same target.
+#        Default:     30 / 50 / 30
+#
 #    Bot.AI.Move.Natural.Enabled
 #        Description: Natural-looking movement: smoother paths, human pacing, no repeated identical path requests, a step back or
 #                     another route when stuck, light idling, and movement metrics. Adds the strategy "natural_idle".
@@ -5050,6 +5061,10 @@ Bot.AI.Pet.FeedBelowPct = 66
 Bot.AI.Pet.MendBelowPct = 60
 Bot.AI.Pet.RetrySec = 8
 Bot.AI.Pet.TameCooldownSec = 300
+Bot.AI.Buffs.Enabled = 0
+Bot.AI.Buffs.RangeYards = 30
+Bot.AI.Buffs.MinManaPct = 50
+Bot.AI.Buffs.RetrySec = 30
 Bot.AI.Move.Natural.Enabled = 0
 Bot.AI.Move.Natural.Shortcut = 1
 Bot.AI.Move.Natural.RoundCorners = 1
