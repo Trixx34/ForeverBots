@@ -27,6 +27,7 @@
 #include "BotQuestClassifier.h"
 #include "BotAI.h"
 #include "BotAuction.h"
+#include "BotBank.h"
 #include "BotBehavior.h"
 #include "BotCombat.h"
 #include "BotDungeonRun.h"
@@ -363,6 +364,7 @@ struct Index
     std::unordered_map<uint32, std::vector<SvcPt>> Trainers;
     std::vector<SvcPt> Vendors;
     std::vector<SvcPt> Auctioneers;   // UNIT_NPC_FLAG_AUCTIONEER spawns (Svc 6)
+    std::vector<SvcPt> Bankers;       // UNIT_NPC_FLAG_BANKER spawns (Svc 8; Svc 9 sends gold from a mailbox)
     std::vector<NodePt> Mailboxes;    // mailbox game objects (Svc 7)
     std::vector<NodePt> Nodes;
     std::unordered_map<uint32, std::vector<NodePt>> Focus;   // SpellFocusObject id -> spawned forges, anvils, cooking fires (Skill field holds the focus id)
@@ -915,6 +917,8 @@ void BuildIndex()
         }
         if (flags & uint64(UNIT_NPC_FLAG_AUCTIONEER))
             g.Auctioneers.push_back(pt);
+        if (flags & uint64(UNIT_NPC_FLAG_BANKER))
+            g.Bankers.push_back(pt);
         if (flags & uint64(UNIT_NPC_FLAG_VENDOR))
         {
             VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(data.id);
@@ -1406,6 +1410,7 @@ public:
     uint32 FocusArrivedSkill = 0;
     uint32 CraftNextMs = 0;                // next craft attempt
     uint32 AhNextMs = 0;                   // next auction house / mailbox check
+    uint32 BankNextMs = 0;                 // next bank / mail-gold check (Bot.Bank.*)
     uint32 AhPosts = 0, AhNextPostMs = 0;  // listings posted on this visit, earliest next listing
     std::unordered_map<uint32, uint32> CraftBackoff;   // skill -> time before which crafting it is not retried (failed cast)
     ObjectGuid SkinGuid;                   // corpse being skinned
@@ -1746,7 +1751,7 @@ private:
         if (c.T.K == Kind::Service)
         {
             // E1/E4: the failure is reported under the service code, the movement code goes into the summary
-            c.SvcBlack[(c.T.Svc == 3 || c.T.Svc == 5 || c.T.Svc == 7) ? (0x80000000u | uint32(c.T.NodeSpawn)) : c.T.NpcEntry] = now + 600 * 1000;
+            c.SvcBlack[(c.T.Svc == 3 || c.T.Svc == 5 || c.T.Svc == 7 || c.T.Svc == 9) ? (0x80000000u | uint32(c.T.NodeSpawn)) : c.T.NpcEntry] = now + 600 * 1000;
             if (c.T.Svc == 1)
                 c.TrainRetryMs = now + 300 * 1000;
             else if (c.T.Svc == 3)
@@ -1757,10 +1762,12 @@ private:
                 c.CraftNextMs = now + 300 * 1000;
             else if (c.T.Svc == 6 || c.T.Svc == 7)
                 c.AhNextMs = now + 600 * 1000;
+            else if (c.T.Svc == 8 || c.T.Svc == 9)
+                c.BankNextMs = now + 600 * 1000;
             else
                 c.NextVendorMs = now + 300 * 1000;
             summary = StringFormat("{} ({})", summary, code);
-            code = c.T.Svc == 1 ? "TRAIN_UNREACHABLE" : c.T.Svc == 3 ? "GATHER_UNREACHABLE" : c.T.Svc == 4 ? "FISH_UNREACHABLE" : c.T.Svc == 5 ? "WORKSHOP_UNREACHABLE" : (c.T.Svc == 6 || c.T.Svc == 7) ? "AH_UNREACHABLE" : "VENDOR_UNREACHABLE";
+            code = c.T.Svc == 1 ? "TRAIN_UNREACHABLE" : c.T.Svc == 3 ? "GATHER_UNREACHABLE" : c.T.Svc == 4 ? "FISH_UNREACHABLE" : c.T.Svc == 5 ? "WORKSHOP_UNREACHABLE" : (c.T.Svc == 6 || c.T.Svc == 7) ? "AH_UNREACHABLE" : (c.T.Svc == 8 || c.T.Svc == 9) ? "BANK_UNREACHABLE" : "VENDOR_UNREACHABLE";
         }
         if (c.T.K == Kind::Loot && c.T.GoSpawn && IsReachCode(code) && std::strcmp(code, "ITEM_NOT_DROPPING") != 0)
             GoNoteBad(ai, bot, c.T, code);   // the spawn itself cannot be reached: other bots should not try it over and over
@@ -3236,6 +3243,97 @@ private:
         return false;
     }
 
+    // Bank and mail trips (Bot.Bank.*): a banker for deposits and wanted upgrades (Svc 8), a mailbox to send surplus gold away (Svc 9).
+    static bool WantFromBank(Player* bot, Item* item)
+    {
+        return KeepItem(bot, item);
+    }
+
+    bool BankDue(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        c.BankNextMs = now + 60000;
+        if (bot->IsInCombat() || bot->GetLevel() < 10)
+            return false;
+        bool const bank = BotBank::Enabled() && BotBank::PlanVisit(bot, WantFromBank) != BotBankPlan::Visit::None;
+        uint64 const gold = bank ? 0 : BotBank::MailGold(bot);
+        if (!bank && !gold)
+            return false;
+        SvcPt const* best = nullptr;
+        NodePt const* box = nullptr;
+        float bd = 2500.0f;
+        if (bank)
+            for (SvcPt const& b : g.Bankers)
+            {
+                if (b.Map != bot->GetMapId())
+                    continue;
+                float const d = Dist2D(b.X, b.Y, bot->GetPositionX(), bot->GetPositionY());
+                auto bl = c.SvcBlack.find(b.Entry);
+                if (d < bd && (bl == c.SvcBlack.end() || now >= bl->second))
+                {
+                    best = &b;
+                    bd = d;
+                }
+            }
+        else
+            for (NodePt const& n : g.Mailboxes)
+            {
+                if (n.Map != bot->GetMapId())
+                    continue;
+                float const d = Dist2D(n.X, n.Y, bot->GetPositionX(), bot->GetPositionY());
+                auto bl = c.SvcBlack.find(0x80000000u | uint32(n.SpawnId));
+                if (d < bd && (bl == c.SvcBlack.end() || now >= bl->second))
+                {
+                    box = &n;
+                    bd = d;
+                }
+            }
+        if (!best && !box)
+        {
+            c.BankNextMs = now + 300000;
+            Decision(ai, bot, "BANK_NONE", StringFormat("{} but no {} within reach", bank ? "bags are tight" : "gold to mail", bank ? "banker" : "mailbox"), 0, 0);
+            return false;
+        }
+        SvcPt pt;
+        if (best)
+            pt = *best;
+        else
+        {
+            pt.Map = box->Map; pt.X = box->X; pt.Y = box->Y; pt.Z = box->Z; pt.Entry = box->Entry;
+        }
+        StartService(bot, c, now, best ? 8 : 9, pt, false, false);
+        if (box)
+            c.T.NodeSpawn = box->SpawnId;
+        Decision(ai, bot, best ? "BANK_TRIP" : "MAIL_TRIP", StringFormat("walking to {} ({:.0f} yd)", best ? "a banker" : "a mailbox", bd), 0, pt.Entry);
+        return true;
+    }
+
+    // Svc 8: at the banker, deposit and fetch. Svc 9: at the mailbox, mail the surplus gold.
+    bool RunBank(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        Task& t = c.T;
+        if (now - t.SinceMs > 5 * 60 * 1000)
+        {
+            Drop(ai, bot, c, now, 0, "UNREACHABLE", "gave up walking to the banker or mailbox after 5 min", std::string(), t.NpcEntry, 0);
+            return true;
+        }
+        if (Dist2D(t.SvcX, t.SvcY, bot->GetPositionX(), bot->GetPositionY()) > (t.Svc == 8 ? 3.5f : 3.0f))
+        {
+            Travel(ai, bot, c, now, t.SvcX, t.SvcY, t.SvcZ, 2.5f, t.NpcEntry);
+            return false;
+        }
+        StopMoving(ai, bot, c);
+        if (t.Svc == 9)
+        {
+            if (GameObject* box = bot->FindNearestGameObject(t.NpcEntry, 10.0f))
+                BotBank::PostMailGold(bot->GetGUID(), box->GetGUID());
+        }
+        else if (Creature* npc = FindLiveNpc(bot, t.NpcEntry, 10.0f))
+            BotBank::PostBank(bot->GetGUID(), npc->GetGUID(), WantFromBank);
+        c.BankNextMs = now + BotBank::VisitCooldownMs();
+        Finish(c, now);
+        return true;
+    }
+
     // E2: one profession trainer trip at a time. A planned profession the bot lacks comes first, then ranks of the ones it has.
     bool ProfessionTrip(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
     {
@@ -3309,6 +3407,8 @@ private:
         if (level >= 5 && now >= c.FishNextMs && FishDue(ai, bot, c, now))
             return true;
         if (now >= c.AhNextMs && BotAuction::Enabled() && AuctionDue(ai, bot, c, now))
+            return true;
+        if (now >= c.BankNextMs && (BotBank::Enabled() || BotBank::MailEnabled()) && BankDue(ai, bot, c, now))
             return true;
 
         if (now >= c.CraftNextMs)
@@ -3467,6 +3567,8 @@ private:
             return RunWorkshop(ai, bot, c, now);
         if (t.Svc == 6 || t.Svc == 7)
             return RunAuction(ai, bot, c, now);
+        if (t.Svc == 8 || t.Svc == 9)
+            return RunBank(ai, bot, c, now);
         Creature* npc = FindLiveNpc(bot, t.NpcEntry, 45.0f);
         if (npc && npc->IsAlive() && bot->IsWithinDistInMap(npc, 4.5f))
         {
