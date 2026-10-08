@@ -164,15 +164,23 @@ BEGIN
   CLOSE cur;
 END//
 
--- Rolls bot_event (p_keep_days, archive), bot_event_hot (p_hot_days, decision/state_change/trace rows) and bot_pos (2 days).
-DROP PROCEDURE IF EXISTS botlog_roll_partitions2//
-CREATE PROCEDURE botlog_roll_partitions2(IN p_keep_days INT, IN p_hot_days INT)
+-- Rolls bot_event (p_keep_days, archive), bot_event_hot (p_hot_days, decision/state_change/trace rows) and bot_pos (p_pos_days, default 2).
+-- p_pos_days is the bot_pos retention: raise it (e.g. 7) for longer map trails, at up to 720 rows per bot and hour at the 5 s interval.
+DROP PROCEDURE IF EXISTS botlog_roll_partitions3//
+CREATE PROCEDURE botlog_roll_partitions3(IN p_keep_days INT, IN p_hot_days INT, IN p_pos_days INT)
 BEGIN
   CALL botlog_roll_table('bot_event', p_keep_days);
   IF EXISTS (SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bot_event_hot') THEN
     CALL botlog_roll_table('bot_event_hot', p_hot_days);
   END IF;
-  CALL botlog_roll_table('bot_pos', 2);
+  CALL botlog_roll_table('bot_pos', GREATEST(1, p_pos_days));
+END//
+
+-- Two-argument form kept for older callers: bot_pos retention 2 days.
+DROP PROCEDURE IF EXISTS botlog_roll_partitions2//
+CREATE PROCEDURE botlog_roll_partitions2(IN p_keep_days INT, IN p_hot_days INT)
+BEGIN
+  CALL botlog_roll_partitions3(p_keep_days, p_hot_days, 2);
 END//
 
 -- Compatibility wrapper (the daily event and older notes call it with one argument): hot retention 5 days.
@@ -186,7 +194,7 @@ DELIMITER ;
 -- Switch the daily event to the two-argument procedure (archive 14 days, hot 5 days).
 CREATE EVENT IF NOT EXISTS botlog_daily_roll
   ON SCHEDULE EVERY 1 DAY STARTS (CURRENT_DATE + INTERVAL 1 DAY + INTERVAL 5 MINUTE)
-  DO CALL botlog_roll_partitions2(14, 5);
-ALTER EVENT botlog_daily_roll DO CALL botlog_roll_partitions2(14, 5);
+  DO CALL botlog_roll_partitions3(14, 5, 2);
+ALTER EVENT botlog_daily_roll DO CALL botlog_roll_partitions3(14, 5, 2);
 
-CALL botlog_roll_partitions2(14, 5);
+CALL botlog_roll_partitions3(14, 5, 2);

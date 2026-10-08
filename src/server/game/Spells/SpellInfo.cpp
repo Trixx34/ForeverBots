@@ -2971,7 +2971,28 @@ void SpellInfo::_LoadSpellSpecific()
                 if (SpellFamilyFlags[0] & 0x00002190)
                     return SPELL_SPECIFIC_HAND;
 
-                // only paladin auras have this (for palaldin class family)
+                // Native Classic aura ranks have different family flags from
+                // retail; use the existing per-caster aura exclusivity rule.
+                if (HasAttribute(SPELL_ATTR15_UNK13)
+                    && (HasEffect(SPELL_EFFECT_APPLY_AREA_AURA_PARTY)
+                        || HasEffect(SPELL_EFFECT_APPLY_AREA_AURA_RAID)))
+                {
+                    switch (Id)
+                    {
+                        case 465: case 10290: case 643: case 10291:
+                        case 1032: case 10292: case 10293: // Devotion
+                        case 7294: case 10298: case 10299: case 10300: case 10301: // Retribution
+                        case 19746: // Concentration
+                        case 19876: case 19895: case 19896: // Shadow Resistance
+                        case 19888: case 19897: case 19898: // Frost Resistance
+                        case 19891: case 19899: case 19900: // Fire Resistance
+                            return SPELL_SPECIFIC_AURA;
+                        default:
+                            break;
+                    }
+                }
+
+                // Retail aura identifiers retain their existing behavior.
                 switch (Id)
                 {
                     case 465:    // Devotion Aura
@@ -3874,7 +3895,7 @@ bool SpellInfo::CanSpellProvideImmunityAgainstAura(SpellInfo const* auraSpellInf
                 return true;
 
         if (uint32 dispelImmunity = immuneInfo->DispelImmuneMask)
-            if (auraSpellInfo->Dispel == dispelImmunity)
+            if ((auraSpellInfo->GetDispelMask() & dispelImmunity) != 0)
                 return true;
 
         bool immuneToAllEffects = true;
@@ -3934,7 +3955,7 @@ bool SpellInfo::CanSpellEffectProvideImmunityAgainstAuraEffect(SpellEffectInfo c
     }
 
     if (uint32 dispelImmunity = immuneInfo->DispelImmuneMask)
-        if (auraSpellInfo->Dispel == dispelImmunity)
+        if ((auraSpellInfo->GetDispelMask() & dispelImmunity) != 0)
             return true;
 
     if (immuneInfo->AuraTypeImmune.find(auraEffectInfo.ApplyAuraName) != immuneInfo->AuraTypeImmune.end())

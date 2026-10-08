@@ -1621,6 +1621,7 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         void QuickEquipItem(uint16 pos, Item* pItem);
         void VisualizeItem(uint8 slot, Item* pItem);
         void SetVisibleItemSlot(uint8 slot, Item const* item);
+        void RefreshVisibleItemEnchantment(Item const* item, bool temporary);
         Item* BankItem(ItemPosCountVec const& dest, Item* pItem, bool update);
         void RemoveItem(uint8 bag, uint8 slot, bool update);
         void MoveItemFromInventory(uint8 bag, uint8 slot, bool update);

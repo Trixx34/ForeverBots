@@ -68,7 +68,7 @@ event; config is read once (no reload); trace rows are INFO severity by design (
   sample taken; at 360 ticks/s that is 0.2 ms of CPU per second (0.02 % of a core). Whole-tick average stayed about 2.1 us (it was 0.96 us
   in the Phase 2 run; the two extra clock reads and the position checks account for part of it, rest is noise between runs).
 
-## Phase 3: non-combat basics (verified on the sim 2026-10-06, not committed)
+## Phase 3: non-combat basics (verified on the sim 2026-10-06; code is committed on `forever`)
 
 - Walking with mmaps, arrival, NO_PATH, stuck (NO_PROGRESS then UNREACHABLE_TARGET), eat, drink, eat+drink together (EAT_START/DRINK_START/
   EAT_DONE/DRINK_DONE/REST_END rows), follow, stay, bot_pos moving flag: all seen in bot_event/bot_pos.
@@ -90,7 +90,7 @@ event; config is read once (no reload); trace rows are INFO severity by design (
 - Not verified: far (cross-map) teleport handshake, instance/battleground deaths, Hardcore path, killer capture in the death event, real
   consumables from bags (FreeFood placeholder), grid-load memory for many far goals, follow across maps, a long partial-path goto.
 
-## Death post-mortem and combat events (verified on the sim 2026-10-06, not committed)
+## Death post-mortem and combat events (verified on the sim 2026-10-06; code is committed on `forever`)
 
 - `death` rows (reason DIED) carry: `killer` (guid, entry, name, level, rank, type creature/player/environment/self, last hit melee/spell, lvl_diff, hp_before), `damage` (last 10 s per source and per spell, hits, total, fight_s, started_by, first_hit_s_before_death), `hp_traj` ([ms before death, hp]), `auras` and `cc`, `resources` (power at death and 10 s ago, armor, gear summary), `combat` (attackers, hostiles_30yd, dealt_10s, strategies per engine, activity), `bots_30yd` and `bots_30yd_fighting`, `repeat` (per bot and per killer entry+zone), `source` (`test_command` for bot kill/hurt/aggro/envdmg, else `bot`), `fight_id`. Header: zone_id, level, target_entry = killer entry. `recent_decisions` limited to 15 s / 10 entries.
 - `combat` rows: COMBAT_START (target, first=bot/mob, hp, power, hostiles_30yd, dist, activity) and COMBAT_END (outcome died/target_killed/fled/reset/other, duration_s, dealt, taken, hp_start/end/min, kills), linked by `fight_id = "<botguid>-<unix_ms>"`; END after 2 s without combat or hits (flapping coalesced).
@@ -99,7 +99,7 @@ event; config is read once (no reload); trace rows are INFO severity by design (
 - Test aids: `bot aggro <name> [radius]`, `bot envdmg <name> <type 0-6> <amount>`.
 - Cost, 180 bots (`bot ai status`): tick steady windows 3.28 us before, 3.17-3.42 us after; hooks outside the tick avg 4.76 us/call; death row 0.8-2.1 KB.
 
-## Goto navigation fixes (verified on the sim 2026-10-06, not committed)
+## Goto navigation fixes (verified on the sim 2026-10-06; code is committed on `forever`)
 
 - Root cause of the NO_PATH / stuck bursts: (1) `bot nudge` moved bots in straight lines off the navmesh and they were saved there (every later goto
   NO_PATH, `start_off_navmesh`); (2) burst goals at a fixed offset landed on navmesh holes (gnome, Skyborne) or on ledges 46 yd above/below
@@ -124,7 +124,7 @@ event; config is read once (no reload); trace rows are INFO severity by design (
   paths return 0x0A; Skyborne goals at 108 yd (only holes tested).
 
 
-## A2 chat commands (built, NOT yet verified on the sim, not committed)
+## A2 chat commands (committed, NOT yet verified on the sim)
 
 - Code: `src/server/game/Bots/BotChat.h/.cpp` (parser, authorization, verbs follow/stay/goto/rest/release/status/strategy/verbose, aggregated replies,
   per-bot `chat_command` bot_event with issuer, channel, match, outcome, reason; unauthorized attempts rate limited per issuer), test path
@@ -136,7 +136,7 @@ event; config is read once (no reload); trace rows are INFO severity by design (
   (hybrids are not split by spec), the unauthorized event is logged against the first bot of the group (or the whispered bot).
 - Decisions: selectors combine as follows. Subgroup parts union among themselves (`g1,g3`), role/class parts union among themselves (`tank,dps`), and a subgroup plus a role/class is an INTERSECTION (`g1,tank` = tanks inside subgroup 1). Only the party/raid leader commands bots; verbose defaults to off. Selector change rebuilt but not yet verified on the sim.
 
-## Quest pipeline (BotQuest.*), verified on the sim 2026-10-06 (partially), not committed
+## Quest pipeline (BotQuest.*), verified on the sim 2026-10-06 (partially); code is committed on `forever`
 - New: `src/server/game/Bots/BotQuest.{h,cpp}`; hunks in BotEngine.h, BotStrategies.cpp, BotMgr.cpp (EnsureIndex in StartLogin), worldserver.conf.dist (Bot.Quest.*).
 - Enable with "quest" in Bot.AI.Default.NonCombat (sim worldserver.conf has it; the .dist default is unchanged).
 - Static index at startup (starter grid, spawns, kill credit, quest-item drop sources from one world-thread query); per-bot task state in `quest_ctx`.
@@ -145,7 +145,7 @@ event; config is read once (no reload); trace rows are INFO severity by design (
 - Fixes found by the 1-5 run: (1) MoveChase does not move a Player, the approach now uses BotMotion goals; (2) PathGenerator returns NOPATH|SHORTCUT on routes longer than about 300 yd (74 point buffer), Travel now hops via validated intermediate waypoints (FindHop), NO_PATH dropped from about 150 to about 20 per run; (3) bots with a left-over auto-repeat spell (Auto Shot/Shoot) counted as casting and froze the quest tick, now skipAutorepeat; (4) melee pull range. `bot state` shows task diagnostics (calls/why).
 - Known gaps: game-object objectives and area triggers, trainer visits (extension point: walk-to-NPC visit in RunNpcVisit), no grind fallback and no quest-hub travel (bots idle when nothing is takeable locally, next-plan E3), no spell training (E1).
 
-## Basic combat (BotCombat.*), verified on the sim 2026-10-06, not committed
+## Basic combat (BotCombat.*), verified on the sim 2026-10-06; code is committed on `forever`
 - Strategy `combat` (Combat engine, default `Bot.AI.Default.Combat = "combat"`): triggers `combat_engaged`, `combat_need_heal`, `combat_fleeing`; actions `combat_flee` (Emergency, BotMotion SetGoal+Step), `combat_heal` (SELF_HEAL below `HealBelowPct`), `combat_engage` (pick nearest opponent that is not too strong, Attack + MoveChase, ranged classes stop at `CasterRangePct` of spell range), `combat_cast` (per class table of 27 vanilla rank-1 spell ids, resolved against what the bot knows incl. rank chain; `bot spells <name>` shows it). Only level-gated spells are known: trainer spells (Serpent Sting, Arcane Shot, Battle Shout, Rend, Frostbolt, Fire Blast, Earth Shock, Immolate, Corruption, Moonfire, SWP, Judgement ...) are NOT known at level 1 and bots never train, so L1 rotations are 1-2 spells.
 - Config (`Bot.AI.Combat.*`, documented in worldserver.conf.dist): Flee.Enabled, Flee.LevelDiff (4), EliteLevelBonus (3), Flee.MaxSec, Flee.Yards, ApproachTimeoutSec, HealBelowPct, CasterRangePct.
 - Events: TARGET_PICKED, FLEE_LEVEL_DIFF / FLEE_ENDED / FLEE_GAVE_UP / FLEE_BLOCKED, FIGHT_TOO_STRONG, APPROACH_TIMEOUT, RANGED_TO_MELEE, CAST_FAILED (deduped, with result name), CAST_NO_POWER, SELF_HEAL, NO_TARGET (diagnostic), COMBAT_SUMMARY (casts per spell, targets, heals) next to COMBAT_START/END.
@@ -161,3 +161,17 @@ event; config is read once (no reload); trace rows are INFO severity by design (
 - E4: vendors cached at startup. Sells greys then unusable armor/weapons (never quest items, bags), repairs, buys bigger bags after spell reserve. Events VENDOR_TRIP, SOLD_ITEMS, REPAIRED, BAG_BOUGHT, BAG_NO_MONEY, BAG_BUY_FAILED, VENDOR_NONE, VENDOR_UNREACHABLE. BAG_BOUGHT not yet seen in a run.
 - Skyborne: quest 92460 'Coming of Age' reward item 264908 has no item template; TurnIn now logs REWARD_ITEM_MISSING and rewards anyway. Data gap still needs a data extraction/database fix.
 - Quarantine: per-bot escalation (quest blacklisted 6 h after 3 reach failures, QUEST_QUARANTINED) and global (10 drops across bots, 1 h, QUEST_QUARANTINED_GLOBAL).
+
+## Gear, professions and gathering (branch claude/project-thread-8mh0k5; compiled, unit tests pass, not sim-verified)
+- BotGear (pure, tests/game/BotGear.cpp): class role weights over stats x item level, armor, weapon DPS; upgrade = +10 percent plus a floor. Used by `ChooseReward`, `EquipIfUpgrade`, a 30 s bag sweep (`GEAR_EQUIPPED`) and `BuyGearUpgrades` at vendors (`GEAR_BOUGHT`, `GEAR_BUY_FAILED`, max 3 per visit, trainer money reserved). One-hand weapons only go to the main hand (no dual wield yet).
+- BotProfession (pure, tests/game/BotProfession.cpp): plan per bot = first aid, cooking, two of mining/herbalism/skinning (guid % 3). Profession trainers indexed under key `0x100 | skill`; `ProfessionTrip` (level 5+, every 60 s): PROF_TRIP, PROF_NO_TRAINER, PROF_NO_MONEY; learning logs TRAINED.
+- Skinning: after looting a skinnable corpse the bot casts Skinning (8613) if its skill allows (`SkinReqSkill`) and loots the skin (`SKINNED`).
+- First aid and cooking: `CraftForSkill` (every 15 s, standing still, out of combat) casts the best known recipe from carried materials (`PickRecipe`), PROF_CRAFT / PROF_CRAFT_FAIL (5 min backoff, e.g. cooking without a fire).
+- Mining and herbalism: nodes indexed from chest game object locks (`Index.Nodes`); `GatherDue` starts a Svc 3 task to a node within 80 yd whose required skill the bot meets; `RunGather` casts 2575 / 2366 and loots (`GATHER_TRIP`, `GATHERED`, `GATHER_FAILED`, `GATHER_UNREACHABLE`).
+- Fishing: plan skill 5 (after the gathering pair). `FishDue` (60 s) looks for a shore within ~24 yd (`BotProfession::FindShore`, map liquid probes), needs a pole in the bags (`BuyFishingPole` at vendors, POLE_BOUGHT), walks there, wields the pole (the 30 s gear sweep re-wields the real weapon afterwards), casts the best Fishing rank, uses the bobber when it is ready and loots (max 8 casts per trip). FISH_TRIP, FISH_DONE, FISH_UNREACHABLE, FISH_CAST_FAILED.
+- Crafting: plan slot 4 is a crafting profession paired with the gathering one (mining+blacksmithing, herbalism+alchemy, skinning+leatherworking, mining+engineering), learned from level 8. Recipes needing a forge/anvil/fire send the bot to the nearest spell focus object (`WorkshopTrip`, Svc 5; WORKSHOP_TRIP, WORKSHOP_UNREACHABLE).
+- Auction house v1 (config `Bot.AH.*`, default off; `BotAuction`, `BotAuctionPlan` pure + tests): `AuctionDue` (every 30 s, level 10+) sends a bot with surplus gear (unequipped, non-stackable, green+, not bound, not an upgrade for it) to the nearest auctioneer (Svc 6, max 6 listings per visit, 1.6 s apart) or, with mail waiting, to a mailbox (Svc 7: take gold and items). Calls run on the world thread through `BotMgr::PostWorldTask`. Price 1.5 x vendor sell minus undercut, 8 h runtime, caps per bot and per house. Events AH_TRIP, AH_LISTED, AH_REFUSED, AH_NO_MONEY, AH_LIMIT, AH_NONE, AH_MAIL, AH_UNREACHABLE.
+- Not done: AH buying, stackable goods, seeding the house, recent-price lookup, dual wield, spec-specific weights.
+
+## Dungeon runs (glue over BotDungeonPlan, default off, never run on a server)
+See the "Glue" section of feature-bot-dungeon-groups-20261008.md: `BotDungeonRun` forms one group, walks to the entrance, teleports in and clears packs in order. No tank/healer roles yet.

@@ -339,46 +339,6 @@ TEST_CASE("BotLoot: spawn index filter (M1)", "[BotLoot]")
     CHECK_FALSE(CountsAsSpawn(SpawnUse::SkipSpawnGroup));
 }
 
-TEST_CASE("BotLoot: chest danger", "[BotLoot]")
-{
-    DangerConfig cfg;
-    cfg.MaxGap = 4;
-    cfg.EliteBonus = 3;
-    cfg.SpawnRadius = 30.0f;
-    cfg.BotRadius = 18.0f;
-
-    CHECK_FALSE(ChestDangerous(std::span<MobFacts const>{}, cfg));
-
-    MobFacts strongAtChest;
-    strongAtChest.DistToSpawn = 10.0f;
-    strongAtChest.DistToBot = 80.0f;
-    strongAtChest.LevelDiff = 4;
-    MobFacts const one[] = { strongAtChest };
-    CHECK(ChestDangerous(one, cfg));
-
-    MobFacts weakAtChest = strongAtChest;
-    weakAtChest.LevelDiff = 3;
-    MobFacts const two[] = { weakAtChest };
-    CHECK_FALSE(ChestDangerous(two, cfg));
-
-    MobFacts eliteAtChest = weakAtChest;
-    eliteAtChest.LevelDiff = 1;
-    eliteAtChest.Elite = true;
-    MobFacts const three[] = { eliteAtChest };
-    CHECK(ChestDangerous(three, cfg));
-
-    MobFacts farAway = strongAtChest;   // strong but neither near the chest nor near the bot
-    farAway.DistToSpawn = 60.0f;
-    farAway.DistToBot = 60.0f;
-    MobFacts const four[] = { farAway };
-    CHECK_FALSE(ChestDangerous(four, cfg));
-
-    MobFacts nearBot = farAway;         // strong and close to the bot: it would aggro on the way
-    nearBot.DistToBot = 10.0f;
-    MobFacts const five[] = { weakAtChest, nearBot };
-    CHECK(ChestDangerous(five, cfg));
-}
-
 TEST_CASE("BotLoot: shared spawn quarantine", "[BotLoot]")
 {
     SpawnQuarantine q;

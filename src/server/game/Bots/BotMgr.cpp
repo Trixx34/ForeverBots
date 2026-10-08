@@ -19,6 +19,7 @@
 #include "BotSocial.h"
 #include "AccountMgr.h"
 #include "BotAI.h"
+#include "BotDungeonRun.h"
 #include "BotAlts.h"
 #include "BotLogDatabase.h"
 #include "BotPet.h"
@@ -42,9 +43,11 @@
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "UpdateFields.h"
+#include "UpdateTime.h"
 #include "Util.h"
 #include "World.h"
 #include "WorldSession.h"
+#include <map>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -299,13 +302,60 @@ void BotMgr::UpdateProbe(uint32 diff)
     }
 }
 
+void BotMgr::PostWorldTask(std::function<void()> task)
+{
+    std::lock_guard<std::mutex> lock(_worldTaskLock);
+    _worldTasks.push_back(std::move(task));
+}
+
+// One server log line per Bot.Log.ServerStatsSec: world update diff (sWorldUpdateTime, includes bot visibility and AI work done inside
+// the map updates) and the cost of BotMgr::Update itself. Compare the line between runs/builds (same bot count) to A/B the cost of a change.
+void BotMgr::LogTickStats(uint32 diff, uint64 updateUs)
+{
+    uint32 const serverDiff = sWorldUpdateTime.GetLastUpdateTime();
+    ++_statsTicks;
+    _statsDiffSum += serverDiff;
+    _statsDiffMax = std::max(_statsDiffMax, serverDiff);
+    _statsMgrUsSum += updateUs;
+    _statsMgrUsMax = std::max<uint32>(_statsMgrUsMax, uint32(std::min<uint64>(updateUs, 0xFFFFFFFFu)));
+
+    if (!_statsIntervalMs || (_statsSinceMs += diff) < _statsIntervalMs)
+        return;
+
+    TC_LOG_INFO("server.worldserver", "BOT_TICK_STATS bots={} ticks={} serverDiffMs avg={} max={} botMgrUpdateUs avg={} max={}",
+        _onlineCount, _statsTicks, _statsDiffSum / _statsTicks, _statsDiffMax, _statsMgrUsSum / _statsTicks, _statsMgrUsMax);
+    _statsSinceMs = 0;
+    _statsTicks = 0;
+    _statsDiffSum = _statsMgrUsSum = 0;
+    _statsDiffMax = _statsMgrUsMax = 0;
+}
+
 void BotMgr::Update(uint32 diff)
 {
     ++_ticks;
     _uptimeMs += diff;
 
+    std::vector<std::function<void()>> tasks;
+    {
+        std::lock_guard<std::mutex> lock(_worldTaskLock);
+        tasks.swap(_worldTasks);
+    }
+    for (auto& task : tasks)
+        task();
+
+    struct StatsScope
+    {
+        BotMgr* mgr; uint32 diff; std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        ~StatsScope()
+        {
+            if (mgr->_statsIntervalMs)
+                mgr->LogTickStats(diff, uint64(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count()));
+        }
+    } statsScope{ this, diff };
+
     ProcessLogins();
     ProcessBotTeleports();
+    BotDungeonRun::Update(diff);
     UpdateProbe(diff);
     BotSocial::Update(diff);
     BotAlts::RestoreOnce();
@@ -502,27 +552,33 @@ std::string JsonCode(std::string const& s)
 }
 
 // _logMutex held. Builds the LOG_SUPPRESSED row for a bot (empty when nothing is pending) and clears the pending counters.
-static bool BuildSuppressedRow(uint64 guid, uint64 session, auto& pending, uint32 cap, double ts, BotEvent& out)
+static bool BuildSuppressedRow(uint64 guid, uint64 session, auto& pending, uint32& loginTotal, uint32 cap, double ts, BotEvent& out)
 {
     if (pending.empty())
         return false;
     uint32 total = 0;
     std::string list;
+    std::map<std::string, uint32> byReason;   // per code (event reason), so the lost rows can be added back per code
     for (auto const& [key, p] : pending)
     {
         total += p.Suppressed;
+        byReason[p.Reason] += p.Suppressed;
         if (!list.empty())
             list += ',';
         list += Trinity::StringFormat(R"({{"type":"{}","reason":"{}","quest_id":{},"target_entry":{},"count":{}}})", JsonCode(p.Type), JsonCode(p.Reason), p.QuestId, p.Entry, p.Suppressed);
     }
     pending.clear();
+    loginTotal += total;
+    std::string codes;
+    for (auto const& [reason, n] : byReason)
+        codes += Trinity::StringFormat(R"({}"{}":{})", codes.empty() ? "" : ",", JsonCode(reason), n);
     out = BotEvent();
     out.BotGuid = guid;
     out.Type = "decision";
     out.Severity = BOTLOG_INFO;
     out.Reason = "LOG_SUPPRESSED";
     out.Summary = Trinity::StringFormat("{} repeated log rows suppressed (cap {} per login)", total, cap);
-    out.Details = Trinity::StringFormat(R"({{"total":{},"cap":{},"suppressed":[{}]}})", total, cap, list);
+    out.Details = Trinity::StringFormat(R"({{"total":{},"cap":{},"by_reason":{{{}}},"login_total":{},"suppressed":[{}]}})", total, cap, codes, loginTotal, list);
     out.Timestamp = ts;
     out.SessionSeq = session;
     return true;
@@ -554,7 +610,7 @@ bool BotMgr::ApplyRepeatCap(BotEvent const& event, std::vector<BotEvent>& extra)
         }
     }
     BotEvent row;
-    if (BuildSuppressedRow(event.BotGuid, st.Session, st.Pending, _repeatCap, event.Timestamp, row))
+    if (BuildSuppressedRow(event.BotGuid, st.Session, st.Pending, st.SuppressedLogin, _repeatCap, event.Timestamp, row))
     {
         row.Level = event.Level;
         row.MapId = event.MapId;
@@ -574,7 +630,7 @@ void BotMgr::FlushSuppressed(uint64 botGuid)
         return;
     BotEvent row;
     double const now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
-    if (BuildSuppressedRow(botGuid, it->second.Session, it->second.Pending, _repeatCap, now, row))
+    if (BuildSuppressedRow(botGuid, it->second.Session, it->second.Pending, it->second.SuppressedLogin, _repeatCap, now, row))
         _logBuffer.push_back(std::move(row));
 }
 
@@ -594,6 +650,7 @@ void BotMgr::BeginLogSession(BotInfo& bot)
     st.Session = bot.SessionSeq;
     st.Counts.clear();
     st.Pending.clear();
+    st.SuppressedLogin = 0;
 }
 
 void BotMgr::LogEvent(BotEvent&& event)
@@ -954,6 +1011,7 @@ void BotMgr::LoadRegistry()
 
     _registryLoaded = true;
     _loginMaxPerTick = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Login.MaxPerTick", 5)));
+    _statsIntervalMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.ServerStatsSec", 60), 0, 3600)) * 1000;
 
     std::vector<uint32> accounts;
     std::map<uint32, std::string> accountNames;

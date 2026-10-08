@@ -27,9 +27,12 @@
 
 #include "BotAI.h"
 #include "BotCombat.h"
+#include "BotRotation.h"
+#include "BotGroupRoles.h"
 #include "CombatManager.h"
 #include "Config.h"
 #include "Creature.h"
+#include "Group.h"
 #include "Item.h"
 #include "Log.h"
 #include "Map.h"
@@ -37,6 +40,7 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "SpellHistory.h"
+#include "BotAvoid.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
@@ -67,7 +71,15 @@ struct CombatConfig
     uint32 PrePullManaPct = 40;    // Bot.AI.Combat.PrePullManaPct: mana users drink out of combat below this mana percent (before pulling)
     bool FreeRepair = true;        // Bot.AI.Combat.FreeRepair: broken equipment is repaired for free (placeholder until the economy phase)
     uint32 LowHpFleePct = 15;      // Bot.AI.Combat.Flee.LowHpPct: flee (flee_reason low_hp) below this health percent, 0 = off
+    bool GroupRoles = false;       // Bot.AI.Roles.Enabled: healers heal group members, damage dealers assist the tank's target (needs a group)
+    uint32 HoldMs = 3000;          // Bot.AI.Roles.HoldSec: non-tanks wait this long for the tank to gather threat before they open
+    BotGroupRoles::Config Roles;   // Bot.AI.Roles.AllyHealBelowPct / TankHealBelowPct / EmergencyPct
     int32 FleeMode = 0;            // Bot.AI.Flee.Mode: 0 current, 1 aggro avoidance + fight to the end, 2 flee toward nearest friendly guard
+    bool Rotation = false;         // Bot.AI.Rotation.Enabled: full class rotations (conditional rows of the spell table); off = the old fixed spells
+    int32 FleeAbMode = 1;          // Bot.AI.Flee.AbMode: the mode the experiment arm runs
+    int32 FleeAbPct = 0;           // Bot.AI.Flee.AbPct: percent of bots (guid counter % 100 below it) on AbMode, 0 = everyone on Flee.Mode
+    std::vector<uint32> AvoidEntries;  // Bot.AI.Avoid.Entries: creature entries to stay away from
+    int32 AvoidMaxGap = 1;         // Bot.AI.Avoid.MaxLevelGap: listed creatures are fought only when at most this many levels above the bot, -1 = list off
 };
 
 CombatConfig const& Cfg()
@@ -89,8 +101,30 @@ CombatConfig const& Cfg()
         cfg.FreeRepair = sConfigMgr->GetBoolDefault("Bot.AI.Combat.FreeRepair", true);
         cfg.LowHpFleePct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.LowHpPct", 15), 0, 60));
         cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
+        cfg.Rotation = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.Enabled", false);
+        cfg.GroupRoles = sConfigMgr->GetBoolDefault("Bot.AI.Roles.Enabled", false);
+        cfg.HoldMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.HoldSec", 3), 0, 15)) * 1000;
+        cfg.Roles.AllyHealBelowPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.AllyHealBelowPct", 80), 10, 99);
+        cfg.Roles.TankHealBelowPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.TankHealBelowPct", 90), 10, 99);
+        cfg.Roles.EmergencyPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.EmergencyPct", 35), 5, 90);
+        cfg.FleeAbMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.AbMode", 1), 0, 2);
+        cfg.FleeAbPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.AbPct", 0), 0, 100);
+        cfg.AvoidMaxGap = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Avoid.MaxLevelGap", 1), -1, 10);
+        cfg.AvoidEntries = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.AI.Avoid.Entries", "116,822,250927,79"));
     });
     return cfg;
+}
+
+// Flee mode of this bot (Bot.AI.Flee.Mode, or the A/B arm Bot.AI.Flee.AbMode for the bots picked by Bot.AI.Flee.AbPct).
+int32 FleeModeOf(Player const* bot)
+{
+    return BotAvoid::FleeModeFor(bot->GetGUID().GetCounter(), Cfg().FleeMode, Cfg().FleeAbMode, Cfg().FleeAbPct);
+}
+
+bool AvoidedByList(Player const* bot, Unit const* mob)
+{
+    return mob && mob->GetTypeId() == TYPEID_UNIT &&
+        BotAvoid::ShouldAvoid(Cfg().AvoidEntries, mob->GetEntry(), int(mob->GetLevel()), int(bot->GetLevel()), Cfg().AvoidMaxGap);
 }
 
 std::string Json(std::string const& s)
@@ -122,7 +156,8 @@ enum class Kind : uint8
     Finisher,   // needs combo points
     AutoShot,   // auto-repeat ranged attack (hunter)
     Wand,       // auto-repeat wand attack (Shoot): filler of a caster that cannot afford its spells (needs a wand equipped)
-    Heal        // self-heal (combat_heal)
+    Heal,       // self-heal (combat_heal)
+    Debuff      // cast while the target does not carry the spell's aura (Sunder Armor, Hunter's Mark); like Dot but not a damage spell
 };
 
 struct SpellDef
@@ -133,48 +168,92 @@ struct SpellDef
     Kind Type;
     uint32 ReqAura = 0;        // aura (spell id) the bot must carry first (Judgement needs a seal), 0 none
     uint8 MinCombo = 0;        // Finisher: combo points needed
+    BotRotation::Rule When;    // condition of the row (BotRotation.h); rows with a condition other than Always only run with Bot.AI.Rotation.Enabled
 };
+
+using RC = BotRotation::Cond;
 
 constexpr SpellDef SPELLS[] =
 {
-    // Warrior: Battle Shout, Rend (needs Battle Stance), Heroic Strike (next melee swing)
+    // Rows run in this order, one cast per tick (the first that passes). Rows with a condition (last field) belong to the full rotation
+    // and only run with Bot.AI.Rotation.Enabled (docs/playerbots/feature-bot-class-rotations-20261008.md). Spell ids are rank 1; a row whose
+    // id is missing or whose name differs is dropped at startup and logged, and a spell the bot has not learned yet is skipped.
+    // Warrior: Charge to open, Battle Shout, Bloodrage when rage-starved, Execute, area and debuff moves, Rend (Battle Stance), Heroic Strike (next melee swing)
+    { CLASS_WARRIOR, 100,   "Charge",               Kind::Direct, 0, 0, { RC::Opener, 8 } },
     { CLASS_WARRIOR, 6673,  "Battle Shout",         Kind::SelfBuff },
+    { CLASS_WARRIOR, 2687,  "Bloodrage",            Kind::SelfBuff, 0, 0, { RC::SelfPowerBelow, 20 } },
+    { CLASS_WARRIOR, 5308,  "Execute",              Kind::Direct, 0, 0, { RC::TargetHpBelow, 20 } },
+    { CLASS_WARRIOR, 1715,  "Hamstring",            Kind::Direct, 0, 0, { RC::TargetFleeing, 0 } },
+    { CLASS_WARRIOR, 6343,  "Thunder Clap",         Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 } },
+    { CLASS_WARRIOR, 1160,  "Demoralizing Shout",   Kind::Debuff, 0, 0, { RC::EnemiesAtLeast, 3 } },
+    { CLASS_WARRIOR, 7386,  "Sunder Armor",         Kind::Debuff, 0, 0, { RC::TargetStrong, 2 } },
     { CLASS_WARRIOR, 772,   "Rend",                 Kind::Dot },
+    { CLASS_WARRIOR, 845,   "Cleave",               Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_WARRIOR, 78,    "Heroic Strike",        Kind::Direct },
-    // Rogue
+    // Rogue: Kick a caster, Evasion when hurt, Slice and Dice before the damage finisher
+    { CLASS_ROGUE,   1766,  "Kick",                 Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
+    { CLASS_ROGUE,   5277,  "Evasion",              Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 50 } },
+    { CLASS_ROGUE,   5171,  "Slice and Dice",       Kind::Finisher, 0, 2, { RC::TargetHpAbove, 40 } },
     { CLASS_ROGUE,   2098,  "Eviscerate",           Kind::Finisher, 0, 3 },
     { CLASS_ROGUE,   1752,  "Sinister Strike",      Kind::Direct },
-    // Paladin
+    // Paladin: Divine Protection when hurt, Hammer of Justice on a caster, Consecration against several mobs
     { CLASS_PALADIN, 20154, "Seal of Righteousness", Kind::SelfBuff },
+    { CLASS_PALADIN, 498,   "Divine Protection",    Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 35 } },
     { CLASS_PALADIN, 20271, "Judgement",            Kind::Direct, 20154 },
+    { CLASS_PALADIN, 853,   "Hammer of Justice",    Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
+    { CLASS_PALADIN, 26573, "Consecration",         Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 3 } },
     { CLASS_PALADIN, 635,   "Holy Light",           Kind::Heal },
     // Hunter. Pet upkeep (calling, feeding, taming) is the separate "pet" strategy (BotPet.cpp, Bot.AI.Pet.*, off by default); without
     // it a pet would lose happiness (Pet.h HAPPINESS_*) and deal 75% damage once unhappy.
     // Auto Shot first: it is only (re)started when not running, so it never waits behind the shots below
     { CLASS_HUNTER,  75,    "Auto Shot",            Kind::AutoShot },
+    { CLASS_HUNTER,  1130,  "Hunter's Mark",        Kind::Debuff, 0, 0, { RC::TargetStrong, 2 } },
+    { CLASS_HUNTER,  5116,  "Concussive Shot",      Kind::Direct, 0, 0, { RC::TargetFleeing, 0 } },
+    { CLASS_HUNTER,  2974,  "Wing Clip",            Kind::Direct, 0, 0, { RC::TargetFleeing, 0 } },
+    { CLASS_HUNTER,  2643,  "Multi-Shot",           Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_HUNTER,  1978,  "Serpent Sting",        Kind::Dot },
     { CLASS_HUNTER,  3044,  "Arcane Shot",          Kind::Direct },
     { CLASS_HUNTER,  2973,  "Raptor Strike",        Kind::Direct },   // melee, so only used once a mob is on top of the hunter
-    // Mage
+    // Mage: Counterspell, Frost Nova and Cone of Cold against several mobs, Mana Shield / Ice Barrier when hurt
+    { CLASS_MAGE,    2139,  "Counterspell",         Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
+    { CLASS_MAGE,    122,   "Frost Nova",           Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 } },
+    { CLASS_MAGE,    1463,  "Mana Shield",          Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 40 } },
+    { CLASS_MAGE,    11426, "Ice Barrier",          Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 70 } },
+    { CLASS_MAGE,    120,   "Cone of Cold",         Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 3 } },
     { CLASS_MAGE,    2136,  "Fire Blast",           Kind::Direct },
     { CLASS_MAGE,    116,   "Frostbolt",            Kind::Direct },
     { CLASS_MAGE,    133,   "Fireball",             Kind::Direct },
     { CLASS_MAGE,    5019,  "Shoot",                Kind::Wand },
-    // Priest
+    // Priest: Power Word: Shield when hurt, Inner Fire at the start, Psychic Scream against several mobs, Mind Blast with a mana reserve
+    { CLASS_PRIEST,  17,    "Power Word: Shield",   Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 70 } },
+    { CLASS_PRIEST,  588,   "Inner Fire",           Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
+    { CLASS_PRIEST,  8122,  "Psychic Scream",       Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 3 } },
     { CLASS_PRIEST,  589,   "Shadow Word: Pain",    Kind::Dot },
+    { CLASS_PRIEST,  8092,  "Mind Blast",           Kind::Direct, 0, 0, { RC::SelfPowerAbove, 25 } },
     { CLASS_PRIEST,  585,   "Smite",                Kind::Direct },
     { CLASS_PRIEST,  2050,  "Lesser Heal",          Kind::Heal },
     { CLASS_PRIEST,  5019,  "Shoot",                Kind::Wand },
-    // Warlock
+    // Warlock: Death Coil and Drain Life when hurt, Life Tap when mana is low, Curse of Agony, no damage over time on a dying mob
+    { CLASS_WARLOCK, 6789,  "Death Coil",           Kind::Direct, 0, 0, { RC::SelfHpBelow, 40 } },
+    { CLASS_WARLOCK, 689,   "Drain Life",           Kind::Direct, 0, 0, { RC::SelfHpBelow, 50 } },
+    { CLASS_WARLOCK, 1454,  "Life Tap",             Kind::SelfBuff, 0, 0, { RC::LifeTapSafe, 30 } },
+    { CLASS_WARLOCK, 980,   "Curse of Agony",       Kind::Dot, 0, 0, { RC::TargetHpAbove, 40 } },
     { CLASS_WARLOCK, 348,   "Immolate",             Kind::Dot },
     { CLASS_WARLOCK, 172,   "Corruption",           Kind::Dot },
     { CLASS_WARLOCK, 686,   "Shadow Bolt",          Kind::Direct },
     { CLASS_WARLOCK, 5019,  "Shoot",                Kind::Wand },
-    // Shaman
+    // Shaman: Lightning Shield at the start, Flame Shock (shares the cooldown of Earth Shock), Stormstrike
+    { CLASS_SHAMAN,  324,   "Lightning Shield",     Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
+    { CLASS_SHAMAN,  8050,  "Flame Shock",          Kind::Dot, 0, 0, { RC::TargetHpAbove, 40 } },
+    { CLASS_SHAMAN,  17364, "Stormstrike",          Kind::Direct, 0, 0, { RC::TargetHpAbove, 20 } },
     { CLASS_SHAMAN,  8042,  "Earth Shock",          Kind::Direct },
     { CLASS_SHAMAN,  403,   "Lightning Bolt",       Kind::Direct },
     { CLASS_SHAMAN,  331,   "Healing Wave",         Kind::Heal },
-    // Druid
+    // Druid: Barkskin when hurt, Thorns at the start, Faerie Fire on a strong mob, Entangling Roots on a fleeing one (forms are not used)
+    { CLASS_DRUID,   22812, "Barkskin",             Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 50 } },
+    { CLASS_DRUID,   467,   "Thorns",               Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
+    { CLASS_DRUID,   770,   "Faerie Fire",          Kind::Debuff, 0, 0, { RC::TargetStrong, 2 } },
+    { CLASS_DRUID,   339,   "Entangling Roots",     Kind::Direct, 0, 0, { RC::TargetFleeing, 0 } },
     { CLASS_DRUID,   8921,  "Moonfire",             Kind::Dot },
     { CLASS_DRUID,   5176,  "Wrath",                Kind::Direct },
     { CLASS_DRUID,   5185,  "Healing Touch",        Kind::Heal },
@@ -446,11 +525,18 @@ void BotCombatCtx::End(Player* bot)
             casts += StringFormat(R"({}"{}":{})", casts.empty() ? "" : ",", Json(SpellNameOf(si)), c.N);
         }
         std::string summaryJson = StringFormat(R"({{"fight_seq":{},"role":"{}","flee_mode":{},"seconds":{},"targets_picked":{},"targets_dead":{},"casts":{{{}}},"cast_failed":{},"heals":{},"no_power_skips":{},"melee_fallback":{},"fled":{},"fled_gave_up":{},"flee_attempts":{},"flee_reason":"{}","ranged_broken":{},"state_now":"{}"}})",
-                Seq, RoleName(BotRole), Cfg().FleeMode, (ai->GetNowMs() - StartMs) / 1000, Picked, TargetsDead, casts, CastFails, Heals, NoPowerSkips,
+                Seq, RoleName(BotRole), bot ? FleeModeOf(bot) : Cfg().FleeMode, (ai->GetNowMs() - StartMs) / 1000, Picked, TargetsDead, casts, CastFails, Heals, NoPowerSkips,
                 MeleeFallback ? "true" : "false", (Fleeing || FleeGaveUp) ? "true" : "false", FleeGaveUp ? "true" : "false", FleeAttempts, FleeReason, RangedBroken ? "true" : "false",
                 BotStateName(ai->GetState()));
         // per-spell breakdown (casts, hits, damage, power) and unused spells, appended inside the details object
         summaryJson.pop_back();
+        if (BotAI::Config().PullDetail)
+        {
+            // fight_id joins this row to COMBAT_START / COMBAT_END; outcome is this stay's result; casts_ok totals the successful casts
+            char const* outcome = !bot->IsAlive() ? "bot_died" : (Fleeing || FleeGaveUp) ? "fled" : (Picked && TargetsDead >= Picked) ? "all_targets_dead" :
+                TargetsDead ? "partial_kills" : Picked ? "no_kill" : "no_target";
+            summaryJson += StringFormat(R"(,"fight_id":"{}","outcome":"{}","casts_ok":{})", ai->CurrentFightId(), outcome, Casts);
+        }
         summaryJson += "," + ai->TakeSpellBreakdownJson(bot) + "}";
         ai->EmitEvent(bot, "decision", BOTLOG_INFO, "COMBAT_SUMMARY",
             StringFormat("combat strategy: {} target(s), {} cast(s), {} failed", Picked, Casts, CastFails), std::move(summaryJson));
@@ -560,7 +646,7 @@ bool Affordable(Player* bot, SpellInfo const* si)
 void LogDecision(BotAI* ai, Player* bot, BotCombatCtx* ctx, char const* reason, std::string summary, std::string extra, uint8 sev = BOTLOG_INFO)
 {
     ai->EmitEvent(bot, "decision", sev, reason, std::move(summary),
-        StringFormat(R"({{"kind":"combat","fight_seq":{},"flee_mode":{}{}{}}})", ctx->Seq, Cfg().FleeMode, extra.empty() ? "" : ",", extra));
+        StringFormat(R"({{"kind":"combat","fight_seq":{},"flee_mode":{}{}{}}})", ctx->Seq, FleeModeOf(bot), extra.empty() ? "" : ",", extra));
 }
 
 std::string MobJson(Player* bot, Unit* mob, Threat const& t)
@@ -581,6 +667,53 @@ public:
     bool IsActive() override { return GetAI()->GetState() == BotState::Combat; }
 };
 
+// Group members for the heal choice (Bot.AI.Roles.*): everybody alive on the bot's map within `range` yards, the bot itself included.
+// The tank is the warrior of the group. At most 40 members are looked at.
+// The tank of the bot's group: the living warrior on the bot's map with the lowest guid (the same answer for every member, the bot included).
+Player* GroupTank(Player* bot)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return nullptr;
+    Player* tank = nullptr;
+    for (GroupReference const& ref : group->GetMembers())
+    {
+        Player* m = ref.GetSource();
+        if (!m || !m->IsInWorld() || !m->IsAlive() || m->GetMap() != bot->GetMap() || m->GetClass() != CLASS_WARRIOR)
+            continue;
+        if (!tank || m->GetGUID().GetCounter() < tank->GetGUID().GetCounter())
+            tank = m;
+    }
+    return tank;
+}
+
+std::vector<BotGroupRoles::Ally> GroupAllies(Player* bot, float range, std::vector<Player*>* members = nullptr)
+{
+    Player* const tank = GroupTank(bot);
+    std::vector<BotGroupRoles::Ally> out;
+    Group* group = bot->GetGroup();
+    if (!group)
+        return out;
+    for (GroupReference const& ref : group->GetMembers())
+    {
+        Player* m = ref.GetSource();
+        if (!m || !m->IsInWorld() || m->GetMap() != bot->GetMap() || out.size() >= 40)
+            continue;
+        BotGroupRoles::Ally a;
+        a.Guid = m->GetGUID().GetCounter();
+        a.Alive = m->IsAlive();
+        a.HealthPct = int32(m->GetHealthPct());
+        a.MissingHealth = m->GetMaxHealth() > m->GetHealth() ? uint32(m->GetMaxHealth() - m->GetHealth()) : 0;
+        a.IsTank = m == tank;
+        a.IsSelf = m == bot;
+        a.InRange = m == bot || (bot->GetDistance(m) <= range && bot->IsWithinLOSInMap(m));
+        out.push_back(a);
+        if (members)
+            members->push_back(m);
+    }
+    return out;
+}
+
 class NeedHealTrigger : public Trigger
 {
 public:
@@ -588,7 +721,12 @@ public:
     bool IsActive() override
     {
         Player* bot = GetBot();
-        return bot && GetAI()->GetState() == BotState::Combat && bot->GetHealthPct() < float(Cfg().HealBelowPct);
+        if (!bot || GetAI()->GetState() != BotState::Combat)
+            return false;
+        if (bot->GetHealthPct() < float(Cfg().HealBelowPct))
+            return true;
+        // a healer with a heal spell watches the group too (the heal itself is chosen by HealAction)
+        return Cfg().GroupRoles && bot->GetGroup() && bot->GetGroup()->GetMembersCount() > 1 && BotGroupRoles::AnyoneNeedsHeal(GroupAllies(bot, 100.0f), Cfg().Roles);
     }
 };
 
@@ -600,7 +738,7 @@ public:
     bool IsActive() override
     {
         Player* bot = GetBot();
-        if (!bot || !Cfg().FleeEnabled || Cfg().FleeMode == 1 || !Cfg().LowHpFleePct || GetAI()->GetState() != BotState::Combat || bot->GetHealthPct() >= float(Cfg().LowHpFleePct))
+        if (!bot || !Cfg().FleeEnabled || FleeModeOf(bot) == 1 || !Cfg().LowHpFleePct || GetAI()->GetState() != BotState::Combat || bot->GetHealthPct() >= float(Cfg().LowHpFleePct))
             return false;
         BotCombatCtx* ctx = static_cast<BotCombatCtx*>(GetAI()->GetValueRaw("combat_ctx"));
         if (!ctx || !ctx->InFight || ctx->Fleeing || ctx->FleeAttempts >= Cfg().FleeMaxAttempts || GetAI()->GetNowMs() < ctx->LowHpNextMs)
@@ -628,7 +766,7 @@ public:
 // Picks a destination away from `from` that has a complete navmesh path. Returns false when every direction is blocked.
 bool FindFleePoint(Player* bot, Unit* from, float& ox, float& oy, float& oz, float& dirOut)
 {
-    if (Cfg().FleeMode == 2)
+    if (FleeModeOf(bot) == 2)
     {
         // mode 2: run to the nearest friendly guard (mob that chases us meets the guard); falls through to the open-field flee when none is in reach
         std::list<Creature*> guards;
@@ -766,6 +904,56 @@ public:
 // Opponents = PvE combat references of the bot (melee attackers and casters alike).
 struct Candidate { Unit* Mob; Threat T; float Dist; };
 
+// Calls `fn` for each distinct hostile unit a living group member (not the bot) is fighting, within 45 yards of the bot. At most 32 units.
+template<typename Fn>
+void GroupFoes(Player* bot, Fn&& fn)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return;
+    ObjectGuid seen[32];
+    uint32 n = 0;
+    auto visit = [&](Unit* mob)
+    {
+        if (!mob || !mob->IsInWorld() || !mob->IsAlive() || n >= 32 || bot->GetDistance(mob) > 45.0f)
+            return;
+        for (uint32 i = 0; i < n; ++i)
+            if (seen[i] == mob->GetGUID())
+                return;
+        seen[n++] = mob->GetGUID();
+        fn(mob);
+    };
+    for (GroupReference const& ref : group->GetMembers())
+    {
+        Player* m = ref.GetSource();
+        if (!m || m == bot || !m->IsInWorld() || !m->IsAlive() || m->GetMap() != bot->GetMap() || !m->IsInCombat())
+            continue;
+        visit(m->GetVictim());
+        for (auto const& [guid, combatRef] : m->GetCombatManager().GetPvECombatRefs())
+            visit(combatRef->GetOther(m));
+    }
+}
+
+// Hold fire (Bot.AI.Roles.*): a non-tank waits for the tank to gather threat on the mob before it opens (BotGroupRoles::HoldFire).
+bool HeldByTank(Player* bot, BotAI* ai, BotCombatCtx* ctx, Unit* target)
+{
+    if (!Cfg().GroupRoles || !Cfg().HoldMs || !bot->GetGroup() || !target)
+        return false;
+    Player* tank = GroupTank(bot);
+    BotGroupRoles::HoldFacts f;
+    f.IsTank = tank == bot;
+    f.TankKnown = tank && bot->GetDistance(tank) <= 60.0f;
+    if (f.TankKnown)
+    {
+        Unit* victim = target->GetVictim();
+        f.MobOnTank = victim == tank;
+        f.TankEngaged = f.MobOnTank || tank->GetVictim() == target;
+    }
+    f.MobOnMe = target->GetVictim() == bot;
+    f.SinceMs = ai->GetNowMs() - ctx->TargetSinceMs;
+    return BotGroupRoles::HoldFire(f, Cfg().HoldMs);
+}
+
 class EngageAction : public Action
 {
 public:
@@ -816,6 +1004,10 @@ public:
             if (ctx->Fleeing)
                 return true;
         }
+
+        // group play: wait for the tank to gather threat before the first hit
+        if (bot->GetVictim() != target && HeldByTank(bot, ai, ctx, target))
+            return changed;
 
         // attack
         if (bot->GetVictim() != target)
@@ -917,10 +1109,19 @@ private:
                 continue;
             if (mob->GetGUID() == ctx->Ignored && now < ctx->IgnoredUntilMs)
                 continue;
+            if (ai->IsPassive() && mob->GetVictim() != bot)
+                continue;   // `passive` (Bot.Chat.Orders.*): only self defense
             cands.push_back({ mob, Assess(bot, mob), bot->GetDistance(mob) });
             if (cands.size() >= 12)
                 break;
         }
+        // in a group the bot may be called into a fight it is not in yet: the mobs the other members fight are its candidates
+        if (cands.empty() && Cfg().GroupRoles)
+            GroupFoes(bot, [&](Unit* mob)
+            {
+                if (cands.size() < 12 && CanFight(bot, mob) && !(mob->GetGUID() == ctx->Ignored && now < ctx->IgnoredUntilMs))
+                    cands.push_back({ mob, Assess(bot, mob), bot->GetDistance(mob) });
+            });
         if (cands.empty())
         {
             if (!ctx->NoTargetLogged && now - ctx->StartMs >= 2000)
@@ -944,7 +1145,11 @@ private:
         auto nearest = [&](bool strongOk) -> Candidate*
         {
             // nearest wins, but every level above the bot counts as 12 more yards: prefers +0/-1 mobs over a +2 one
-            auto score = [](Candidate const& c) { return c.Dist + 12.0f * float(std::max(0, c.T.Diff)); };
+            // an avoid-list creature (Bot.AI.Avoid.*) counts as 100 more yards: fought last unless nothing else is on the bot
+            auto score = [bot](Candidate const& c)
+            {
+                return c.Dist + 12.0f * float(std::max(0, c.T.Diff)) + (AvoidedByList(bot, c.Mob) ? 100.0f : 0.0f);
+            };
             Candidate* best = nullptr;
             for (Candidate& c : cands)
                 if ((strongOk || !c.T.TooStrong) && (!best || score(c) < score(*best)))
@@ -953,6 +1158,35 @@ private:
         };
 
         Candidate* pick = nearest(false);
+        // group play (Bot.AI.Roles.*): everybody but the tank attacks what the tank attacks, so threat builds on one mob
+        if (pick && Cfg().GroupRoles && bot->GetGroup())
+        {
+            Player* tank = GroupTank(bot);
+            if (tank == bot)
+                tank = nullptr;
+            if (tank)
+            {
+                std::vector<BotGroupRoles::Foe> foes;
+                std::vector<Candidate*> usable;
+                for (Candidate& c : cands)
+                {
+                    if (c.T.TooStrong)
+                        continue;
+                    Unit* victim = c.Mob->GetVictim();
+                    BotGroupRoles::Foe f;
+                    f.Guid = c.Mob->GetGUID().GetCounter();
+                    f.HealthPct = int32(c.Mob->GetHealthPct());
+                    f.OnTank = victim == tank;
+                    f.OnHealer = victim && victim != tank && victim->GetTypeId() == TYPEID_PLAYER;
+                    foes.push_back(f);
+                    usable.push_back(&c);
+                }
+                Unit* tankVictim = tank->GetVictim();
+                int32 const idx = BotGroupRoles::PickAssistTarget(foes, tankVictim ? tankVictim->GetGUID().GetCounter() : 0);
+                if (idx >= 0)
+                    pick = usable[size_t(idx)];
+            }
+        }
         std::string considered;
         for (size_t i = 0; i < cands.size() && i < 6; ++i)
             considered += StringFormat(R"({}{{"entry":{},"level":{},"eff_diff":{},"dist":{:.0f},"too_strong":{}}})", i ? "," : "", cands[i].Mob->GetEntry(),
@@ -963,7 +1197,7 @@ private:
             // everything on us is too strong
             Candidate* worst = nearest(true);
             char const* why = "NO_FLEE_PATH";
-            if (Cfg().FleeMode == 1)
+            if (FleeModeOf(bot) == 1)
                 why = "FLEE_MODE_FIGHT_TO_END";
             else if (!Cfg().FleeEnabled)
                 why = "FLEE_DISABLED";
@@ -1037,9 +1271,9 @@ bool TryCast(BotAI* ai, Player* bot, BotCombatCtx* ctx, Resolved const& r, Unit*
         ctx->BlockPower = res == SPELL_FAILED_NO_POWER;
         ctx->BlockUntilMs = nowMs + (ctx->BlockPower ? 3000 : 60000);
     }
-    // Shoot: two failures (not a swing timer, range or equipment result) and the caster fights in melee until its mana is back
+    // Shoot: two failures (not a swing timer (NOT_READY or DONT_REPORT = ranged swing not ready, Spell::CheckCast), range or equipment result) and the caster fights in melee until its mana is back
     if (r.Def->Type == Kind::Wand && !ctx->MeleeFallback && res != SPELL_FAILED_NOT_READY && res != SPELL_FAILED_OUT_OF_RANGE &&
-        res != SPELL_FAILED_MOVING && res != SPELL_FAILED_SPELL_IN_PROGRESS && res != SPELL_FAILED_NO_AMMO && res != SPELL_FAILED_NEED_AMMO &&
+        res != SPELL_FAILED_MOVING && res != SPELL_FAILED_SPELL_IN_PROGRESS && res != SPELL_FAILED_DONT_REPORT && res != SPELL_FAILED_NO_AMMO && res != SPELL_FAILED_NEED_AMMO &&
         res != SPELL_FAILED_EQUIPPED_ITEM && res != SPELL_FAILED_EQUIPPED_ITEM_CLASS && res != SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND)
     {
         if (!ctx->WandFails || nowMs - ctx->WandFailMs >= 1000)
@@ -1069,7 +1303,7 @@ bool TryCast(BotAI* ai, Player* bot, BotCombatCtx* ctx, Resolved const& r, Unit*
     }
     // not-ready/range/moving results are the normal rhythm of a fight; the rest is worth a row (once per fight)
     bool const routine = res == SPELL_FAILED_NOT_READY || res == SPELL_FAILED_OUT_OF_RANGE || res == SPELL_FAILED_MOVING || res == SPELL_FAILED_SPELL_IN_PROGRESS ||
-        res == SPELL_FAILED_NO_POWER || res == SPELL_FAILED_UNIT_NOT_INFRONT || res == SPELL_FAILED_NOT_INFRONT || res == SPELL_FAILED_INTERRUPTED;
+        res == SPELL_FAILED_NO_POWER || res == SPELL_FAILED_DONT_REPORT || res == SPELL_FAILED_UNIT_NOT_INFRONT || res == SPELL_FAILED_NOT_INFRONT || res == SPELL_FAILED_INTERRUPTED;
     if (!ctx->FailSeen(r.Id, uint32(res)) && !(routine && res != SPELL_FAILED_OUT_OF_RANGE))
         LogDecision(ai, bot, ctx, "CAST_FAILED", StringFormat("{} failed: {}", SpellNameOf(r.Info), CastResultName(uint32(res))),
             StringFormat(R"("spell":{},"spell_name":"{}","result":{},"result_name":"{}","dist":{:.1f},"power":{},"target":{},"routine":{})", r.Id, Json(SpellNameOf(r.Info)),
@@ -1094,6 +1328,35 @@ bool HasRequiredAura(Player* bot, BotCombatCtx* ctx, uint32 root)
     return false;
 }
 
+// Minimum time between two casts of a self buff. A seal that another spell consumes (Judgement needs it and uses it up) is recast
+// quickly, otherwise the next Judgement waits for the 25 s throttle with no seal and fails with CASTER_AURASTATE.
+uint32 BuffRecastMs(BotCombatCtx* ctx, Resolved const& r)
+{
+    for (Resolved const& s : ctx->Spells)
+        if (s.Def->ReqAura == r.Def->Root)
+            return 3000;
+    return 25000;
+}
+
+// Facts for the rotation conditions (BotRotation.h), read once per cast tick.
+BotRotation::Facts RotationFacts(BotAI* ai, Player* bot, BotCombatCtx* ctx, Unit* target)
+{
+    BotRotation::Facts f;
+    f.Enabled = Cfg().Rotation;
+    f.SelfHpPct = int32(bot->GetHealthPct());
+    uint32 const maxPower = bot->GetMaxPower(bot->GetPowerType());
+    f.SelfPowerPct = maxPower ? int32(uint64(bot->GetPower(bot->GetPowerType())) * 100 / maxPower) : 100;
+    f.TargetHpPct = int32(target->GetHealthPct());
+    f.EnemiesOnBot = std::max<uint32>(1, uint32(bot->getAttackers().size()));
+    f.TargetCasting = target->IsNonMeleeSpellCast(false);
+    f.TargetFleeing = target->HasUnitState(UNIT_STATE_FLEEING);
+    if (Creature const* c = target->ToCreature())
+        f.TargetElite = c->IsElite();
+    f.TargetLevelDiff = int32(target->GetLevel()) - int32(bot->GetLevel());
+    f.FightMs = ai->GetNowMs() - ctx->StartMs;
+    return f;
+}
+
 class CastAction : public Action
 {
 public:
@@ -1109,15 +1372,19 @@ public:
         if (!CanFight(bot, target))
             return false;
 
+        if (bot->GetVictim() != target && HeldByTank(bot, ai, ctx, target))
+            return false;
+
         float const dist = bot->GetDistance(target);
         bool const inMelee = bot->IsWithinMeleeRange(target);
         bool const moving = bot->isMoving();
         bool skippedForPower = false;
+        BotRotation::Facts const facts = RotationFacts(ai, bot, ctx, target);
 
         for (Resolved const& r : ctx->Spells)
         {
             Kind const kind = r.Def->Type;
-            if (kind == Kind::Heal)
+            if (kind == Kind::Heal || !BotRotation::Allowed(r.Def->When, facts))
                 continue;
             if (r.Id == ctx->BlockSpell && ai->GetNowMs() < ctx->BlockUntilMs)
             {
@@ -1126,7 +1393,7 @@ public:
             }
             if (kind == Kind::SelfBuff)
             {
-                if (bot->HasAura(r.Id) || !Ready(bot, r) || !Affordable(bot, r.Info) || (ctx->LastBuffMs && ai->GetNowMs() - ctx->LastBuffMs < 25000))
+                if (bot->HasAura(r.Id) || !Ready(bot, r) || !Affordable(bot, r.Info) || (ctx->LastBuffMs && ai->GetNowMs() - ctx->LastBuffMs < BuffRecastMs(ctx, r)))
                     continue;
                 if (TryCast(ai, bot, ctx, r, nullptr))
                 {
@@ -1141,6 +1408,10 @@ public:
                 continue;
             if (kind == Kind::Dot && target->HasAura(r.Id, bot->GetGUID()))
                 continue;
+            if (kind == Kind::Debuff && target->HasAura(r.Id))
+                continue;
+            if (kind == Kind::Finisher && bot->HasAura(r.Id))
+                continue; // Slice and Dice: the aura is running
             if (kind == Kind::Wand && (!skippedForPower || ctx->MeleeFallback))
                 continue; // the wand only fills in for spells the bot cannot afford (this entry comes last in the class table)
             if (r.Info->EquippedItemClass >= 0 && !WeaponOk(bot, r.Info) && !(RepairIfBroken(ai, bot, ctx->Seq) && WeaponOk(bot, r.Info)))
@@ -1211,20 +1482,142 @@ public:
         Player* bot = GetBot();
         BotAI* ai = GetAI();
         BotCombatCtx* ctx = FightCtx(ai, bot);
-        if (CastingNow(bot) || ai->GetNowMs() - ctx->LastHealMs < 3000 && ctx->Heals)
+        if (CastingNow(bot) || ai->GetNowMs() - ctx->LastHealMs < (Cfg().GroupRoles && bot->GetGroup() ? 1500u : 3000u) && ctx->Heals)
             return false;
         Resolved const* heal = ctx->Find(Kind::Heal);
         if (!heal || !Ready(bot, *heal) || !Affordable(bot, heal->Info))
             return false;
-        float const hpBefore = bot->GetHealthPct();
-        if (!TryCast(ai, bot, ctx, *heal, bot))
+        float hpBefore = bot->GetHealthPct();
+        Unit* healTarget = bot;
+        if (Cfg().GroupRoles && bot->GetGroup())
+        {
+            std::vector<Player*> members;
+            std::vector<BotGroupRoles::Ally> allies = GroupAllies(bot, std::max(5.0f, heal->MaxRange - 1.0f), &members);
+            int32 const pick = BotGroupRoles::PickHealTarget(allies, Cfg().Roles);
+            if (pick >= 0)
+            {
+                healTarget = members[size_t(pick)];
+                hpBefore = healTarget->GetHealthPct();
+            }
+            else if (bot->GetHealthPct() >= float(Cfg().HealBelowPct))
+                return false;   // somebody needs a heal but cannot be reached, and the bot itself is fine
+        }
+        if (!TryCast(ai, bot, ctx, *heal, healTarget))
             return false;
         ctx->LastHealMs = ai->GetNowMs();
         ++ctx->Heals;
-        SetResult("SELF_HEAL", StringFormat("casts {} at {:.0f}% health", SpellNameOf(heal->Info), hpBefore),
+        SetResult(healTarget == bot ? "SELF_HEAL" : "GROUP_HEAL", StringFormat("casts {} at {:.0f}% health", SpellNameOf(heal->Info), hpBefore),
             StringFormat(R"({{"spell":{},"spell_name":"{}","hp_pct":{:.0f},"threshold":{},"fight_seq":{}}})", heal->Id, Json(SpellNameOf(heal->Info)), hpBefore, Cfg().HealBelowPct, ctx->Seq));
         return true;
     }
+};
+
+// ---------------------------------------------------------------------------------------------------------------------
+// tank (Bot.AI.Roles.*): the warrior of a group holds Defensive Stance, taunts mobs that attack other members and keeps Sunder Armor up
+// ---------------------------------------------------------------------------------------------------------------------
+constexpr SpellDef TANK_SPELLS[] =
+{
+    { CLASS_WARRIOR, 71,   "Defensive Stance", Kind::SelfBuff },
+    { CLASS_WARRIOR, 355,  "Taunt",            Kind::Direct },
+    { CLASS_WARRIOR, 7386, "Sunder Armor",     Kind::Direct },
+};
+
+// Highest known rank of a tank spell, only when the id still carries the expected name; false when the bot does not know it.
+bool ResolveTankSpell(Player* bot, SpellDef const& def, Resolved& out)
+{
+    if (!bot->HasSpell(def.Root))
+        return false;
+    uint32 id = def.Root;
+    for (uint32 guard = 0; guard < 16; ++guard)
+    {
+        uint32 const next = sSpellMgr->GetNextSpellInChain(id);
+        if (!next || !bot->HasSpell(next))
+            break;
+        id = next;
+    }
+    SpellInfo const* si = sSpellMgr->GetSpellInfo(id, DIFFICULTY_NONE);
+    if (!si || !StringEqualI(SpellNameOf(sSpellMgr->GetSpellInfo(def.Root, DIFFICULTY_NONE)), def.Name))
+        return false;
+    out.Def = &def;
+    out.Id = id;
+    out.Info = si;
+    out.MaxRange = si->GetMaxRange(false, bot);
+    out.MinRange = si->GetMinRange(false);
+    out.MeleeRange = false;
+    return true;
+}
+
+class TankAction : public Action
+{
+public:
+    explicit TankAction(BotAI* ai) : Action(ai, "combat_tank", ACTION_FLAG_NONE) { }
+    bool Execute() override
+    {
+        Player* bot = GetBot();
+        BotAI* ai = GetAI();
+        if (!Cfg().GroupRoles || bot->GetClass() != CLASS_WARRIOR || !bot->GetGroup() || GroupTank(bot) != bot)
+            return false;
+        BotCombatCtx* ctx = FightCtx(ai, bot);
+        if (ctx->Fleeing || CastingNow(bot) || bot->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_CONFUSED | UNIT_STATE_FLEEING))
+            return false;
+        uint32 const now = ai->GetNowMs();
+
+        // 1. Defensive Stance (Taunt needs it); the offensive stance spells of the table then fail and back off
+        Resolved stance;
+        if (ResolveTankSpell(bot, TANK_SPELLS[0], stance) && !bot->HasAura(stance.Id) && Ready(bot, stance) && Affordable(bot, stance.Info))
+            if (TryCast(ai, bot, ctx, stance, nullptr))
+            {
+                SetResult("TANK_STANCE", "takes Defensive Stance", StringFormat(R"({{"spell":{},"fight_seq":{}}})", stance.Id, ctx->Seq));
+                return true;
+            }
+
+        // 2. taunt a mob that attacks another member
+        Resolved taunt;
+        if (ResolveTankSpell(bot, TANK_SPELLS[1], taunt) && Ready(bot, taunt) && Affordable(bot, taunt.Info) && bot->HasAura(71))
+        {
+            std::vector<BotGroupRoles::Foe> foes;
+            std::vector<Unit*> mobs;
+            GroupFoes(bot, [&](Unit* mob)
+            {
+                Unit* victim = mob->GetVictim();
+                if (!CanFight(bot, mob) || !victim || victim == bot || victim->GetTypeId() != TYPEID_PLAYER)
+                    return;
+                BotGroupRoles::Foe f;
+                f.Guid = mob->GetGUID().GetCounter();
+                f.HealthPct = int32(mob->GetHealthPct());
+                f.OnHealer = true;
+                f.VictimHealthPct = int32(victim->GetHealthPct());
+                f.VictimIsHealer = victim->GetClass() == CLASS_PRIEST || victim->GetClass() == CLASS_DRUID || victim->GetClass() == CLASS_SHAMAN || victim->GetClass() == CLASS_PALADIN;
+                f.InRange = bot->GetDistance(mob) <= std::max(5.0f, taunt.MaxRange - 1.0f) && bot->IsWithinLOSInMap(mob);
+                f.Taunted = mob->HasAura(taunt.Id, bot->GetGUID());
+                foes.push_back(f);
+                mobs.push_back(mob);
+            });
+            int32 const idx = BotGroupRoles::PickTauntTarget(foes);
+            if (idx >= 0 && TryCast(ai, bot, ctx, taunt, mobs[size_t(idx)]))
+            {
+                SetResult("TAUNT", StringFormat("taunts {}", mobs[size_t(idx)]->GetName()),
+                    StringFormat(R"({{"spell":{},"target_entry":{},"victim_hp_pct":{},"fight_seq":{}}})", taunt.Id, mobs[size_t(idx)]->GetEntry(), foes[size_t(idx)].VictimHealthPct, ctx->Seq));
+                return true;
+            }
+        }
+
+        // 3. Sunder Armor on the target until five stacks
+        Unit* target = ctx->Target.IsEmpty() ? nullptr : ObjectAccessor::GetUnit(*bot, ctx->Target);
+        Resolved sunder;
+        if (target && CanFight(bot, target) && ResolveTankSpell(bot, TANK_SPELLS[2], sunder) && bot->IsWithinMeleeRange(target) && Ready(bot, sunder) && Affordable(bot, sunder.Info))
+        {
+            Aura const* aura = target->GetAura(sunder.Id, bot->GetGUID());
+            if ((!aura || aura->GetStackAmount() < 5) && now - _lastSunderMs >= 1500 && TryCast(ai, bot, ctx, sunder, target))
+            {
+                _lastSunderMs = now;
+                return true;
+            }
+        }
+        return false;
+    }
+private:
+    uint32 _lastSunderMs = 0;
 };
 
 } // namespace
@@ -1232,9 +1625,52 @@ public:
 // ---------------------------------------------------------------------------------------------------------------------
 // console aid and registration
 // ---------------------------------------------------------------------------------------------------------------------
+bool BotCombatGroupEngaged(Player* bot)
+{
+    if (!bot || !Cfg().GroupRoles || !bot->GetGroup() || !bot->IsAlive())
+        return false;
+    bool found = false;
+    GroupFoes(bot, [&](Unit* mob) { found = found || CanFight(bot, mob); });
+    return found;
+}
+
+bool BotCombatAvoids(Player const* bot, Creature const* mob)
+{
+    return bot && AvoidedByList(bot, mob);
+}
+
+int32 BotCombatFleeMode(Player const* bot)
+{
+    return bot ? FleeModeOf(bot) : Cfg().FleeMode;
+}
+
 uint32 BotCombatPrePullManaPct()
 {
     return Cfg().PrePullManaPct;
+}
+
+char const* BotCombatHealUnit(Player* bot, Unit* target)
+{
+    if (!bot || !target || !target->IsAlive())
+        return "CAST_FAILED";
+    BotCombatCtx probe(nullptr);
+    probe.Resolve(bot);
+    Resolved const* heal = probe.Find(Kind::Heal);
+    if (!heal)
+        return "NO_HEAL_SPELL";
+    if (CastingNow(bot) || bot->isMoving())
+        return "BUSY";
+    if (!Ready(bot, *heal))
+        return "COOLDOWN";
+    if (!Affordable(bot, heal->Info))
+        return "NO_POWER";
+    if (bot->GetDistance(target) > heal->MaxRange)
+        return "OUT_OF_RANGE";
+    if (!bot->IsWithinLOSInMap(target))
+        return "NO_LOS";
+    if (target != bot && !bot->HasInArc(float(M_PI), target))
+        bot->SetInFront(target);
+    return bot->CastSpell(target, heal->Id, CastSpellExtraArgs(TRIGGERED_NONE)) == SPELL_CAST_OK ? "OK" : "CAST_FAILED";
 }
 
 std::vector<std::string> BotCombatDescribeSpells(Player* bot)
@@ -1293,6 +1729,7 @@ void RegisterCombatBotObjects(BotRegistry& r)
     r.AddAction("combat_heal", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<HealAction>(ai); });
     r.AddAction("combat_engage", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<EngageAction>(ai); });
     r.AddAction("combat_cast", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<CastAction>(ai); });
+    r.AddAction("combat_tank", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<TankAction>(ai); });
 
     class CombatStrategy : public Strategy
     {
@@ -1303,7 +1740,7 @@ void RegisterCombatBotObjects(BotRegistry& r)
             t.push_back({ "combat_fleeing", { { "combat_flee", BotRelevance::Emergency } } });
             t.push_back({ "combat_low_hp", { { "combat_flee_low_hp", BotRelevance::Emergency - 10.0f } } });
             t.push_back({ "combat_need_heal", { { "combat_heal", BotRelevance::High + 40.0f } } });
-            t.push_back({ "combat_engaged", { { "combat_engage", BotRelevance::Move }, { "combat_cast", BotRelevance::Normal } } });
+            t.push_back({ "combat_engaged", { { "combat_engage", BotRelevance::Move }, { "combat_cast", BotRelevance::Normal }, { "combat_tank", BotRelevance::Move + 5.0f } } });
         }
     };
     r.AddStrategy("combat", BotStateBit(BotState::Combat), []() -> std::unique_ptr<Strategy> { return std::make_unique<CombatStrategy>(); });

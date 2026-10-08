@@ -14,6 +14,8 @@ The later loot work (`Bot.AI.Loot.Improved.*`, default **off**) has deadly areas
 
 Not changed: the 12 minute and 8 attempt caps, the R5 quest quarantine for loot drops when Improved is off, claim and cooling logic, path-cost choice (still the Improved switch).
 
+Note: an earlier version of this change had its own danger check (`QUEST_LOOT_DANGER`, `LOOT_DANGER`, `Bot.AI.Loot.Safety.DangerGap`). It was dropped when merging with `forever`, which already re-checks the camp around the spawn while approaching (`GoDangerAt`). Item 1 above and the danger rows in the queries file no longer apply.
+
 ## Needs a sim run
 
 Nothing here has been run on a server. The pure functions have unit tests (`[BotLoot]`); `BotQuest.cpp` was only read carefully, not compiled here. Open questions: whether the danger threshold is too strict for level 3 bots at level 8 to 10 chests (it could cut the 936 R5 loot successes; tune `Bot.AI.Loot.Safety.DangerGap`), whether the grid scan finds mobs far enough ahead, and whether the extra deaths come from the loot walks at all. The queries in `loot-regression-queries-20261008.sql` answer this on `bot_event_all`: deaths within 90 s of a loot go and per chest area, stuck and path failures on loot quests, retries per spawn, and loot/reward counts to check that progress did not fall. Compare against R5 on the same 60 minute window.

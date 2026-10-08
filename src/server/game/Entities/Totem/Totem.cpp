@@ -108,6 +108,12 @@ void Totem::UnSummon(uint32 msTime)
     CombatStop();
     RemoveAurasDueToSpell(GetSpell(), GetGUID());
 
+    // Sentry's parent aura belongs to the owner, not the totem's spell slot.
+    // Delayed removal of a superseded totem must preserve its replacement's aura.
+    ObjectGuid const& airTotem = GetOwner()->m_SummonSlot[SUMMON_SLOT_TOTEM + 3];
+    bool const removeSentryAura = GetEntry() == 3968 && m_unitData->CreatedBySpell == 6495
+        && GetOwner()->GetClass() == CLASS_SHAMAN && (airTotem.IsEmpty() || airTotem == GetGUID());
+
     // clear owner's totem slot
     for (uint8 i = SUMMON_SLOT_TOTEM; i < MAX_TOTEM_SLOT; ++i)
     {
@@ -119,6 +125,8 @@ void Totem::UnSummon(uint32 msTime)
     }
 
     GetOwner()->RemoveAurasDueToSpell(GetSpell(), GetGUID());
+    if (removeSentryAura)
+        GetOwner()->RemoveAurasDueToSpell(6495, GetOwner()->GetGUID());
 
     // remove aura all party members too
     if (Player* owner = GetOwner()->ToPlayer())

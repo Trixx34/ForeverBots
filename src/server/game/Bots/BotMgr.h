@@ -21,6 +21,7 @@
 #include "Define.h"
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <future>
 #include <list>
 #include <map>
@@ -141,6 +142,10 @@ public:
     // Called once per world update tick (see World::Update). Counts ticks and flushes the log buffer.
     void Update(uint32 diff);
 
+    // Thread-safe. Queues a task for the world thread (run at the start of the next Update). Map-thread bot code uses it for work that
+    // touches global state or session handlers that the core runs on the world thread (auction house, mail).
+    void PostWorldTask(std::function<void()> task);
+
     // Status line: ticks, bots known/online, log state.
     std::string GetStatus() const;
 
@@ -237,6 +242,14 @@ private:
     uint32 _ticks = 0;
     uint32 _uptimeMs = 0;
 
+    // Bot.Log.ServerStatsSec: periodic server log line (BOT_TICK_STATS) with the server update diff and the BotMgr::Update cost, for A/B runs
+    void LogTickStats(uint32 diff, uint64 updateUs);
+    uint32 _statsIntervalMs = 60000;
+    uint32 _statsSinceMs = 0;
+    uint32 _statsTicks = 0;
+    uint64 _statsDiffSum = 0, _statsMgrUsSum = 0;
+    uint32 _statsDiffMax = 0, _statsMgrUsMax = 0;
+
     bool _registryLoaded = false;
     uint32 _nextAccountNumber = 1;
     uint32 _onlineCount = 0;
@@ -271,6 +284,8 @@ private:
         InFlight(TransactionCallback&& cb) : Callback(std::move(cb)) { }
     };
     std::list<InFlight> _inFlight;        // world thread only
+    std::mutex _worldTaskLock;
+    std::vector<std::function<void()>> _worldTasks;
     // Reachability probe (Bot.Log.ProbeIntervalSec): a TCP connect to the bot log host on a helper thread, polled by the world thread.
     // The core DB layer aborts the process when a reconnect fails, so rows must not be submitted while the server is unreachable.
     std::string _probeHost, _probePort;
@@ -295,6 +310,7 @@ private:
         uint64 Session = 0;
         std::unordered_map<std::string, uint32> Counts;            // events let through per key this session
         std::unordered_map<std::string, LogRepeat> Pending;        // suppressed since the last flush row
+        uint32 SuppressedLogin = 0;                                // suppressed rows this session, reported as login_total
     };
     std::unordered_map<uint64, BotLogState> _botLogState;
     uint32 _repeatCap = 3;                                          // Bot.Log.RepeatCap, 0 = no cap

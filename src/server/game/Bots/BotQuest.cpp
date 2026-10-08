@@ -26,16 +26,24 @@
 #include "BotQuest.h"
 #include "BotQuestClassifier.h"
 #include "BotAI.h"
+#include "BotAuction.h"
 #include "BotBehavior.h"
+#include "BotCombat.h"
+#include "BotDungeonRun.h"
 #include "BotEngine.h"
 #include "BotLootPlan.h"
+#include "BotGear.h"
+#include "BotProfession.h"
+#include "GameTime.h"
 #include "BotMgr.h"
 #include "BotPet.h"
+#include "BotTravel.h"
 #include "Config.h"
 #include "Creature.h"
 #include "CreatureData.h"
 #include "DB2Stores.h"
 #include "DB2Structure.h"
+#include "SpellMgr.h"
 #include "DatabaseEnv.h"
 #include "GameObject.h"
 #include "Item.h"
@@ -58,6 +66,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <array>
+#include <deque>
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
@@ -90,7 +100,15 @@ struct QuestCfg
     uint32 HubScanSec = 20;        // minimum time between hub scans of one bot
     int32 GrindMaxGap = 1;         // Bot.AI.Grind.MaxLevelGap: grind targets at most this many (effective) levels above the bot
     float GrindMaxRadius = 150.0f; // Bot.AI.Grind.MaxRadius: grind targets stay this close to the grind anchor, 0 = off
+    float FirstStrikeMargin = 2.0f; // Bot.AI.Pull.FirstStrikeMargin: ranged classes open from the mob's aggro radius plus this (yards), 0 = off
+    float PullRangedMax = 28.0f;   // Bot.AI.Pull.RangedMaxYd: cap of that wider opener distance
     int32 FleeMode = 0;            // Bot.AI.Flee.Mode (0 current, 1 aggro avoidance, 2 flee to guard); here: mode >= 1 avoids gap >= 2 mobs
+    // Death-reduction rules, each off by default (A/B switches)
+    bool GateLegs = false;         // Bot.Quest.GateLongLegs: no go_giver / go_ender / loot leg over LegGateYd for an under-level bot that died recently or sees mobs 2+ levels above
+    bool LootByCost = false;       // Bot.Quest.LootSpawnByCost: loot spawn chosen by path cost, not too far, penalty for death areas
+    bool DeathLoop = false;        // Bot.Quest.DeathLoopBreaker: second death within 10 min on the same quest / area drops the task and defers the quest
+    bool DeferQuest8 = false;      // Bot.Quest.DeferQuest8: quest 8 is not taken before level 4
+    float LegGateYd = 150.0f;      // Bot.Quest.LegGateYd
 };
 
 QuestCfg const& Cfg()
@@ -111,7 +129,14 @@ QuestCfg const& Cfg()
         cfg.SelBlockCap = uint32(std::max<int32>(0, sConfigMgr->GetIntDefault("Bot.Quest.SelectionBlockLogCap", 40)));
         cfg.GrindMaxGap = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Grind.MaxLevelGap", 1), -5, 10);
         cfg.GrindMaxRadius = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Grind.MaxRadius", 150), 0, 2000));
+        cfg.FirstStrikeMargin = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Pull.FirstStrikeMargin", 2), 0, 10));
+        cfg.PullRangedMax = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Pull.RangedMaxYd", 28), 10, 40));
         cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
+        cfg.GateLegs = sConfigMgr->GetBoolDefault("Bot.Quest.GateLongLegs", false);
+        cfg.LootByCost = sConfigMgr->GetBoolDefault("Bot.Quest.LootSpawnByCost", false);
+        cfg.DeathLoop = sConfigMgr->GetBoolDefault("Bot.Quest.DeathLoopBreaker", false);
+        cfg.DeferQuest8 = sConfigMgr->GetBoolDefault("Bot.Quest.DeferQuest8", false);
+        cfg.LegGateYd = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Quest.LegGateYd", 150), 50, 2000));
     });
     return cfg;
 }
@@ -154,10 +179,8 @@ BotLoot::DeadlyAreas g_deadly{ 128 };   // bot deaths of the last minutes, share
 struct LootSafetyCfg
 {
     bool Enabled = true;
-    int32 DangerGap = 0;           // effective level gap of a nearby mob that makes a chest unsafe; 0 = Bot.Quest.MaxMobLevelDiff + 2
     uint32 QuarantineStrikes = 3;  // bot-independent failures of one spawn (in 30 min) before every bot skips it
     uint32 QuarantineSec = 1200;
-    uint32 DangerCooldownSec = 300;
 };
 
 LootSafetyCfg const& Safety()
@@ -167,10 +190,8 @@ LootSafetyCfg const& Safety()
     std::call_once(once, []()
     {
         cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Loot.Safety.Enabled", true);
-        cfg.DangerGap = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Loot.Safety.DangerGap", 0), 0, 20);
         cfg.QuarantineStrikes = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Loot.Safety.QuarantineStrikes", 3), 1, 20));
         cfg.QuarantineSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Loot.Safety.QuarantineSec", 1200), 60, 86400));
-        cfg.DangerCooldownSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Loot.Safety.DangerCooldownSec", 300), 30, 86400));
     });
     return cfg;
 }
@@ -244,6 +265,17 @@ struct GoPt
     bool Pooled = false;
 };
 
+// a mining vein or herb node (E2), indexed once from the lock of every chest-type game object
+struct NodePt
+{
+    uint32 Map = 0;
+    float X = 0, Y = 0, Z = 0;
+    uint32 Entry = 0;
+    uint32 Skill = 0;      // BotProfession::SKILL_MINING / SKILL_HERBALISM
+    uint32 Req = 0;        // skill needed to open it
+    uint64 SpawnId = 0;
+};
+
 struct GrindPt
 {
     float X, Y, Z;
@@ -270,6 +302,43 @@ struct BagOffer
     int32 ReqLevel = 0;
 };
 
+// Bot.AI.Ammo.*: ranged bots (a bow, crossbow or gun equipped) keep ammo stocked: low ammo plans a vendor trip and buys arrows or bullets. Off by default.
+struct AmmoConfig
+{
+    bool Enabled = false;
+    uint32 LowCount = 60;       // below this many rounds of the right type the bot plans a vendor trip
+    uint32 BuyTarget = 400;     // the vendor visit tops the bot up to about this many
+    uint32 CooldownSec = 300;   // minimum time between ammo trips of one bot
+};
+
+AmmoConfig const& AmmoCfg()
+{
+    static AmmoConfig cfg;
+    static std::once_flag once;
+    std::call_once(once, []()
+    {
+        cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Ammo.Enabled", false);
+        cfg.LowCount = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Ammo.LowCount", 60), 1, 2000));
+        cfg.BuyTarget = std::max<uint32>(cfg.LowCount + 1, uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Ammo.BuyTarget", 400), 1, 4000)));
+        cfg.CooldownSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Ammo.CooldownSec", 300), 30, 7200));
+    });
+    return cfg;
+}
+
+struct AmmoOffer
+{
+    uint32 Item = 0;
+    uint32 VendorSlot = 0;
+    uint32 SubClass = 0;      // ITEM_SUBCLASS_ARROW / ITEM_SUBCLASS_BULLET
+    uint32 Price = 0;         // copper per BuyCount units
+    uint32 BuyCount = 1;
+    uint32 MaxStack = 1;
+    int32 ReqLevel = 0;
+};
+
+constexpr uint32 SPELL_SKINNING = 8613;
+constexpr uint32 SPELL_MINING = 2575;
+constexpr uint32 SPELL_HERB_GATHERING = 2366;
 constexpr float GRID_CELL = 200.0f;
 constexpr uint32 MAX_STARTER_POINTS = 8;
 
@@ -288,11 +357,16 @@ struct Index
     std::unordered_map<uint64, uint32> HubByCell;                  // (map, cell) -> index in Hubs
     std::unordered_map<uint64, std::vector<GrindPt>> GrindGrid;    // (map, cell) -> hostile normal-rank spawns (grind fallback)
     uint32 NumGrind = 0;
-    // trainers by key: class id (1..11). Profession trainers would use 0x100 | skill line (not indexed in v1).
+    // trainers by key: class id (1..11), or 0x100 | skill line for the profession trainers of BotProfession (first aid, cooking, gathering)
     std::unordered_map<uint32, std::vector<SvcPt>> Trainers;
     std::vector<SvcPt> Vendors;
+    std::vector<SvcPt> Auctioneers;   // UNIT_NPC_FLAG_AUCTIONEER spawns (Svc 6)
+    std::vector<NodePt> Mailboxes;    // mailbox game objects (Svc 7)
+    std::vector<NodePt> Nodes;
+    std::unordered_map<uint32, std::vector<NodePt>> Focus;   // SpellFocusObject id -> spawned forges, anvils, cooking fires (Skill field holds the focus id)
     std::unordered_map<uint32, std::vector<BagOffer>> VendorBags;   // vendor entry -> plain bags it sells for gold
-    uint32 NumTrainers = 0, NumBagVendors = 0, MinBagPrice = 0xFFFFFFFFu;
+    std::unordered_map<uint32, std::vector<AmmoOffer>> VendorAmmo;  // vendor entry -> arrows/bullets it sells for gold (only filled with Bot.AI.Ammo.Enabled)
+    uint32 NumTrainers = 0, NumProfTrainers = 0, NumBagVendors = 0, MinBagPrice = 0xFFFFFFFFu, NumAmmoVendors = 0;
     uint32 NumStarterQuests = 0, NumStarterPoints = 0, NumSpawnEntries = 0, NumItemSources = 0, NumGoItems = 0, NumGoSpawns = 0;
 } g;
 
@@ -711,7 +785,62 @@ void BuildIndex()
         ++g.NumGrind;
     }
 
-    // 9. class trainers and vendors (E1/E4)
+    // 8b. mining veins and herb nodes (E2): a chest-type game object whose lock asks for the mining or herbalism skill
+    {
+        std::unordered_map<uint32, std::pair<uint32, uint32>> nodeKinds;   // go entry -> (skill, required value)
+        for (auto const& [goEntry, goTmpl] : sObjectMgr->GetGameObjectTemplates())
+        {
+            if (goTmpl.type != GAMEOBJECT_TYPE_CHEST || !goTmpl.GetLockId())
+                continue;
+            LockEntry const* lock = sLockStore.LookupEntry(goTmpl.GetLockId());
+            if (!lock)
+                continue;
+            for (uint32 i = 0; i < MAX_LOCK_CASE; ++i)
+            {
+                if (lock->Type[i] != LOCK_KEY_SKILL)
+                    continue;
+                if (lock->Index[i] == LOCKTYPE_MINING || lock->Index[i] == LOCKTYPE_MINING_2)
+                    nodeKinds[goEntry] = { BotProfession::SKILL_MINING, lock->Skill[i] };
+                else if (lock->Index[i] == LOCKTYPE_HERBALISM)
+                    nodeKinds[goEntry] = { BotProfession::SKILL_HERBALISM, lock->Skill[i] };
+            }
+        }
+        for (auto const& [spawnId, data] : sObjectMgr->GetAllGameObjectData())
+        {
+            auto nk = nodeKinds.find(data.id);
+            if (nk == nodeKinds.end())
+                continue;
+            g.Nodes.push_back({ data.mapId, data.spawnPoint.GetPositionX(), data.spawnPoint.GetPositionY(), data.spawnPoint.GetPositionZ(), data.id, nk->second.first, nk->second.second, spawnId });
+        }
+    }
+
+    // 8b2. mailboxes
+    {
+        std::unordered_set<uint32> boxes;
+        for (auto const& [goEntry, goTmpl] : sObjectMgr->GetGameObjectTemplates())
+            if (goTmpl.type == GAMEOBJECT_TYPE_MAILBOX)
+                boxes.insert(goEntry);
+        for (auto const& [spawnId, data] : sObjectMgr->GetAllGameObjectData())
+            if (boxes.count(data.id))
+                g.Mailboxes.push_back({ data.mapId, data.spawnPoint.GetPositionX(), data.spawnPoint.GetPositionY(), data.spawnPoint.GetPositionZ(), data.id, 0, 0, spawnId });
+    }
+
+    // 8c. spell focus objects (forge, anvil, cooking fire): crafts that need one send the bot to the nearest
+    {
+        std::unordered_map<uint32, uint32> focusOf;   // go entry -> focus id
+        for (auto const& [goEntry, goTmpl] : sObjectMgr->GetGameObjectTemplates())
+            if (goTmpl.type == GAMEOBJECT_TYPE_SPELL_FOCUS && goTmpl.spellFocus.spellFocusType)
+                focusOf[goEntry] = goTmpl.spellFocus.spellFocusType;
+        for (auto const& [spawnId, data] : sObjectMgr->GetAllGameObjectData())
+        {
+            auto f = focusOf.find(data.id);
+            if (f != focusOf.end())
+                g.Focus[f->second].push_back({ data.mapId, data.spawnPoint.GetPositionX(), data.spawnPoint.GetPositionY(), data.spawnPoint.GetPositionZ(), data.id, f->second, 0, spawnId });
+        }
+    }
+
+    // 9. class trainers, profession trainers and vendors (E1/E2/E4)
+    std::unordered_map<uint32, std::vector<uint32>> profSkills;   // trainer id -> planned professions it teaches
     for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
     {
         CreatureTemplate const* t = sObjectMgr->GetCreatureTemplate(data.id);
@@ -733,6 +862,37 @@ void BuildIndex()
                 ++g.NumTrainers;
             }
         }
+        // profession trainers: any trainer whose spell list teaches a planned profession (spell -> skill line through SkillLineAbility)
+        if (!(t->trainer_class > 0 && t->trainer_class < 32))
+        {
+            uint32 const tid = sObjectMgr->GetCreatureDefaultTrainer(data.id);
+            Trainer::Trainer const* tr = tid ? sObjectMgr->GetTrainer(tid) : nullptr;
+            if (tr)
+            {
+                auto cached = profSkills.find(tid);
+                if (cached == profSkills.end())
+                {
+                    std::vector<uint32> skills;
+                    for (Trainer::Spell const& sp : tr->GetSpells())
+                    {
+                        auto bounds = sSpellMgr->GetSkillLineAbilityMapBounds(sp.SpellId);
+                        for (auto it = bounds.first; it != bounds.second; ++it)
+                            if (BotProfession::Find(it->second->SkillLine) && std::find(skills.begin(), skills.end(), uint32(it->second->SkillLine)) == skills.end())
+                                skills.push_back(it->second->SkillLine);
+                    }
+                    cached = profSkills.emplace(tid, std::move(skills)).first;
+                }
+                for (uint32 skill : cached->second)
+                {
+                    SvcPt ppt = pt;
+                    ppt.TrainerId = tid;
+                    g.Trainers[0x100 | skill].push_back(ppt);
+                    ++g.NumProfTrainers;
+                }
+            }
+        }
+        if (flags & uint64(UNIT_NPC_FLAG_AUCTIONEER))
+            g.Auctioneers.push_back(pt);
         if (flags & uint64(UNIT_NPC_FLAG_VENDOR))
         {
             VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(data.id);
@@ -756,6 +916,25 @@ void BuildIndex()
                 vb = g.VendorBags.emplace(data.id, std::move(offers)).first;
                 if (!vb->second.empty())
                     ++g.NumBagVendors;
+                if (AmmoCfg().Enabled)
+                {
+                    std::vector<AmmoOffer> ammo;
+                    for (uint32 i = 0; i < items->GetItemCount(); ++i)
+                    {
+                        VendorItem const* vi = items->GetItem(i);
+                        if (!vi || vi->ExtendedCost || vi->maxcount || vi->PlayerConditionId)
+                            continue;
+                        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(vi->item);
+                        if (!proto || proto->GetClass() != ITEM_CLASS_PROJECTILE || (proto->GetSubClass() != ITEM_SUBCLASS_ARROW && proto->GetSubClass() != ITEM_SUBCLASS_BULLET) || !proto->GetBuyPrice())
+                            continue;
+                        ammo.push_back({ vi->item, i, proto->GetSubClass(), proto->GetBuyPrice(), proto->GetBuyCount(), std::max<uint32>(1, proto->GetMaxStackSize()), proto->GetBaseRequiredLevel() });
+                    }
+                    if (!ammo.empty())
+                    {
+                        ++g.NumAmmoVendors;
+                        g.VendorAmmo.emplace(data.id, std::move(ammo));
+                    }
+                }
             }
             pt.Repair = (flags & uint64(UNIT_NPC_FLAG_REPAIR)) != 0;
             g.Vendors.push_back(pt);
@@ -763,8 +942,8 @@ void BuildIndex()
     }
 
     g.Ready.store(true, std::memory_order_release);
-    TC_LOG_INFO("server.worldserver", "Bot quest index: {} starter quests, {} starter points, {} spawn entries, {} quest items with creature sources, {} quest items in chest objects ({} object spawns), {} hubs, {} grind spawns, {} class trainer spawns, {} vendor spawns ({} bag vendor entries), {} ms",
-        g.NumStarterQuests, g.NumStarterPoints, g.NumSpawnEntries, g.NumItemSources, g.NumGoItems, g.NumGoSpawns, uint32(g.Hubs.size()), g.NumGrind, g.NumTrainers, uint32(g.Vendors.size()), g.NumBagVendors, GetMSTimeDiffToNow(startMs));
+    TC_LOG_INFO("server.worldserver", "Bot quest index: {} starter quests, {} starter points, {} spawn entries, {} quest items with creature sources, {} quest items in chest objects ({} object spawns), {} hubs, {} grind spawns, {} class trainer spawns, {} vendor spawns ({} bag vendor entries, {} ammo vendor entries), {} ms",
+        g.NumStarterQuests, g.NumStarterPoints, g.NumSpawnEntries, g.NumItemSources, g.NumGoItems, g.NumGoSpawns, uint32(g.Hubs.size()), g.NumGrind, g.NumTrainers, uint32(g.Vendors.size()), g.NumBagVendors, g.NumAmmoVendors, GetMSTimeDiffToNow(startMs));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -820,6 +999,8 @@ struct Task
     uint8 Svc = 0;                 // Service task: 1 = train, 2 = vendor visit
     float SvcX = 0, SvcY = 0, SvcZ = 0;
     uint32 SvcTrainerId = 0;
+    float FishWaterX = 0, FishWaterY = 0;   // Svc 4 (fish): where the bobber should land
+    uint64 NodeSpawn = 0;     // Svc 3 (gather): spawn id of the node
     bool SvcRepair = false, SvcBags = false;
     // Loot task (quest item inside a chest game object)
     uint64 GoSpawn = 0;            // claimed spawn (0 = none picked yet)
@@ -834,10 +1015,12 @@ struct Task
     uint32 GoWaitMs = 0;           // start of a respawn wait
     uint32 GoNextMs = 0;           // next scan at the claimed spawn
     uint32 GoUseTries = 0;
+    uint32 GoApproachTries = 0;    // passes spent walking up to the live object (counted every pass)
+    float GoBestGo = 0.0f;         // best 3D distance to the live object so far (0 = not measured yet)
+    uint32 GoBestGoMs = 0;
+    uint32 GoDangerMs = 0;         // next danger scan near the claimed spawn
     uint32 GoRenewMs = 0;          // next claim renewal while GoSpawn is set
     uint32 GoMap = 0;              // map of the claimed spawn
-    uint32 GoDangerMs = 0;         // next danger scan around the claimed spawn (Bot.AI.Loot.Safety)
-    uint8 GoDangers = 0;           // spawns given up in this task because of strong mobs near them
     uint32 GoSkipQuar = 0, GoSkipDeadly = 0;   // spawns the last pick skipped (quarantined by all bots / near a recent death)
 };
 
@@ -1043,6 +1226,33 @@ bool IsReachCode(char const* code)
     return false;
 }
 
+// Death history. Per bot the last few deaths (kept in the context), globally the recent death places of all bots (for spawn choice).
+struct DeathRec { uint32 Map = 0; float X = 0, Y = 0; uint32 Quest = 0; uint32 Ms = 0; };
+std::mutex g_deathMx;
+std::deque<DeathRec> g_deathAreas;
+constexpr size_t DEATH_AREAS_MAX = 600;
+constexpr uint32 DEATH_AREA_KEEP_MS = 3600 * 1000;
+
+void NoteDeathArea(DeathRec const& d)
+{
+    std::lock_guard<std::mutex> lk(g_deathMx);
+    while (!g_deathAreas.empty() && (g_deathAreas.size() >= DEATH_AREAS_MAX || uint32(d.Ms - g_deathAreas.front().Ms) > DEATH_AREA_KEEP_MS))
+        g_deathAreas.pop_front();
+    g_deathAreas.push_back(d);
+}
+
+// number of deaths within radius of a point in the last hour
+uint32 AreaDeaths(uint32 map, float x, float y, float radius)
+{
+    uint32 const nowMs = getMSTime();
+    uint32 n = 0;
+    std::lock_guard<std::mutex> lk(g_deathMx);
+    for (DeathRec const& d : g_deathAreas)
+        if (d.Map == map && uint32(nowMs - d.Ms) <= DEATH_AREA_KEEP_MS && Dist2D(d.X, d.Y, x, y) <= radius)
+            ++n;
+    return n;
+}
+
 class BotQuestCtx : public UntypedValue
 {
 public:
@@ -1059,7 +1269,10 @@ public:
     // A dead bot changes position anyway (corpse run, spirit healer): give the chest back and drop the loot task.
     void OnStateEnter() override
     {
-        if (GetAI()->GetState() != BotState::Dead || T.K != Kind::Loot)
+        if (GetAI()->GetState() != BotState::Dead)
+            return;
+        NoteDeath();
+        if (T.K != Kind::Loot)
             return;
         ReleaseLoot();
         T = Task();
@@ -1067,6 +1280,60 @@ public:
         ExpectGoal = false;
         NextChooseMs = 0;
     }
+
+    // Death bookkeeping: own history (last 4), global death places, and the death-loop rule.
+    void NoteDeath()
+    {
+        Player* bot = GetBot();
+        BotAI* ai = GetAI();
+        if (!bot)
+            return;
+        DeathRec d;
+        d.Map = bot->GetMapId();
+        d.X = bot->GetPositionX();
+        d.Y = bot->GetPositionY();
+        d.Quest = T.Quest;
+        d.Ms = getMSTime();
+        DeathRec const prev = Deaths[0];
+        for (size_t i = Deaths.size() - 1; i > 0; --i)
+            Deaths[i] = Deaths[i - 1];
+        Deaths[0] = d;
+        NoteDeathArea(d);
+        if (!Cfg().DeathLoop || !prev.Ms || uint32(d.Ms - prev.Ms) > 600 * 1000)
+            return;
+        bool const sameQuest = d.Quest && d.Quest == prev.Quest;
+        bool const sameArea = prev.Map == d.Map && Dist2D(prev.X, prev.Y, d.X, d.Y) <= 150.0f;
+        if (!sameQuest && !sameArea)
+            return;
+        // second death in a short chain: give up this leg and keep the quest(s) away for a while
+        uint32 const now = ai->GetNowMs();
+        uint32 deferred = 0;
+        for (uint32 qid : { d.Quest, prev.Quest })
+            if (qid)
+            {
+                Blacklist[qid] = now + 15 * 60 * 1000;
+                if (!deferred)
+                    deferred = qid;
+            }
+        ReleaseLoot();
+        T = Task();
+        GoalFails = 0;
+        ExpectGoal = false;
+        NextChooseMs = 0;
+        ++LoopBreaks;
+        BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_DEATH_LOOP", StringFormat("second death within {} s ({}), quest {} deferred for 15 min", (d.Ms - prev.Ms) / 1000, sameQuest ? "same quest" : "same area", deferred));
+        if (deferred)
+            ev.QuestId = deferred;
+        ev.Details = StringFormat(R"({{"gap_s":{},"same_quest":{},"quest":{},"prev_quest":{},"prev_dist":{:.0f}}})", (d.Ms - prev.Ms) / 1000, sameQuest, d.Quest, prev.Quest, Dist2D(prev.X, prev.Y, d.X, d.Y));
+        sBotMgr->LogEvent(std::move(ev));
+    }
+
+    std::array<DeathRec, 4> Deaths{};            // newest first
+    uint32 LoopBreaks = 0;
+    // cache of the leg gate's bot-state part (recent death, hostile mobs 2+ levels above around the bot)
+    uint32 GateUntilMs = 0;
+    char const* GateWhy = nullptr;
+    uint32 GateLogged = 0;
     uint32 ExecCalls = 0;
     char const* Why = "none";
 
@@ -1101,13 +1368,32 @@ public:
     uint32 TrainWant = 0;                           // copper needed for the cheapest available but unaffordable spell (0 = none)
     uint32 TrainRetryMs = 0;
     uint32 TrainedTotal = 0, VendorTrips = 0;
-    uint32 NextVendorMs = 0, NextBagMs = 0;
+    uint32 NextVendorMs = 0, NextBagMs = 0, NextAmmoMs = 0;
     bool VendorNow = false;                         // a reward could not be stored: go to a vendor now
     std::unordered_map<uint64, uint8> Repeats;      // (quest, npc) -> reach failures (quarantine)
     std::unordered_map<uint32, uint32> SvcBlack;    // npc entry -> AI clock until
     std::unordered_map<uint64, uint32> GoIgnore;    // chest spawn id -> AI clock until (empty / unusable for this bot)
     BotLoot::SpawnBlacklist LootBlack;              // chest spawns that gave this bot no progress (Bot.AI.Loot.Improved)
-    uint8 NoTrainerLevel = 0, NoMoneyLevel = 0, BagNoMoneyLevel = 0, NoVendorLevel = 0;
+    uint32 FishNextMs = 0;                 // next shore check
+    uint32 FishState = 0;                  // 0 walk, 1 cast, 2 wait for the bite
+    uint32 FishCasts = 0, FishCatches = 0, FishCastMs = 0;
+    uint32 GatherNextMs = 0;               // next node check
+    ObjectGuid GatherGuid;                 // node being opened
+    uint32 GatherSinceMs = 0;
+    uint32 FocusArrivedMs = 0;             // when the bot last walked to a forge/fire; a failed craft right after it backs the skill off
+    uint32 FocusArrivedSkill = 0;
+    uint32 CraftNextMs = 0;                // next craft attempt
+    uint32 AhNextMs = 0;                   // next auction house / mailbox check
+    uint32 AhPosts = 0, AhNextPostMs = 0;  // listings posted on this visit, earliest next listing
+    std::unordered_map<uint32, uint32> CraftBackoff;   // skill -> time before which crafting it is not retried (failed cast)
+    ObjectGuid SkinGuid;                   // corpse being skinned
+    uint32 SkinSinceMs = 0;
+    uint32 ProfNextMs = 0;                 // next profession check
+    std::vector<uint32> ProfPlan;          // BotProfession::Plan for this bot, filled on first use
+    std::unordered_set<uint32> ProfWarned; // skills already reported as PROF_NO_TRAINER / PROF_NO_MONEY at this level (cleared per level)
+    uint8 ProfWarnLevel = 0;
+    uint32 NextGearMs = 0;   // next bag sweep for gear upgrades
+    uint8 NoTrainerLevel = 0, NoMoneyLevel = 0, BagNoMoneyLevel = 0, NoVendorLevel = 0, AmmoNoMoneyLevel = 0;
     std::string LastNote;
 
     bool Blacklisted(uint32 quest, uint32 now) const
@@ -1344,9 +1630,25 @@ public:
             c.Why = "taming";
             return false;
         }
+        if (BotTravel::Busy(ai)) // a trip to the next leveling zone holds the bot
+        {
+            c.Why = "travel";
+            return false;
+        }
+
+        if (BotDungeonRun::Busy(ai)) // the dungeon group moves the bot
+        {
+            c.Why = "dungeon";
+            return false;
+        }
 
         if (!bot->IsAlive())
         {
+            if (c.T.K == Kind::Loot && c.T.GoSpawn)
+            {
+                GoRelease(c.T.GoSpawn, c.T.GoBot, 0);   // L2: a dead bot does not keep the chest claimed
+                c.T.GoSpawn = 0;
+            }
             c.ExpectGoal = false;
             c.Why = "dead";
             return false;
@@ -1415,13 +1717,21 @@ private:
         if (c.T.K == Kind::Service)
         {
             // E1/E4: the failure is reported under the service code, the movement code goes into the summary
-            c.SvcBlack[c.T.NpcEntry] = now + 600 * 1000;
+            c.SvcBlack[(c.T.Svc == 3 || c.T.Svc == 5 || c.T.Svc == 7) ? (0x80000000u | uint32(c.T.NodeSpawn)) : c.T.NpcEntry] = now + 600 * 1000;
             if (c.T.Svc == 1)
                 c.TrainRetryMs = now + 300 * 1000;
+            else if (c.T.Svc == 3)
+                c.GatherNextMs = now + 60 * 1000;
+            else if (c.T.Svc == 4)
+                c.FishNextMs = now + 300 * 1000;
+            else if (c.T.Svc == 5)
+                c.CraftNextMs = now + 300 * 1000;
+            else if (c.T.Svc == 6 || c.T.Svc == 7)
+                c.AhNextMs = now + 600 * 1000;
             else
                 c.NextVendorMs = now + 300 * 1000;
             summary = StringFormat("{} ({})", summary, code);
-            code = c.T.Svc == 1 ? "TRAIN_UNREACHABLE" : "VENDOR_UNREACHABLE";
+            code = c.T.Svc == 1 ? "TRAIN_UNREACHABLE" : c.T.Svc == 3 ? "GATHER_UNREACHABLE" : c.T.Svc == 4 ? "FISH_UNREACHABLE" : c.T.Svc == 5 ? "WORKSHOP_UNREACHABLE" : (c.T.Svc == 6 || c.T.Svc == 7) ? "AH_UNREACHABLE" : "VENDOR_UNREACHABLE";
         }
         if (c.T.K == Kind::Loot && c.T.GoSpawn && IsReachCode(code) && std::strcmp(code, "ITEM_NOT_DROPPING") != 0)
             GoNoteBad(ai, bot, c.T, code);   // the spawn itself cannot be reached: other bots should not try it over and over
@@ -1565,6 +1875,12 @@ private:
                 c.ExpectX = hx; c.ExpectY = hy;
                 return true;
             }
+            if (t.K == Kind::Loot && t.GoSpawn)
+            {
+                // a chest spawn this bot cannot path to is a per-bot problem: try the next spawn, no quarantine
+                GoSpawnFailed(ai, bot, c, now, t, info.NoPath ? "no path" : "path partial far");
+                return false;
+            }
             std::string det = StringFormat(R"({{"task":"{}","dest":[{:.0f},{:.0f},{:.0f}],"no_path":{},"partial":{},"gap3d":{:.0f},"goal_off_mesh":{},"length":{:.0f},"hops":{},"path_us":{},"hop_us":{}}})",
                 KindName(t.K), x, y, z, info.NoPath, info.Partial, info.EndGap3D, info.GoalOffMesh, info.Length, t.Hops, pathUs, hopUs);
             Drop(ai, bot, c, now, t.Quest, info.NoPath ? "NO_PATH" : "PATH_PARTIAL_FAR",
@@ -1634,7 +1950,7 @@ private:
                 for (uint32 en : enders)
                 {
                     float d;
-                    if (NearestSpawn(bot, en, &d) && d < bd)
+                    if (NearestSpawn(bot, en, &d) && d < bd && !LegGated(ai, bot, c, now, q, d, "go_ender", true))
                     {
                         bd = d;
                         best = &e;
@@ -1697,7 +2013,7 @@ private:
                     for (uint32 en : gos)
                     {
                         float d;
-                        if (NearestGoSpawn(bot, en, &d) && d < best.D)
+                        if (NearestGoSpawn(bot, en, &d) && d < best.D && !LegGated(ai, bot, c, now, q, d, "loot", true))
                             best = { &e, obj, d, en, true };
                     }
                     if (entries.empty() && gos.empty() && SupplyQuestItems(bot, q))
@@ -1799,10 +2115,18 @@ private:
         if (!bot->CanTakeQuest(q, false))
             return 0.0f; // exclusive group, day/week, conditions: not worth a row
 
+        if (Cfg().DeferQuest8 && ref.Quest == 8 && bot->GetLevel() < 4)
+            return 0.0f; // deferred until level 4 (death rate at level 1-3)
         int32 ql = bot->GetQuestLevel(q);
         int32 gap = ql - int32(bot->GetLevel());
         if (gap > 2)
             return 0.0f; // too hard for now, becomes takeable as the bot levels
+        if (Cfg().GateLegs && dist > Cfg().LegGateYd)
+        {
+            bool const lg = canLog && c.SelBlocks < Cfg().SelBlockCap;
+            if (LegGated(ai, bot, c, now, q, dist, "go_giver", lg))
+                return 0.0f;
+        }
         float fit = gap >= 2 ? 0.5f : gap >= 0 ? 1.0f : gap >= -2 ? 0.8f : 0.4f;
         float xp = float(q->XPValue(bot)) + 20.0f;
         float work = 40.0f * float(q->GetObjectives().size());
@@ -2006,7 +2330,7 @@ private:
     bool HighGapMobNear(Player* bot, std::vector<Creature*> const& list, Creature* m)
     {
         for (Creature* o : list)
-            if (o != m && o->IsAlive() && EffectiveDiff(bot, o) >= 2 && m->GetExactDist2d(o) < 22.0f && bot->IsValidAttackTarget(o))
+            if (o != m && o->IsAlive() && (EffectiveDiff(bot, o) >= 2 || BotCombatAvoids(bot, o)) && m->GetExactDist2d(o) < 22.0f && bot->IsValidAttackTarget(o))
                 return true;
         return false;
     }
@@ -2204,6 +2528,8 @@ private:
             Quest const* q = sObjectMgr->GetQuestTemplate(questId);
             if (!q || c.Blacklisted(questId, now) || !giver->hasQuest(questId))
                 continue;
+            if (Cfg().DeferQuest8 && questId == 8 && bot->GetLevel() < 4)
+                continue;
             if (bot->GetQuestStatus(questId) != QUEST_STATUS_NONE || bot->GetQuestRewardStatus(questId))
                 continue;
             if (CachedAnalysis(q).Code)
@@ -2235,7 +2561,7 @@ private:
         return !(bf && nf && nf->IsHostileTo(bf));
     }
 
-    SvcPt const* NearestSvc(Player* bot, BotQuestCtx& c, uint32 now, std::vector<SvcPt> const& list, bool needRepair, bool needBags, float maxDist, float& dOut)
+    SvcPt const* NearestSvc(Player* bot, BotQuestCtx& c, uint32 now, std::vector<SvcPt> const& list, bool needRepair, bool needBags, float maxDist, float& dOut, uint32 ammoSub = 0)
     {
         SvcPt const* best = nullptr;
         float bs = 1e9f;
@@ -2256,6 +2582,12 @@ private:
             {
                 auto vb = g.VendorBags.find(p.Entry);
                 if (vb == g.VendorBags.end() || vb->second.empty())
+                    continue;
+            }
+            if (ammoSub)
+            {
+                auto va = g.VendorAmmo.find(p.Entry);
+                if (va == g.VendorAmmo.end() || std::none_of(va->second.begin(), va->second.end(), [&](AmmoOffer const& o) { return o.SubClass == ammoSub; }))
                     continue;
             }
             if (!FriendlyNpc(bot, p.Faction))
@@ -2299,6 +2631,35 @@ private:
         SvcPt const* tp = NearestSvc(bot, c, now, it->second, false, false, 4000.0f, d);
         Trainer::Trainer const* tr = tp ? sObjectMgr->GetTrainer(tp->TrainerId) : nullptr;
         return tr ? EvalTrain(bot, tr).CostAll : 0;
+    }
+
+    // ammo item subclass the equipped ranged weapon fires (ITEM_SUBCLASS_ARROW / ITEM_SUBCLASS_BULLET), 0 when none (wands, thrown, no ranged weapon)
+    static uint32 AmmoSubClassOf(Player* bot)
+    {
+        Item* ranged = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+        ItemTemplate const* proto = ranged ? ranged->GetTemplate() : nullptr;
+        if (!proto || proto->GetClass() != ITEM_CLASS_WEAPON)
+            return 0;
+        switch (proto->GetSubClass())
+        {
+            case ITEM_SUBCLASS_WEAPON_BOW:
+            case ITEM_SUBCLASS_WEAPON_CROSSBOW: return ITEM_SUBCLASS_ARROW;
+            case ITEM_SUBCLASS_WEAPON_GUN: return ITEM_SUBCLASS_BULLET;
+            default: return 0;
+        }
+    }
+
+    static uint32 AmmoCount(Player* bot, uint32 sub)
+    {
+        uint32 total = 0;
+        bot->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
+        {
+            ItemTemplate const* proto = item->GetTemplate();
+            if (proto && proto->GetClass() == ITEM_CLASS_PROJECTILE && proto->GetSubClass() == sub)
+                total += item->GetCount();
+            return ItemSearchCallbackResult::Continue;
+        });
+        return total;
     }
 
     static uint64 RepairCost(Player* bot)
@@ -2365,6 +2726,540 @@ private:
         c.LastWasGrind = false;
     }
 
+    // Equips at most one upgrade from the bags per call (the bag walk must not run while items move).
+    static void EquipBagUpgrade(BotAI* ai, Player* bot)
+    {
+        Item* best = nullptr;
+        double bestGain = 0.0;
+        bot->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
+        {
+            ItemTemplate const* proto = item->GetTemplate();
+            if (!proto || !(proto->IsArmor() || proto->IsWeapon()) || bot->CanUseItem(item) != EQUIP_ERR_OK)
+                return ItemSearchCallbackResult::Continue;
+            GearChoice gc;
+            if (BestGearSlot(bot, proto, gc) && (!best || gc.Gain() > bestGain))
+            {
+                best = item;
+                bestGain = gc.Gain();
+            }
+            return ItemSearchCallbackResult::Continue;
+        });
+        if (best)
+            EquipIfUpgrade(ai, bot, best, "GEAR_EQUIPPED", 0);
+    }
+
+    // E2: a mining vein or herb node of a skill the bot has, within reach of its skill, close to where it is.
+    bool GatherDue(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        c.GatherNextMs = now + 20000;
+        if (bot->IsInCombat() || bot->GetFreeInventorySlotCount() < 2)
+            return false;
+        bool const mine = bot->HasSkill(BotProfession::SKILL_MINING) && bot->HasSpell(SPELL_MINING);
+        bool const herb = bot->HasSkill(BotProfession::SKILL_HERBALISM) && bot->HasSpell(SPELL_HERB_GATHERING);
+        if (!mine && !herb)
+            return false;
+        uint32 const mv = mine ? bot->GetSkillValue(BotProfession::SKILL_MINING) : 0;
+        uint32 const hv = herb ? bot->GetSkillValue(BotProfession::SKILL_HERBALISM) : 0;
+        NodePt const* best = nullptr;
+        float bd = 80.0f;
+        for (NodePt const& n : g.Nodes)
+        {
+            if (n.Map != bot->GetMapId())
+                continue;
+            if (n.Skill == BotProfession::SKILL_MINING ? (!mine || n.Req > mv) : (!herb || n.Req > hv))
+                continue;
+            float const d = Dist2D(n.X, n.Y, bot->GetPositionX(), bot->GetPositionY());
+            if (d >= bd)
+                continue;
+            auto bl = c.SvcBlack.find(0x80000000u | uint32(n.SpawnId));
+            if (bl != c.SvcBlack.end() && now < bl->second)
+                continue;
+            best = &n;
+            bd = d;
+        }
+        if (!best)
+            return false;
+        SvcPt pt;
+        pt.Map = best->Map; pt.X = best->X; pt.Y = best->Y; pt.Z = best->Z; pt.Entry = best->Entry;
+        StartService(bot, c, now, 3, pt, false, false);
+        c.T.NodeSpawn = best->SpawnId;
+        c.GatherGuid.Clear();
+        Decision(ai, bot, "GATHER_TRIP", StringFormat("walking to {} node {} ({:.0f} yd)", best->Skill == BotProfession::SKILL_MINING ? "mining" : "herb", best->Entry, bd), 0, best->Entry,
+            StringFormat(R"({{"skill":{},"req":{},"dist":{:.0f},"skill_value":{}}})", best->Skill, best->Req, bd, best->Skill == BotProfession::SKILL_MINING ? mv : hv));
+        return true;
+    }
+
+    // Svc 3: walk to the node, cast the gathering spell on it, take the loot.
+    bool RunGather(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        Task& t = c.T;
+        if (now - t.SinceMs > 2 * 60 * 1000)
+        {
+            Drop(ai, bot, c, now, 0, "UNREACHABLE", StringFormat("gave up walking to node {} after 2 min", t.NpcEntry), std::string(), t.NpcEntry, 0);
+            return true;
+        }
+        GameObject* go = bot->FindNearestGameObject(t.NpcEntry, 60.0f);
+        float const dgo = go ? Dist2D(go->GetPositionX(), go->GetPositionY(), bot->GetPositionX(), bot->GetPositionY()) : 1e9f;
+        if (go && dgo <= 3.5f && std::abs(go->GetPositionZ() - bot->GetPositionZ()) < 6.0f)
+        {
+            StopMoving(ai, bot, c);
+            uint32 const spell = IsMiningEntry(t.NpcEntry) ? SPELL_MINING : SPELL_HERB_GATHERING;
+            if (c.GatherGuid == go->GetGUID())
+            {
+                if (bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) && now - c.GatherSinceMs < 8000)
+                    return false;   // still casting
+                bool const took = LootGameObject(bot, go);
+                Decision(ai, bot, took ? "GATHERED" : "GATHER_FAILED", StringFormat("{} node {}", took ? "gathered" : "could not gather", go->GetEntry()), 0, go->GetEntry(),
+                    StringFormat(R"({{"spell":{},"mining":{},"herbalism":{}}})", spell, bot->GetSkillValue(BotProfession::SKILL_MINING), bot->GetSkillValue(BotProfession::SKILL_HERBALISM)));
+                c.GatherGuid.Clear();
+                Finish(c, now);
+                return true;
+            }
+            if (bot->CastSpell(go, spell, CastSpellExtraArgs(TRIGGERED_NONE)) != SPELL_CAST_OK)
+            {
+                Drop(ai, bot, c, now, 0, "GATHER_CAST_FAILED", StringFormat("cannot open node {}", t.NpcEntry), std::string(), t.NpcEntry, 0);
+                return true;
+            }
+            c.GatherGuid = go->GetGUID();
+            c.GatherSinceMs = now;
+            return false;
+        }
+        if (!go && Dist2D(t.SvcX, t.SvcY, bot->GetPositionX(), bot->GetPositionY()) < 8.0f)
+        {
+            Drop(ai, bot, c, now, 0, "NODE_GONE", StringFormat("node {} is not spawned", t.NpcEntry), std::string(), t.NpcEntry, 0);
+            return true;
+        }
+        Travel(ai, bot, c, now, go ? go->GetPositionX() : t.SvcX, go ? go->GetPositionY() : t.SvcY, go ? go->GetPositionZ() : t.SvcZ, 2.5f, t.NpcEntry);
+        return false;
+    }
+
+    static bool IsMiningEntry(uint32 goEntry)
+    {
+        for (NodePt const& n : g.Nodes)
+            if (n.Entry == goEntry)
+                return n.Skill == BotProfession::SKILL_MINING;
+        return false;
+    }
+
+    // ----- fishing (E2): a shore close to the bot, a pole in the bags, then cast, wait for the bite, use the bobber -----
+    static bool FishHasSpell(void* ctx, uint32 spell) { return static_cast<Player*>(ctx)->HasSpell(spell); }
+    struct FishProbe { Player* Bot; };
+    static bool FishWater(void* ctx, float x, float y)
+    {
+        Player* bot = static_cast<FishProbe*>(ctx)->Bot;
+        Map* map = bot->GetMap();
+        float const z = map->GetHeight(bot->GetPhaseShift(), x, y, bot->GetPositionZ() + 4.0f);
+        if (z <= INVALID_HEIGHT)
+            return false;
+        LiquidData ld;
+        ZLiquidStatus const st = map->GetLiquidStatus(bot->GetPhaseShift(), x, y, z, map_liquidHeaderTypeFlags::AllLiquids, &ld);
+        return (st & MAP_LIQUID_STATUS_SWIMMING) != 0 && ld.type_flags.HasFlag(map_liquidHeaderTypeFlags::Water);
+    }
+    static bool FishLand(void* ctx, float x, float y)
+    {
+        Player* bot = static_cast<FishProbe*>(ctx)->Bot;
+        Map* map = bot->GetMap();
+        float const z = map->GetHeight(bot->GetPhaseShift(), x, y, bot->GetPositionZ() + 4.0f);
+        if (z <= INVALID_HEIGHT || std::abs(z - bot->GetPositionZ()) > 5.0f)
+            return false;
+        return map->GetLiquidStatus(bot->GetPhaseShift(), x, y, z) == LIQUID_MAP_NO_WATER;
+    }
+
+    static Item* FindPole(Player* bot)
+    {
+        Item* pole = nullptr;
+        bot->ForEachItem(ItemSearchLocation::Everywhere, [&](Item* item)
+        {
+            ItemTemplate const* proto = item->GetTemplate();
+            if (proto && proto->IsWeapon() && proto->GetSubClass() == ITEM_SUBCLASS_WEAPON_FISHING_POLE && !item->IsBag())
+            {
+                pole = item;
+                return ItemSearchCallbackResult::Stop;
+            }
+            return ItemSearchCallbackResult::Continue;
+        });
+        return pole;
+    }
+
+    bool FishDue(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        c.FishNextMs = now + 60000;
+        if (bot->IsInCombat() || !bot->HasSkill(BotProfession::SKILL_FISHING) || bot->GetFreeInventorySlotCount() < 3 || !FindPole(bot))
+            return false;
+        if (!BotProfession::FishingSpell(FishHasSpell, bot))
+            return false;
+        FishProbe probe{ bot };
+        BotProfession::Shore shore;
+        if (!BotProfession::FindShore(bot->GetPositionX(), bot->GetPositionY(), FishWater, FishLand, &probe, shore))
+            return false;
+        SvcPt pt;
+        pt.Map = bot->GetMapId(); pt.X = shore.StandX; pt.Y = shore.StandY;
+        pt.Z = bot->GetMap()->GetHeight(bot->GetPhaseShift(), shore.StandX, shore.StandY, bot->GetPositionZ() + 4.0f);
+        pt.Entry = 0;
+        StartService(bot, c, now, 4, pt, false, false);
+        c.T.FishWaterX = shore.WaterX;
+        c.T.FishWaterY = shore.WaterY;
+        c.FishState = 0;
+        c.FishCasts = c.FishCatches = 0;
+        Decision(ai, bot, "FISH_TRIP", StringFormat("walking to a shore ({:.0f} yd) to fish", Dist2D(shore.StandX, shore.StandY, bot->GetPositionX(), bot->GetPositionY())), 0, 0,
+            StringFormat(R"({{"skill_value":{},"x":{:.0f},"y":{:.0f}}})", bot->GetSkillValue(BotProfession::SKILL_FISHING), shore.StandX, shore.StandY));
+        return true;
+    }
+
+    bool RunFish(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        Task& t = c.T;
+        if (bot->IsInCombat() || now - t.SinceMs > 3 * 60 * 1000 || c.FishCasts >= 8)
+        {
+            if (c.FishCasts)
+                Decision(ai, bot, "FISH_DONE", StringFormat("fished {} casts, {} catches", c.FishCasts, c.FishCatches), 0, 0,
+                    StringFormat(R"({{"casts":{},"catches":{},"skill_value":{}}})", c.FishCasts, c.FishCatches, bot->GetSkillValue(BotProfession::SKILL_FISHING)));
+            bot->InterruptNonMeleeSpells(false);
+            c.FishNextMs = now + 120000;
+            Finish(c, now);
+            return true;
+        }
+        if (c.FishState == 0)
+        {
+            if (Dist2D(t.SvcX, t.SvcY, bot->GetPositionX(), bot->GetPositionY()) > 1.5f)
+            {
+                Travel(ai, bot, c, now, t.SvcX, t.SvcY, t.SvcZ, 1.0f, 0);
+                return false;
+            }
+            StopMoving(ai, bot, c);
+            bot->SetFacingTo(bot->GetAbsoluteAngle(t.FishWaterX, t.FishWaterY));
+            Item* pole = FindPole(bot);
+            if (!pole)
+            {
+                Drop(ai, bot, c, now, 0, "NO_POLE", "fishing pole is gone", std::string(), 0, 0);
+                return true;
+            }
+            if (!pole->IsEquipped())
+            {
+                uint16 dest = 0;
+                if (bot->CanEquipItem(EQUIPMENT_SLOT_MAINHAND, dest, pole, true) != EQUIP_ERR_OK)
+                {
+                    Drop(ai, bot, c, now, 0, "POLE_NOT_EQUIPPABLE", "cannot wield the fishing pole", std::string(), 0, 0);
+                    return true;
+                }
+                bot->SwapItem(pole->GetPos(), dest);
+                return false;   // cast next tick
+            }
+            c.FishState = 1;
+        }
+        if (c.FishState == 1)
+        {
+            uint32 const spell = BotProfession::FishingSpell(FishHasSpell, bot);
+            if (!spell || bot->CastSpell(bot, spell, CastSpellExtraArgs(TRIGGERED_NONE)) != SPELL_CAST_OK)
+            {
+                Drop(ai, bot, c, now, 0, "FISH_CAST_FAILED", "could not cast fishing", std::string(), 0, 0);
+                return true;
+            }
+            ++c.FishCasts;
+            c.FishCastMs = now;
+            c.FishState = 2;
+            return false;
+        }
+        // waiting for the bite: the bobber is a game object the bot owns, it becomes ready when a fish bites
+        uint32 const spell = BotProfession::FishingSpell(FishHasSpell, bot);
+        GameObject* bobber = spell ? bot->GetGameObject(spell) : nullptr;
+        if (bobber && bobber->getLootState() == GO_READY)
+        {
+            bobber->Use(bot);
+            if (Loot* loot = bobber->GetLootForPlayer(bot))
+                if (!loot->isLooted())
+                {
+                    LootGameObject(bot, bobber);
+                    ++c.FishCatches;
+                }
+            c.FishState = 1;
+            return false;
+        }
+        if (!bobber && !bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) && now - c.FishCastMs > 2000)
+            c.FishState = 1;   // the channel ended without a catch (fish got away): cast again
+        else if (now - c.FishCastMs > 30000)
+            c.FishState = 1;
+        return false;
+    }
+
+    // E2: first aid and cooking level up by crafting what the bot already knows from materials it already carries. One cast per call,
+    // only while standing still and out of combat. A failed cast (no cooking fire nearby, missing tool) backs that skill off for 5 minutes.
+    void CraftForSkill(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        if (bot->IsInCombat() || !bot->IsAlive() || bot->isMoving() || bot->IsNonMeleeSpellCast(false) || bot->GetLevel() < 5)
+            return;
+        for (BotProfession::Info const& info : BotProfession::All())
+        {
+            if (info.Gathering || !bot->HasSkill(info.Skill))
+                continue;
+            auto back = c.CraftBackoff.find(info.Skill);
+            if (back != c.CraftBackoff.end() && now < back->second)
+                continue;
+            int32 const skill = int32(bot->GetSkillValue(info.Skill));
+            if (skill >= int32(bot->GetMaxSkillValue(info.Skill)))
+                continue;
+            std::vector<BotProfession::Recipe> craftable;
+            for (auto const& [spellId, ps] : bot->GetSpellMap())
+            {
+                if (ps.state == PLAYERSPELL_REMOVED || !ps.active || ps.disabled)
+                    continue;
+                auto bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+                SkillLineAbilityEntry const* ab = nullptr;
+                for (auto it = bounds.first; it != bounds.second; ++it)
+                    if (it->second->SkillLine == info.Skill)
+                        ab = it->second;
+                if (!ab || ab->TrivialSkillLineRankHigh <= 0)
+                    continue;
+                SpellInfo const* si = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE);
+                if (!si)
+                    continue;
+                bool haveAll = true, any = false;
+                for (size_t i = 0; i < si->Reagent.size(); ++i)
+                    if (si->Reagent[i] > 0 && si->ReagentCount[i] > 0)
+                    {
+                        any = true;
+                        haveAll = haveAll && bot->HasItemCount(uint32(si->Reagent[i]), uint32(si->ReagentCount[i]));
+                    }
+                if (!any || !haveAll || bot->GetFreeInventorySlotCount() == 0)
+                    continue;
+                craftable.push_back({ spellId, (ab->TrivialSkillLineRankHigh + ab->TrivialSkillLineRankLow) / 2, ab->TrivialSkillLineRankHigh });
+            }
+            int const pick = BotProfession::PickRecipe(skill, craftable);
+            if (pick < 0)
+                continue;
+            uint32 const spellId = craftable[pick].SpellId;
+            SpellCastResult const res = bot->CastSpell(bot, spellId, CastSpellExtraArgs(TRIGGERED_NONE));
+            if (res == SPELL_CAST_OK)
+            {
+                Decision(ai, bot, "PROF_CRAFT", StringFormat("crafting spell {} for {} (skill {})", spellId, info.Name, skill), 0, 0,
+                    StringFormat(R"({{"skill":{},"spell":{},"skill_value":{}}})", info.Skill, spellId, skill));
+                return;
+            }
+            if (res == SPELL_FAILED_REQUIRES_SPELL_FOCUS && !(c.FocusArrivedSkill == info.Skill && now - c.FocusArrivedMs < 60000))
+                if (SpellInfo const* si = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE))
+                    if (WorkshopTrip(ai, bot, c, now, info, si->RequiresSpellFocus))
+                        return;
+            c.CraftBackoff[info.Skill] = now + 300000;
+            Blocked(ai, bot, c, 0, "PROF_CRAFT_FAIL", StringFormat("cannot craft spell {} for {}: cast result {}", spellId, info.Name, uint32(res)),
+                StringFormat(R"({{"skill":{},"spell":{},"result":{}}})", info.Skill, spellId, uint32(res)), 0, false);
+        }
+    }
+
+    // E2: the recipe needs a forge, anvil or fire nearby: walk to the closest one (same map, within 400 yd), then craft again.
+    bool WorkshopTrip(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, BotProfession::Info const& info, uint32 focusId)
+    {
+        auto fit = g.Focus.find(focusId);
+        if (fit == g.Focus.end())
+            return false;
+        NodePt const* best = nullptr;
+        float bd = 400.0f;
+        for (NodePt const& n : fit->second)
+        {
+            if (n.Map != bot->GetMapId())
+                continue;
+            float const d = Dist2D(n.X, n.Y, bot->GetPositionX(), bot->GetPositionY());
+            auto bl = c.SvcBlack.find(0x80000000u | uint32(n.SpawnId));
+            if (d < bd && (bl == c.SvcBlack.end() || now >= bl->second))
+            {
+                best = &n;
+                bd = d;
+            }
+        }
+        if (!best)
+            return false;
+        SvcPt pt;
+        pt.Map = best->Map; pt.X = best->X; pt.Y = best->Y; pt.Z = best->Z; pt.Entry = best->Entry;
+        StartService(bot, c, now, 5, pt, false, false);
+        c.T.NodeSpawn = best->SpawnId;
+        c.FocusArrivedSkill = info.Skill;
+        Decision(ai, bot, "WORKSHOP_TRIP", StringFormat("walking to a spell focus {} ({:.0f} yd) to craft {}", focusId, bd, info.Name), 0, best->Entry,
+            StringFormat(R"({{"skill":{},"focus":{},"dist":{:.0f}}})", info.Skill, focusId, bd));
+        return true;
+    }
+
+    bool RunWorkshop(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        Task& t = c.T;
+        if (now - t.SinceMs > 3 * 60 * 1000)
+        {
+            Drop(ai, bot, c, now, 0, "UNREACHABLE", "gave up walking to the workshop after 3 min", std::string(), t.NpcEntry, 0);
+            return true;
+        }
+        if (Dist2D(t.SvcX, t.SvcY, bot->GetPositionX(), bot->GetPositionY()) <= 3.5f)
+        {
+            StopMoving(ai, bot, c);
+            c.FocusArrivedMs = now;
+            c.CraftNextMs = now + 1000;   // craft right away, standing still
+            Finish(c, now);
+            return true;
+        }
+        Travel(ai, bot, c, now, t.SvcX, t.SvcY, t.SvcZ, 2.5f, t.NpcEntry);
+        return false;
+    }
+
+    // Gear the bot wants to keep: anything that is an upgrade for its role, and everything it can still grow into is judged the same way.
+    static bool KeepItem(Player* bot, Item* item)
+    {
+        GearChoice gc;
+        ItemTemplate const* proto = item->GetTemplate();
+        return (proto->IsArmor() || proto->IsWeapon()) && bot->CanUseItem(item) == EQUIP_ERR_OK && BestGearSlot(bot, proto, gc);
+    }
+
+    // E3: surplus gear to sell, or auction mail to collect. One cooldown for both; the auctioneer comes before the mailbox.
+    bool AuctionDue(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        c.AhNextMs = now + 30000;
+        if (bot->IsInCombat() || bot->GetLevel() < 10)
+            return false;
+        bool const sell = BotAuction::PickListing(bot, [&](Item* i) { return KeepItem(bot, i); }) != nullptr;
+        bool const mail = BotAuction::HasMail(bot);
+        if (!sell && !mail)
+            return false;
+        SvcPt const* best = nullptr;
+        NodePt const* box = nullptr;
+        float bd = 2500.0f;
+        if (sell)
+            for (SvcPt const& a : g.Auctioneers)
+            {
+                if (a.Map != bot->GetMapId())
+                    continue;
+                float const d = Dist2D(a.X, a.Y, bot->GetPositionX(), bot->GetPositionY());
+                auto bl = c.SvcBlack.find(a.Entry);
+                if (d < bd && (bl == c.SvcBlack.end() || now >= bl->second))
+                {
+                    best = &a;
+                    bd = d;
+                }
+            }
+        if (!best && mail)
+            for (NodePt const& n : g.Mailboxes)
+            {
+                if (n.Map != bot->GetMapId())
+                    continue;
+                float const d = Dist2D(n.X, n.Y, bot->GetPositionX(), bot->GetPositionY());
+                auto bl = c.SvcBlack.find(0x80000000u | uint32(n.SpawnId));
+                if (d < bd && (bl == c.SvcBlack.end() || now >= bl->second))
+                {
+                    box = &n;
+                    bd = d;
+                }
+            }
+        if (!best && !box)
+        {
+            c.AhNextMs = now + 300000;
+            Decision(ai, bot, "AH_NONE", StringFormat("{} but no auctioneer or mailbox within reach", sell ? "gear to sell" : "mail waiting"), 0, 0);
+            return false;
+        }
+        SvcPt pt;
+        if (best)
+            pt = *best;
+        else
+        {
+            pt.Map = box->Map; pt.X = box->X; pt.Y = box->Y; pt.Z = box->Z; pt.Entry = box->Entry;
+        }
+        StartService(bot, c, now, best ? 6 : 7, pt, false, false);
+        if (box)
+            c.T.NodeSpawn = box->SpawnId;
+        c.AhPosts = 0;
+        c.AhNextPostMs = 0;
+        Decision(ai, bot, "AH_TRIP", StringFormat("walking to {} ({:.0f} yd)", best ? "an auctioneer" : "a mailbox", bd), 0, pt.Entry);
+        return true;
+    }
+
+    // Svc 6: at the auctioneer, list one item per 1.6 s (the house throttles), up to the per-visit cap. Svc 7: take the mail.
+    bool RunAuction(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        Task& t = c.T;
+        if (now - t.SinceMs > 5 * 60 * 1000)
+        {
+            Drop(ai, bot, c, now, 0, "UNREACHABLE", "gave up walking to the auction house or mailbox after 5 min", std::string(), t.NpcEntry, 0);
+            return true;
+        }
+        if (Dist2D(t.SvcX, t.SvcY, bot->GetPositionX(), bot->GetPositionY()) > (t.Svc == 6 ? 3.5f : 3.0f))
+        {
+            Travel(ai, bot, c, now, t.SvcX, t.SvcY, t.SvcZ, 2.5f, t.NpcEntry);
+            return false;
+        }
+        StopMoving(ai, bot, c);
+        if (t.Svc == 7)
+        {
+            GameObject* box = bot->FindNearestGameObject(t.NpcEntry, 10.0f);
+            if (box)
+                BotAuction::PostMail(bot->GetGUID(), box->GetGUID());
+            c.AhNextMs = now + BotAuction::VisitCooldownMs();
+            Finish(c, now);
+            return true;
+        }
+        Creature* npc = FindLiveNpc(bot, t.NpcEntry, 10.0f);
+        Item* item = npc && c.AhPosts < BotAuction::MaxPostsPerVisit() ? BotAuction::PickListing(bot, [&](Item* i) { return KeepItem(bot, i); }) : nullptr;
+        if (!item)
+        {
+            c.AhNextMs = now + BotAuction::VisitCooldownMs();
+            Finish(c, now);
+            return true;
+        }
+        if (now >= c.AhNextPostMs)
+        {
+            BotAuction::PostSell(bot->GetGUID(), npc->GetGUID(), item->GetGUID());
+            ++c.AhPosts;
+            c.AhNextPostMs = now + 1600;
+        }
+        return false;
+    }
+
+    // E2: one profession trainer trip at a time. A planned profession the bot lacks comes first, then ranks of the ones it has.
+    bool ProfessionTrip(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        c.ProfNextMs = now + 60000;
+        uint8 const level = bot->GetLevel();
+        if (c.ProfWarnLevel != level)
+        {
+            c.ProfWarnLevel = level;
+            c.ProfWarned.clear();
+        }
+        if (c.ProfPlan.empty())
+            c.ProfPlan = BotProfession::Plan(bot->GetGUID().GetCounter());
+
+        std::vector<uint32> known;
+        for (uint32 skill : c.ProfPlan)
+            if (bot->HasSkill(skill))
+                known.push_back(skill);
+
+        std::vector<uint32> order;
+        if (uint32 next = BotProfession::NextToLearn(c.ProfPlan, known, level))
+            order.push_back(next);
+        order.insert(order.end(), known.begin(), known.end());
+
+        for (uint32 skill : order)
+        {
+            char const* name = BotProfession::Find(skill)->Name;
+            bool const have = bot->HasSkill(skill);
+            auto tl = g.Trainers.find(0x100 | skill);
+            float d = 0.0f;
+            SvcPt const* tp = tl == g.Trainers.end() ? nullptr : NearestSvc(bot, c, now, tl->second, false, false, 3000.0f, d);
+            Trainer::Trainer const* tr = tp ? sObjectMgr->GetTrainer(tp->TrainerId) : nullptr;
+            if (!tr)
+            {
+                if (!have && c.ProfWarned.insert(skill).second)
+                    Blocked(ai, bot, c, 0, "PROF_NO_TRAINER", StringFormat("no reachable {} trainer on map {} within 3000 yd", name, bot->GetMapId()),
+                        StringFormat(R"({{"skill":{},"map":{},"level":{},"x":{:.0f},"y":{:.0f}}})", skill, bot->GetMapId(), level, bot->GetPositionX(), bot->GetPositionY()), 0, false);
+                continue;
+            }
+            TrainEval ev = EvalTrain(bot, tr);
+            if (ev.Affordable)
+            {
+                StartService(bot, c, now, 1, *tp, false, false);
+                Decision(ai, bot, "PROF_TRIP", StringFormat("walking to {} trainer {} ({:.0f} yd), {} spells", name, tp->Entry, d, ev.Affordable), 0, tp->Entry,
+                    StringFormat(R"({{"skill":{},"have":{},"trainer_id":{},"dist":{:.0f},"affordable":{},"money":{},"skill_value":{}}})", skill, have, tp->TrainerId, d, ev.Affordable, bot->GetMoney(), bot->GetSkillValue(skill)));
+                return true;
+            }
+            if (!have && ev.Avail && c.ProfWarned.insert(skill).second)
+                Blocked(ai, bot, c, 0, "PROF_NO_MONEY", StringFormat("{} costs {} copper, bot has {}", name, ev.Want, bot->GetMoney()),
+                    StringFormat(R"({{"skill":{},"cheapest":{},"money":{},"level":{}}})", skill, ev.Want, bot->GetMoney(), level), tp->Entry, false);
+        }
+        return false;
+    }
+
     // Decides whether a trainer or vendor trip is due and starts it. Throttled, cheap in the common case.
     bool ServiceDue(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
     {
@@ -2373,12 +3268,35 @@ private:
         c.NextSvcMs = now + 4000;
         uint8 const level = bot->GetLevel();
 
+        // gear: equip a clear upgrade sitting in the bags (loot, bought, a level-up that made an item usable)
+        if (now >= c.NextGearMs)
+        {
+            c.NextGearMs = now + 30000;
+            EquipBagUpgrade(ai, bot);
+        }
+
+        if (level >= 5 && now >= c.GatherNextMs && GatherDue(ai, bot, c, now))
+            return true;
+        if (level >= 5 && now >= c.FishNextMs && FishDue(ai, bot, c, now))
+            return true;
+        if (now >= c.AhNextMs && BotAuction::Enabled() && AuctionDue(ai, bot, c, now))
+            return true;
+
+        if (now >= c.CraftNextMs)
+        {
+            c.CraftNextMs = now + 15000;
+            CraftForSkill(ai, bot, c, now);
+        }
+
         // 1. trainer: new level, or enough money for the cheapest spell we could not afford before. Spells have money priority.
         if (level >= 2 && now >= c.TrainRetryMs && (c.TrainLevel != level || (c.TrainWant && bot->GetMoney() >= c.TrainWant)))
         {
             auto tl = g.Trainers.find(bot->GetClass());
             float d = 0.0f;
             SvcPt const* tp = tl == g.Trainers.end() ? nullptr : NearestSvc(bot, c, now, tl->second, false, false, 4000.0f, d);
+            // fallback: a friendly trainer of the class on the same map that is farther than 4000 yd (large continents) beats no training at all
+            if (!tp && tl != g.Trainers.end())
+                tp = NearestSvc(bot, c, now, tl->second, false, false, 15000.0f, d);
             if (!tp)
             {
                 c.TrainLevel = level;
@@ -2402,7 +3320,7 @@ private:
                         }
                     char const* why = tl == g.Trainers.end() ? "no_trainer_of_class_in_world" : !friendlyAny ? "no_friendly_trainer_for_race_in_world" :
                         !friendlyOnMap ? "no_friendly_trainer_on_map" : "friendly_trainers_blacklisted_or_far";
-                    Blocked(ai, bot, c, 0, "TRAIN_NO_TRAINER", StringFormat("no reachable class trainer on map {} within 4000 yd (class {}, race {}, level {}): {}", bot->GetMapId(), bot->GetClass(), bot->GetRace(), level, why),
+                    Blocked(ai, bot, c, 0, "TRAIN_NO_TRAINER", StringFormat("no reachable class trainer on map {} within 15000 yd (class {}, race {}, level {}): {}", bot->GetMapId(), bot->GetClass(), bot->GetRace(), level, why),
                         StringFormat(R"({{"map":{},"class":{},"race":{},"level":{},"x":{:.0f},"y":{:.0f},"why":"{}","on_map":{},"friendly_on_map":{},"friendly_any":{}}})", bot->GetMapId(), bot->GetClass(), bot->GetRace(), level, bot->GetPositionX(), bot->GetPositionY(), why, onMap, friendlyOnMap, friendlyAny), 0, false);
                     // no point re-checking every level when the world has no friendly trainer for this class and race
                     if (!friendlyAny)
@@ -2431,6 +3349,10 @@ private:
             }
         }
 
+        // 1b. professions: learn the planned ones, then buy the next ranks when skill and money allow
+        if (level >= 5 && now >= c.ProfNextMs && ProfessionTrip(ai, bot, c, now))
+            return true;
+
         // 2. vendor
         uint32 const freeSlots = bot->GetFreeInventorySlotCount();
         bool const forced = c.VendorNow;
@@ -2439,7 +3361,18 @@ private:
         bool const needRepair = repairCost >= 150 && bot->GetMoney() >= repairCost * 2;
         uint32 replaceSize = 0;
         bool const needBags = level >= 3 && now >= c.NextBagMs && g.MinBagPrice != 0xFFFFFFFFu && bot->GetMoney() >= g.MinBagPrice && BagTargetSlot(bot, replaceSize) != 0xFF;
-        if (!forced && !(now >= c.NextVendorMs && (full || needRepair || needBags)))
+        uint32 ammoSub = 0, ammoHave = 0;
+        bool needAmmo = false;
+        if (AmmoCfg().Enabled && level >= 2 && now >= c.NextAmmoMs && !g.VendorAmmo.empty())
+        {
+            ammoSub = AmmoSubClassOf(bot);
+            if (ammoSub)
+            {
+                ammoHave = AmmoCount(bot, ammoSub);
+                needAmmo = ammoHave < AmmoCfg().LowCount && bot->GetMoney() >= 10;
+            }
+        }
+        if (!forced && !(now >= c.NextVendorMs && (full || needRepair || needBags || needAmmo)))
             return false;
 
         float d = 0.0f;
@@ -2447,11 +3380,28 @@ private:
         SvcPt const* vp = nullptr;
         if (needBags && !full && !needRepair)
             vp = NearestSvc(bot, c, now, g.Vendors, false, true, maxD, d);
+        if (!vp && needAmmo)
+            vp = NearestSvc(bot, c, now, g.Vendors, needRepair, false, maxD, d, ammoSub);
         if (!vp && needRepair)
             vp = NearestSvc(bot, c, now, g.Vendors, true, false, maxD, d);
+        if (!vp && needAmmo && !full && !forced && !needRepair && !needBags)
+        {
+            // only ammo is due and no vendor within range sells it: back off instead of walking to a vendor that cannot help
+            c.NextAmmoMs = now + AmmoCfg().CooldownSec * 1000;
+            c.NextVendorMs = now + 120 * 1000;
+            Blocked(ai, bot, c, 0, "AMMO_NO_VENDOR", StringFormat("{} ammo left (low below {}) and no reachable vendor within {:.0f} yd sells the right type", ammoHave, AmmoCfg().LowCount, maxD),
+                StringFormat(R"({{"have":{},"low":{},"subclass":{},"map":{}}})", ammoHave, AmmoCfg().LowCount, ammoSub, bot->GetMapId()), 0, false);
+            return false;
+        }
         if (!vp)
             vp = NearestSvc(bot, c, now, g.Vendors, false, false, maxD, d);
         c.VendorNow = false;
+        if (needAmmo)
+        {
+            c.NextAmmoMs = now + AmmoCfg().CooldownSec * 1000;
+            Decision(ai, bot, "AMMO_LOW", StringFormat("{} ammo left (low below {}), planning a vendor trip", ammoHave, AmmoCfg().LowCount), 0, 0,
+                StringFormat(R"({{"have":{},"low":{},"subclass":{},"money":{}}})", ammoHave, AmmoCfg().LowCount, ammoSub, bot->GetMoney()));
+        }
         if (needBags)
             c.NextBagMs = now + 300 * 1000;
         if (!vp)
@@ -2480,6 +3430,14 @@ private:
             Drop(ai, bot, c, now, 0, "UNREACHABLE", StringFormat("gave up walking to {} npc {} after 10 min", t.Svc == 1 ? "trainer" : "vendor", t.NpcEntry), std::string(), t.NpcEntry, 0);
             return true;
         }
+        if (t.Svc == 3)
+            return RunGather(ai, bot, c, now);
+        if (t.Svc == 4)
+            return RunFish(ai, bot, c, now);
+        if (t.Svc == 5)
+            return RunWorkshop(ai, bot, c, now);
+        if (t.Svc == 6 || t.Svc == 7)
+            return RunAuction(ai, bot, c, now);
         Creature* npc = FindLiveNpc(bot, t.NpcEntry, 45.0f);
         if (npc && npc->IsAlive() && bot->IsWithinDistInMap(npc, 4.5f))
         {
@@ -2522,7 +3480,11 @@ private:
         uint32 const tid = sObjectMgr->GetCreatureDefaultTrainer(npc->GetEntry());
         Trainer::Trainer const* tr = tid ? sObjectMgr->GetTrainer(tid) : nullptr;
         uint8 const level = bot->GetLevel();
-        c.TrainLevel = level;
+        // profession trainers must not touch the class-spell bookkeeping (it decides when the next class trainer trip is due)
+        CreatureTemplate const* ct = npc->GetCreatureTemplate();
+        bool const classTrainer = ct && ct->trainer_class > 0 && ct->trainer_class < 32;
+        if (classTrainer)
+            c.TrainLevel = level;
         if (!tr)
         {
             Blocked(ai, bot, c, 0, "TRAIN_NO_TRAINER", StringFormat("npc {} has no trainer data", npc->GetEntry()), std::string(), npc->GetEntry(), false);
@@ -2562,7 +3524,8 @@ private:
                 break;
         }
         TrainEval left = EvalTrain(bot, tr);
-        c.TrainWant = left.Want;
+        if (classTrainer)
+            c.TrainWant = left.Want;
         c.TrainedTotal += learned;
         if (learned)
             Decision(ai, bot, "TRAINED", StringFormat("learned {} spells from trainer {} for {} copper", learned, npc->GetEntry(), moneyBefore - bot->GetMoney()), 0, npc->GetEntry(),
@@ -2666,7 +3629,155 @@ private:
                     StringFormat(R"({{"cheapest":{},"money":{},"reserve":{},"level":{}}})", cheapest, money, reserve, level), npc->GetEntry(), false);
             }
         }
+        if (AmmoCfg().Enabled)
+            BuyAmmo(ai, bot, c, npc);
+        BuyGearUpgrades(ai, bot, c, now, npc);
+        BuyFishingPole(ai, bot, c, npc);
         c.NextVendorMs = now + (bot->GetFreeInventorySlotCount() <= 1 ? 600 : 120) * 1000;
+    }
+
+    // tops up arrows or bullets at a vendor visit (Bot.AI.Ammo.Enabled): the best usable offer of the right subclass, whole vendor stacks, no spell-money reserve
+    void BuyAmmo(BotAI* ai, Player* bot, BotQuestCtx& c, Creature* npc)
+    {
+        uint32 const sub = AmmoSubClassOf(bot);
+        auto va = g.VendorAmmo.find(npc->GetEntry());
+        if (!sub || va == g.VendorAmmo.end())
+            return;
+        AmmoConfig const& cfg = AmmoCfg();
+        uint32 const level = bot->GetLevel();
+        uint32 const have0 = AmmoCount(bot, sub);
+        if (have0 >= cfg.BuyTarget)
+            return;
+        AmmoOffer const* pick = nullptr;
+        for (AmmoOffer const& o : va->second)
+        {
+            if (o.SubClass != sub || o.ReqLevel > int32(level))
+                continue;
+            if (!pick || o.ReqLevel > pick->ReqLevel || (o.ReqLevel == pick->ReqLevel && o.Price < pick->Price))
+                pick = &o;
+        }
+        if (!pick)
+            return;
+        uint64 const money0 = bot->GetMoney();
+        uint32 have = have0;
+        for (int round = 0; round < 4 && have < cfg.BuyTarget; ++round)
+        {
+            uint32 const unit = std::max<uint32>(1, pick->BuyCount);
+            uint32 want = std::min<uint32>(pick->MaxStack, cfg.BuyTarget - have);
+            want = std::max<uint32>(unit, want / unit * unit);
+            uint64 const cost = uint64(pick->Price) * (want / unit);
+            if (bot->GetMoney() < cost)
+            {
+                // buy what the bot can pay for, at least one vendor unit
+                uint64 const units = unit ? bot->GetMoney() / std::max<uint32>(1, pick->Price) : 0;
+                if (!units)
+                    break;
+                want = uint32(std::min<uint64>(units, want / unit)) * unit;
+            }
+            uint64 const before = bot->GetMoney();
+            bot->BuyItemFromVendorSlot(npc->GetGUID(), pick->VendorSlot, pick->Item, want, NULL_BAG, NULL_SLOT);
+            if (bot->GetMoney() >= before)
+                break;   // refused (no inventory space, level, stock)
+            have = AmmoCount(bot, sub);
+        }
+        if (have > have0)
+            Decision(ai, bot, "AMMO_BOUGHT", StringFormat("bought {} ammo (item {}) for {} copper, now {}", have - have0, pick->Item, money0 - bot->GetMoney(), have), 0, npc->GetEntry(),
+                StringFormat(R"({{"item":{},"bought":{},"have":{},"price":{},"money_left":{}}})", pick->Item, have - have0, have, money0 - bot->GetMoney(), bot->GetMoney()));
+        else if (bot->GetMoney() < pick->Price)
+        {
+            if (c.AmmoNoMoneyLevel != level)
+            {
+                c.AmmoNoMoneyLevel = uint8(level);
+                Blocked(ai, bot, c, 0, "AMMO_NO_MONEY", StringFormat("cannot afford ammo: {} copper per {} rounds, bot has {}", pick->Price, pick->BuyCount, bot->GetMoney()),
+                    StringFormat(R"({{"item":{},"price":{},"unit":{},"money":{},"have":{}}})", pick->Item, pick->Price, pick->BuyCount, bot->GetMoney(), have0), npc->GetEntry(), false);
+            }
+        }
+        else
+            Blocked(ai, bot, c, 0, "AMMO_BUY_FAILED", StringFormat("could not buy ammo {} (no inventory space or vendor refused)", pick->Item),
+                StringFormat(R"({{"item":{},"free_slots":{},"money":{}}})", pick->Item, bot->GetFreeInventorySlotCount(), bot->GetMoney()), npc->GetEntry(), false);
+    }
+
+    // E2: a bot that has the fishing skill but no pole buys the cheapest one on offer.
+    void BuyFishingPole(BotAI* ai, Player* bot, BotQuestCtx& c, Creature* npc)
+    {
+        if (!bot->HasSkill(BotProfession::SKILL_FISHING) || FindPole(bot))
+            return;
+        VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(npc->GetEntry());
+        if (!items || items->Empty())
+            return;
+        uint32 slot = 0, entry = 0, price = 0xFFFFFFFFu;
+        for (uint32 i = 0; i < items->GetItemCount(); ++i)
+        {
+            VendorItem const* vi = items->GetItem(i);
+            if (!vi || vi->ExtendedCost || vi->maxcount || vi->PlayerConditionId)
+                continue;
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(vi->item);
+            if (proto && proto->IsWeapon() && proto->GetSubClass() == ITEM_SUBCLASS_WEAPON_FISHING_POLE && proto->GetBuyPrice() && proto->GetBuyPrice() < price && bot->GetMoney() >= proto->GetBuyPrice())
+            {
+                slot = i; entry = vi->item; price = proto->GetBuyPrice();
+            }
+        }
+        if (!entry)
+            return;
+        uint64 const before = bot->GetMoney();
+        bot->BuyItemFromVendorSlot(npc->GetGUID(), slot, entry, 1, NULL_BAG, NULL_SLOT);
+        if (bot->GetMoney() < before)
+            Decision(ai, bot, "POLE_BOUGHT", StringFormat("bought fishing pole {} for {} copper", entry, before - bot->GetMoney()), 0, npc->GetEntry(),
+                StringFormat(R"({{"item":{},"price":{}}})", entry, before - bot->GetMoney()));
+        else
+            Blocked(ai, bot, c, 0, "POLE_BUY_FAILED", StringFormat("could not buy fishing pole {}", entry), std::string(), npc->GetEntry(), false);
+    }
+
+    // E2/gear: buys armor and weapons from this vendor that are a clear upgrade for the class and equips them. At most 3 per visit,
+    // plain gold price only, and the money the class trainer still wants stays untouched.
+    void BuyGearUpgrades(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Creature* npc)
+    {
+        VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(npc->GetEntry());
+        if (!items || items->Empty() || bot->GetLevel() < 3)
+            return;
+        uint64 const reserve = TrainReserve(bot, c, now);
+        for (int round = 0; round < 3; ++round)
+        {
+            if (bot->GetFreeInventorySlotCount() == 0)
+                return;
+            VendorItem const* pick = nullptr;
+            uint32 pickSlot = 0;
+            double pickGain = 0.0;
+            for (uint32 i = 0; i < items->GetItemCount(); ++i)
+            {
+                VendorItem const* vi = items->GetItem(i);
+                if (!vi || vi->ExtendedCost || vi->maxcount || vi->PlayerConditionId)
+                    continue;
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(vi->item);
+                if (!proto || !(proto->IsArmor() || proto->IsWeapon()) || !proto->GetBuyPrice() || bot->GetMoney() < reserve + proto->GetBuyPrice())
+                    continue;
+                if (bot->CanUseItem(proto) != EQUIP_ERR_OK)
+                    continue;
+                GearChoice gc;
+                if (BestGearSlot(bot, proto, gc) && (!pick || gc.Gain() > pickGain))
+                {
+                    pick = vi;
+                    pickSlot = i;
+                    pickGain = gc.Gain();
+                }
+            }
+            if (!pick)
+                return;
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(pick->item);
+            uint64 const before = bot->GetMoney();
+            bot->BuyItemFromVendorSlot(npc->GetGUID(), pickSlot, pick->item, 1, NULL_BAG, NULL_SLOT);
+            Item* bought = bot->GetMoney() < before ? bot->GetItemByEntry(pick->item) : nullptr;
+            if (!bought)
+            {
+                Blocked(ai, bot, c, 0, "GEAR_BUY_FAILED", StringFormat("could not buy {} (vendor refused or no space)", pick->item),
+                    StringFormat(R"({{"item":{},"money":{},"free_slots":{}}})", pick->item, bot->GetMoney(), bot->GetFreeInventorySlotCount()), npc->GetEntry(), false);
+                return;
+            }
+            Decision(ai, bot, "GEAR_BOUGHT", StringFormat("bought {} for {} copper", proto->GetName(DEFAULT_LOCALE), before - bot->GetMoney()), 0, npc->GetEntry(),
+                StringFormat(R"({{"item":{},"price":{},"gain":{:.1f},"money_left":{}}})", pick->item, before - bot->GetMoney(), pickGain, bot->GetMoney()));
+            if (!EquipIfUpgrade(ai, bot, bought, "GEAR_EQUIPPED", 0))
+                return;   // could not wear it: do not buy the same thing again
+        }
     }
 
     // ----- running the task -----
@@ -2790,6 +3901,70 @@ private:
         return false; // let move_to_goal run in the same tick
     }
 
+    // ----- gear scoring (BotGear.h): class-role stat weights decide what is an upgrade -----
+    static BotGear::ItemFacts GearFacts(ItemTemplate const* proto)
+    {
+        BotGear::ItemFacts f;
+        f.InvType = uint32(proto->GetInventoryType());
+        f.ItemLevel = proto->GetBaseItemLevel();
+        f.Armor = proto->IsArmor() ? proto->GetArmor(f.ItemLevel) : 0;
+        f.Dps = proto->IsWeapon() ? proto->GetDPS(f.ItemLevel) : 0.0f;
+        f.TwoHand = f.InvType == INVTYPE_2HWEAPON;
+        f.RangedWeapon = proto->IsRangedWeapon();
+        for (uint32 i = 0; i < MAX_ITEM_PROTO_STATS; ++i)
+            if (proto->GetStatPercentEditor(i) > 0)
+                f.Stats.emplace_back(proto->GetStatModifierBonusStat(i), proto->GetStatPercentEditor(i));
+        return f;
+    }
+
+    static double GearScore(Player* bot, ItemTemplate const* proto)
+    {
+        return BotGear::Score(BotGear::RoleForClass(bot->GetClass()), GearFacts(proto));
+    }
+
+    struct GearChoice
+    {
+        uint8 Slot = 0xFF;
+        double Score = 0.0;
+        double Worn = 0.0;
+        uint32 WornEntry = 0;
+        uint32 WornLevel = 0;
+        double Gain() const { return Score - Worn; }
+    };
+
+    // Picks the slot the item would replace with the least loss (an empty slot first) and says whether it is an upgrade there.
+    static bool BestGearSlot(Player* bot, ItemTemplate const* proto, GearChoice& out)
+    {
+        if (!(proto->IsArmor() || proto->IsWeapon()))
+            return false;
+        std::vector<uint8> const slots = BotGear::SlotsForInvType(uint32(proto->GetInventoryType()));
+        if (slots.empty())
+            return false;
+        double const score = GearScore(bot, proto);
+        bool found = false;
+        for (uint8 slot : slots)
+        {
+            Item* worn = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            double wornScore = worn ? GearScore(bot, worn->GetTemplate()) : 0.0;
+            uint32 wornEntry = worn ? worn->GetEntry() : 0;
+            uint32 wornLevel = worn ? worn->GetTemplate()->GetBaseItemLevel() : 0;
+            // a two-hander also pushes the off hand out, a worn two-hander blocks the off hand
+            if (slot == EQUIPMENT_SLOT_MAINHAND && proto->GetInventoryType() == INVTYPE_2HWEAPON)
+                if (Item* off = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
+                    wornScore += GearScore(bot, off->GetTemplate());
+            if (!found || wornScore < out.Worn)
+            {
+                out.Slot = slot;
+                out.Score = score;
+                out.Worn = wornScore;
+                out.WornEntry = wornEntry;
+                out.WornLevel = wornLevel;
+                found = true;
+            }
+        }
+        return found && BotGear::IsUpgrade(out.Score, out.Worn);
+    }
+
     uint32 ChooseReward(Player* bot, Quest const* q)
     {
         uint32 bestId = 0;
@@ -2804,7 +3979,13 @@ private:
                 continue;
             double s = double(proto->GetSellPrice());
             if (bot->CanUseItem(proto) == EQUIP_ERR_OK)
-                s += (proto->IsArmor() || proto->IsWeapon()) ? 1e9 : 1e6;
+            {
+                GearChoice gc;
+                if (BestGearSlot(bot, proto, gc))
+                    s += 1e9 + gc.Gain() * 1000.0;     // a real upgrade for this class beats any vendor value
+                else if (!(proto->IsArmor() || proto->IsWeapon()))
+                    s += 1e6;
+            }
             if (s > bestScore)
             {
                 bestScore = s;
@@ -2814,36 +3995,34 @@ private:
         return bestId;
     }
 
-    // Equips a quest reward only when it is a clear upgrade: empty slot, or higher item level than what is worn.
-    void TryEquipReward(BotAI* ai, Player* bot, uint32 itemId, uint32 questId)
+    // Equips an item from the bags when it scores clearly higher than what the bot wears in the slot it would take.
+    static bool EquipIfUpgrade(BotAI* ai, Player* bot, Item* item, char const* code, uint32 questId)
     {
-        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
-        if (!proto || !(proto->IsArmor() || proto->IsWeapon()) || bot->IsInCombat())
-            return;
-        Item* item = bot->GetItemByEntry(itemId);
-        if (!item || item->IsEquipped())
-            return;
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto || item->IsEquipped() || bot->IsInCombat() || bot->CanUseItem(item) != EQUIP_ERR_OK)
+            return false;
+        GearChoice gc;
+        if (!BestGearSlot(bot, proto, gc))
+            return false;
         uint16 dest = 0;
-        if (bot->CanEquipItem(NULL_SLOT, dest, item, true) != EQUIP_ERR_OK)
-            return;
-        Item* worn = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, uint8(dest & 255));
-        uint32 wornLevel = 0;
-        if (worn)
-        {
-            ItemTemplate const* wp = worn->GetTemplate();
-            wornLevel = wp->GetBaseItemLevel();
-            if (wp->GetQuality() > proto->GetQuality() || proto->GetBaseItemLevel() <= wornLevel)
-                return;
-        }
-        uint32 wornEntry = worn ? worn->GetEntry() : 0;
+        if (bot->CanEquipItem(gc.Slot, dest, item, true) != EQUIP_ERR_OK)
+            return false;
         bot->SwapItem(item->GetPos(), dest);
         Item* now = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, uint8(dest & 255));
-        BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_REWARD_EQUIPPED",
-            StringFormat("equipped quest reward {} ({})", proto->GetName(DEFAULT_LOCALE), now && now->GetEntry() == itemId ? "ok" : "swap failed"));
+        bool const ok = now && now->GetEntry() == proto->GetId();
+        BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, code,
+            StringFormat("equipped {} ({})", proto->GetName(DEFAULT_LOCALE), ok ? "ok" : "swap failed"));
         ev.QuestId = questId;
-        ev.TargetEntry = itemId;
-        ev.Details = StringFormat(R"({{"slot":{},"replaced_entry":{},"old_ilvl":{},"new_ilvl":{}}})", dest & 255, wornEntry, wornLevel, proto->GetBaseItemLevel());
+        ev.TargetEntry = proto->GetId();
+        ev.Details = StringFormat(R"({{"slot":{},"replaced_entry":{},"old_ilvl":{},"new_ilvl":{},"old_score":{:.1f},"new_score":{:.1f}}})",
+            dest & 255, gc.WornEntry, gc.WornLevel, proto->GetBaseItemLevel(), gc.Worn, gc.Score);
         sBotMgr->LogEvent(std::move(ev));
+        return ok;
+    }
+
+    void TryEquipReward(BotAI* ai, Player* bot, uint32 itemId, uint32 questId)
+    {
+        EquipIfUpgrade(ai, bot, bot->GetItemByEntry(itemId), "QUEST_REWARD_EQUIPPED", questId);
     }
 
     bool TurnIn(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Quest const* q, Creature* npc)
@@ -2957,36 +4136,6 @@ private:
         sBotMgr->LogEvent(std::move(ev));
     }
 
-    // True when a live hostile mob that is too strong for the bot stands near the chest (or near the bot): the bot would pull it on the
-    // way in or while it stands at the chest. Only sees mobs in the loaded grid around the bot, so it is asked again while approaching.
-    bool ChestUnsafe(Player* bot, float sx, float sy)
-    {
-        static thread_local std::vector<Creature*> list;
-        static thread_local std::vector<BotLoot::MobFacts> facts;
-        list.clear();
-        facts.clear();
-        FindCreatureOptions opt;
-        opt.IsAlive = FindCreatureAliveState::Alive;
-        bot->GetCreatureListWithOptionsInGrid(list, 70.0f, opt);
-        for (Creature* m : list)
-        {
-            if (m->IsPet() || m->IsTotem() || m->IsCritter() || m->IsCivilian() || m->IsTrigger())
-                continue;
-            if (!bot->IsHostileTo(m) || !bot->IsValidAttackTarget(m))
-                continue;
-            BotLoot::MobFacts f;
-            f.DistToSpawn = Dist2D(m->GetPositionX(), m->GetPositionY(), sx, sy);
-            f.DistToBot = Dist2D(m->GetPositionX(), m->GetPositionY(), bot->GetPositionX(), bot->GetPositionY());
-            f.LevelDiff = int32(m->GetLevel()) - int32(bot->GetLevel());
-            f.Elite = m->IsElite() || m->isWorldBoss();
-            facts.push_back(f);
-        }
-        BotLoot::DangerConfig dc;
-        dc.MaxGap = Safety().DangerGap > 0 ? Safety().DangerGap : Cfg().MaxMobLevelDiff + 2;
-        dc.EliteBonus = Cfg().EliteBonus;
-        return BotLoot::ChestDangerous(facts, dc);
-    }
-
     // Backs a Loot task off: the quest is parked for this bot for `sec` seconds (no quarantine, this is contention, not failure).
     void GoBackOff(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Quest const* q, char const* code, std::string summary, std::string details, uint32 entry, uint32 sec)
     {
@@ -2997,29 +4146,115 @@ private:
     }
 
     // The claimed spawn turned out empty / unusable for this bot: forget it and try the next one.
-    // objectCause: the reason describes the object (looted, not spawned, no loot) and cools the spawn for every bot; bot-specific
-    // reasons only ignore it for this bot.
-    void GoSpawnFailed(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Task& t, char const* why, bool objectCause)
+    // `global` is only true for a fact about the object (confirmed not spawned with the grid loaded): then every bot cools the spawn
+    // for a short while. Everything else (no path, danger, cannot interact, store failed) is this bot's problem: per-bot ignore only.
+    void GoSpawnFailed(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Task& t, char const* why, bool global = false, std::string extra = std::string())
     {
         BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_SPAWN_EMPTY", StringFormat("object {} at spawn {} not usable ({})", t.GoEntry, t.GoSpawn, why));
         ev.QuestId = t.Quest;
         ev.TargetEntry = t.GoEntry;
+        ev.Details = StringFormat(R"({{"cause":"{}","global":{},"spawn_dist":{:.0f},"bot":[{:.0f},{:.0f},{:.0f}]{}}})", why, global,
+            Dist2D(t.GoX, t.GoY, bot->GetPositionX(), bot->GetPositionY()), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), extra);
         sBotMgr->LogEvent(std::move(ev));
         uint32 const respawnMs = std::min<uint32>(t.GoRespawn, 600) * 1000;
-        c.GoIgnore[t.GoSpawn] = now + respawnMs;
-        GoRelease(t.GoSpawn, t.GoBot, objectCause ? respawnMs : 0);
+        c.GoIgnore[t.GoSpawn] = now + (global ? respawnMs : 300 * 1000);
+        GoRelease(t.GoSpawn, t.GoBot, global ? std::min<uint32>(respawnMs, 120 * 1000) : 0);
         if (Improved().Enabled)
         {
-            if (!objectCause)
+            if (!global)
                 c.LootBlack.Add(t.GoSpawn, now, Improved().BlacklistSec * 1000);   // one no-progress result is enough for this bot
-            if (!(t.GoPooled && objectCause))
+            if (!(t.GoPooled && global))
                 ++t.GoAttempts;   // a pooled spawn that is simply not up does not use the attempt budget
         }
         else
             ++t.GoAttempts;
         t.GoSpawn = 0;
         t.GoUseTries = 0;
+        t.GoApproachTries = 0;
+        t.GoBestGo = 0.0f;
+        t.GoWaitMs = 0;
         StopMoving(ai, bot, c);
+    }
+
+    // H3: hostile units around a point that would kill a low level bot: an elite or a mob 2+ levels above (EffectiveDiff >= 2), or a
+    // camp of 3 or more hostile mobs within 25 yards. `list` is the bot's own grid scan (the point must be inside its range).
+    // Returns true on danger; entry/count describe the worst mob and the number of hostiles.
+    bool GoDangerAt(Player* bot, std::vector<Creature*> const& list, float x, float y, uint32& entry, uint32& count)
+    {
+        entry = 0;
+        count = 0;
+        bool danger = false;
+        for (Creature* m : list)
+        {
+            if (!m->IsAlive() || m->IsCritter() || m->IsPet() || m->IsTotem() || m->IsCivilian() || m->GetCreatureTemplate()->npcflag)
+                continue;
+            if (Dist2D(m->GetPositionX(), m->GetPositionY(), x, y) > 25.0f || !bot->IsValidAttackTarget(m))
+                continue;
+            ++count;
+            if (m->isWorldBoss() || EffectiveDiff(bot, m) >= 2)
+            {
+                if (!danger)
+                    entry = m->GetEntry();
+                danger = true;
+            }
+            else if (!entry)
+                entry = m->GetEntry();
+        }
+        return danger || count >= 3;
+    }
+
+    void GoScanList(Player* bot, std::vector<Creature*>& list)
+    {
+        FindCreatureOptions opt;
+        opt.IsAlive = FindCreatureAliveState::Alive;
+        bot->GetCreatureListWithOptionsInGrid(list, 90.0f, opt);
+    }
+
+    // R6-1: why a long quest leg should not start now (nullptr = fine). The bot-state part is cached for 5 s per bot:
+    // a death on a quest leg in the last 15 min, or a hostile mob 2+ levels above within 90 yd of the bot (the start of the route).
+    char const* LegGateWhy(Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        if (int32(now - c.GateUntilMs) < 0)
+            return c.GateWhy;
+        c.GateUntilMs = now + 5000;
+        c.GateWhy = nullptr;
+        uint32 const ms = getMSTime();
+        for (DeathRec const& d : c.Deaths)
+            if (d.Ms && d.Quest && uint32(ms - d.Ms) <= 15 * 60 * 1000)
+            {
+                c.GateWhy = "recent_death";
+                return c.GateWhy;
+            }
+        std::vector<Creature*> list;
+        GoScanList(bot, list);
+        for (Creature* m : list)
+        {
+            if (!m->IsAlive() || m->IsCritter() || m->IsPet() || m->IsTotem() || m->IsCivilian() || m->GetCreatureTemplate()->npcflag)
+                continue;
+            if ((m->isWorldBoss() || EffectiveDiff(bot, m) >= 2) && bot->IsValidAttackTarget(m))
+            {
+                c.GateWhy = "hostile_above";
+                break;
+            }
+        }
+        return c.GateWhy;
+    }
+
+    // true = do not start this leg (go_giver, go_ender, loot) of legDist yards for quest q
+    bool LegGated(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Quest const* q, float legDist, char const* kind, bool log)
+    {
+        if (!Cfg().GateLegs || !q || legDist <= Cfg().LegGateYd)
+            return false;
+        int32 const ql = bot->GetQuestLevel(q);
+        if (ql <= 0 || int32(bot->GetLevel()) >= ql)
+            return false;
+        char const* why = LegGateWhy(bot, c, now);
+        if (!why)
+            return false;
+        if (log && c.Logged.insert(LogKey(q->GetQuestId(), "LEG_GATED")).second)
+            Decision(ai, bot, "QUEST_LEG_GATED", StringFormat("long {} leg for '{}' held back ({})", kind, q->GetLogTitle(), why), q->GetQuestId(), 0,
+                StringFormat(R"({{"leg":"{}","dist":{:.0f},"why":"{}","bot_level":{},"quest_level":{}}})", kind, legDist, why, bot->GetLevel(), ql));
+        return true;
     }
 
     // Another bot holds the claimed spawn now (ours expired): give it up without cooling it and pick another.
@@ -3033,7 +4268,7 @@ private:
 
     // Picks and claims the nearest free spawn of the item's chest objects. 0 = claimed, 1 = all busy (other bots), 2 = all cooling or
     // ignored (respawn wait), 3 = none on this map.
-    int GoPickSpawn(Player* bot, BotQuestCtx& c, uint32 now, Task& t, std::vector<uint32> const& gos, uint32& minWaitMs)
+    int GoPickSpawn(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Task& t, std::vector<uint32> const& gos, uint32& minWaitMs)
     {
         uint64 const me = bot->GetGUID().GetCounter();
         GoPt const* best = nullptr;
@@ -3042,6 +4277,8 @@ private:
         minWaitMs = 0xFFFFFFFFu;
         t.GoSkipQuar = 0;
         t.GoSkipDeadly = 0;
+        std::vector<Creature*> list;
+        bool listed = false;
         static thread_local std::vector<GoPt const*> cand;   // M5: no allocation per pick
         static thread_local std::vector<uint64> ids;
         cand.clear();
@@ -3074,6 +4311,43 @@ private:
         std::vector<GoState> states;
         std::vector<uint32> lefts;
         GoGateStateBatch(ids, me, states, lefts); // one lock for the whole pick
+        struct Elig { GoPt const* P; float D; };
+        std::vector<Elig> elig;
+        // sanity before a spawn becomes the candidate: another floor / ledge needs a real path, and a camp of mobs near the
+        // spawn point (when it is in scan range) rules the spawn out for this bot. True = ruled out (and ignored for 5 min).
+        auto sanityBad = [&](GoPt const& p, float d) -> bool
+        {
+            bool bad = false;
+            char const* badWhy = "";
+            if (std::fabs(p.P.Z - bot->GetPositionZ()) > 15.0f && d < 150.0f)
+            {
+                BotPathInfo info = BotMotion::QueryPath(bot, p.P.X, p.P.Y, p.P.Z);
+                if (info.NoPath || (info.Partial && info.EndGap3D > 25.0f) || (info.Valid && info.GoalOffMesh && info.EndGap3D > 25.0f))
+                { bad = true; badWhy = "pick: no path to another level"; }
+            }
+            if (!bad && d < 80.0f)
+            {
+                if (!listed)
+                {
+                    GoScanList(bot, list);
+                    listed = true;
+                }
+                uint32 dEntry = 0, dCount = 0;
+                if (GoDangerAt(bot, list, p.P.X, p.P.Y, dEntry, dCount))
+                { bad = true; badWhy = "pick: danger"; }
+            }
+            if (!bad)
+                return false;
+            c.GoIgnore[p.SpawnId] = now + 300 * 1000;
+            ++cooling;
+            minWaitMs = std::min<uint32>(minWaitMs, 300 * 1000);
+            BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_SPAWN_EMPTY", StringFormat("object {} at spawn {} skipped ({})", p.Entry, p.SpawnId, badWhy));
+            ev.QuestId = t.Quest;
+            ev.TargetEntry = p.Entry;
+            ev.Details = StringFormat(R"({{"cause":"{}","global":false,"spawn_dist":{:.0f},"bot":[{:.0f},{:.0f},{:.0f}]}})", badWhy, d, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            sBotMgr->LogEvent(std::move(ev));
+            return true;
+        };
         bool rejectedByRules = false;
         if (Improved().Enabled)
         {
@@ -3134,10 +4408,58 @@ private:
                 continue;
             }
             float d = Dist2D(p.P.X, p.P.Y, bot->GetPositionX(), bot->GetPositionY());
+            if (Cfg().LootByCost)
+            {
+                elig.push_back({ &p, d });
+                continue;
+            }
             if (d < bd)
             {
+                if (sanityBad(p, d))
+                    continue;
                 bd = d;
                 best = &p;
+            }
+        }
+        bool tooFar = false;
+        if (Cfg().LootByCost && !elig.empty())
+        {
+            // R6-2: look at the nearest few spawns by straight line, rank them by walking distance plus a penalty for places
+            // where bots died in the last hour, and refuse spawns beyond the leg limit unless the bot is strong enough for the quest
+            std::sort(elig.begin(), elig.end(), [](Elig const& a, Elig const& b) { return a.D < b.D; });
+            Quest const* lq = sObjectMgr->GetQuestTemplate(t.Quest);
+            bool const strong = lq && int32(bot->GetLevel()) >= bot->GetQuestLevel(lq) && bot->GetHealthPct() >= 90.0f;
+            float bestCost = 1e9f;
+            uint32 looked = 0;
+            for (Elig const& e : elig)
+            {
+                if (looked >= 5)
+                    break;
+                if (!strong && e.D > Cfg().LegGateYd)
+                {
+                    tooFar = true;
+                    break;      // sorted: everything after is further
+                }
+                if (sanityBad(*e.P, e.D))
+                    continue;
+                ++looked;
+                float cost = e.D;
+                BotPathInfo info = BotMotion::QueryPath(bot, e.P->P.X, e.P->P.Y, e.P->P.Z);
+                if (info.NoPath || (info.Partial && info.EndGap3D > 25.0f))
+                    continue;
+                if (info.Valid && info.Length > 0.0f)
+                    cost = info.Length;
+                if (!strong && cost > Cfg().LegGateYd * 1.5f)
+                {
+                    tooFar = true;
+                    continue;
+                }
+                cost += 150.0f * float(std::min<uint32>(AreaDeaths(e.P->P.Map, e.P->P.X, e.P->P.Y, 150.0f), 4));
+                if (cost < bestCost)
+                {
+                    bestCost = cost;
+                    best = e.P;
+                }
             }
         }
         if (best && GoTryClaim(best->SpawnId, me))
@@ -3153,10 +4475,15 @@ private:
             t.GoNextMs = 0;
             t.GoRenewMs = now + GO_RENEW_MS;
             t.GoUseTries = 0;
+            t.GoApproachTries = 0;
+            t.GoBestGo = 0.0f;
+            t.GoDangerMs = 0;
             return 0;
         }
         if (best || busy)
             return 1;
+        if (tooFar && !cooling)
+            return 4;
         if (cooling)
             return 2;
         return (rejectedByRules || t.GoSkipQuar || t.GoSkipDeadly) ? 4 : 3;
@@ -3191,13 +4518,13 @@ private:
         // overall caps: respawn waits are longer than the kill stall timer, but a task is never open forever
         if (now - t.SinceMs > 12 * 60 * 1000)
         {
-            Drop(ai, bot, c, now, t.Quest, "ITEM_NOT_DROPPING", StringFormat("no progress on '{}' from chest objects in 12 minutes", q->GetLogTitle()),
+            Drop(ai, bot, c, now, t.Quest, "LOOT_EXHAUSTED", StringFormat("no progress on '{}' from chest objects in 12 minutes", q->GetLogTitle()),
                 StringFormat(R"({{"item":{},"attempts":{},"looted":{},"count":{},"amount":{}}})", obj->ObjectID, t.GoAttempts, t.GoLooted, count, obj->Amount), uint32(obj->ObjectID), 1800);
             return true;
         }
         if (t.GoAttempts >= 8)
         {
-            Drop(ai, bot, c, now, t.Quest, "ITEM_NOT_DROPPING", StringFormat("{} chest object spawns for '{}' were empty or unusable", t.GoAttempts, q->GetLogTitle()),
+            Drop(ai, bot, c, now, t.Quest, "LOOT_EXHAUSTED", StringFormat("{} chest object spawns for '{}' were empty or unusable", t.GoAttempts, q->GetLogTitle()),
                 StringFormat(R"({{"item":{},"attempts":{},"looted":{},"count":{},"amount":{}}})", obj->ObjectID, t.GoAttempts, t.GoLooted, count, obj->Amount), uint32(obj->ObjectID), 1800);
             return true;
         }
@@ -3265,7 +4592,7 @@ private:
             }
             GoEntriesOf(uint32(obj->ObjectID), gos);
             uint32 waitMs = 0;
-            int r = GoPickSpawn(bot, c, now, t, gos, waitMs);
+            int r = GoPickSpawn(ai, bot, c, now, t, gos, waitMs);
             if (r == 1)
             {
                 GoBackOff(ai, bot, c, now, q, "GO_BUSY", StringFormat("object spawns for '{}' are in use by other bots, doing other work", q->GetLogTitle()),
@@ -3274,22 +4601,19 @@ private:
             }
             if (r == 2)
             {
-                // everything is looted / respawning: wait for the earliest respawn, but not long (the bot does other work meanwhile)
-                if (!t.GoWaitMs)
-                    t.GoWaitMs = now;
-                if (waitMs <= 90 * 1000 && now - t.GoWaitMs < 90 * 1000)
-                {
-                    t.GoNextMs = now + std::clamp<uint32>(waitMs, 1000, 5000);
-                    return false;
-                }
+                // everything is looted / respawning / ruled out: do other work meanwhile, never stand around in the open waiting
                 GoBackOff(ai, bot, c, now, q, "GO_RESPAWN_WAIT", StringFormat("all object spawns for '{}' are looted, respawn in {} s", q->GetLogTitle(), waitMs / 1000),
                     StringFormat(R"({{"item":{},"wait_s":{}}})", obj->ObjectID, waitMs / 1000), uint32(obj->ObjectID), std::clamp<uint32>(waitMs / 1000, 60, 600));
                 return true;
             }
             if (r == 4)
             {
-                GoBackOff(ai, bot, c, now, q, "LOOT_NO_USABLE_SPAWN", StringFormat("no object spawn for '{}' is reachable, close enough and safe right now", q->GetLogTitle()),
-                    StringFormat(R"({{"item":{},"quarantined":{},"deadly":{}}})", obj->ObjectID, t.GoSkipQuar, t.GoSkipDeadly), uint32(obj->ObjectID), 300);
+                if (Improved().Enabled)
+                    GoBackOff(ai, bot, c, now, q, "LOOT_NO_USABLE_SPAWN", StringFormat("no object spawn for '{}' is reachable, close enough and safe right now", q->GetLogTitle()),
+                        StringFormat(R"({{"item":{},"quarantined":{},"deadly":{}}})", obj->ObjectID, t.GoSkipQuar, t.GoSkipDeadly), uint32(obj->ObjectID), 300);
+                else
+                    Drop(ai, bot, c, now, t.Quest, "LOOT_TOO_FAR", StringFormat("every free object spawn for '{}' is too far or too costly to walk for this bot now", q->GetLogTitle()),
+                        StringFormat(R"({{"item":{},"limit":{:.0f}}})", obj->ObjectID, Cfg().LegGateYd), uint32(obj->ObjectID), 600);
                 return true;
             }
             if (r == 3)
@@ -3307,24 +4631,16 @@ private:
         }
 
         float const dSpawn = Dist2D(t.GoX, t.GoY, bot->GetPositionX(), bot->GetPositionY());
-        if (Safety().Enabled && dSpawn <= 80.0f && int32(now - t.GoDangerMs) >= 0)
+        if (dSpawn < 60.0f && now >= t.GoDangerMs)
         {
-            // strong mobs near the chest (or on the way in): do not walk into them, take another spawn or park the quest
+            // H3: re-check the camp around the spawn point while approaching (the first pick often happens out of scan range)
             t.GoDangerMs = now + 1500;
-            if (ChestUnsafe(bot, t.GoX, t.GoY))
+            std::vector<Creature*> list;
+            GoScanList(bot, list);
+            uint32 dEntry = 0, dCount = 0;
+            if (GoDangerAt(bot, list, t.GoX, t.GoY, dEntry, dCount))
             {
-                uint64 const spawn = t.GoSpawn;
-                BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, "QUEST_LOOT_DANGER", StringFormat("strong mobs near object {} at spawn {} for '{}', not going", t.GoEntry, spawn, q->GetLogTitle()));
-                ev.QuestId = t.Quest;
-                ev.TargetEntry = t.GoEntry;
-                ev.Details = StringFormat(R"({{"spawn":{},"dist":{:.0f},"level":{},"danger_count":{}}})", spawn, dSpawn, bot->GetLevel(), uint32(t.GoDangers) + 1);
-                sBotMgr->LogEvent(std::move(ev));
-                GoSpawnFailed(ai, bot, c, now, t, "strong mobs near", false);
-                uint32& ign = c.GoIgnore[spawn];
-                ign = std::max<uint32>(ign, now + Safety().DangerCooldownSec * 1000);
-                if (++t.GoDangers >= 3)
-                    GoBackOff(ai, bot, c, now, q, "LOOT_DANGER", StringFormat("chests for '{}' are guarded by mobs too strong for level {}", q->GetLogTitle(), bot->GetLevel()),
-                        StringFormat(R"({{"item":{},"level":{}}})", obj->ObjectID, bot->GetLevel()), uint32(obj->ObjectID), 600);
+                GoSpawnFailed(ai, bot, c, now, t, "danger", false, StringFormat(R"(,"hostile_entry":{},"hostiles":{})", dEntry, dCount));
                 return false;
             }
         }
@@ -3357,6 +4673,11 @@ private:
                 t.GoWaitMs = now;
             if (dSpawn > 8.0f)
             {
+                if (now - t.GoWaitMs > 20000)
+                {
+                    GoSpawnFailed(ai, bot, c, now, t, "cannot get near the spawn point");
+                    return false;
+                }
                 Travel(ai, bot, c, now, t.GoX, t.GoY, t.GoZ, 5.0f, t.GoEntry);
                 return false;
             }
@@ -3369,8 +4690,22 @@ private:
         float const dGo = bot->GetExactDist(go);
         if (dGo > 3.0f)
         {
+            // H1: every pass counts, and the approach has its own stall timer (best distance must improve within 20 s)
+            ++t.GoApproachTries;
+            if (t.GoBestGo <= 0.0f || dGo < t.GoBestGo - 0.5f)
+            {
+                t.GoBestGo = dGo;
+                t.GoBestGoMs = now;
+            }
+            if (now - t.GoBestGoMs > 20000 || t.GoApproachTries >= 40)
+            {
+                GoSpawnFailed(ai, bot, c, now, t, "cannot reach object", false, StringFormat(R"(,"object_dist":{:.1f},"tries":{})", dGo, t.GoApproachTries));
+                return false;
+            }
             Travel(ai, bot, c, now, go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(), 2.0f, t.GoEntry);
-            if (dGo > 5.0f || ++t.GoUseTries < 12)
+            if (!t.GoSpawn)
+                return false;   // the walk could not start and the spawn was given up
+            if (dGo > 5.0f || t.GoApproachTries < 12)
                 return false;
         }
         StopMoving(ai, bot, c);
@@ -3385,8 +4720,22 @@ private:
             return false;
         }
         bot->SetFacingToObject(usable);
+        uint32 const itemBefore = obj->Type == QUEST_OBJECTIVE_ITEM ? bot->GetItemCount(uint32(obj->ObjectID), true) : 0;
+        int32 const objBefore = bot->GetQuestObjectiveData(*obj);
         usable->Use(bot);
-        if (LootGameObject(bot, usable))
+        bool const lootTaken = LootGameObject(bot, usable);
+        if (lootTaken && obj->Type == QUEST_OBJECTIVE_ITEM && bot->GetItemCount(uint32(obj->ObjectID), true) <= itemBefore &&
+            bot->GetQuestObjectiveData(*obj) <= objBefore)
+        {
+            // M4: the loot window was emptied for us but neither the item count nor the quest objective moved (bags full, unique item): not a success
+            ItemPosCountVec dest;
+            bool const bagsFull = bot->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, uint32(obj->ObjectID), 1) != EQUIP_ERR_OK;
+            if (bagsFull)
+                c.VendorNow = true;
+            GoSpawnFailed(ai, bot, c, now, t, bagsFull ? "store failed: bags full" : "store failed");
+            return false;
+        }
+        if (lootTaken)
         {
             ++t.GoLooted;
             g_goBad.Clear(t.GoSpawn);   // it works: forget earlier failures
@@ -3400,6 +4749,8 @@ private:
             sBotMgr->LogEvent(std::move(ev));
             t.GoSpawn = 0;
             t.GoUseTries = 0;
+            t.GoApproachTries = 0;
+            t.GoBestGo = 0.0f;
             t.GoAttempts = 0;   // a successful loot resets the failure budget
             if (Improved().Enabled && (t.GoTrip || bot->GetFreeInventorySlotCount() < Improved().MinFreeSlots))
             {
@@ -3452,7 +4803,12 @@ private:
         if (!bot->IsValidAttackTarget(m))
             return false;
         ++t.SeenLive;
-        if (m->isWorldBoss() || EffectiveDiff(bot, m) > (Cfg().FleeMode >= 1 ? std::min<int32>(Cfg().MaxMobLevelDiff, 1) : Cfg().MaxMobLevelDiff))
+        if (BotCombatAvoids(bot, m))
+        {
+            ++t.TooStrongSeen;   // Bot.AI.Avoid.*: listed killers are skipped unless within the allowed level gap
+            return false;
+        }
+        if (m->isWorldBoss() || EffectiveDiff(bot, m) > (BotCombatFleeMode(bot) >= 1 ? std::min<int32>(Cfg().MaxMobLevelDiff, 1) : Cfg().MaxMobLevelDiff))
         {
             if (m->IsElite() || m->isWorldBoss())
                 ++t.EliteSeen;
@@ -3655,7 +5011,13 @@ private:
     // Returns false when the task was dropped.
     bool ApproachAndPull(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Task& t, Creature* m)
     {
-        float const range = PullRange(bot);
+        float range = PullRange(bot);
+        if (!IsMeleeClass(bot) && Cfg().FirstStrikeMargin > 0.0f)
+        {
+            // first strike: open from just outside the mob's aggro radius so it does not get the first hit while the bot walks in
+            float const open = std::min(m->GetAttackDistance(bot) + Cfg().FirstStrikeMargin, Cfg().PullRangedMax);
+            range = std::max(range, open);
+        }
         float const d = bot->GetExactDist(m);
         t.LastDist = d;
         ++t.Approaches;
@@ -3709,14 +5071,8 @@ private:
     }
 
     // Loots every item and the money of one of our corpses when in range. Returns true when something was done.
-    bool LootCorpse(BotAI* ai, Player* bot, BotQuestCtx& c, Task& t, Creature* m)
+    void TakeLoot(BotAI* ai, Player* bot, Creature* m, Loot* loot)
     {
-        (void)ai; (void)c; (void)t;
-        if (!m->IsWithinDistInMap(bot, 3.5f) || !m->isTappedBy(bot))
-            return false;
-        Loot* loot = m->GetLootForPlayer(bot);
-        if (!loot || loot->isLooted())
-            return false;
         bot->SendLoot(*loot);
         for (uint32 i = 0; i < loot->items.size(); ++i)
             if (LootItem* li = loot->LootItemInSlot(i, bot))
@@ -3730,7 +5086,56 @@ private:
         }
         bot->GetSession()->DoLootRelease(loot);
         PaceAfter(ai, bot, ai->GetNowMs(), BotMove::Pause::Loot);
-        return true;
+    }
+
+    // E2: skins a skinnable corpse the bot is able to skin (planned profession, skill high enough, room in the bags).
+    static bool CanSkin(Player* bot, Creature* m)
+    {
+        if (!m->HasUnitFlag(UNIT_FLAG_SKINNABLE) || m->HasUnitFlag3(UNIT_FLAG3_ALREADY_SKINNED) || !bot->HasSpell(SPELL_SKINNING))
+            return false;
+        if (bot->GetFreeInventorySlotCount() == 0)
+            return false;
+        return BotProfession::SkinReqSkill(m->GetLevel()) <= bot->GetSkillValue(BotProfession::SKILL_SKINNING) + 25;
+    }
+
+    // Loots the corpse; then skins it and loots the skin. Returns true while it did something this tick.
+    bool LootCorpse(BotAI* ai, Player* bot, BotQuestCtx& c, Task& t, Creature* m)
+    {
+        (void)ai; (void)t;
+        if (!m->IsWithinDistInMap(bot, 3.5f) || !m->isTappedBy(bot))
+            return false;
+        uint32 const nowMs = GameTime::GetGameTimeMS();
+        Loot* loot = m->GetLootForPlayer(bot);
+        if (c.SkinGuid == m->GetGUID())
+        {
+            if (bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) && nowMs - c.SkinSinceMs < 6000)
+                return true;   // still casting
+            c.SkinGuid.Clear();
+            if (loot && !loot->isLooted() && m->HasUnitFlag3(UNIT_FLAG3_ALREADY_SKINNED))
+            {
+                TakeLoot(ai, bot, m, loot);
+                Decision(ai, bot, "SKINNED", StringFormat("skinned {} (skill {})", m->GetName(), bot->GetSkillValue(BotProfession::SKILL_SKINNING)), 0, m->GetEntry(),
+                    StringFormat(R"({{"creature_level":{},"skill":{}}})", m->GetLevel(), bot->GetSkillValue(BotProfession::SKILL_SKINNING)));
+                return true;
+            }
+            return false;
+        }
+        if (loot && !loot->isLooted())
+        {
+            TakeLoot(ai, bot, m, loot);
+            return true;
+        }
+        if (CanSkin(bot, m))
+        {
+            bot->GetMotionMaster()->Clear();
+            if (bot->CastSpell(m, SPELL_SKINNING, CastSpellExtraArgs(TRIGGERED_NONE)) == SPELL_CAST_OK)
+            {
+                c.SkinGuid = m->GetGUID();
+                c.SkinSinceMs = nowMs;
+                return true;
+            }
+        }
+        return false;
     }
 };
 
@@ -3783,6 +5188,36 @@ std::string DescribeTask(BotAI* ai)
     return StringFormat("task {} quest {} npc {} target {} kills {} scans {} raw {} ok {} seenlive {} toostrong {} wait {} chasing {} dist {:.1f} appr {} ign {} expect {} fails {} legs {} accepted {} rewarded {} blacklisted {} nextchoose {} calls {} hubtrips {} grinds {} hub {} why {}",
         KindName(t.K), t.Quest, t.NpcEntry, t.Target.IsEmpty() ? 0 : 1, t.Kills, t.Scans, t.ScanRaw, t.ScanOk, t.SeenLive, t.TooStrongSeen, t.WaitStartMs ? 1 : 0, t.Chasing ? 1 : 0, t.LastDist, t.Approaches, t.Ignored,
         cp->ExpectGoal ? 1 : 0, cp->GoalFails, t.LegIssues, cp->Accepted, cp->Rewarded, cp->Blacklist.size(), cp->NextChooseMs, cp->ExecCalls, cp->HubTrips, cp->Grinds, int64(t.HubId == 0xFFFFFFFFu ? -1 : int64(t.HubId)), cp->Why);
+}
+
+bool IsGrinding(BotAI* ai)
+{
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    return cp && cp->LastWasGrind;
+}
+
+// The nearest quest hub of the bot's map inside the zone whose quest levels fit the bot (same level window as the hub choice).
+bool FindHubInZone(Player* bot, uint32 zoneId, float& x, float& y, float& z)
+{
+    if (!g.Ready.load(std::memory_order_acquire) || !bot->GetMap())
+        return false;
+    int32 const lvl = int32(bot->GetLevel());
+    float best = 0.0f;
+    bool found = false;
+    for (Hub const& h : g.Hubs)
+    {
+        if (h.Map != bot->GetMapId() || (h.MinQ > 0 && h.MinQ > lvl + 2) || (h.MaxQ > 0 && h.MaxQ < lvl - 4))
+            continue;
+        float const d = Dist2D(h.X, h.Y, bot->GetPositionX(), bot->GetPositionY());
+        if (found && d >= best)
+            continue;
+        if (bot->GetMap()->GetZoneId(bot->GetPhaseShift(), h.X, h.Y, h.Z) != zoneId)
+            continue;
+        found = true;
+        best = d;
+        x = h.X; y = h.Y; z = h.Z;
+    }
+    return found;
 }
 
 void NoteDeath(Player* bot)

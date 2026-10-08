@@ -208,20 +208,8 @@ void SpawnBlacklist::Prune(uint32 nowMs)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// chest danger and spawn quarantine
+// spawn quarantine
 // ---------------------------------------------------------------------------------------------------------------------
-bool ChestDangerous(std::span<MobFacts const> mobs, DangerConfig const& cfg)
-{
-    for (MobFacts const& m : mobs)
-    {
-        if (m.DistToSpawn > cfg.SpawnRadius && m.DistToBot > cfg.BotRadius)
-            continue;
-        if (m.LevelDiff + (m.Elite ? cfg.EliteBonus : 0) >= cfg.MaxGap)
-            return true;
-    }
-    return false;
-}
-
 bool SpawnQuarantine::Note(uint64 spawnId, uint32 nowMs, uint32 strikes, uint32 windowMs, uint32 baseMs)
 {
     std::lock_guard<std::mutex> lk(_mx);
