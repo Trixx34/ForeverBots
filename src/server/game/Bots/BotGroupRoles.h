@@ -102,6 +102,34 @@ namespace BotGroupRoles
     // true = hold fire: a damage dealer or healer waits for the tank to gather threat, up to `holdMs`, and a little after the mob turned
     // to the tank. Never when the bot is the tank, when there is no tank or the tank is not engaged, or when the mob already attacks the bot.
     TC_GAME_API bool HoldFire(HoldFacts const& f, uint32 holdMs, uint32 afterTurnMs = 1500);
+
+    // Threat awareness: a non-tank that is about to take the mob off the tank. Pulling happens at 110 percent of the tank's threat in melee
+    // range and 130 percent at range, so the bot acts a little before that.
+    enum class ThreatAct : uint8
+    {
+        None,
+        Reduce,    // cast a threat reducer (Fade, Feint)
+        Pause      // stop attacking for a moment so the tank builds a lead
+    };
+
+    struct ThreatFacts
+    {
+        bool IsTank = false;
+        bool TankKnown = false;        // the group has a tank in range that is fighting this mob
+        bool Ranged = false;           // the bot attacks from range (130 percent limit instead of 110)
+        float MyThreat = 0.0f;         // the bot's threat on the mob
+        float TankThreat = 0.0f;       // the tank's threat on the mob (0 = the tank has not built any yet)
+        bool CanReduce = false;        // a threat reducer is ready and affordable
+        uint32 SinceLastMs = 0xFFFFFFFFu;   // time since the last Reduce or Pause for this mob
+    };
+
+    struct ThreatConfig
+    {
+        float WarnFraction = 0.9f;     // act at this fraction of the pull limit
+        uint32 CooldownMs = 8000;      // minimum time between two actions
+    };
+
+    TC_GAME_API ThreatAct CheckThreat(ThreatFacts const& f, ThreatConfig const& cfg);
 }
 
 #endif

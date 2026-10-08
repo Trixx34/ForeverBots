@@ -233,3 +233,45 @@ TEST_CASE("BotGroupRoles: hold fire", "[BotGroupRoles]")
     f.TankKnown = false;
     CHECK_FALSE(HoldFire(f, 3000));
 }
+
+TEST_CASE("BotGroupRoles: threat awareness", "[BotGroupRoles]")
+{
+    ThreatFacts f;
+    f.TankKnown = true;
+    f.TankThreat = 1000.0f;
+    ThreatConfig cfg;
+
+    f.MyThreat = 500.0f;
+    CHECK(CheckThreat(f, cfg) == ThreatAct::None);
+    f.MyThreat = 1000.0f;                          // melee limit 1100, warn at 990
+    CHECK(CheckThreat(f, cfg) == ThreatAct::Pause);
+    f.CanReduce = true;
+    CHECK(CheckThreat(f, cfg) == ThreatAct::Reduce);
+    f.Ranged = true;                               // ranged limit 1300, warn at 1170
+    CHECK(CheckThreat(f, cfg) == ThreatAct::None);
+    f.MyThreat = 1200.0f;
+    CHECK(CheckThreat(f, cfg) == ThreatAct::Reduce);
+}
+
+TEST_CASE("BotGroupRoles: threat awareness stays out of the way", "[BotGroupRoles]")
+{
+    ThreatFacts f;
+    f.TankKnown = true;
+    f.TankThreat = 1000.0f;
+    f.MyThreat = 5000.0f;
+    ThreatConfig cfg;
+    CHECK(CheckThreat(f, cfg) == ThreatAct::Pause);
+    f.IsTank = true;
+    CHECK(CheckThreat(f, cfg) == ThreatAct::None);          // the tank wants the lead
+    f.IsTank = false;
+    f.TankKnown = false;
+    CHECK(CheckThreat(f, cfg) == ThreatAct::None);          // no tank: nothing to protect
+    f.TankKnown = true;
+    f.TankThreat = 0.0f;
+    CHECK(CheckThreat(f, cfg) == ThreatAct::None);          // the tank has built nothing yet (HoldFire covers the opening)
+    f.TankThreat = 1000.0f;
+    f.SinceLastMs = 3000;
+    CHECK(CheckThreat(f, cfg) == ThreatAct::None);          // cooldown
+    f.SinceLastMs = 8000;
+    CHECK(CheckThreat(f, cfg) == ThreatAct::Pause);
+}

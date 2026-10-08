@@ -5072,6 +5072,13 @@ Bot.AI.Death.GiveUpSec = 300
 #                     docs/playerbots/feature-bot-class-rotations-20261008.md.
 #        Default:     0 - Off
 #
+#    Bot.AI.Roles.Threat
+#        Description: Needs Bot.AI.Roles.Enabled. A bot that is not the tank and whose threat on the fight target nears the pull limit
+#                     over the tank's (110 percent in melee, 130 percent at range, acting at 90 percent of that) casts a threat reducer
+#                     (Fade for priests, Feint for rogues) or, without one, stops attacking for 2.5 s. At most one action per 8 s.
+#                     Logged as THREAT_REDUCE / THREAT_PAUSE.
+#        Default:     1
+#
 #    Bot.AI.Rotation.CrowdControl
 #        Description: With two or more mobs on the bot and none controlled yet, a control spell goes on the strongest mob that is not the
 #                     fight target: Polymorph (mage), Shackle Undead (priest), Hibernate (druid), Banish (warlock), Scare Beast (hunter).
