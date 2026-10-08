@@ -237,6 +237,14 @@ private:
     uint32 _ticks = 0;
     uint32 _uptimeMs = 0;
 
+    // Bot.Log.ServerStatsSec: periodic server log line (BOT_TICK_STATS) with the server update diff and the BotMgr::Update cost, for A/B runs
+    void LogTickStats(uint32 diff, uint64 updateUs);
+    uint32 _statsIntervalMs = 60000;
+    uint32 _statsSinceMs = 0;
+    uint32 _statsTicks = 0;
+    uint64 _statsDiffSum = 0, _statsMgrUsSum = 0;
+    uint32 _statsDiffMax = 0, _statsMgrUsMax = 0;
+
     bool _registryLoaded = false;
     uint32 _nextAccountNumber = 1;
     uint32 _onlineCount = 0;

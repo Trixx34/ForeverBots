@@ -299,10 +299,42 @@ void BotMgr::UpdateProbe(uint32 diff)
     }
 }
 
+// One server log line per Bot.Log.ServerStatsSec: world update diff (sWorldUpdateTime, includes bot visibility and AI work done inside
+// the map updates) and the cost of BotMgr::Update itself. Compare the line between runs/builds (same bot count) to A/B the cost of a change.
+void BotMgr::LogTickStats(uint32 diff, uint64 updateUs)
+{
+    uint32 const serverDiff = sWorldUpdateTime.GetLastUpdateTime();
+    ++_statsTicks;
+    _statsDiffSum += serverDiff;
+    _statsDiffMax = std::max(_statsDiffMax, serverDiff);
+    _statsMgrUsSum += updateUs;
+    _statsMgrUsMax = std::max<uint32>(_statsMgrUsMax, uint32(std::min<uint64>(updateUs, 0xFFFFFFFFu)));
+
+    if (!_statsIntervalMs || (_statsSinceMs += diff) < _statsIntervalMs)
+        return;
+
+    TC_LOG_INFO("server.worldserver", "BOT_TICK_STATS bots={} ticks={} serverDiffMs avg={} max={} botMgrUpdateUs avg={} max={}",
+        _onlineCount, _statsTicks, _statsDiffSum / _statsTicks, _statsDiffMax, _statsMgrUsSum / _statsTicks, _statsMgrUsMax);
+    _statsSinceMs = 0;
+    _statsTicks = 0;
+    _statsDiffSum = _statsMgrUsSum = 0;
+    _statsDiffMax = _statsMgrUsMax = 0;
+}
+
 void BotMgr::Update(uint32 diff)
 {
     ++_ticks;
     _uptimeMs += diff;
+
+    struct StatsScope
+    {
+        BotMgr* mgr; uint32 diff; std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        ~StatsScope()
+        {
+            if (mgr->_statsIntervalMs)
+                mgr->LogTickStats(diff, uint64(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count()));
+        }
+    } statsScope{ this, diff };
 
     ProcessLogins();
     ProcessBotTeleports();
@@ -954,6 +986,7 @@ void BotMgr::LoadRegistry()
 
     _registryLoaded = true;
     _loginMaxPerTick = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Login.MaxPerTick", 5)));
+    _statsIntervalMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.ServerStatsSec", 60), 0, 3600)) * 1000;
 
     std::vector<uint32> accounts;
     std::map<uint32, std::string> accountNames;

@@ -4505,7 +4505,8 @@ Classic.GuildFinder = 0
 #                     0 - (Disabled)
 #
 #    Bot.Log.PosIntervalSec
-#        Description: Position telemetry for the sim console map (table bot_pos in the bot log database, kept 2 days). Every
+#        Description: Position telemetry for the sim console map (table bot_pos in the bot log database, kept 2 days by default; retention
+#                     is the third argument of botlog_roll_partitions3 in the daily event, not a config option). Every
 #                     online bot is sampled at most once per this many seconds, and only when it moved more than 2 yards since its
 #                     last sample; one extra sample is written on login and on map/zone change. 0 = off. Needs the bot log
 #                     database (BotLogDatabaseInfo) and its bot_pos table (forever-botlog-setup.sql); read once at startup.
@@ -4524,6 +4525,12 @@ Classic.GuildFinder = 0
 #
 #    Bot.Log.AiTickStatsSec
 #        Description: Interval of the AI_TICK_STATS row (engine tick cost per state). 0 = off.
+#        Default:     60
+#
+#    Bot.Log.ServerStatsSec
+#        Description: Interval of the BOT_TICK_STATS line in the server log (server.worldserver): bots online, world update diff
+#                     (avg/max ms) and BotMgr::Update cost (avg/max us) over the window. Works without the bot log database. Use it
+#                     to compare runs at the same bot count (e.g. before/after a visibility or AI change). 0 = off.
 #        Default:     60
 #
 #    Bot.Log.BufferMax / Bot.Log.PosBufferMax
@@ -4702,6 +4709,7 @@ Bot.Log.PosIntervalSlowSec = 15
 Bot.Log.PosScaleBots = 500
 Bot.Log.RepeatCap = 3
 Bot.Log.AiTickStatsSec = 60
+Bot.Log.ServerStatsSec = 60
 Bot.Log.BufferMax = 200000
 Bot.Log.PosBufferMax = 100000
 Bot.Log.FlushRetries = 3
