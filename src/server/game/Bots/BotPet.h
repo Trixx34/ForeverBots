@@ -18,7 +18,7 @@
 #ifndef TRINITY_BOT_PET_H
 #define TRINITY_BOT_PET_H
 
-// Hunter bot pets (strategy "pet", NonCombat and Combat engines; Bot.AI.Pet.*, default off). The decisions are in BotPetLogic.cpp, this
+// Hunter bot pets and warlock demons (strategy "pet", NonCombat and Combat engines; Bot.AI.Pet.*, default off). The decisions are in BotPetLogic.cpp, this
 // file reads the game state, carries the decisions out, and owns the taming run. See docs/playerbots/feature-bot-pets-movement-loot-20261008.md.
 
 #include "Define.h"
@@ -35,6 +35,7 @@ namespace BotPet
         bool Abilities = true;       // Bot.AI.Pet.Abilities: autocast set of the pet
         bool Taming = true;          // Bot.AI.Pet.Taming: Taming the Beast quests
         bool TameFirstPet = true;    // Bot.AI.Pet.TameFirstPet: a hunter without any pet tames one with Tame Beast
+        bool Warlock = true;         // Bot.AI.Pet.Warlock: warlock bots summon a demon (needs Enabled)
         uint32 MinLevel = 10;        // Bot.AI.Pet.MinLevel
         uint32 FeedBelowPct = 66;    // Bot.AI.Pet.FeedBelowPct
         uint32 MendBelowPct = 60;    // Bot.AI.Pet.MendBelowPct

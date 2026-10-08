@@ -56,6 +56,9 @@ using Trinity::StringFormat;
 namespace Logic = BotPetLogic;
 
 constexpr uint32 SPELL_CALL_PET = 883;
+constexpr uint32 SPELL_SUMMON_IMP = 688;
+constexpr uint32 SPELL_SUMMON_VOIDWALKER = 697;   // needs a Soul Shard; the sturdiest demon for a solo bot, so it is preferred over the Imp
+constexpr uint32 ITEM_SOUL_SHARD = 6265;
 constexpr uint32 SPELL_REVIVE_PET = 982;
 constexpr uint32 SPELL_FEED_PET = 6991;
 constexpr uint32 SPELL_MEND_PET = 136;            // root of the Mend Pet ranks
@@ -69,6 +72,7 @@ Config s_cfg;
 std::once_flag s_cfgOnce;
 
 bool IsHunter(Player const* bot) { return bot->GetClass() == CLASS_HUNTER; }
+bool IsWarlock(Player const* bot) { return bot->GetClass() == CLASS_WARLOCK; }
 
 uint32 HighestRank(Player* bot, uint32 root)
 {
@@ -286,7 +290,9 @@ public:
     bool IsPossible() override
     {
         Player* bot = GetBot();
-        return s_cfg.Enabled && IsHunter(bot) && bot->IsAlive() && bot->GetLevel() >= s_cfg.MinLevel;
+        if (!s_cfg.Enabled || !bot->IsAlive())
+            return false;
+        return (IsHunter(bot) && bot->GetLevel() >= s_cfg.MinLevel) || (IsWarlock(bot) && s_cfg.Warlock);
     }
 
     bool Execute() override
@@ -296,6 +302,8 @@ public:
         PetCtx* c = Ctx(ai);
         if (!c)
             return false;
+        if (IsWarlock(bot))
+            return SummonDemon(ai, bot, *c);
         uint32 const now = ai->GetNowMs();
         Pet* pet = HunterPet(bot);
         Unit* target = FightTarget(bot);
@@ -396,6 +404,34 @@ public:
     }
 
 private:
+    // Warlock: summon a demon when none is out. Outside combat only (the summon takes 10 s of casting); Voidwalker when a Soul Shard is
+    // at hand, else the Imp. The wait between attempts grows with every failure (RetrySec, up to 6 times), so a bot without shards or
+    // mana does not spam. The core keeps the demon across logout, so this mostly runs after a death or a dismissal.
+    bool SummonDemon(BotAI* ai, Player* bot, PetCtx& c)
+    {
+        uint32 const now = ai->GetNowMs();
+        if (bot->GetPet() || bot->IsInCombat() || bot->IsMounted() || bot->IsInFlight() || bot->IsNonMeleeSpellCast(false, false, true)
+            || c.T.Active || ai->Rest().Resting())
+            return false;
+        uint32 spell = 0;
+        if (bot->HasSpell(SPELL_SUMMON_VOIDWALKER) && bot->HasItemCount(ITEM_SOUL_SHARD, 1))
+            spell = SPELL_SUMMON_VOIDWALKER;
+        else if (bot->HasSpell(SPELL_SUMMON_IMP))
+            spell = SPELL_SUMMON_IMP;
+        if (!spell)
+            return false;
+        uint32 const wait = s_cfg.RetrySec * 1000u * (1u + std::min<uint32>(c.CallFails, 5));
+        if (c.LastCallMs && !Logic::Elapsed(now, c.LastCallMs, wait))
+            return false;
+        Logic::Decision d;
+        d.Reason = "no demon out";
+        BotMotion::Halt(bot);
+        bool const ok = Cast(ai, bot, c, d, spell, bot, c.LastCallMs, "PET_SUMMON", "summoning a demon", &c.CallFails);
+        if (ok)
+            c.CallFails = 0;
+        return ok;
+    }
+
     bool Cast(BotAI* /*ai*/, Player* bot, PetCtx& c, Logic::Decision const& d, uint32 spell, Unit* target, uint32& lastMs, char const* reason, char const* what, uint32* fails)
     {
         uint32 const now = GetAI()->GetNowMs();
@@ -782,6 +818,7 @@ Config const& Cfg()
         s_cfg.Abilities = sConfigMgr->GetBoolDefault("Bot.AI.Pet.Abilities", true);
         s_cfg.Taming = sConfigMgr->GetBoolDefault("Bot.AI.Pet.Taming", true);
         s_cfg.TameFirstPet = sConfigMgr->GetBoolDefault("Bot.AI.Pet.TameFirstPet", true);
+        s_cfg.Warlock = sConfigMgr->GetBoolDefault("Bot.AI.Pet.Warlock", true);
         s_cfg.MinLevel = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Pet.MinLevel", 10), 1, 80));
         s_cfg.FeedBelowPct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Pet.FeedBelowPct", 66), 1, 100));
         s_cfg.MendBelowPct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Pet.MendBelowPct", 60), 1, 99));

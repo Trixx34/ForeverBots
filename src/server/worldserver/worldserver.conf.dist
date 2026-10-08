@@ -4859,6 +4859,11 @@ Bot.AI.Death.GiveUpSec = 300
 #                     (needs Bot.AI.Pet.Enabled) / tame a first pet with Tame Beast when the hunter has none.
 #        Default:     1 / 1 / 1 / 1
 #
+#    Bot.AI.Pet.Warlock
+#        Description: Warlock bots summon a demon when none is out (Voidwalker with a Soul Shard in the bags, else Imp), outside combat.
+#                     Needs Bot.AI.Pet.Enabled.
+#        Default:     1
+#
 #    Bot.AI.Pet.MinLevel
 #        Description: Level from which a hunter bot is expected to have a pet.
 #        Default:     10
@@ -5045,6 +5050,7 @@ Bot.AI.Pet.Feed = 1
 Bot.AI.Pet.Abilities = 1
 Bot.AI.Pet.Taming = 1
 Bot.AI.Pet.TameFirstPet = 1
+Bot.AI.Pet.Warlock = 1
 Bot.AI.Pet.MinLevel = 10
 Bot.AI.Pet.FeedBelowPct = 66
 Bot.AI.Pet.MendBelowPct = 60

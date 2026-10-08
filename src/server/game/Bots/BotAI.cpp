@@ -126,7 +126,7 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
     if (state == BotState::NonCombat && BotMove::Natural().Enabled && BotMove::Natural().Idle
         && std::find(names.begin(), names.end(), "natural_idle") == names.end())
         names.push_back("natural_idle");
-    if (BotPet::Cfg().Enabled && bot && bot->GetClass() == CLASS_HUNTER && state != BotState::Dead
+    if (BotPet::Cfg().Enabled && bot && (bot->GetClass() == CLASS_HUNTER || (bot->GetClass() == CLASS_WARLOCK && BotPet::Cfg().Warlock)) && state != BotState::Dead
         && std::find(names.begin(), names.end(), "pet") == names.end())
         names.push_back("pet");
     if (BotTravel::Cfg().Enabled && bot && state == BotState::NonCombat && !(bot->GetSession() && bot->GetSession()->IsAltBot())
