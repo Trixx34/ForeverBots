@@ -4918,6 +4918,7 @@ Bot.AI.Death.GiveUpSec = 300
 #    Bot.AI.Consumables.HealthBelowPct / Bot.AI.Consumables.ManaBelowPct
 #        Description: Health percent / mana percent below which a potion is drunk in combat.
 #        Default:     35 / 20
+#
 #    Bot.Loot.Roll.Enabled
 #        Description: Bots vote in group loot rolls at once instead of leaving the roll to time out (60 s, which holds up the real
 #                     players): Need on a gear upgrade their class can use (class-role gear score) and on items for an active quest,
