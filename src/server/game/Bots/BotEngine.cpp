@@ -19,6 +19,7 @@
 #include "BotAI.h"
 #include "StringFormat.h"
 #include <algorithm>
+#include <cstring>
 
 char const* BotStateName(BotState state)
 {
@@ -207,7 +208,10 @@ bool BotEngine::DoNextAction()
     }
 
     if (_queue.empty())
+    {
+        ++_idleNoTrigger;
         return false;
+    }
 
     std::stable_sort(_queue.begin(), _queue.end(), [](Slot const& a, Slot const& b) { return a.Relevance > b.Relevance; });
 
@@ -250,6 +254,19 @@ bool BotEngine::DoNextAction()
         skipped.push_back(SkippedAlt{ slot.Act, slot.Relevance, skip });
     }
 
+    if (!skipped.empty())
+    {
+        char const* top = skipped.front().Outcome;   // the outcome of the highest-ranked queued action explains the idle tick
+        if (!std::strcmp(top, "MULTIPLIED_TO_ZERO"))
+            ++_idleMultiplied;
+        else if (!std::strcmp(top, "NOT_POSSIBLE"))
+            ++_idleNotPossible;
+        else if (!std::strcmp(top, "NOT_USEFUL"))
+            ++_idleNotUseful;
+        else
+            ++_idleExecFailed;
+    }
+
     if (_ai->IsTrace())
     {
         std::string json = "{\"engine\":\"";
@@ -265,4 +282,15 @@ bool BotEngine::DoNextAction()
         _ai->TraceEvaluation(_state, "no action ran", json);
     }
     return false;
+}
+
+std::string BotEngine::TakeIdleJson()
+{
+    uint32 const total = _idleNoTrigger + _idleMultiplied + _idleNotPossible + _idleNotUseful + _idleExecFailed;
+    if (!total)
+        return std::string();
+    std::string j = Trinity::StringFormat(R"({{"total":{},"no_trigger":{},"multiplied_to_zero":{},"not_possible":{},"not_useful":{},"execute_failed":{}}})",
+        total, _idleNoTrigger, _idleMultiplied, _idleNotPossible, _idleNotUseful, _idleExecFailed);
+    _idleNoTrigger = _idleMultiplied = _idleNotPossible = _idleNotUseful = _idleExecFailed = 0;
+    return j;
 }

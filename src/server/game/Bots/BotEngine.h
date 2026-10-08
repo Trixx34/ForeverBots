@@ -261,6 +261,11 @@ public:
 
     bool IsEmpty() const { return _strategyNames.empty(); }
 
+    // Ticks since the last call on which no action ran, by reason, as a JSON object ("" when there were none); resets the counters.
+    // Reasons: no_trigger (nothing relevant fired), then the outcome of the best queued action (MULTIPLIED_TO_ZERO, NOT_POSSIBLE,
+    // NOT_USEFUL, EXECUTE_FAILED).
+    std::string TakeIdleJson();
+
 private:
     struct Slot { Action* Act; float Relevance; Trigger* Trig; };
     struct Node { Trigger* Trig; std::vector<std::pair<Action*, float>> Actions; };
@@ -275,6 +280,7 @@ private:
     std::vector<Node> _nodes;
     std::vector<Multiplier*> _multipliers;
     std::vector<Slot> _queue; // reused every tick
+    uint32 _idleNoTrigger = 0, _idleMultiplied = 0, _idleNotPossible = 0, _idleNotUseful = 0, _idleExecFailed = 0;
 };
 
 #endif

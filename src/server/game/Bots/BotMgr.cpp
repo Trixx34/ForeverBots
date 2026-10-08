@@ -45,6 +45,7 @@
 #include "Util.h"
 #include "World.h"
 #include "WorldSession.h"
+#include <map>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -502,27 +503,33 @@ std::string JsonCode(std::string const& s)
 }
 
 // _logMutex held. Builds the LOG_SUPPRESSED row for a bot (empty when nothing is pending) and clears the pending counters.
-static bool BuildSuppressedRow(uint64 guid, uint64 session, auto& pending, uint32 cap, double ts, BotEvent& out)
+static bool BuildSuppressedRow(uint64 guid, uint64 session, auto& pending, uint32& loginTotal, uint32 cap, double ts, BotEvent& out)
 {
     if (pending.empty())
         return false;
     uint32 total = 0;
     std::string list;
+    std::map<std::string, uint32> byReason;   // per code (event reason), so the lost rows can be added back per code
     for (auto const& [key, p] : pending)
     {
         total += p.Suppressed;
+        byReason[p.Reason] += p.Suppressed;
         if (!list.empty())
             list += ',';
         list += Trinity::StringFormat(R"({{"type":"{}","reason":"{}","quest_id":{},"target_entry":{},"count":{}}})", JsonCode(p.Type), JsonCode(p.Reason), p.QuestId, p.Entry, p.Suppressed);
     }
     pending.clear();
+    loginTotal += total;
+    std::string codes;
+    for (auto const& [reason, n] : byReason)
+        codes += Trinity::StringFormat(R"({}"{}":{})", codes.empty() ? "" : ",", JsonCode(reason), n);
     out = BotEvent();
     out.BotGuid = guid;
     out.Type = "decision";
     out.Severity = BOTLOG_INFO;
     out.Reason = "LOG_SUPPRESSED";
     out.Summary = Trinity::StringFormat("{} repeated log rows suppressed (cap {} per login)", total, cap);
-    out.Details = Trinity::StringFormat(R"({{"total":{},"cap":{},"suppressed":[{}]}})", total, cap, list);
+    out.Details = Trinity::StringFormat(R"({{"total":{},"cap":{},"by_reason":{{{}}},"login_total":{},"suppressed":[{}]}})", total, cap, codes, loginTotal, list);
     out.Timestamp = ts;
     out.SessionSeq = session;
     return true;
@@ -554,7 +561,7 @@ bool BotMgr::ApplyRepeatCap(BotEvent const& event, std::vector<BotEvent>& extra)
         }
     }
     BotEvent row;
-    if (BuildSuppressedRow(event.BotGuid, st.Session, st.Pending, _repeatCap, event.Timestamp, row))
+    if (BuildSuppressedRow(event.BotGuid, st.Session, st.Pending, st.SuppressedLogin, _repeatCap, event.Timestamp, row))
     {
         row.Level = event.Level;
         row.MapId = event.MapId;
@@ -574,7 +581,7 @@ void BotMgr::FlushSuppressed(uint64 botGuid)
         return;
     BotEvent row;
     double const now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
-    if (BuildSuppressedRow(botGuid, it->second.Session, it->second.Pending, _repeatCap, now, row))
+    if (BuildSuppressedRow(botGuid, it->second.Session, it->second.Pending, it->second.SuppressedLogin, _repeatCap, now, row))
         _logBuffer.push_back(std::move(row));
 }
 
@@ -594,6 +601,7 @@ void BotMgr::BeginLogSession(BotInfo& bot)
     st.Session = bot.SessionSeq;
     st.Counts.clear();
     st.Pending.clear();
+    st.SuppressedLogin = 0;
 }
 
 void BotMgr::LogEvent(BotEvent&& event)

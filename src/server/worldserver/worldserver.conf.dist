@@ -4526,6 +4526,15 @@ Classic.GuildFinder = 0
 #        Description: Interval of the AI_TICK_STATS row (engine tick cost per state). 0 = off.
 #        Default:     60
 #
+#    Bot.Log.PullDetail
+#        Description: 1 = COMBAT_START carries aggro_cause / aggro_range / pull_dist, COMBAT_SUMMARY carries fight_id, outcome and casts_ok.
+#        Default:     1
+#
+#    Bot.Log.IdleReasons
+#        Description: 1 = AI_TICK_STATS carries "no_action": ticks per engine on which no action ran, by reason (no_trigger,
+#                     multiplied_to_zero, not_possible, not_useful, execute_failed). Needs Bot.Log.AiTickStatsSec > 0.
+#        Default:     1
+#
 #    Bot.Log.BufferMax / Bot.Log.PosBufferMax
 #        Description: Rows held in memory while the bot log database is slow or down. Over the cap rows are dropped and counted
 #                     (an error is logged once; a log_dropped event with the counts is written when the database recovers).
@@ -4702,6 +4711,8 @@ Bot.Log.PosIntervalSlowSec = 15
 Bot.Log.PosScaleBots = 500
 Bot.Log.RepeatCap = 3
 Bot.Log.AiTickStatsSec = 60
+Bot.Log.PullDetail = 1
+Bot.Log.IdleReasons = 1
 Bot.Log.BufferMax = 200000
 Bot.Log.PosBufferMax = 100000
 Bot.Log.FlushRetries = 3
