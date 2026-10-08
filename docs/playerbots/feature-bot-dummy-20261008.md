@@ -23,3 +23,9 @@ Compare rotation on and off with the same class and level, and check the existin
 * Rage comes from the hits only (not refilled), like a real fight.
 * Not run on a server. `BotDummy.cpp`, `BotChat.cpp`, `BotAI.cpp`, `BotStrategies.cpp`, `npcs_special.cpp` and the test compile; the SQL is untested against the live schema (it copies the rows of entry 4952 into 9900001 table by table).
 * The conf.dist description of `Bot.AI.Rotation.Enabled` from PR #16 has no value line under the keys list; not touched here.
+
+## Also in this branch: warrior Battle Stance and per-spell buff timers
+
+* New first warrior row `Battle Stance` (2457, self buff): Charge, Rend and Overpower need it, and the bots use no other stance, so a warrior in another stance switches back. Defensive and Berserker are not used yet.
+* The self-buff recast timer was one value for the whole fight (a buff just cast blocked every other buff for 25 s). It is now per spell id, so a stance, Battle Shout and a seal no longer starve each other. The 3 s / 25 s recast times are unchanged.
+* Not run on a server. Check `DUMMY_SUMMARY` of a warrior and the "class spells validated, dropped:" line for `Battle Stance`.
