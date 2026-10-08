@@ -31,6 +31,7 @@ class Unit;
 
 // Bot.AI.Combat.PrePullManaPct: a mana user out of combat drinks when its mana is below this percent, so it does not pull
 // with an almost empty pool (used by the rest strategy together with Bot.AI.Rest.DrinkBelowPct, the higher one wins).
+TC_GAME_API bool BotCombatRotationEnabled();
 TC_GAME_API uint32 BotCombatPrePullManaPct();
 
 // Death avoidance (Bot.AI.Avoid.*, docs/playerbots/death-avoidance-20261008.md): true when `mob` is on the configured avoid list and

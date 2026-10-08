@@ -247,6 +247,8 @@ void RegisterPetBotObjects(BotRegistry& registry);
 void RegisterTravelBotObjects(BotRegistry& registry);
 // Defined in BotConsumables.cpp: potions in a fight (strategy "consumables").
 void RegisterConsumableBotObjects(BotRegistry& registry);
+// Defined in BotDummy.cpp: training dummy runs (strategy "dummy").
+void RegisterDummyBotObjects(BotRegistry& registry);
 
 // One engine: the active strategies of one BotState, the merged trigger/action wiring and the action queue.
 class BotEngine
