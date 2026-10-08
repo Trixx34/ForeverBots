@@ -161,6 +161,8 @@ public:
     void OnXpGain(Player* bot, uint32 amount, uint32 bonus, Unit* victim);
     // Player::GiveLevel (end) -> LEVEL_UP row and a fresh SPELLS_KNOWN row.
     void OnLevelUp(Player* bot, uint8 oldLevel, uint8 newLevel);
+    // Bot.Talents.Premade.*: learns the configured talent per tier for the bot's class (opt-in, default off). Called from OnLevelUp.
+    void ApplyPremadeTalents(Player* bot, char const* cause);
     // For BotCombatCtx::End (COMBAT_SUMMARY): JSON members (no braces, no leading comma) with the per-spell breakdown of the current
     // Combat engine stay ("spell_stats":[{id,name,casts,hits,dmg,power}], "power_type", "unused_spells":[{id,name}]). Resets the stats.
     std::string TakeSpellBreakdownJson(Player* bot);

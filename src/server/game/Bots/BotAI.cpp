@@ -29,13 +29,16 @@
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "Optional.h"
 #include "Player.h"
 #include "Random.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "StringConvert.h"
 #include "StringFormat.h"
 #include "Unit.h"
+#include "Util.h"
 #include "WorldSession.h"
 #include <algorithm>
 #include <chrono>
@@ -1624,6 +1627,100 @@ void BotAI::OnLevelUp(Player* bot, uint8 oldLevel, uint8 newLevel)
         uint32(oldLevel), uint32(newLevel), _nowMs / 1000, sinceLast / 1000, _killXpTotal);
     Emit(std::move(event));
     EmitSpellsKnown(bot, "LEVEL_UP");
+    ApplyPremadeTalents(bot, "LEVEL_UP");
+}
+
+namespace
+{
+// Bot.Talents.Premade.Enabled (default 0): per class a list of Talent.db2 ids ("Bot.Talents.Premade.Class.<classId>", e.g. "12345,12360"),
+// and optionally the specialization to pick when the bot has none ("Bot.Talents.Premade.Spec.<classId>", a ChrSpecialization id).
+// This fork's talents are tiered (one pick per tier, tiers unlock with level), so the table is a flat list of ids; the first id of a tier wins.
+struct PremadeTalents
+{
+    bool Enabled = false;
+    std::vector<uint32> Talents[MAX_CLASSES];
+    uint32 Spec[MAX_CLASSES] = {};
+};
+
+PremadeTalents const& Premade()
+{
+    static PremadeTalents cfg;
+    static std::once_flag once;
+    std::call_once(once, []()
+    {
+        cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.Talents.Premade.Enabled", false);
+        if (!cfg.Enabled)
+            return;
+        for (uint8 cls = 1; cls < MAX_CLASSES; ++cls)
+        {
+            cfg.Spec[cls] = uint32(std::max<int32>(0, sConfigMgr->GetIntDefault(Trinity::StringFormat("Bot.Talents.Premade.Spec.{}", uint32(cls)), 0)));
+            std::string const list = sConfigMgr->GetStringDefault(Trinity::StringFormat("Bot.Talents.Premade.Class.{}", uint32(cls)), "");
+            for (std::string_view tok : Trinity::Tokenize(list, ',', false))
+            {
+                while (!tok.empty() && tok.front() == ' ')
+                    tok.remove_prefix(1);
+                while (!tok.empty() && tok.back() == ' ')
+                    tok.remove_suffix(1);
+                if (Optional<uint32> id = Trinity::StringTo<uint32>(tok))
+                    cfg.Talents[cls].push_back(*id);
+            }
+        }
+    });
+    return cfg;
+}
+}
+
+void BotAI::ApplyPremadeTalents(Player* bot, char const* cause)
+{
+    PremadeTalents const& cfg = Premade();
+    uint8 const cls = bot->GetClass();
+    if (!cfg.Enabled || cls >= MAX_CLASSES || cfg.Talents[cls].empty() || bot->IsInCombat() || !bot->IsAlive())
+        return;
+    // bots below the specialization level have no talents to pick (level 10 in this client)
+    if (bot->GetLevel() < 10)
+        return;
+    if (bot->GetPrimarySpecialization() == ChrSpecialization::None && cfg.Spec[cls])
+        bot->SetPrimarySpecialization(cfg.Spec[cls]);
+
+    uint32 learned = 0, failed = 0, tiersDone = 0;
+    std::string ids;
+    uint32 usedTiers = 0;   // bitmask of tiers already handled (first listed id of a tier wins)
+    for (uint32 talentId : cfg.Talents[cls])
+    {
+        TalentEntry const* t = sTalentStore.LookupEntry(talentId);
+        if (!t || t->ClassID != int8(cls) || t->TierID >= 32 || (usedTiers & (1u << t->TierID)))
+            continue;
+        usedTiers |= 1u << t->TierID;
+        // a tier that already holds a pick is left alone (LearnTalent would swap it and demand a rest area)
+        bool tierTaken = false;
+        for (uint32 col = 0; col < MAX_TALENT_COLUMNS && !tierTaken; ++col)
+            for (TalentEntry const* other : sDB2Manager.GetTalentsByPosition(cls, t->TierID, col))
+                if (bot->HasTalent(other->ID, bot->GetActiveTalentGroup()))
+                {
+                    tierTaken = true;
+                    break;
+                }
+        if (tierTaken)
+        {
+            ++tiersDone;
+            continue;
+        }
+        int32 cooldownSpell = 0;
+        if (bot->LearnTalent(talentId, &cooldownSpell) == TALENT_LEARN_OK)
+        {
+            ++learned;
+            if (ids.size() < 120)
+                ids += Trinity::StringFormat("{}{}", ids.empty() ? "" : ",", talentId);
+        }
+        else
+            ++failed;
+    }
+    if (!learned && !failed)
+        return;
+    BotEvent event = MakeEvent(bot, "decision", failed && !learned ? BOTLOG_WARN : BOTLOG_INFO, "TALENTS_APPLIED",
+        Trinity::StringFormat("premade talents: {} learned, {} failed at L{}", learned, failed, uint32(bot->GetLevel())));
+    event.Details = Trinity::StringFormat(R"({{"cause":"{}","learned":{},"failed":{},"tiers_already_set":{},"ids":[{}]}})", cause, learned, failed, tiersDone, ids);
+    Emit(std::move(event));
 }
 
 // Highest-rank, non-passive spells with a class spell family: a cheap stand-in for "the class spells this bot could cast".

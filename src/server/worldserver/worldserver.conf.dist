@@ -4821,6 +4821,24 @@ Bot.AI.Death.CorpseRunMaxFails = 3
 #        Description: One decision row MOVE_METRICS per bot per window (turn rate, repeated legs, idle ratio, stuck count) / window length (10-3600).
 #        Default:     1 / 60
 #
+#    Bot.AI.Ammo.Enabled
+#        Description: Ranged ammo upkeep of the quest strategy's vendor layer: a bot with a bow, crossbow or gun equipped counts its arrows or
+#                     bullets; below Bot.AI.Ammo.LowCount it logs AMMO_LOW, plans a vendor trip to a vendor that sells the right ammo and
+#                     tops up to Bot.AI.Ammo.BuyTarget (AMMO_BOUGHT, AMMO_NO_MONEY, AMMO_NO_VENDOR, AMMO_BUY_FAILED). Needs a restart (vendor index).
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+#
+#    Bot.AI.Ammo.LowCount / Bot.AI.Ammo.BuyTarget / Bot.AI.Ammo.CooldownSec
+#        Description: Trip threshold (rounds), top-up target (rounds) and minimum seconds between ammo trips of one bot.
+#        Default:     60 / 400 / 300
+#
+#    Bot.Talents.Premade.Enabled
+#        Description: On level-up, learn a configured talent per tier for the bot's class (this fork has tiered talents: one pick per tier).
+#                     Bot.Talents.Premade.Class.<classId> = comma list of Talent.db2 ids (first id of a tier wins, tiers that already hold a
+#                     pick are left alone); Bot.Talents.Premade.Spec.<classId> = ChrSpecialization id to set when the bot has none (optional).
+#                     Class ids: 1 warrior, 2 paladin, 3 hunter, 4 rogue, 5 priest, 7 shaman, 8 mage, 9 warlock, 11 druid. Empty = no-op.
+#        Default:     0 - (Disabled)
+#
 #    Bot.AI.Loot.Improved.Enabled
 #        Description: Improved chest loot task of the quest strategy: spawn choice by path cost, skip far spawns and recently deadly areas,
 #                     per-bot spawn blacklist, bag-space check with a planned vendor trip, loot exits never feed the quest quarantine.
@@ -4870,6 +4888,11 @@ Bot.AI.Move.Natural.Idle = 1
 Bot.AI.Move.Natural.IdleMaxStandSec = 25
 Bot.AI.Move.Natural.Metrics = 1
 Bot.AI.Move.Natural.MetricsSec = 60
+Bot.AI.Ammo.Enabled = 0
+Bot.AI.Ammo.LowCount = 60
+Bot.AI.Ammo.BuyTarget = 400
+Bot.AI.Ammo.CooldownSec = 300
+Bot.Talents.Premade.Enabled = 0
 Bot.AI.Loot.Improved.Enabled = 0
 Bot.AI.Loot.Improved.MaxYards = 150
 Bot.AI.Loot.Improved.DeadlyRadius = 40
