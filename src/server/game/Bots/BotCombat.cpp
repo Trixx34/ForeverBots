@@ -222,6 +222,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_PALADIN, 853,   "Hammer of Justice",    Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
     { CLASS_PALADIN, 26573, "Consecration",         Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 3 } },
     { CLASS_PALADIN, 635,   "Holy Light",           Kind::Heal },
+    { CLASS_PALADIN, 19750, "Flash of Light",       Kind::Heal },
     // Hunter. Pet upkeep (calling, feeding, taming) is the separate "pet" strategy (BotPet.cpp, Bot.AI.Pet.*, off by default); without
     // it a pet would lose happiness (Pet.h HAPPINESS_*) and deal 75% damage once unhappy.
     // Auto Shot first: it is only (re)started when not running, so it never waits behind the shots below
@@ -244,6 +245,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_MAGE,    133,   "Fireball",             Kind::Direct },
     { CLASS_MAGE,    5019,  "Shoot",                Kind::Wand },
     // Priest: Power Word: Shield when hurt, Inner Fire at the start, Psychic Scream against several mobs, Mind Blast with a mana reserve
+    { CLASS_PRIEST,  139,   "Renew",                Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 85 } },
     { CLASS_PRIEST,  17,    "Power Word: Shield",   Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 70 } },
     { CLASS_PRIEST,  588,   "Inner Fire",           Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
     { CLASS_PRIEST,  8122,  "Psychic Scream",       Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 3 } },
@@ -251,6 +253,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_PRIEST,  8092,  "Mind Blast",           Kind::Direct, 0, 0, { RC::SelfPowerAbove, 25 } },
     { CLASS_PRIEST,  585,   "Smite",                Kind::Direct },
     { CLASS_PRIEST,  2050,  "Lesser Heal",          Kind::Heal },
+    { CLASS_PRIEST,  2061,  "Flash Heal",           Kind::Heal },     // heal rows: the last known one in table order is the heal (the quicker spell of a higher level)
     { CLASS_PRIEST,  5019,  "Shoot",                Kind::Wand },
     // Warlock: Death Coil and Drain Life when hurt, Life Tap when mana is low, Curse of Agony, no damage over time on a dying mob
     { CLASS_WARLOCK, 6789,  "Death Coil",           Kind::Direct, 0, 0, { RC::SelfHpBelow, 40 } },
@@ -291,6 +294,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_DRUID,   339,   "Entangling Roots",     Kind::Direct, 0, 0, { RC::TargetFleeing, 0 }, FORM_NONE },
     { CLASS_DRUID,   8921,  "Moonfire",             Kind::Dot, 0, 0, {}, FORM_NONE },
     { CLASS_DRUID,   5176,  "Wrath",                Kind::Direct, 0, 0, {}, FORM_NONE },
+    { CLASS_DRUID,   774,   "Rejuvenation",         Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 85 }, FORM_NONE },
     { CLASS_DRUID,   5185,  "Healing Touch",        Kind::Heal, 0, 0, {}, FORM_NONE },
 };
 
@@ -467,6 +471,17 @@ public:
             if (r.Def->Type == kind)
                 return &r;
         return nullptr;
+    }
+    // The last known row of a kind in table order: for heals the higher level (quicker) spell after the first one.
+    Resolved const* FindLast(Kind kind) const
+    {
+        if (!Cfg().Rotation)
+            return Find(kind);   // rotation off: the old single heal
+        Resolved const* last = nullptr;
+        for (Resolved const& r : Spells)
+            if (r.Def->Type == kind)
+                last = &r;
+        return last;
     }
 
 protected:
@@ -1552,7 +1567,7 @@ public:
         BotCombatCtx* ctx = FightCtx(ai, bot);
         if (CastingNow(bot) || ai->GetNowMs() - ctx->LastHealMs < (Cfg().GroupRoles && bot->GetGroup() ? 1500u : 3000u) && ctx->Heals)
             return false;
-        Resolved const* heal = ctx->Find(Kind::Heal);
+        Resolved const* heal = ctx->FindLast(Kind::Heal);
         if (!heal || !Ready(bot, *heal) || !Affordable(bot, heal->Info))
             return false;
         float hpBefore = bot->GetHealthPct();
@@ -1825,7 +1840,7 @@ char const* BotCombatHealUnit(Player* bot, Unit* target)
         return "CAST_FAILED";
     BotCombatCtx probe(nullptr);
     probe.Resolve(bot);
-    Resolved const* heal = probe.Find(Kind::Heal);
+    Resolved const* heal = probe.FindLast(Kind::Heal);
     if (!heal)
         return "NO_HEAL_SPELL";
     if (CastingNow(bot) || bot->isMoving())
