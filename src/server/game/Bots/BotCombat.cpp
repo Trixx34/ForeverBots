@@ -27,6 +27,7 @@
 
 #include "BotAI.h"
 #include "BotCombat.h"
+#include "BotRotation.h"
 #include "BotGroupRoles.h"
 #include "CombatManager.h"
 #include "Config.h"
@@ -74,6 +75,7 @@ struct CombatConfig
     uint32 HoldMs = 3000;          // Bot.AI.Roles.HoldSec: non-tanks wait this long for the tank to gather threat before they open
     BotGroupRoles::Config Roles;   // Bot.AI.Roles.AllyHealBelowPct / TankHealBelowPct / EmergencyPct
     int32 FleeMode = 0;            // Bot.AI.Flee.Mode: 0 current, 1 aggro avoidance + fight to the end, 2 flee toward nearest friendly guard
+    bool Rotation = false;         // Bot.AI.Rotation.Enabled: full class rotations (conditional rows of the spell table); off = the old fixed spells
     int32 FleeAbMode = 1;          // Bot.AI.Flee.AbMode: the mode the experiment arm runs
     int32 FleeAbPct = 0;           // Bot.AI.Flee.AbPct: percent of bots (guid counter % 100 below it) on AbMode, 0 = everyone on Flee.Mode
     std::vector<uint32> AvoidEntries;  // Bot.AI.Avoid.Entries: creature entries to stay away from
@@ -99,6 +101,7 @@ CombatConfig const& Cfg()
         cfg.FreeRepair = sConfigMgr->GetBoolDefault("Bot.AI.Combat.FreeRepair", true);
         cfg.LowHpFleePct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.LowHpPct", 15), 0, 60));
         cfg.FleeMode = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Flee.Mode", 0), 0, 2);
+        cfg.Rotation = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.Enabled", false);
         cfg.GroupRoles = sConfigMgr->GetBoolDefault("Bot.AI.Roles.Enabled", false);
         cfg.HoldMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.HoldSec", 3), 0, 15)) * 1000;
         cfg.Roles.AllyHealBelowPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Roles.AllyHealBelowPct", 80), 10, 99);
@@ -153,7 +156,8 @@ enum class Kind : uint8
     Finisher,   // needs combo points
     AutoShot,   // auto-repeat ranged attack (hunter)
     Wand,       // auto-repeat wand attack (Shoot): filler of a caster that cannot afford its spells (needs a wand equipped)
-    Heal        // self-heal (combat_heal)
+    Heal,       // self-heal (combat_heal)
+    Debuff      // cast while the target does not carry the spell's aura (Sunder Armor, Hunter's Mark); like Dot but not a damage spell
 };
 
 struct SpellDef
@@ -164,48 +168,92 @@ struct SpellDef
     Kind Type;
     uint32 ReqAura = 0;        // aura (spell id) the bot must carry first (Judgement needs a seal), 0 none
     uint8 MinCombo = 0;        // Finisher: combo points needed
+    BotRotation::Rule When;    // condition of the row (BotRotation.h); rows with a condition other than Always only run with Bot.AI.Rotation.Enabled
 };
+
+using RC = BotRotation::Cond;
 
 constexpr SpellDef SPELLS[] =
 {
-    // Warrior: Battle Shout, Rend (needs Battle Stance), Heroic Strike (next melee swing)
+    // Rows run in this order, one cast per tick (the first that passes). Rows with a condition (last field) belong to the full rotation
+    // and only run with Bot.AI.Rotation.Enabled (docs/playerbots/feature-bot-class-rotations-20261008.md). Spell ids are rank 1; a row whose
+    // id is missing or whose name differs is dropped at startup and logged, and a spell the bot has not learned yet is skipped.
+    // Warrior: Charge to open, Battle Shout, Bloodrage when rage-starved, Execute, area and debuff moves, Rend (Battle Stance), Heroic Strike (next melee swing)
+    { CLASS_WARRIOR, 100,   "Charge",               Kind::Direct, 0, 0, { RC::Opener, 8 } },
     { CLASS_WARRIOR, 6673,  "Battle Shout",         Kind::SelfBuff },
+    { CLASS_WARRIOR, 2687,  "Bloodrage",            Kind::SelfBuff, 0, 0, { RC::SelfPowerBelow, 20 } },
+    { CLASS_WARRIOR, 5308,  "Execute",              Kind::Direct, 0, 0, { RC::TargetHpBelow, 20 } },
+    { CLASS_WARRIOR, 1715,  "Hamstring",            Kind::Direct, 0, 0, { RC::TargetFleeing, 0 } },
+    { CLASS_WARRIOR, 6343,  "Thunder Clap",         Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 } },
+    { CLASS_WARRIOR, 1160,  "Demoralizing Shout",   Kind::Debuff, 0, 0, { RC::EnemiesAtLeast, 3 } },
+    { CLASS_WARRIOR, 7386,  "Sunder Armor",         Kind::Debuff, 0, 0, { RC::TargetStrong, 2 } },
     { CLASS_WARRIOR, 772,   "Rend",                 Kind::Dot },
+    { CLASS_WARRIOR, 845,   "Cleave",               Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_WARRIOR, 78,    "Heroic Strike",        Kind::Direct },
-    // Rogue
+    // Rogue: Kick a caster, Evasion when hurt, Slice and Dice before the damage finisher
+    { CLASS_ROGUE,   1766,  "Kick",                 Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
+    { CLASS_ROGUE,   5277,  "Evasion",              Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 50 } },
+    { CLASS_ROGUE,   5171,  "Slice and Dice",       Kind::Finisher, 0, 2, { RC::TargetHpAbove, 40 } },
     { CLASS_ROGUE,   2098,  "Eviscerate",           Kind::Finisher, 0, 3 },
     { CLASS_ROGUE,   1752,  "Sinister Strike",      Kind::Direct },
-    // Paladin
+    // Paladin: Divine Protection when hurt, Hammer of Justice on a caster, Consecration against several mobs
     { CLASS_PALADIN, 20154, "Seal of Righteousness", Kind::SelfBuff },
+    { CLASS_PALADIN, 498,   "Divine Protection",    Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 35 } },
     { CLASS_PALADIN, 20271, "Judgement",            Kind::Direct, 20154 },
+    { CLASS_PALADIN, 853,   "Hammer of Justice",    Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
+    { CLASS_PALADIN, 26573, "Consecration",         Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 3 } },
     { CLASS_PALADIN, 635,   "Holy Light",           Kind::Heal },
     // Hunter. Pet upkeep (calling, feeding, taming) is the separate "pet" strategy (BotPet.cpp, Bot.AI.Pet.*, off by default); without
     // it a pet would lose happiness (Pet.h HAPPINESS_*) and deal 75% damage once unhappy.
     // Auto Shot first: it is only (re)started when not running, so it never waits behind the shots below
     { CLASS_HUNTER,  75,    "Auto Shot",            Kind::AutoShot },
+    { CLASS_HUNTER,  1130,  "Hunter's Mark",        Kind::Debuff, 0, 0, { RC::TargetStrong, 2 } },
+    { CLASS_HUNTER,  5116,  "Concussive Shot",      Kind::Direct, 0, 0, { RC::TargetFleeing, 0 } },
+    { CLASS_HUNTER,  2974,  "Wing Clip",            Kind::Direct, 0, 0, { RC::TargetFleeing, 0 } },
+    { CLASS_HUNTER,  2643,  "Multi-Shot",           Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_HUNTER,  1978,  "Serpent Sting",        Kind::Dot },
     { CLASS_HUNTER,  3044,  "Arcane Shot",          Kind::Direct },
     { CLASS_HUNTER,  2973,  "Raptor Strike",        Kind::Direct },   // melee, so only used once a mob is on top of the hunter
-    // Mage
+    // Mage: Counterspell, Frost Nova and Cone of Cold against several mobs, Mana Shield / Ice Barrier when hurt
+    { CLASS_MAGE,    2139,  "Counterspell",         Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
+    { CLASS_MAGE,    122,   "Frost Nova",           Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 } },
+    { CLASS_MAGE,    1463,  "Mana Shield",          Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 40 } },
+    { CLASS_MAGE,    11426, "Ice Barrier",          Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 70 } },
+    { CLASS_MAGE,    120,   "Cone of Cold",         Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 3 } },
     { CLASS_MAGE,    2136,  "Fire Blast",           Kind::Direct },
     { CLASS_MAGE,    116,   "Frostbolt",            Kind::Direct },
     { CLASS_MAGE,    133,   "Fireball",             Kind::Direct },
     { CLASS_MAGE,    5019,  "Shoot",                Kind::Wand },
-    // Priest
+    // Priest: Power Word: Shield when hurt, Inner Fire at the start, Psychic Scream against several mobs, Mind Blast with a mana reserve
+    { CLASS_PRIEST,  17,    "Power Word: Shield",   Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 70 } },
+    { CLASS_PRIEST,  588,   "Inner Fire",           Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
+    { CLASS_PRIEST,  8122,  "Psychic Scream",       Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 3 } },
     { CLASS_PRIEST,  589,   "Shadow Word: Pain",    Kind::Dot },
+    { CLASS_PRIEST,  8092,  "Mind Blast",           Kind::Direct, 0, 0, { RC::SelfPowerAbove, 25 } },
     { CLASS_PRIEST,  585,   "Smite",                Kind::Direct },
     { CLASS_PRIEST,  2050,  "Lesser Heal",          Kind::Heal },
     { CLASS_PRIEST,  5019,  "Shoot",                Kind::Wand },
-    // Warlock
+    // Warlock: Death Coil and Drain Life when hurt, Life Tap when mana is low, Curse of Agony, no damage over time on a dying mob
+    { CLASS_WARLOCK, 6789,  "Death Coil",           Kind::Direct, 0, 0, { RC::SelfHpBelow, 40 } },
+    { CLASS_WARLOCK, 689,   "Drain Life",           Kind::Direct, 0, 0, { RC::SelfHpBelow, 50 } },
+    { CLASS_WARLOCK, 1454,  "Life Tap",             Kind::SelfBuff, 0, 0, { RC::LifeTapSafe, 30 } },
+    { CLASS_WARLOCK, 980,   "Curse of Agony",       Kind::Dot, 0, 0, { RC::TargetHpAbove, 40 } },
     { CLASS_WARLOCK, 348,   "Immolate",             Kind::Dot },
     { CLASS_WARLOCK, 172,   "Corruption",           Kind::Dot },
     { CLASS_WARLOCK, 686,   "Shadow Bolt",          Kind::Direct },
     { CLASS_WARLOCK, 5019,  "Shoot",                Kind::Wand },
-    // Shaman
+    // Shaman: Lightning Shield at the start, Flame Shock (shares the cooldown of Earth Shock), Stormstrike
+    { CLASS_SHAMAN,  324,   "Lightning Shield",     Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
+    { CLASS_SHAMAN,  8050,  "Flame Shock",          Kind::Dot, 0, 0, { RC::TargetHpAbove, 40 } },
+    { CLASS_SHAMAN,  17364, "Stormstrike",          Kind::Direct, 0, 0, { RC::TargetHpAbove, 20 } },
     { CLASS_SHAMAN,  8042,  "Earth Shock",          Kind::Direct },
     { CLASS_SHAMAN,  403,   "Lightning Bolt",       Kind::Direct },
     { CLASS_SHAMAN,  331,   "Healing Wave",         Kind::Heal },
-    // Druid
+    // Druid: Barkskin when hurt, Thorns at the start, Faerie Fire on a strong mob, Entangling Roots on a fleeing one (forms are not used)
+    { CLASS_DRUID,   22812, "Barkskin",             Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 50 } },
+    { CLASS_DRUID,   467,   "Thorns",               Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
+    { CLASS_DRUID,   770,   "Faerie Fire",          Kind::Debuff, 0, 0, { RC::TargetStrong, 2 } },
+    { CLASS_DRUID,   339,   "Entangling Roots",     Kind::Direct, 0, 0, { RC::TargetFleeing, 0 } },
     { CLASS_DRUID,   8921,  "Moonfire",             Kind::Dot },
     { CLASS_DRUID,   5176,  "Wrath",                Kind::Direct },
     { CLASS_DRUID,   5185,  "Healing Touch",        Kind::Heal },
@@ -1290,6 +1338,25 @@ uint32 BuffRecastMs(BotCombatCtx* ctx, Resolved const& r)
     return 25000;
 }
 
+// Facts for the rotation conditions (BotRotation.h), read once per cast tick.
+BotRotation::Facts RotationFacts(BotAI* ai, Player* bot, BotCombatCtx* ctx, Unit* target)
+{
+    BotRotation::Facts f;
+    f.Enabled = Cfg().Rotation;
+    f.SelfHpPct = int32(bot->GetHealthPct());
+    uint32 const maxPower = bot->GetMaxPower(bot->GetPowerType());
+    f.SelfPowerPct = maxPower ? int32(uint64(bot->GetPower(bot->GetPowerType())) * 100 / maxPower) : 100;
+    f.TargetHpPct = int32(target->GetHealthPct());
+    f.EnemiesOnBot = std::max<uint32>(1, uint32(bot->getAttackers().size()));
+    f.TargetCasting = target->IsNonMeleeSpellCast(false);
+    f.TargetFleeing = target->HasUnitState(UNIT_STATE_FLEEING);
+    if (Creature const* c = target->ToCreature())
+        f.TargetElite = c->IsElite();
+    f.TargetLevelDiff = int32(target->GetLevel()) - int32(bot->GetLevel());
+    f.FightMs = ai->GetNowMs() - ctx->StartMs;
+    return f;
+}
+
 class CastAction : public Action
 {
 public:
@@ -1312,11 +1379,12 @@ public:
         bool const inMelee = bot->IsWithinMeleeRange(target);
         bool const moving = bot->isMoving();
         bool skippedForPower = false;
+        BotRotation::Facts const facts = RotationFacts(ai, bot, ctx, target);
 
         for (Resolved const& r : ctx->Spells)
         {
             Kind const kind = r.Def->Type;
-            if (kind == Kind::Heal)
+            if (kind == Kind::Heal || !BotRotation::Allowed(r.Def->When, facts))
                 continue;
             if (r.Id == ctx->BlockSpell && ai->GetNowMs() < ctx->BlockUntilMs)
             {
@@ -1340,6 +1408,10 @@ public:
                 continue;
             if (kind == Kind::Dot && target->HasAura(r.Id, bot->GetGUID()))
                 continue;
+            if (kind == Kind::Debuff && target->HasAura(r.Id))
+                continue;
+            if (kind == Kind::Finisher && bot->HasAura(r.Id))
+                continue; // Slice and Dice: the aura is running
             if (kind == Kind::Wand && (!skippedForPower || ctx->MeleeFallback))
                 continue; // the wand only fills in for spells the bot cannot afford (this entry comes last in the class table)
             if (r.Info->EquippedItemClass >= 0 && !WeaponOk(bot, r.Info) && !(RepairIfBroken(ai, bot, ctx->Seq) && WeaponOk(bot, r.Info)))
