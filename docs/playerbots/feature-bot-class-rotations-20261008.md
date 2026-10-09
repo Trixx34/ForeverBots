@@ -1,6 +1,6 @@
 # Bot class rotations (2026-10-08)
 
-Branch `feature/bot-class-rotations`, started from `forever`. Until now the bots cast only three or four fixed spells per class (the table in `BotCombat.cpp`); everything else they trained was never cast. This adds conditional rows to that table. Switch: `Bot.AI.Rotation.Enabled` (default **off**, `worldserver.conf.dist`). With the switch off every conditional row is skipped, so the old behaviour is unchanged.
+Branch `feature/bot-class-rotations`, started from `forever`. Until now the bots cast only three or four fixed spells per class (the table in `BotCombat.cpp`); everything else they trained was never cast. This adds conditional rows to that table. Switch: `Bot.AI.Rotation.Enabled` (default **off**, `botserver.conf.dist`). With the switch off every conditional row is skipped, so the old behaviour is unchanged.
 
 ## How it works
 

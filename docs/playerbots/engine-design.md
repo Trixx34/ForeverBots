@@ -109,7 +109,7 @@ template's reward ids, not the final standing change. The accept time is kept in
 `bot quest add|complete|reward|abandon|fail <bot> <questId> [choiceItemId]` (test aids using the normal Player quest APIs).
 Use the existing `revive <name>` to revive a bot.
 
-## Config (worldserver.conf.dist, PLAYER BOTS block)
+## Config (botserver.conf.dist, PLAYER BOTS block)
 `Bot.AI.Enabled`, `Bot.AI.TickMs`, `Bot.AI.TestStrategy`, `Bot.AI.Test.IdleSec`, `Bot.AI.Test.CombatSec`. Read once at first
 use (not reloadable); `bot ai on|off` pauses ticking at runtime.
 
@@ -155,7 +155,7 @@ Defaults come from config: NonCombat `rest,goto,follow`, Combat empty, Dead `rec
 - Test commands: `bot goto <name> x y z [arrive]`, `bot follow <name> <leader|off>`, `bot stay <name|all> on|off`, `bot hurt <name> hp% [mana%]`,
   `bot root <name> on|off`, `bot level <name> lvl`, `bot tele <name> map x y z [force]` (refused inside the start zone of the other faction without force, logged as TELE_REFUSED_FACTION), `bot state <name>`, `bot path <name> x y z`.
 - Config: `Bot.AI.Default.NonCombat/Combat/Dead`, `Bot.AI.Rest.EatBelowPct/DrinkBelowPct/DonePct/FreeFood`, `Bot.AI.Release.MinSec/MaxSec`,
-  `Bot.AI.Recover.MaxCorpseRunYards`, `Bot.AI.Move.StuckSec/StuckRepaths` (see worldserver.conf.dist).
+  `Bot.AI.Recover.MaxCorpseRunYards`, `Bot.AI.Move.StuckSec/StuckRepaths` (see botserver.conf.dist).
 
 ## Death and combat telemetry
 BotAI keeps ring buffers of damage taken, damage dealt and 1 Hz vitals; `Unit::Kill` calls `OnDying` before `setDeathState` strips auras/power, and `SnapshotDeath` builds the death details JSON. Fights are tracked by `UpdateFight` (fight_id, 2 s coalescing). See progress.md, "Death post-mortem and combat events".
@@ -200,6 +200,14 @@ TEST_IDLE_NOTE are written, the rest are counted and flushed as one LOG_SUPPRESS
 With 1, rows whose type is in `Bot.Log.HotTypes` (default decision,state_change,trace) go to `bot_event_hot` (5 days) instead of `bot_event` (14 days), except COMBAT_SUMMARY, LOG_SUPPRESSED and
 LOG_DROPPED. Turn it on only after the console and analyst queries read `bot_event_all`. It is ignored with a warning when the table does not exist. State changes of the engine
 stay queryable for 5 days; deaths, quests, xp, combat summaries stay 14 days.
+
+### Summary rows (`Bot.Log.Summary.Enabled`, default 0)
+High-volume events (types `Bot.Log.Summary.Types`, default cast,aura,trace; reason prefixes `Bot.Log.Summary.Reasons`, default GOTO_, QUEST_WALK_, QUEST_PULL, FOLLOW_, TOWN_IDLE_) are counted in memory and written as one `bot_event_rollup`
+row per window (`Bot.Log.Summary.WindowSec`, 60) and key (bot, type, reason, severity, spell text for cast/aura, map, zone, quest, target): `n`, `first_ts`, `last_ts`, `level`, and the summary/details of the first
+event as a sample. Rows at or above `Bot.Log.Summary.KeepSeverity` (2) and reasons with a `Bot.Log.Summary.Keep` prefix (DUNGEON_, TRAVEL_, DUMMY_, COMBAT_, BOT_, LOG_, CORPSE_, SPIRIT_, WATCHDOG_, PARTY_, BANK_, MAIL_)
+stay detailed. Counts, per-bot/zone/quest/reason breakdowns and time series stay exact; per-event timing inside a window and per-event details beyond the first sample do not. Count queries use the view
+`bot_event_counts_all` (rollup + detailed rows). Needs `forever-botlog-migrate-2.sql`; ignored with a warning when the table is missing. Rollup rows are kept 30 days (`botlog_rollup_prune_daily`).
+Add the reason prefix of every new rare event to `Bot.Log.Summary.Keep` if its prefix would otherwise match a summarized one.
 
 ### Writer behaviour (BotMgr)
 - `LogEvent`/`LogPosition` are non-blocking (mutex + vector push). The world thread flushes in `Update` every `BotLog.FlushIntervalMs`: one async transaction per flush (positions + events), at most 16 in flight.

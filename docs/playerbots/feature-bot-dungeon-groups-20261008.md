@@ -1,6 +1,6 @@
 # Bot dungeon groups (2026-10-08)
 
-Branch `feature/bot-dungeon-groups`, started from `forever`. First step of the "Deadmines with 5 boosted bots" target in `next-plan.md`: the decisions a bot group needs to run a five-man dungeon. Config switch `Bot.AI.Dungeon.Enabled` (default **off**, options documented in `worldserver.conf.dist`), decision logic as pure functions over plain data (`BotDungeonPlan.h/.cpp`, no `Player`, no `Map`), settings reader (`BotDungeon.h/.cpp`), Catch2 tests in `tests/game/BotDungeonPlan.cpp` (tag `[BotDungeon]`).
+Branch `feature/bot-dungeon-groups`, started from `forever`. First step of the "Deadmines with 5 boosted bots" target in `next-plan.md`: the decisions a bot group needs to run a five-man dungeon. Config switch `Bot.AI.Dungeon.Enabled` (default **off**, options documented in `botserver.conf.dist`), decision logic as pure functions over plain data (`BotDungeonPlan.h/.cpp`, no `Player`, no `Map`), settings reader (`BotDungeon.h/.cpp`), Catch2 tests in `tests/game/BotDungeonPlan.cpp` (tag `[BotDungeon]`).
 
 ## What is in this step
 

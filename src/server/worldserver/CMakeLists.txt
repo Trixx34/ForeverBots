@@ -61,7 +61,11 @@ if(UNIX)
       POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/worldserver.conf.dist ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/../etc/worldserver.conf.dist
     )
-    install(FILES worldserver.conf.dist DESTINATION ${CONF_DIR})
+    add_custom_command(TARGET worldserver
+      POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/botserver.conf.dist ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/../etc/botserver.conf.dist
+    )
+    install(FILES worldserver.conf.dist botserver.conf.dist DESTINATION ${CONF_DIR})
   endif()
 elseif(WIN32)
   install(TARGETS worldserver DESTINATION "${CMAKE_INSTALL_PREFIX}")
@@ -70,7 +74,11 @@ elseif(WIN32)
       POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/worldserver.conf.dist ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/
     )
-    install(FILES worldserver.conf.dist DESTINATION "${CMAKE_INSTALL_PREFIX}")
+    add_custom_command(TARGET worldserver
+      POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/botserver.conf.dist ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/
+    )
+    install(FILES worldserver.conf.dist botserver.conf.dist DESTINATION "${CMAKE_INSTALL_PREFIX}")
   endif()
 endif()
 

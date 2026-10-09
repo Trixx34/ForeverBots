@@ -452,6 +452,14 @@ void BotMgr::SetLogDatabaseAvailable(bool available)
     {
         int32 const minSeverity = sConfigMgr->GetIntDefault("BotLog.MinSeverity", BOTLOG_INFO);
         _logMinSeverity = uint8(std::clamp<int32>(minSeverity, BOTLOG_TRACE, BOTLOG_ERROR));
+        _logCategories = BotLogCat::Config();
+        {
+            std::vector<std::string> unknown;
+            BotLogCat::ParseCategories(sConfigMgr->GetStringDefault("Bot.Log.Categories", "all"), _logCategories, unknown);
+            BotLogCat::ParseSeverities(sConfigMgr->GetStringDefault("Bot.Log.CategoryMinSeverity", ""), _logCategories, unknown);
+            for (std::string const& u : unknown)
+                TC_LOG_WARN("server.worldserver", "Bot log: '{}' in Bot.Log.Categories / Bot.Log.CategoryMinSeverity is not understood, ignored", u);
+        }
         _logFlushIntervalMs = uint32(std::max<int32>(100, sConfigMgr->GetIntDefault("BotLog.FlushIntervalMs", 1000)));
         _logMaxBatch = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("BotLog.MaxBatch", 500)));
         _repeatCap = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.RepeatCap", 3), 0, 100000));
@@ -461,6 +469,25 @@ void BotMgr::SetLogDatabaseAvailable(bool available)
         _hotSplit = sConfigMgr->GetBoolDefault("Bot.Log.HotSplit", false) && BotLogHasHotTable.load(std::memory_order_relaxed);
         if (sConfigMgr->GetBoolDefault("Bot.Log.HotSplit", false) && !_hotSplit)
             TC_LOG_WARN("server.worldserver", "Bot.Log.HotSplit is set but the bot_event_hot table does not exist in the bot log database (run forever-botlog-migrate-1.sql): hot rows stay in bot_event");
+        {
+            BotLogSummary::Policy& sp = _summaryPolicy;
+            sp = BotLogSummary::Policy();
+            sp.Enabled = sConfigMgr->GetBoolDefault("Bot.Log.Summary.Enabled", false);
+            if (sp.Enabled && !BotLogHasRollupTable.load(std::memory_order_relaxed))
+            {
+                TC_LOG_WARN("server.worldserver", "Bot.Log.Summary.Enabled is set but the bot_event_rollup table does not exist in the bot log database (run forever-botlog-migrate-2.sql): events stay detailed");
+                sp.Enabled = false;
+            }
+            sp.WindowSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.Summary.WindowSec", 60), 10, 3600));
+            sp.KeepSeverity = uint8(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.Summary.KeepSeverity", BOTLOG_WARN), BOTLOG_TRACE, 4));
+            sp.Types = BotLogSummary::ParseList(sConfigMgr->GetStringDefault("Bot.Log.Summary.Types", "cast,aura,trace"), BotLogSummary::Lower);
+            sp.ReasonPrefixes = BotLogSummary::ParseList(sConfigMgr->GetStringDefault("Bot.Log.Summary.Reasons", "GOTO_,QUEST_WALK_,QUEST_PULL,FOLLOW_,TOWN_IDLE_"), BotLogSummary::Upper);
+            sp.KeepPrefixes = BotLogSummary::ParseList(sConfigMgr->GetStringDefault("Bot.Log.Summary.Keep", "DUNGEON_,TRAVEL_,DUMMY_,COMBAT_,BOT_,LOG_,CORPSE_,SPIRIT_,WATCHDOG_,PARTY_,BANK_,MAIL_"), BotLogSummary::Upper);
+            sp.KeyBySummary = BotLogSummary::ParseList(sConfigMgr->GetStringDefault("Bot.Log.Summary.KeyBySummary", "cast,aura"), BotLogSummary::Lower);
+            _summaryMaxKeys = size_t(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.Summary.MaxKeys", 100000), 1000, 50000000));
+            TC_LOG_INFO("server.worldserver", "Bot log summary rows: {}", sp.Enabled ? Trinity::StringFormat("on, {} s windows, types [{}], reasons [{}]", sp.WindowSec,
+                sConfigMgr->GetStringDefault("Bot.Log.Summary.Types", "cast,aura,trace"), sConfigMgr->GetStringDefault("Bot.Log.Summary.Reasons", "GOTO_,QUEST_WALK_,QUEST_PULL,FOLLOW_,TOWN_IDLE_")) : std::string("off"));
+        }
         _hotTypes.clear();
         std::string const hotTypesCfg = sConfigMgr->GetStringDefault("Bot.Log.HotTypes", "decision,state_change,trace,cast,aura");
         for (std::string_view tok : Trinity::Tokenize(hotTypesCfg, ',', false))
@@ -491,6 +518,17 @@ void BotMgr::SetLogDatabaseAvailable(bool available)
             }
         }
         TC_LOG_INFO("server.worldserver", "Bot position samples: {}", posSec ? Trinity::StringFormat("every {} s per moving bot ({} s above {} bots online)", posSec, posSlowSec, _posScaleBots) : std::string("off"));
+        {
+            std::string off, floors;
+            for (uint8 i = 0; i < BotLogCat::Count; ++i)
+            {
+                if (!_logCategories.Enabled[i])
+                    off += std::string(off.empty() ? "" : ",") + BotLogCat::kNames[i];
+                else if (_logCategories.MinSeverity[i])
+                    floors += Trinity::StringFormat("{}{}:{}", floors.empty() ? "" : ",", BotLogCat::kNames[i], uint32(_logCategories.MinSeverity[i]));
+            }
+            TC_LOG_INFO("server.worldserver", "Bot log categories: off [{}], severity floors [{}]", off.empty() ? "none" : off, floors.empty() ? "none" : floors);
+        }
         TC_LOG_INFO("server.worldserver", "Bot log enabled (min severity {}, flush every {} ms, batches of up to {} events, buffer cap {} events / {} positions, {} retries, hot split {})",
             _logMinSeverity, _logFlushIntervalMs, _logMaxBatch, _logBufferMax, _posBufferMax, _flushRetries, _hotSplit ? "on" : "off");
     }
@@ -663,6 +701,8 @@ void BotMgr::LogEvent(BotEvent&& event)
 {
     if (!IsLogDatabaseAvailable() || event.Severity < _logMinSeverity)
         return;
+    if (!_logCategories.Allows(BotLogCat::Classify(event.Type, event.Reason), event.Severity))
+        return;
 
     if (event.Timestamp == 0.0)
         event.Timestamp = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
@@ -677,6 +717,17 @@ void BotMgr::LogEvent(BotEvent&& event)
             auto it = _botLogState.find(event.BotGuid);
             if (it != _botLogState.end())
                 event.SessionSeq = it->second.Session;
+        }
+        if (_summaryPolicy.Enabled && event.Count == 0 && BotLogSummary::ShouldSummarize(_summaryPolicy, event.Type, event.Reason, event.Severity))
+        {
+            BotLogSummary::Input in;
+            in.BotGuid = event.BotGuid; in.Type = event.Type; in.Reason = event.Reason; in.Summary = event.Summary; in.Details = event.Details;
+            in.Severity = event.Severity; in.Level = event.Level.value_or(0);
+            in.MapId = event.MapId.value_or(0); in.ZoneId = event.ZoneId.value_or(0);
+            in.QuestId = event.QuestId.value_or(0); in.TargetEntry = event.TargetEntry.value_or(0);
+            in.Timestamp = event.Timestamp; in.SessionSeq = event.SessionSeq;
+            if (_summary.Add(_summaryPolicy, in, _summaryMaxKeys))
+                return; // counted; written by DrainSummary when its window is over
         }
         std::vector<BotEvent> extra;
         if (ApplyRepeatCap(event, extra))
@@ -806,6 +857,33 @@ void BotMgr::SubmitBatch(std::vector<BotEvent>&& events, std::vector<BotPosSampl
 
     for (BotEvent const& e : events)
     {
+        if (e.Count)
+        {
+            BotLogDatabasePreparedStatement* stmt = BotLogDatabase.GetPreparedStatement(BOTLOG_INS_ROLLUP);
+            uint8 i = 0;
+            stmt->setDouble(i++, e.WindowStart);
+            stmt->setUInt64(i++, e.BotGuid);
+            stmt->setString(i++, e.Type);
+            stmt->setString(i++, e.Reason);
+            stmt->setUInt8(i++, e.Severity);
+            stmt->setString(i++, e.SummaryKey);
+            stmt->setUInt16(i++, e.MapId.value_or(0));
+            stmt->setUInt16(i++, e.ZoneId.value_or(0));
+            stmt->setUInt32(i++, e.QuestId.value_or(0));
+            stmt->setUInt32(i++, e.TargetEntry.value_or(0));
+            stmt->setUInt32(i++, e.Count);
+            stmt->setDouble(i++, e.Timestamp);
+            stmt->setDouble(i++, e.LastTs);
+            stmt->setUInt8(i++, e.Level.value_or(0));
+            if (e.Summary.empty()) stmt->setNull(i++); else stmt->setString(i++, e.Summary);
+            for (int n = 0; n < 3; ++n)
+            {
+                if (e.Details.empty()) stmt->setNull(i++); else stmt->setString(i++, e.Details);
+            }
+            if (e.SessionSeq) stmt->setUInt64(i++, e.SessionSeq); else stmt->setNull(i++);
+            trans->Append(stmt);
+            continue;
+        }
         BotLogDatabasePreparedStatement* stmt = BotLogDatabase.GetPreparedStatement(IsHotEvent(e) ? BOTLOG_INS_EVENT_HOT : BOTLOG_INS_EVENT);
         BindEvent(stmt, e, hasSession);
         trans->Append(stmt);
@@ -887,9 +965,49 @@ void BotMgr::PollInFlight()
     _dropWindowStart = 0.0;
 }
 
+// Finished windows of the summary table become rollup rows in the event buffer (written with the next batch, same retries and caps).
+void BotMgr::DrainSummary(bool all)
+{
+    if (!_summaryPolicy.Enabled)
+        return;
+    double const now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+    std::vector<BotLogSummary::Row> rows;
+    {
+        std::lock_guard<std::mutex> lock(_logMutex);
+        rows = _summary.Drain(now, _summaryPolicy.WindowSec, all);
+    }
+    if (rows.empty())
+        return;
+    std::lock_guard<std::mutex> lock(_logMutex);
+    for (BotLogSummary::Row& r : rows)
+    {
+        BotEvent e;
+        e.BotGuid = r.K.BotGuid;
+        e.Type = std::move(r.K.Type);
+        e.Severity = r.K.Severity;
+        e.Reason = std::move(r.K.Reason);
+        e.SummaryKey = std::move(r.K.SummaryKey);
+        e.MapId = uint16(r.K.MapId);
+        e.ZoneId = uint16(r.K.ZoneId);
+        e.QuestId = r.K.QuestId;
+        e.TargetEntry = r.K.TargetEntry;
+        e.Count = r.Count;
+        e.Timestamp = r.FirstTs;
+        e.LastTs = r.LastTs;
+        e.WindowStart = double(r.K.Window);
+        e.Level = r.Level;
+        e.SessionSeq = r.SessionSeq;
+        e.Summary = std::move(r.SampleSummary);
+        e.Details = std::move(r.SampleDetails);
+        _logBuffer.push_back(std::move(e)); // not capped: bounded by _summaryMaxKeys
+    }
+}
+
 void BotMgr::FlushLog(bool sync)
 {
     _logSinceFlushMs = 0;
+
+    DrainSummary(sync);
 
     PollInFlight();
 

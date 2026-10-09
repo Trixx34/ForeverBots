@@ -30,6 +30,8 @@
 #include <set>
 #include <string>
 #include <vector>
+#include "BotLogCategory.h"
+#include "BotLogSummary.h"
 #include "DatabaseEnvFwd.h"
 #include "Transaction.h"
 #include <unordered_map>
@@ -65,6 +67,13 @@ struct BotEvent
     std::string Details;    // JSON text, may be empty
     double Timestamp = 0.0; // unix seconds; filled in by LogEvent when 0
     uint64 SessionSeq = 0;  // login session id of the bot (bot_event.session_seq); filled in by LogEvent when 0
+
+    // Set only on summary rows (Bot.Log.Summary.*, table bot_event_rollup); Count 0 = an ordinary bot_event row. Timestamp is then the first
+    // event of the row, Summary/Details the sample of that first event, Level the level of the last event.
+    uint32 Count = 0;
+    double LastTs = 0.0;
+    double WindowStart = 0.0;
+    std::string SummaryKey;
 };
 
 // One position sample (table bot_pos), used by the sim console map. Flags: bit 0 moving, bit 1 in combat, bit 2 dead.
@@ -269,6 +278,11 @@ private:
 
     std::atomic<bool> _logAvailable{false};
     uint8 _logMinSeverity = BOTLOG_INFO;
+    BotLogSummary::Policy _summaryPolicy;  // Bot.Log.Summary.*; written at startup only
+    BotLogSummary::Aggregator _summary;    // guarded by _logMutex
+    size_t _summaryMaxKeys = 100000;
+    void DrainSummary(bool all);           // _logMutex NOT held: moves finished windows into _logBuffer as rollup rows
+    BotLogCat::Config _logCategories;     // Bot.Log.Categories / Bot.Log.CategoryMinSeverity; written at startup only
     uint32 _logFlushIntervalMs = 1000;
     uint32 _logMaxBatch = 500;
     uint32 _logBufferMax = 200000;        // Bot.Log.BufferMax: events held while the database is slow; over it events are dropped and counted

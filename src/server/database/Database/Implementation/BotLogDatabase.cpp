@@ -22,6 +22,7 @@
 
 std::atomic<bool> BotLogHasSessionSeq{false};
 std::atomic<bool> BotLogHasHotTable{false};
+std::atomic<bool> BotLogHasRollupTable{false};
 
 void BotLogDatabaseConnection::DoPrepareStatements()
 {
@@ -67,6 +68,24 @@ void BotLogDatabaseConnection::DoPrepareStatements()
         std::string("INSERT INTO bot_event_hot (ts, bot_guid, event_type, severity, reason, summary, level, map_id, zone_id, "
         "pos_x, pos_y, pos_z, quest_id, target_entry, details, session_seq) "
         "VALUES (FROM_UNIXTIME(?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, IF(JSON_VALID(?), ?, JSON_QUOTE(?)), ?)") : eventSql,
+        CONNECTION_BOTH);
+
+    // Summary rows (Bot.Log.Summary.*). Parameters: 1 window start (unix seconds), 2 bot_guid, 3 event_type, 4 reason, 5 severity,
+    // 6 summary_key, 7 map_id, 8 zone_id, 9 quest_id, 10 target_entry, 11 n, 12 first ts, 13 last ts (unix seconds, fractional),
+    // 14 level, 15 sample summary, 16-18 sample details (3x, see above), 19 session_seq. A window flushed twice adds up.
+    // Without the table the statement targets bot_event_hot or bot_event so the pool still opens, and it is never used.
+    bool hasRollup = false;
+    {
+        std::unique_ptr<ResultSet> r(Query("SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bot_event_rollup'"));
+        hasRollup = r && r->GetRowCount() > 0;
+    }
+    BotLogHasRollupTable.store(hasRollup, std::memory_order_relaxed);
+    PrepareStatement(BOTLOG_INS_ROLLUP, hasRollup ?
+        std::string("INSERT INTO bot_event_rollup (window_ts, bot_guid, event_type, reason, severity, summary_key, map_id, zone_id, quest_id, "
+        "target_entry, n, first_ts, last_ts, level, sample_summary, sample_details, session_seq) "
+        "VALUES (FROM_UNIXTIME(?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FROM_UNIXTIME(?), FROM_UNIXTIME(?), ?, ?, IF(JSON_VALID(?), ?, JSON_QUOTE(?)), ?) "
+        "ON DUPLICATE KEY UPDATE n = n + VALUES(n), first_ts = LEAST(first_ts, VALUES(first_ts)), last_ts = GREATEST(last_ts, VALUES(last_ts)), "
+        "level = VALUES(level), session_seq = VALUES(session_seq)") : eventSql,
         CONNECTION_BOTH);
 
     // Parameters: 1 ts (unix seconds, fractional), 2 bot_guid, 3 map_id, 4 zone_id, 5-7 x/y/z, 8 flags (bit0 moving, bit1 combat, bit2 dead)

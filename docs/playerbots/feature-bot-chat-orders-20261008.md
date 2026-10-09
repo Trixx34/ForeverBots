@@ -1,6 +1,6 @@
 # Bot chat orders: stop, aggressive, passive, pull, heal, mount, dismount, summon, revive (2026-10-08)
 
-Requested by Trixx34. Extends the chat commands of step A2 (`BotChat.cpp`, see the header of `BotChat.h` and the `Bot.Chat.*` block of `worldserver.conf.dist`). Switch: `Bot.Chat.Orders.Enabled` (default **off**). With it off the new words are ordinary chat and nothing changes.
+Requested by Trixx34. Extends the chat commands of step A2 (`BotChat.cpp`, see the header of `BotChat.h` and the `Bot.Chat.*` block of `botserver.conf.dist`). Switch: `Bot.Chat.Orders.Enabled` (default **off**). With it off the new words are ordinary chat and nothing changes.
 
 `follow` and `release` already existed and are unchanged; the other verbs of the request are new. Syntax and authorization are the existing ones: `[selector] verb`, from the group leader, in party chat, raid chat or a whisper to one bot. None of the new verbs takes arguments (`pull now` is refused with `BAD_ARGS`). The reply codes below show in `verbose on` and in the `chat_command` log rows.
 

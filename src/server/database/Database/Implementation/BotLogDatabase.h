@@ -33,6 +33,7 @@ enum BotLogDatabaseStatements : uint32
     BOTLOG_INS_EVENT,
     BOTLOG_INS_EVENT_HOT,   // same columns as BOTLOG_INS_EVENT, table bot_event_hot (only used when BotLogHasHotTable)
     BOTLOG_INS_POS,
+    BOTLOG_INS_ROLLUP,      // upsert into bot_event_rollup (only used when BotLogHasRollupTable)
 
     MAX_BOTLOGDATABASE_STATEMENTS
 };
@@ -58,6 +59,9 @@ TC_DATABASE_API extern std::atomic<bool> BotLogHasSessionSeq;
 /// True when the bot_event_hot table exists (probed when the statements are prepared): BOTLOG_INS_EVENT_HOT writes to it. Otherwise that
 /// statement is prepared against bot_event and the writer never routes to it.
 TC_DATABASE_API extern std::atomic<bool> BotLogHasHotTable;
+
+/// True when the bot_event_rollup table exists (probed when the statements are prepared): Bot.Log.Summary.* needs it.
+TC_DATABASE_API extern std::atomic<bool> BotLogHasRollupTable;
 
 /// Accessor to the bot log database (only opened when BotLogDatabaseInfo is set in worldserver.conf)
 TC_DATABASE_API extern DatabaseWorkerPool<BotLogDatabaseConnection> BotLogDatabase;
