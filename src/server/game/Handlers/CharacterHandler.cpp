@@ -1352,9 +1352,31 @@ void WorldSession::AbortLogin(WorldPackets::Character::LoginFailureReason reason
     SendPacket(WorldPackets::Character::CharacterLoginFailed(reason).Write());
 }
 
-void WorldSession::HandleLoadScreenOpcode(WorldPackets::Character::LoadingScreenNotify& /*loadingScreenNotify*/)
+void WorldSession::HandleLoadScreenOpcode(WorldPackets::Character::LoadingScreenNotify& loadingScreenNotify)
 {
-    // TODO: Do something with this packet
+    // the Discord bot's chat channel (DiscordChannel.h) is joined once the client finished loading: joined during the login itself
+    // the channel showed incoming messages but the client could not type into it (/6 did nothing, GetChannelName(6) was 0)
+    if (!loadingScreenNotify.Showing && _player && _player->IsInWorld())
+    {
+        DiscordChannel::OnLoadingScreenDone(_player);
+
+        // Message of the day (worldserver.conf Motd, .server set motd), once per login, as system messages: the client shows those
+        // (it showed nothing of SMSG_MOTD sent during the login)
+        if (_motdPending)
+        {
+            _motdPending = false;
+            ChatHandler handler(this);
+            for (std::string const& line : sWorld->GetMotd())
+                if (!line.empty())
+                    handler.SendSysMessage(line);
+        }
+
+        // Classic 1.60 (client 70291): "Played in the WoW: Forever Beta", earned at login on the official beta (sniff 70291), gives
+        // 16 Legacy Points (TraitCurrencySource 38875). Given after the loading screen so the client shows it and the points at once.
+        static constexpr uint32 AchievementForeverBeta = 64283;
+        if (AchievementEntry const* foreverBeta = sAchievementStore.LookupEntry(AchievementForeverBeta))
+            _player->CompletedAchievement(foreverBeta);
+    }
 }
 
 void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
@@ -1402,12 +1424,8 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
 
     SendFeatureSystemStatus();
 
-    // Send MOTD
-    {
-        WorldPackets::System::MOTD motd;
-        motd.Text = &sWorld->GetMotd();
-        SendPacket(motd.Write());
-    }
+    // MOTD: sent once the client's loading screen is gone (HandleLoadScreenOpcode); sent here, during the login, the client dropped it
+    _motdPending = true;
 
     SendSetTimeZoneInformation();
 
@@ -1716,9 +1734,6 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
     _player->UpdateCriteria(CriteriaType::Login, 1);
 
     sScriptMgr->OnPlayerLogin(pCurrChar, firstLogin);
-
-    // the Discord bot's chat channel (DiscordChannel.h): joined unless the player left it
-    DiscordChannel::OnLogin(pCurrChar);
 
     // Battle.net presence: the client takes the account's BattleTag from it (Social window, Battle.net friends); online friends are told
     BattlenetPresence::OnLogin(this);

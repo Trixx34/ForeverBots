@@ -65,6 +65,25 @@ enum PetStableFlags : uint8
     PET_STABLE_FAVORITE = 0x8
 };
 
+// Classic 1.60 stable (vanilla rules): the current pet and the stable slots bought at a stable master. Slot numbers of the client
+// (StablePetInfo::PetSlot, CMSG_SET_PET_SLOT): 0 = current pet, 1.. = stable slots. Official 70291 pet flags: 1 current, 3 stabled.
+constexpr uint8 MAX_CLASSIC_STABLE_SLOTS = 2;
+
+constexpr uint32 ToClassicStableSlot(PetSaveMode slot)
+{
+    return IsStabledPetSlot(slot) ? uint32(slot - PET_SAVE_FIRST_STABLE_SLOT + 1) : uint32(slot - PET_SAVE_FIRST_ACTIVE_SLOT);
+}
+
+constexpr PetSaveMode FromClassicStableSlot(uint32 slot)
+{
+    return slot ? PetSaveMode(PET_SAVE_FIRST_STABLE_SLOT + slot - 1) : PET_SAVE_FIRST_ACTIVE_SLOT;
+}
+
+constexpr uint8 ClassicStablePetFlags(PetSaveMode slot)
+{
+    return IsStabledPetSlot(slot) ? uint8(PET_STABLE_ACTIVE | PET_STABLE_INACTIVE) : uint8(PET_STABLE_ACTIVE);
+}
+
 enum PetSpellState
 {
     PETSPELL_UNCHANGED = 0,

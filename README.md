@@ -8,6 +8,8 @@ with a vanilla world (converted from VMaNGOS) and the Skyborne / Zephras Isle co
 **Just want to play?** Use the Windows repack from the releases: extract, run `Setup.bat`, start the servers in the
 Forever Launcher, press Play. No MySQL or compiling needed.
 
+**Server architecture and operations:** [Complete bnetserver and worldserver guide](doc/ServerGuide.md) — login flow, databases, networking, setup, administration, backups, and troubleshooting.
+
 ### Building from source
 
 Build the core as usual (see [Install](#install)), then:

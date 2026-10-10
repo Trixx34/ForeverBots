@@ -1356,6 +1356,9 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         PetStable const* GetPetStable() const { return m_petStable.get(); }
         void AddPetToUpdateFields(PetStable::PetInfo const& pet, PetSaveMode slot, PetStableFlags flags);
         void SetPetSlot(uint32 petNumber, PetSaveMode dstPetSlot);
+        uint8 GetNumStableSlots() const { return m_activePlayerData->NumStableSlots; }
+        void SetNumStableSlots(uint8 slots);
+        void BuyStableSlot();
         ObjectGuid GetStableMaster() const;
         void SetStableMaster(ObjectGuid stableMaster);
 

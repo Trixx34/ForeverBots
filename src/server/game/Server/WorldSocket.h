@@ -144,6 +144,7 @@ private:
     ReadDataHandlerResult HandleAuthContinuedSession(WorldPacket&& packet);
     void HandleAuthContinuedSessionCallback(WorldPackets::Auth::AuthContinuedSession const* authSession, PreparedResultSet const* result);
     void LoadSessionPermissionsCallback(PreparedQueryResult result);
+    void SendEnterEncryptedMode();
     ReadDataHandlerResult HandleKeepAlive();
     ReadDataHandlerResult HandleLogDisconnect(WorldPacket&& packet) const;
     ReadDataHandlerResult HandleConnectToFailed(WorldPacket&& packet);

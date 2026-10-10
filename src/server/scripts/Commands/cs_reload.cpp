@@ -983,6 +983,7 @@ public:
     {
         TC_LOG_INFO("misc", "Re-Loading Creature Template Locale...");
         sObjectMgr->LoadCreatureLocales();
+        sObjectMgr->InitializeQueriesData(QUERY_DATA_CREATURES);
         handler->SendGlobalGMSysMessage("DB table `creature_template_locale` reloaded.");
         return true;
     }
@@ -999,6 +1000,7 @@ public:
     {
         TC_LOG_INFO("misc", "Re-Loading Gameobject Template Locale... ");
         sObjectMgr->LoadGameObjectLocales();
+        sObjectMgr->InitializeQueriesData(QUERY_DATA_GAMEOBJECTS);
         handler->SendGlobalGMSysMessage("DB table `gameobject_template_locale` reloaded.");
         return true;
     }
@@ -1035,6 +1037,7 @@ public:
         sObjectMgr->LoadQuestGreetingLocales();
         sObjectMgr->LoadQuestOfferRewardLocale();
         sObjectMgr->LoadQuestRequestItemsLocale();
+        sObjectMgr->InitializeQueriesData(QUERY_DATA_QUESTS);
         handler->SendGlobalGMSysMessage("DB table `quest_template_locale` reloaded.");
         handler->SendGlobalGMSysMessage("DB table `quest_objectives_locale` reloaded.");
         handler->SendGlobalGMSysMessage("DB table `quest_greeting_locale` reloaded.");

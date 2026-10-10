@@ -243,7 +243,10 @@ def format_chat_line(line, realm):
     base, _, zone = channel.partition(' - ')
     chat = CFG.get('chat', {})
     names = {k.lower(): v for k, v in (chat.get('channels') or {}).items()}
-    if names and base.lower() not in names:
+    # the in-game Discord channel (worldserver Discord.Channel.Name) is always relayed: configs made before 2026-10-07 have no
+    # "Discord" entry in chat.channels, and their /6 chat never reached Discord
+    game_channel = str(chat.get('game_channel') or 'Discord').lower()
+    if names and base.lower() not in names and base.lower() != game_channel:
         return None
     message = clean_wow_text(message)
     if not message:

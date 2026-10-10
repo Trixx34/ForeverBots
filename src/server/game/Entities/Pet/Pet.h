@@ -95,6 +95,7 @@ class TC_GAME_API Pet final : public Guardian
         static constexpr int32 HAPPINESS_LOSS = 670;             // every 7.5 s, twice that in combat
         static constexpr uint32 HAPPINESS_LOSS_INTERVAL = 7500;
         bool HasHappiness() const { return getPetType() == HUNTER_PET; }
+        static uint32 GetHunterPetNextLevelExperience(uint8 level);
         HappinessState GetHappinessState() const;
         float GetHappinessDamageMod() const;                    // unhappy 75%, content 100%, happy 125%
         static int32 GetFoodBenefit(uint8 petLevel, uint32 foodLevel); // happiness per Feed Pet tick, 0 = too low level

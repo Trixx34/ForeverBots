@@ -16,7 +16,10 @@
  */
 
 #include "ClassicOpcodes.h"
+#include "Config.h"
 #include "Opcodes.h"
+#include "Realm.h"
+#include "RealmList.h"
 #include <unordered_map>
 #include <unordered_set>
 
@@ -78,7 +81,67 @@ constexpr uint32 LastRetailServerGroup = 0x6A;
 constexpr uint32 ChatRetailServerGroup = 0x4A;
 constexpr uint32 GuildRetailServerGroup = 0x51;
 
+// Client 1.60.1.70291 (2026-10-09), the tables above stay in 70245 numbers:
+//  - client: only the connection group moved (CMSG_LOG_DISCONNECT 0x450007 -> 0x460007), CMSG_ENUM_CHARACTERS stayed 0x440014
+//  - server: every group is one higher (SMSG_AUTH_CHALLENGE 0x4D0000 -> 0x4E0000; with the main group left at 0x46 the client ignores
+//    AUTH_RESPONSE and never asks for the characters), and the main group got one more message: the official 70291 sniff has
+//    70245 index 0x92 (BATTLE_PET_JOURNAL) unchanged and 0xAD (START_ELAPSED_TIMERS) at 0xAE, SET_TIME_ZONE_INFORMATION 0x124,
+//    ACCOUNT_DATA_TIMES 0x1B6, SERVER_TIME_OFFSET 0x1C0, TUTORIAL_FLAGS 0x269, MIRROR_VARS 0x372, BATTLENET_RESPONSE 0x2B0;
+//    the exact index between 0x93 and 0xAD is not known yet (party / ready check / pet battle messages)
+// Classic.OpcodeGroupShift: -1 (default) = from the realm's game build (realmlist.gamebuild >= 70291 -> 1), or 0 / 1.
+static uint32 ExtraGroupShift()
+{
+    static uint32 const shift = []() -> uint32
+    {
+        int32 configured = sConfigMgr->GetIntDefault("Classic.OpcodeGroupShift", -1);
+        if (configured >= 0)
+            return uint32(configured);
+        std::shared_ptr<Realm const> realm = sRealmList->GetCurrentRealm();
+        return realm && realm->Build >= 70291 ? 1 : 0;
+    }();
+    return shift;
+}
+
+bool ClassicOpcodes::IsBuild70291OrLater()
+{
+    return ExtraGroupShift() != 0;
+}
+
 uint32 ClassicOpcodes::TranslateClientOpcode(uint32 classicOpcode)
+{
+    if (uint32 shift = ExtraGroupShift())
+    {
+        // client: the connection group (70245 0x45) moved to 0x46
+        if (OpcodeGroup(classicOpcode) == ClassicClientConnectionGroup + shift)
+            classicOpcode = WithOpcodeGroup(classicOpcode, ClassicClientConnectionGroup);
+        // and the main client group 0x44 got one more message between 70245 index 0x13A and 0x150 (sniffs 2026-10-09: 0x13A
+        // BATTLE_PAY_OPEN_CHECKOUT unchanged, 0x150 -> 0x151; RECENT_ALLY_REQUEST_DATA, ACCEPT_SOCIAL_CONTRACT, club finder are
+        // above it). Classic.ClientMainGroupInsertIndex = the 70291 index of the new message, everything after it is one lower.
+        static uint32 const clientInsertIndex = uint32(sConfigMgr->GetIntDefault("Classic.ClientMainGroupInsertIndex", 0x13B));
+        if (OpcodeGroup(classicOpcode) == ClassicClientConnectionGroup - 1 && (classicOpcode & 0xFFFF) > clientInsertIndex)
+            --classicOpcode;
+    }
+
+    return TranslateClientOpcode70245(classicOpcode);
+}
+
+uint32 ClassicOpcodes::TranslateServerOpcode(uint32 coreOpcode)
+{
+    uint32 classicOpcode = TranslateServerOpcode70245(coreOpcode);
+    if (uint32 shift = ExtraGroupShift())
+    {
+        uint32 group = OpcodeGroup(classicOpcode);
+        // Classic.MainGroupInsertIndex = the first 70245 main-group index that moved (0x93..0xAD, see above)
+        static uint32 const insertIndex = uint32(sConfigMgr->GetIntDefault("Classic.MainGroupInsertIndex", 0x93));
+        if (group == FirstRetailServerGroup + 1 && (classicOpcode & 0xFFFF) >= insertIndex)
+            ++classicOpcode;
+        if (group >= FirstRetailServerGroup + 1 && group <= LastRetailServerGroup + 1)
+            classicOpcode = WithOpcodeGroup(classicOpcode, group + shift);
+    }
+    return classicOpcode;
+}
+
+uint32 ClassicOpcodes::TranslateClientOpcode70245(uint32 classicOpcode)
 {
     if (auto itr = ClientOpcodes.find(classicOpcode); itr != ClientOpcodes.end())
         return itr->second;
@@ -90,7 +153,7 @@ uint32 ClassicOpcodes::TranslateClientOpcode(uint32 classicOpcode)
     return classicOpcode;
 }
 
-uint32 ClassicOpcodes::TranslateServerOpcode(uint32 coreOpcode)
+uint32 ClassicOpcodes::TranslateServerOpcode70245(uint32 coreOpcode)
 {
     if (auto itr = ServerOpcodes.find(coreOpcode); itr != ServerOpcodes.end())
         return itr->second;

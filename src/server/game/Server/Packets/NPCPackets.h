@@ -284,6 +284,17 @@ namespace WorldPackets
             ObjectGuid StableMaster;
         };
 
+        // Classic 1.60: buys the next stable slot
+        class BuyStableSlot final : public ClientPacket
+        {
+        public:
+            explicit BuyStableSlot(WorldPacket&& packet) : ClientPacket(CMSG_BUY_STABLE_SLOT, std::move(packet)) { }
+
+            void Read() override;
+
+            ObjectGuid StableMaster;
+        };
+
         class SetPetSlot final : public ClientPacket
         {
         public:

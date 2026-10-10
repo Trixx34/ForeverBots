@@ -1138,16 +1138,21 @@ struct WeeklySpellUse : public IsUpdateFieldStructureTag
     bool operator!=(WeeklySpellUse const& right) const { return !(*this == right); }
 };
 
-struct StablePetInfo : public IsUpdateFieldStructureTag, public HasChangesMask<9>
+// Classic 1.60 layout (official sniff 70291): no Specialization, the vanilla pet values instead (stable UI loyalty, happiness, experience)
+struct StablePetInfo : public IsUpdateFieldStructureTag, public HasChangesMask<13>
 {
-    UpdateField<uint32, 0, 1> PetSlot;
+    UpdateField<uint32, 0, 1> PetSlot;                  // 0 = current pet, 1.. = stable slots
     UpdateField<uint32, 0, 2> PetNumber;
     UpdateField<uint32, 0, 3> CreatureID;
     UpdateField<uint32, 0, 4> DisplayID;
     UpdateField<uint32, 0, 5> ExperienceLevel;
     UpdateField<std::string, 0, 6> Name;
-    UpdateField<uint8, 0, 7> PetFlags;
-    UpdateField<uint32, 0, 8> Specialization;
+    UpdateField<uint8, 0, 7> PetFlags;                  // official: 1 current pet, 3 stabled
+    UpdateField<uint8, 0, 8> LoyaltyLevel;              // official: 4 on a level 12 pet
+    UpdateField<uint32, 0, 9> LoyaltyPoints;            // official: 1493 on the same pet; meaning not verified
+    UpdateField<uint32, 0, 10> Happiness;
+    UpdateField<uint32, 0, 11> Experience;
+    UpdateField<uint32, 0, 12> NextLevelExperience;
 
     using OwnerObject = Player;
     void WriteCreate(ByteBuffer& data, Player const* receiver, Player const* owner) const;
@@ -1316,7 +1321,7 @@ struct TransmogOutfitMetadata : public IsUpdateFieldStructureTag
     bool operator!=(TransmogOutfitMetadata const& right) const { return !(*this == right); }
 };
 
-struct ActivePlayerData : public IsUpdateFieldStructureTag, public HasChangesMask<401>
+struct ActivePlayerData : public IsUpdateFieldStructureTag, public HasChangesMask<402>
 {
     UpdateField<bool, 0, 1> BackpackAutoSortDisabled;
     UpdateField<bool, 0, 2> BackpackSellJunkDisabled;
@@ -1488,6 +1493,7 @@ struct ActivePlayerData : public IsUpdateFieldStructureTag, public HasChangesMas
     UpdateFieldArray<int32, 2, 374, 375> ProfessionSkillLine;
     UpdateFieldArray<uint32, 5, 377, 378> BagSlotFlags;
     UpdateFieldArray<float, 17, 383, 384> ItemUpgradeHighWatermark;
+    UpdateField<uint8, 134, 401> NumStableSlots;            // Classic 1.60 only (client bit 159): stable slots bought at a stable master
 
     using OwnerObject = Player;
     void WriteCreate(EnumFlag<UpdateFieldFlag> fieldVisibilityFlags, ByteBuffer& data, Player const* receiver, Player const* owner) const;

@@ -771,6 +771,11 @@ void Pet::GivePetXP(uint32 xp)
     SetPetExperience(petlevel < maxlevel ? newXP : 0);
 }
 
+uint32 Pet::GetHunterPetNextLevelExperience(uint8 level)
+{
+    return uint32(sObjectMgr->GetXPForLevel(level) * PET_XP_FACTOR);
+}
+
 void Pet::GivePetLevel(uint8 level)
 {
     if (!level || level == GetLevel())
@@ -779,7 +784,7 @@ void Pet::GivePetLevel(uint8 level)
     if (getPetType() == HUNTER_PET)
     {
         SetPetExperience(0);
-        SetPetNextLevelExperience(uint32(sObjectMgr->GetXPForLevel(level)*PET_XP_FACTOR));
+        SetPetNextLevelExperience(GetHunterPetNextLevelExperience(level));
     }
 
     InitStatsForLevel(level);

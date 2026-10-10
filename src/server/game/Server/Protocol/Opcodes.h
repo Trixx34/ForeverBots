@@ -146,6 +146,7 @@ enum OpcodeClient : uint32
     CMSG_BUY_ACCOUNT_BANK_TAB                                       = 0x3E0128,
     CMSG_BUY_BACK_ITEM                                              = 0x3E003A,
     CMSG_BUY_ITEM                                                   = 0x3E0039,
+    CMSG_BUY_STABLE_SLOT                                            = 0x3D0310, // Classic 1.60 only (client 0x3E0011), number unused by retail
     CMSG_CAGE_BATTLE_PET                                            = 0x3D00A6,
     CMSG_CALENDAR_ADD_EVENT                                         = 0x4300A9,
     CMSG_CALENDAR_COMMUNITY_INVITE                                  = 0x43009D,
