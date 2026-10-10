@@ -285,6 +285,8 @@ private:
     BotLogCat::Config _logCategories;     // Bot.Log.Categories / Bot.Log.CategoryMinSeverity; written at startup only
     uint32 _logFlushIntervalMs = 1000;
     uint32 _logMaxBatch = 500;
+    uint32 _decisionSampleEvery = 1;      // BotLog.DecisionSampleEvery: keep 1 in N INFO decision events
+    uint32 _decisionSampleSeq = 0;
     uint32 _logBufferMax = 200000;        // Bot.Log.BufferMax: events held while the database is slow; over it events are dropped and counted
     uint32 _posBufferMax = 100000;        // Bot.Log.PosBufferMax
     uint32 _flushRetries = 3;             // Bot.Log.FlushRetries: re-submissions of a failed batch before it is dropped

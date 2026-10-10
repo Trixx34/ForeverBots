@@ -462,6 +462,7 @@ void BotMgr::SetLogDatabaseAvailable(bool available)
         }
         _logFlushIntervalMs = uint32(std::max<int32>(100, sConfigMgr->GetIntDefault("BotLog.FlushIntervalMs", 1000)));
         _logMaxBatch = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("BotLog.MaxBatch", 500)));
+        _decisionSampleEvery = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("BotLog.DecisionSampleEvery", 1)));
         _repeatCap = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.RepeatCap", 3), 0, 100000));
         _logBufferMax = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.BufferMax", 200000), 1000, 50000000));
         _posBufferMax = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.PosBufferMax", 100000), 1000, 50000000));
@@ -702,6 +703,9 @@ void BotMgr::LogEvent(BotEvent&& event)
     if (!IsLogDatabaseAvailable() || event.Severity < _logMinSeverity)
         return;
     if (!_logCategories.Allows(BotLogCat::Classify(event.Type, event.Reason), event.Severity))
+        return;
+
+    if (event.Type == "decision" && event.Severity == BOTLOG_INFO && _decisionSampleEvery > 1 && (_decisionSampleSeq++ % _decisionSampleEvery) != 0)
         return;
 
     if (event.Timestamp == 0.0)
