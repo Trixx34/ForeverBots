@@ -20,6 +20,8 @@
 #include "Channel.h"
 #include "ChannelMgr.h"
 #include "BotChat.h"
+#include "BotLfg.h"
+
 #include "BotCraftOrder.h"
 
 #include "BotConversation.h"
@@ -351,6 +353,7 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
 
             GetPlayer()->Whisper(msg, lang, receiver);
             BotChat::Handle(GetPlayer(), BotChat::Channel::Whisper, msg, receiver);
+            BotLfg::OnWhisper(GetPlayer(), receiver, msg);
             BotTradeLink::OnWhisper(GetPlayer(), receiver, msg);
             BotCraftOrder::OnWhisper(GetPlayer(), receiver, msg);
 
@@ -378,6 +381,8 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
             packet.Initialize(ChatMsg(type), lang, sender, nullptr, msg);
             group->BroadcastPacket(packet.Write(), false, group->GetMemberGroup(GetPlayer()->GetGUID()));
             BotChat::Handle(GetPlayer(), BotChat::Channel::Party, msg);
+            BotLfg::OnPartyChat(GetPlayer(), msg);
+
             BotConversation::OnPartyChat(GetPlayer(), msg);
             break;
         }

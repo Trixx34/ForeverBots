@@ -32,6 +32,8 @@ TEST_CASE("Reason prefixes pick the category", "[BotLogCategory]")
     CHECK(Classify("decision", "CRAFT_DONE") == Economy);
     CHECK(Classify("decision", "MAIL_SENT") == Economy);
     CHECK(Classify("decision", "PARTY_FORMED") == Social);
+    CHECK(Classify("decision", "LFG_JOINED") == Dungeon);
+
     CHECK(Classify("decision", "GUILD_BOT_FOUNDED") == Social);
     CHECK(Classify("decision", "GUILD_INVITE_ACCEPTED") == Social);
     CHECK(Classify("decision", "TOWN_IDLE_GO") == Movement);
