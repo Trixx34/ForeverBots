@@ -3170,6 +3170,16 @@ Network.TcpNodelay = 1
 Network.SkipBuildAuthKeyCheck = 0
 
 #
+#    Network.EnterEncryptedModeDelay
+#        Description: Milliseconds to wait before SMSG_ENTER_ENCRYPTED_MODE on a new realm connection. The Forever launcher
+#                     patches the server key into the client's key store, which the client builds while logging in; the wait
+#                     lets the launcher finish first (otherwise the first realm entry can fail with reason 24, and the
+#                     launcher's auto-login always would). 0 sends it at once.
+#        Default:     1500
+
+Network.EnterEncryptedModeDelay = 1500
+
+#
 ###################################################################################################
 
 ###################################################################################################
@@ -4134,7 +4144,7 @@ BlackMarket.UpdatePeriod = 24
 Appender.Console=1,3,0
 Appender.Server=2,2,0,Server.log,w
 Appender.GM=2,2,1,GM.log
-Appender.DBErrors=2,2,0,DBErrors.log
+Appender.DBErrors=2,2,0,DBErrors.log,w
 
 #  Logger config values: Given a logger "name"
 #    Logger.name
@@ -4474,6 +4484,29 @@ Classic.GuildFinder = 0
 #    All Bot.* and BotLog* settings live in botserver.conf (see botserver.conf.dist).
 #
 ###################################################################################################
+#    Classic.OpcodeGroupShift
+#        Description: Client 1.60.1.70291 numbers the message groups one higher than 70245 (and changed some packet and
+#                     update field layouts). -1 picks it from the realm's game build (realmlist.gamebuild >= 70291).
+#        Default:     -1 - (From the realm build)
+#                      0 - (70245 and older)
+#                      1 - (70291 and newer)
+
+Classic.OpcodeGroupShift = -1
+
+#    Classic.MainGroupInsertIndex
+#        Description: Client 70291+: first 70245 index (decimal) of the main server message group that moved up by one.
+#                     The official sniff narrows it to 147..173 (0x93..0xAD: party, ready check, pet battle messages).
+#        Default:     147
+
+Classic.MainGroupInsertIndex = 147
+
+#    Classic.ClientMainGroupInsertIndex
+#        Description: Client 70291+: 70291 index (decimal) of the message added to the main client group; the client messages
+#                     after it are one lower in 70245 numbering. The sniffs narrow it to 315..336 (0x13B..0x150).
+#        Default:     315
+
+Classic.ClientMainGroupInsertIndex = 315
+
 #    Classic.OfficialFeatureFlags
 #        Description: Send the client feature flags exactly as the official server does (sniffs 70205/70235).
 #                     0 goes back to the older hand-picked flags.
