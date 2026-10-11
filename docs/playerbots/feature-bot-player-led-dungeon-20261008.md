@@ -1,6 +1,6 @@
 # Player-led dungeon runs (2026-10-08)
 
-Requested by Trixx34. A real player leads a group of bots through a five-man dungeon. Switch: `Bot.AI.Dungeon.PlayerLed.Enabled` (default **off**, options in `worldserver.conf.dist`). It is independent of `Bot.AI.Dungeon.Enabled`, which lets bots lead their own runs; a group led by a player is never touched by `BotDungeonRun` (it only forms groups of bots without a group).
+Requested by Trixx34. A real player leads a group of bots through a five-man dungeon. Switch: `Bot.AI.Dungeon.PlayerLed.Enabled` (default **off**, options in `botserver.conf.dist`). It is independent of `Bot.AI.Dungeon.Enabled`, which lets bots lead their own runs; a group led by a player is never touched by `BotDungeonRun` (it only forms groups of bots without a group).
 
 ## How a run goes
 

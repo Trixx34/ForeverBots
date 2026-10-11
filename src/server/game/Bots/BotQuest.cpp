@@ -5593,6 +5593,11 @@ void NoteDeath(Player* bot)
 {
     if (Improved().Enabled || Safety().Enabled)
         g_deadly.Note(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), getMSTime());
+    // Bot.Quest.GroupAfterDeaths: count the death against the quest the bot was working on
+    if (BotAI* ai = bot->GetSession() ? bot->GetSession()->GetBotAI() : nullptr)
+        if (BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx")))
+            if (cp->T.Quest && bot->GetQuestStatus(cp->T.Quest) == QUEST_STATUS_INCOMPLETE)
+                BotParty::NoteQuestDeath(bot, cp->T.Quest);
 }
 
 void OnLogout(BotAI* ai)

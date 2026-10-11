@@ -1,6 +1,6 @@
 # Bot bank and mail (2026-10-08)
 
-Requested by **Trixx34**. Config `Bot.Bank.*` in `worldserver.conf.dist`, default off. Nothing has run on a sim server yet.
+Requested by **Trixx34**. Config `Bot.Bank.*` in `botserver.conf.dist`, default off. Nothing has run on a sim server yet.
 
 ## What bots do
 * **Deposit.** A bot at level 10 or more with at most `Bot.Bank.FreeSlotsBelow` (4) free bag slots walks to the nearest banker (`UNIT_NPC_FLAG_BANKER`, same map, within 2500 yd) and puts trade goods, gems, recipes and reagent-class items in the bank, enough stacks to reach `FreeSlotsTarget` (10), at most `MaxStacksPerVisit` (12) per visit.

@@ -19,6 +19,7 @@
 #define TRINITYCORE_CONFIG_H
 
 #include "Define.h"
+#include <boost/property_tree/ptree.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -38,6 +39,7 @@ public:
     bool LoadInitial(std::string file, std::vector<std::string> args, std::string& error);
     bool LoadAdditionalFile(std::string file, bool keepOnReload, std::string& error);
     bool LoadAdditionalDir(std::string const& dir, bool keepOnReload, std::vector<std::string>& loadedFiles, std::vector<std::string>& errors);
+    bool LoadBotConfigFile(std::string file, std::string& error);
 
     /// Overrides configuration with environment variables and returns overridden keys
     std::vector<std::string> OverrideWithEnvVariablesIfAny();
@@ -57,8 +59,13 @@ public:
     std::vector<std::string> GetKeysByString(std::string const& name);
 
 private:
+    std::string const& GetFilenameForKey(std::string_view name) const;
+
     template<class T, class R = T>
     R GetValueDefault(std::string_view const& name, T def, bool quiet) const;
+
+    boost::property_tree::ptree _botConfig;
+    std::string _botConfigFilename;
 };
 
 #define sConfigMgr ConfigMgr::instance()

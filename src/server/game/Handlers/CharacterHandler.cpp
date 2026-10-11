@@ -1742,12 +1742,12 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
     // Battle.net presence: the client takes the account's BattleTag from it (Social window, Battle.net friends); online friends are told
     BattlenetPresence::OnLogin(this);
 
-    // Battle.net account with an authenticator (support site account page): "account secured", +4 backpack slots and no
-    // "attach an Authenticator" prompts. Removing it takes the slots away again (items in them are mailed).
+    // A linked authenticator or an explicit account bonus grants the secured-account flag and four backpack slots.
+    // Removing both grants takes the slots away again (items in them are mailed).
     {
         bool secured = false;
-        if (QueryResult result = LoginDatabase.PQuery("SELECT COUNT(*) FROM battlenet_accounts WHERE id = {} AND authenticator_secret IS NOT NULL "
-            "AND authenticator_secret <> ''", GetBattlenetAccountId()))
+        if (QueryResult result = LoginDatabase.PQuery("SELECT COUNT(*) FROM battlenet_accounts WHERE id = {} AND "
+            "((authenticator_secret IS NOT NULL AND authenticator_secret <> '') OR backpack_slots_bonus = 1)", GetBattlenetAccountId()))
             secured = (*result)[0].GetUInt64() != 0;
 
         if (secured)

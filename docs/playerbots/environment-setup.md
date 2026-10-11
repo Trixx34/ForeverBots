@@ -56,7 +56,7 @@ Expansion = 0
 Network.SkipBuildAuthKeyCheck = 1
 Network.EnterEncryptedModeRegionGroup = 8
 ```
-`botserver.conf` (copy of `src/server/worldserver/botserver.conf.dist`, next to `worldserver.conf`): every `Bot.*` and `BotLog*` setting, including `BotLogDatabaseInfo`. Optional; without it all bot settings use their defaults.
+`botserver.conf` (copy of `src/server/worldserver/botserver.conf.dist`, next to `worldserver.conf`): every `Bot.*` and `BotLog*` setting, including `BotLogDatabaseInfo`. Optional; without it all bot settings use their defaults. These settings are read only from `botserver.conf`; copies in `worldserver.conf` or `worldserver.conf.d` are ignored.
 
 (If worldserver stops right after "Realm running as realm ID 1", `RealmID`
 isn't actually set to 70.)

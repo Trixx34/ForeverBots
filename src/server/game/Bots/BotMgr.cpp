@@ -114,10 +114,10 @@ T const& RandomOf(T const (&values)[N])
     return values[urand(0, N - 1)];
 }
 
-// "Bot" + random syllables: letters only (a valid player name), clearly a bot
+// Random syllables form a valid player name without exposing the internal bot account prefix.
 std::string GenerateBotName()
 {
-    std::string name = "Bot" + std::string(RandomOf(NameStart)) + (urand(0, 1) ? RandomOf(NameMiddle) : "") + RandomOf(NameEnd);
+    std::string name = std::string(RandomOf(NameStart)) + (urand(0, 1) ? RandomOf(NameMiddle) : "") + RandomOf(NameEnd);
     if (name.size() > 12)
         name.resize(12);
     normalizePlayerName(name); // first letter upper case, rest lower case, like a name typed in character creation

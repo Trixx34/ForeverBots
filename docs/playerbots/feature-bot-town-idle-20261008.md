@@ -20,7 +20,7 @@ old idling is unchanged.
 ## Config
 
 `Bot.AI.TownIdle.Enabled` (default 0), `SearchYards`, `LingerMinSec`, `LingerMaxSec`, `EmotePct`, `SitPct`; see
-`worldserver.conf.dist`. Enabling it adds the `natural_idle` strategy even when `Bot.AI.Move.Natural.Enabled` is off.
+`botserver.conf.dist`. Enabling it adds the `natural_idle` strategy even when `Bot.AI.Move.Natural.Enabled` is off.
 
 ## Code
 

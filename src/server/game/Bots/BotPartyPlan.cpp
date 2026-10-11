@@ -65,7 +65,7 @@ std::vector<Formed> FormParties(std::vector<Candidate> cands, Config const& cfg,
         if (used.count(seed.Guid))
             continue;
         // only some bots look for company at a given check
-        if (Mix(seed.Guid, salt) % 100 >= std::min<uint32>(cfg.FormChancePct, 100))
+        if (!seed.SeekQuest && Mix(seed.Guid, salt) % 100 >= std::min<uint32>(cfg.FormChancePct, 100))
             continue;
 
         struct Join { Candidate const* C; uint32 Shared; float Dist; };

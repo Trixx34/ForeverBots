@@ -1,10 +1,10 @@
 ###################################################################################################
 # BOTSERVER CONFIGURATION
 #
-# Settings of the player-bot subsystem (docs/playerbots/), kept out of worldserver.conf because there are many.
-# Copy this file to botserver.conf next to worldserver.conf and edit the copy. worldserver loads it right after
-# worldserver.conf and the worldserver.conf.d directory. A key set in botserver.conf wins over the same key in
-# worldserver.conf. Without a botserver.conf every setting keeps its default.
+# Settings of the player-bot subsystem (docs/playerbots/), kept in a dedicated file.
+# Copy this file to botserver.conf next to worldserver.conf and edit the copy. Bot.* and BotLog* settings are read
+# only from botserver.conf; values in worldserver.conf or worldserver.conf.d are ignored. Without botserver.conf,
+# every setting keeps its default.
 #
 # How to read an entry: Description says what the setting does, Default is the value the server uses when the key is
 # absent (and the value written below the comment), Values lists what is accepted. Numbers outside the accepted range are
@@ -2044,6 +2044,19 @@ Bot.AI.Party.LeaderGoneSec = 30
 #        Values:      whole number 1 to 60 (seconds)
 Bot.AI.Party.IntervalSec = 5
 
+#
+#    Bot.Quest.GroupAfterDeaths
+#        Description: A bot that died this many times on the same quest (counted per bot and quest, while it
+#                     works on that quest) looks for other bots that hold the same quest and joins or forms a
+#                     bot party to continue it, instead of staying solo. Uses the party code above (follow,
+#                     leash, break-up rules, MinLevel, JoinRadius, MaxLevelSpread, MaxParties); it works even
+#                     with Bot.AI.Party.Enabled = 0, then only these bots seed parties. The counter resets when
+#                     the quest is completed, turned in, abandoned or failed, when the bot logs out, and once
+#                     the bot has been grouped. Logged as decision `quest_group_after_deaths`.
+#        Default:     0 (off)
+#        Values:      0 = off, otherwise whole number 1 to 100 (deaths)
+Bot.Quest.GroupAfterDeaths = 0
+
 
 ###################################################################################################
 # PLAYER-LED DUNGEON RUNS
@@ -2704,8 +2717,6 @@ Bot.Craft.Fee.VendorPercent = 0
 #        Default:     0
 #        Values:      0 (off) or 1 (on)
 Bot.Social.QuestShare.LogEach = 0
-
-
 ###################################################################################################
 # ESCORT AND GROUP QUESTS
 #
@@ -3172,4 +3183,3 @@ Bot.Chat.Food.Enabled = 0
 #        Default:     12
 #        Values:      whole number 1 to 30 (items)
 Bot.Chat.Food.MaxListed = 12
-

@@ -26,6 +26,7 @@
 #include "Define.h"
 
 class BotAI;
+class Player;
 
 namespace BotParty
 {
@@ -35,6 +36,13 @@ namespace BotParty
     // True while the bot is a follower (not the leader) of a bot party: the quest AI stands back so the follow movement is not
     // overridden. Thread-safe (map threads call it).
     TC_GAME_API bool Busy(BotAI* ai);
+
+    // Bot.Quest.GroupAfterDeaths (default 0 = off): a bot that died this many times on the same quest looks for company on that quest.
+    // NoteQuestDeath: map thread of the bot, from BotQuest::NoteDeath with the quest of the bot's current task (0 = none, ignored).
+    // ClearQuest / ClearBot: the quest was completed, turned in, abandoned or failed / the bot logged out; they forget the counter.
+    TC_GAME_API void NoteQuestDeath(Player* bot, uint32 questId);
+    TC_GAME_API void ClearQuest(uint64 botGuid, uint32 questId);
+    TC_GAME_API void ClearBot(uint64 botGuid);
 }
 
 #endif

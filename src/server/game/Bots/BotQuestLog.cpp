@@ -18,6 +18,7 @@
 #include "BotQuestLog.h"
 #include "BotAI.h"
 #include "BotMgr.h"
+#include "BotParty.h"
 #include "Item.h"
 #include "ItemTemplate.h"
 #include "Object.h"
@@ -157,6 +158,7 @@ void BotQuestLog::OnObjectiveChange(Player* bot, Quest const* quest, QuestObject
 
 void BotQuestLog::OnComplete(Player* bot, Quest const* quest)
 {
+    BotParty::ClearQuest(bot->GetGUID().GetCounter(), quest->GetQuestId());
     std::string objectives = "[";
     for (QuestObjective const& obj : quest->GetObjectives())
     {
@@ -172,6 +174,7 @@ void BotQuestLog::OnComplete(Player* bot, Quest const* quest)
 
 void BotQuestLog::OnRewarded(Player* bot, Quest const* quest, LootItemType rewardType, uint32 rewardId, Object* giver, uint32 xp, int32 money)
 {
+    BotParty::ClearQuest(bot->GetGUID().GetCounter(), quest->GetQuestId());
     double acceptedAt = 0.0;
     {
         std::lock_guard<std::mutex> lock(_acceptMutex);
@@ -221,6 +224,7 @@ void BotQuestLog::OnRewarded(Player* bot, Quest const* quest, LootItemType rewar
 
 void BotQuestLog::OnAbandoned(Player* bot, Quest const* quest)
 {
+    BotParty::ClearQuest(bot->GetGUID().GetCounter(), quest->GetQuestId());
     {
         std::lock_guard<std::mutex> lock(_acceptMutex);
         _acceptTimes.erase({ bot->GetGUID().GetCounter(), quest->GetQuestId() });
@@ -242,6 +246,7 @@ BotQuestLog::Scope::~Scope()
 
 void BotQuestLog::OnFailed(Player* bot, Quest const* quest)
 {
+    BotParty::ClearQuest(bot->GetGUID().GetCounter(), quest->GetQuestId());
     {
         std::lock_guard<std::mutex> lock(_acceptMutex);
         _acceptTimes.erase({ bot->GetGUID().GetCounter(), quest->GetQuestId() });
@@ -257,6 +262,7 @@ void BotQuestLog::OnFailed(Player* bot, Quest const* quest)
 
 void BotQuestLog::OnLogout(uint64 botGuid)
 {
+    BotParty::ClearBot(botGuid);
     std::lock_guard<std::mutex> lock(_acceptMutex);
     _acceptTimes.erase(_acceptTimes.lower_bound({ botGuid, 0 }), _acceptTimes.upper_bound({ botGuid, std::numeric_limits<uint32>::max() }));
 }
