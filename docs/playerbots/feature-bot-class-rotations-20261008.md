@@ -35,3 +35,13 @@ Out-of-combat buffs (the self-buff throttle is one shared timer for the whole fi
 ## Verification
 
 `BotRotation` tests pass (compiled standalone). `BotCombat.cpp` and `BotRotation.cpp` compile in the full cmake tree. Nothing was run on a server: rank-1 spell ids were written from memory and are validated by name at startup (look for the "class spells validated, dropped:" line), so check that line first. To check in the sim with the switch on: cast counts per new spell, `CAST_FAILED` reasons (ONLY_SHAPESHIFT / stance results on warrior rows are expected to back off for 60 s), deaths per class against a run with the switch off.
+
+## Stealth openers: Pounce, Prowl, approach from behind
+
+With `Bot.AI.Rotation.Enabled` on:
+
+- A rogue or a stealthed cat that chases a target aims at its back (a chase angle of 180 degrees, tolerance 22 degrees) while it is stealthed and the target is not attacking it yet. When the stealth ends the chase is redone as a normal chase. Ambush and Pounce need that position.
+- Druids with `Bot.AI.Rotation.DruidForms` (and not `DruidBear`) shift to Cat Form and cast Prowl out of combat when an unaware hostile creature is within 25 yards (same rule as the rogue's Stealth). The cat opens with Pounce (rank 1 id 9005, only while prowling), then the usual cat rows.
+- A required aura without a row of its own (Stealth, Prowl) now counts at any rank of its spell chain.
+
+Not run on a server. Check the "class spells validated, dropped:" startup line for Pounce (9005) and Prowl (5215).
