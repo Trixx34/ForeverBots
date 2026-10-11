@@ -22,6 +22,7 @@
 #include "BotCooking.h"
 #include "BotDummy.h"
 #include "BotEngine.h"
+#include "BotMount.h"
 #include "BotMgr.h"
 #include "BotSocial.h"
 #include "Chat.h"
@@ -741,33 +742,10 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
                 return "ALREADY_MOUNTED";
             if (ai->GetState() == BotState::Combat || bot->IsInCombat())
                 return "IN_COMBAT";
-            std::vector<MountOption> options;
-            for (auto const& [id, spell] : bot->GetSpellMap())
-            {
-                if (spell.state == PLAYERSPELL_REMOVED || !spell.active)
-                    continue;
-                SpellInfo const* si = sSpellMgr->GetSpellInfo(id, DIFFICULTY_NONE);
-                if (!si || !si->HasAura(SPELL_AURA_MOUNTED))
-                    continue;
-                MountOption o;
-                o.SpellId = id;
-                for (SpellEffectInfo const& e : si->GetEffects())
-                {
-                    if (e.ApplyAuraName == SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED)
-                        o.Speed = std::max(o.Speed, e.CalcValueAsInt(bot));
-                    else if (e.ApplyAuraName == SPELL_AURA_MOD_INCREASE_FLIGHT_SPEED || e.ApplyAuraName == SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED)
-                        o.Flying = true;
-                }
-                options.push_back(o);
-            }
-            int32 const pick = PickMount(options);
-            if (pick < 0)
-                return "NO_MOUNT";
-            // stop the follow / goto leg: movement interrupts the cast
-            if (ai->Motion().HasGoal())
-                ai->Motion().ClearGoal();
-            bot->StopMoving();
-            return bot->CastSpell(bot, options[size_t(pick)].SpellId, CastSpellExtraArgs(TRIGGERED_NONE)) == SPELL_CAST_OK ? "OK" : "CANT_MOUNT";
+            char const* const res = BotMount::MountUp(ai, bot, 0);
+            if (!std::strcmp(res, "OK"))
+                BotMount::NoteOrder(ai, true);
+            return res;
         }
         case Verb::Dismount:
             if (!alive)
@@ -776,6 +754,7 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
                 return "NOT_MOUNTED";
             bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
             bot->Dismount();
+            BotMount::NoteOrder(ai, false);
             return "OK";
         case Verb::Summon:
         case Verb::Revive:
