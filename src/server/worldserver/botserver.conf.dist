@@ -4194,10 +4194,72 @@ Bot.Rules.TargetPick.MinXp = 25
 Bot.Rules.QuestFilter.Enabled = 1
 #
 #    Bot.Rules.QuestFilter.BlockedQuests
-#        Description: Comma separated quest ids that are never offered (ids that failed on many bots in earlier runs).
-#        Default:     ""
+#        Description: Comma separated quest ids that are never offered (R-V3-02: quests with a reward rate under 10 percent over
+#                     at least 15 acceptances in the last simulation run; 794, 5441, 1656, 3905, 47). Empty the list to offer them again.
+#        Default:     "794,5441,1656,3905,47"
 #        Values:      quest ids
-Bot.Rules.QuestFilter.BlockedQuests = ""
+Bot.Rules.QuestFilter.BlockedQuests = "794,5441,1656,3905,47"
+#
+#    Bot.Rules.QuestFilter.NeverBlock
+#        Description: R-V3-03. Quest ids that stay offered even when they appear in BlockedQuests (dangerous but completable
+#                     quests; the group-after-deaths rule handles them).
+#        Default:     "404,112,789,792,380,488,92544"
+#        Values:      quest ids
+Bot.Rules.QuestFilter.NeverBlock = "404,112,789,792,380,488,92544"
+#
+#    Bot.Rules.QuestFilter.LowLevelBlocked
+#        Description: R-V3-05. Quest ids not offered to bots below LowLevelUntil.
+#        Default:     "92515,92553,92516,92551"
+#        Values:      quest ids
+Bot.Rules.QuestFilter.LowLevelBlocked = "92515,92553,92516,92551"
+#
+#    Bot.Rules.QuestFilter.LowLevelUntil
+#        Description: Bots at this level or above are offered the LowLevelBlocked quests again.
+#        Default:     7
+#        Values:      whole number 1 to 80
+Bot.Rules.QuestFilter.LowLevelUntil = 7
+#
+#    Bot.Rules.CampAvoid.Enabled
+#        Description: R-V3-04. Bots in the level range below do not pick the creature entries below as grind targets and do not
+#                     count them as free targets, unless they have one of the exempt quests in the log. Follows Bot.Rules.ArmPct.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.CampAvoid.Enabled = 1
+#
+#    Bot.Rules.CampAvoid.Entries
+#        Description: Creature entries to avoid (251245 = Prideclaw).
+#        Default:     "251245"
+#        Values:      creature entries
+Bot.Rules.CampAvoid.Entries = "251245"
+#
+#    Bot.Rules.CampAvoid.ExemptQuests
+#        Description: A bot with one of these quests unfinished in its log may still fight the avoided entries.
+#        Default:     "92515,92553"
+#        Values:      quest ids
+Bot.Rules.CampAvoid.ExemptQuests = "92515,92553"
+#
+#    Bot.Rules.CampAvoid.MinLevel
+#    Bot.Rules.CampAvoid.MaxLevel
+#        Description: Bot level range in which the avoidance applies.
+#        Default:     5 and 6
+#        Values:      whole number 1 to 80
+Bot.Rules.CampAvoid.MinLevel = 5
+Bot.Rules.CampAvoid.MaxLevel = 6
+#
+#    Bot.Rules.KillCredit.Enabled
+#        Description: R-V3-06. Count kills by a bot's pet or other owned unit, and kill experience that arrives without a counted
+#                     kill, as kills. COMBAT_SUMMARY gets a kill_src object (self, pet, xp) so no_kill can be told from a missed credit.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.KillCredit.Enabled = 1
+#
+#    Bot.Rules.V3Log.Enabled
+#        Description: R-V3-01 and extra logging: the reason a bot starts grinding (QUEST_GRIND details why and rejected, and a
+#                     grind_entries count in STATE_LEDGER), the moving seconds per activity in STATE_LEDGER (moving_s), and the
+#                     reason an eligible bot/quest pair did not look for a group (quest_group_skip). Logging only.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.V3Log.Enabled = 1
 #
 #    Bot.Rules.QuestFilter.UnsupportedObjectives
 #        Description: Do not offer quests that have a criteria-tree objective (type 14), optional ones included.
@@ -4222,6 +4284,59 @@ Bot.Rules.QuestFilter.GlobalQuarantineSec = 3600
 #        Default:     3
 #        Values:      whole number 1 to 20
 Bot.Rules.QuestFilter.LocalFails = 3
+
+###################################################################################################
+# BOT STARTER GEAR
+#
+#    Bot.StartGear.Enabled
+#        Description: At login, and every LevelStep levels, every EMPTY equipment slot of a bot is filled with the best usable item
+#                     for its class and level (armor type its class can wear, weapon by gear score, neck, cloak, rings). Items already
+#                     worn are never replaced or removed, so the pass can run again safely. Items come from the item templates.
+#                     Bots the simulation creates get it too (same login path).
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.StartGear.Enabled = 1
+#
+#    Bot.StartGear.MaxQuality
+#        Description: Highest item quality used.
+#        Default:     2 (uncommon)
+#        Values:      0 poor, 1 common, 2 uncommon, 3 rare, 4 epic
+Bot.StartGear.MaxQuality = 2
+#
+#    Bot.StartGear.LevelOffset
+#        Description: An item is used only when its required level is at most bot level + this value (the character must also
+#                     meet the real requirement). Negative values give older, weaker gear.
+#        Default:     0
+#        Values:      whole number -60 to 10
+Bot.StartGear.LevelOffset = 0
+#
+#    Bot.StartGear.MinLevel
+#        Description: Bots below this level get no starter gear.
+#        Default:     1
+#        Values:      whole number 1 to 60
+Bot.StartGear.MinLevel = 1
+#
+#    Bot.StartGear.LevelStep
+#        Description: Run the pass again each time the bot gained this many levels since the last pass (fills only slots that
+#                     are empty). 0 = at login only.
+#        Default:     5
+#        Values:      whole number 0 to 60
+Bot.StartGear.LevelStep = 5
+#
+#    Bot.StartGear.AllowBindOnPickup
+#        Description: Also use items that bind when picked up. Off keeps to items that bind on equip or not at all.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.StartGear.AllowBindOnPickup = 0
+#
+#    Bot.StartGear.Armor
+#    Bot.StartGear.Weapons
+#        Description: Which parts the pass fills: armor, neck, cloak and rings; main hand, off hand and ranged slot.
+#                     Bows, crossbows and guns are skipped while the item data holds no ammunition.
+#        Default:     1 and 1
+#        Values:      0 (off) or 1 (on)
+Bot.StartGear.Armor = 1
+Bot.StartGear.Weapons = 1
 
 #
 #    Bot.Log.Diet.Enabled

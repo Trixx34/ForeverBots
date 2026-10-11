@@ -1062,6 +1062,10 @@ char const* KindName(Kind k)
     }
 }
 
+// R-V3-01: why a bot enters the grind task. Index = BotAI::GRIND_WHY slot.
+enum GrindWhy : uint32 { GW_NO_QUEST = 0, GW_LEVEL, GW_PREREQ, GW_PATH, GW_HUB, GW_QUARANTINE, GW_BLOCKED, GW_OTHER };
+static char const* const GrindWhyNames[8] = { "no_quest", "level", "prereq", "path", "hub", "quarantine", "blocked_list", "other" };
+
 struct Task
 {
     Kind K = Kind::None;
@@ -1491,6 +1495,7 @@ public:
 
     BotRule::AvoidBook Shun;                     // R-V2-05: killer entries and areas this bot keeps away from
     uint32 ShunBlocks = 0;                       // R-V2-05: death loop blocks so far
+    uint32 CampSkips = 0;                        // R-V3-04: grind candidates skipped because of Bot.Rules.CampAvoid
     uint32 ShunSkips = 0;                        // R-V2-05: grind candidates skipped because of the block lists
     std::array<DeathRec, 4> Deaths{};            // newest first
     uint32 LoopBreaks = 0;
@@ -1522,6 +1527,10 @@ public:
     uint32 NextHubMs = 0;
     uint8 NoLocalLevel = 0, HubNoneLevel = 0;
     bool LastWasGrind = false;
+    // R-V3-01: why Score() turned quests down during the last PickNew scan, per grind reason (see GrindWhyNames). Counted while RejOn is set.
+    std::array<uint16, 8> Rej{};
+    bool RejOn = false;
+    void NoteRej(uint32 why) { if (RejOn && why < Rej.size()) ++Rej[why]; }
     uint32 GrindAnchorMap = 0xFFFFFFFFu;            // R2: where the current grind run started (last quest area)
     float GrindAnchorX = 0, GrindAnchorY = 0;
     uint32 Grinds = 0, HubTrips = 0;
@@ -2504,8 +2513,16 @@ private:
             return 0.0f;
         if (bot->GetQuestStatus(ref.Quest) != QUEST_STATUS_NONE || bot->GetQuestRewardStatus(ref.Quest))
             return 0.0f;
-        if (c.Blacklisted(ref.Quest, now) || GloballyDead(ref.Quest))
+        if (c.Blacklisted(ref.Quest, now))
+        {
+            c.NoteRej(GW_PATH);
             return 0.0f;
+        }
+        if (GloballyDead(ref.Quest))
+        {
+            c.NoteRej(GW_QUARANTINE);
+            return 0.0f;
+        }
         if (!c.HubBlack.empty() && dist > 100.0f)
         {
             auto hb = g.HubByCell.find(CellKey(ref.P.Map, ref.P.X, ref.P.Y));
@@ -2513,14 +2530,20 @@ private:
             {
                 auto bl = c.HubBlack.find(hb->second);
                 if (bl != c.HubBlack.end() && now < bl->second)
+                {
+                    c.NoteRej(GW_QUARANTINE);
                     return 0.0f;
+                }
             }
         }
         if (dist > 100.0f)
         {
             auto hb = g.HubByCell.find(CellKey(ref.P.Map, ref.P.X, ref.P.Y));
             if (hb != g.HubByCell.end() && HubGloballyFailed(hb->second))
+            {
+                c.NoteRej(GW_QUARANTINE);
                 return 0.0f;
+            }
         }
         // not for this race/class: silent (the quest exists, just not for this bot)
         if (!bot->SatisfyQuestRace(q, false) || !bot->SatisfyQuestClass(q, false))
@@ -2531,6 +2554,7 @@ private:
         bool canLog = logBlocks && dist <= 120.0f && c.SelBlocks < Cfg().SelBlockCap;
         auto block = [&](char const* code, std::string summary, uint32 entry = 0)
         {
+            c.NoteRej(!std::strcmp(code, "QUEST_LEVEL") ? GW_LEVEL : !std::strcmp(code, "QUEST_PREREQ") ? GW_PREREQ : !std::strcmp(code, "QUEST_FILTERED") ? GW_BLOCKED : GW_OTHER);
             if (canLog && c.Logged.find(LogKey(ref.Quest, code)) == c.Logged.end())
             {
                 ++c.SelBlocks;
@@ -2542,8 +2566,10 @@ private:
         if (filterOn)
         {
             // R-V2-08: ids that failed on many bots in earlier runs, and criteria-tree objectives the bots cannot work on
-            if (BotRule::QuestListed(qf.QuestBlocked, ref.Quest))
+            if (BotRule::QuestListed(qf.QuestBlocked, ref.Quest) && !BotRule::QuestListed(qf.QuestNeverBlock, ref.Quest))   // R-V3-03
                 return block("QUEST_FILTERED", StringFormat("quest '{}' is on the blocked list (known to fail for bots)", q->GetLogTitle()));
+            if (bot->GetLevel() < qf.QuestLowLevelUntil && BotRule::QuestListed(qf.QuestLowLevelBlocked, ref.Quest))   // R-V3-05
+                return block("QUEST_FILTERED", StringFormat("quest '{}' is blocked below level {} (no rewards at that level in earlier runs)", q->GetLogTitle(), qf.QuestLowLevelUntil));
             if (qf.QuestFilterObjective)
                 for (QuestObjective const& o : q->GetObjectives())
                     if (o.Type == QUEST_OBJECTIVE_CRITERIA_TREE)
@@ -2573,7 +2599,10 @@ private:
         int32 ql = bot->GetQuestLevel(q);
         int32 gap = ql - int32(bot->GetLevel());
         if (gap > 2)
+        {
+            c.NoteRej(GW_LEVEL);
             return 0.0f; // too hard for now, becomes takeable as the bot levels
+        }
         if (Cfg().GateLegs && dist > Cfg().LegGateYd)
         {
             bool const lg = canLog && c.SelBlocks < Cfg().SelBlockCap;
@@ -2590,6 +2619,7 @@ private:
     bool PickNew(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, std::vector<LogEntry> const& log)
     {
         (void)log;
+        c.Rej.fill(0);
         for (int pass = 0; pass < 2; ++pass)
         {
             float const radius = pass == 0 ? Cfg().SelectRadius : Cfg().FarRadius;
@@ -2612,7 +2642,9 @@ private:
                         float d = Dist2D(ref.P.X, ref.P.Y, bot->GetPositionX(), bot->GetPositionY());
                         if (d > radius || !seen.insert(ref.Quest).second)
                             continue;
+                        c.RejOn = pass == 0;
                         float s = Score(ai, bot, c, now, ref, d, pass == 0);
+                        c.RejOn = false;
                         if (s <= 0.0f)
                             continue;
                         if (alts.size() < 3)
@@ -2651,11 +2683,13 @@ private:
             Decision(ai, bot, "QUEST_NO_LOCAL", StringFormat("no takeable quest within {:.0f} yd at level {}", Cfg().FarRadius, bot->GetLevel()), 0, 0,
                 StringFormat(R"({{"map":{},"x":{:.0f},"y":{:.0f},"level":{},"rewarded":{}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetLevel(), c.Rewarded));
         }
+        bool hubNone = false;
         if (now >= c.NextHubMs)
         {
             c.NextHubMs = now + Cfg().HubScanSec * 1000;
             if (PickHub(ai, bot, c, now))
                 return true;
+            hubNone = true;
             if (BotRules::Cfg().ZoneLeave && BotRules::Applies(bot) && c.Leave.NoteHubNone(bot->GetMapId(), bot->GetLevel(), BotRules::Cfg().Leave))
                 LeaveZone(ai, bot, c, now, BotRule::LeaveReason::NoHub);
             if (c.HubNoneLevel != bot->GetLevel())
@@ -2665,7 +2699,7 @@ private:
                     StringFormat(R"({{"map":{},"x":{:.0f},"y":{:.0f},"level":{},"hubs":{},"skipped_failed":{},"skipped_faction":{},"skipped_far":{}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetLevel(), uint32(g.Hubs.size()), c.HubSkip[0], c.HubSkip[1], c.HubSkip[2]), 0, false, BOTLOG_WARN);
             }
         }
-        return StartGrind(ai, bot, c, now);
+        return StartGrind(ai, bot, c, now, hubNone);
     }
 
     // E3: the best quest hub on this map for the bot (sum of the takeable quest scores, distance discounted), then a go_giver task into it.
@@ -2796,7 +2830,23 @@ private:
         BotRules::Crowds().Claim(key, guid, c.GrindAnchorX, c.GrindAnchorY, wall, 600 * 1000);
     }
 
-    bool StartGrind(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
+    // R-V3-01: the reason for a grind entry. A hub scan that found nothing wins, then the most frequent reason Score() turned quests down,
+    // else nothing was offered within the radius.
+    static uint32 GrindWhyOf(BotQuestCtx const& c, bool hubNone)
+    {
+        if (hubNone)
+            return GW_HUB;
+        uint32 best = GW_NO_QUEST, bestN = 0;
+        for (uint32 w = 1; w < c.Rej.size(); ++w)
+            if (c.Rej[w] > bestN)
+            {
+                bestN = c.Rej[w];
+                best = w;
+            }
+        return best;
+    }
+
+    bool StartGrind(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, bool hubNone = false)
     {
         c.T = Task();
         c.T.K = Kind::Grind;
@@ -2811,9 +2861,31 @@ private:
             c.GrindAnchorX = bot->GetPositionX();
             c.GrindAnchorY = bot->GetPositionY();
             SpreadGrindAnchor(ai, bot, c);
-            Decision(ai, bot, "QUEST_GRIND", StringFormat("no quest to do, grinding mobs of level {}", bot->GetLevel()), 0, 0,
-                StringFormat(R"({{"map":{},"x":{:.0f},"y":{:.0f},"level":{}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetLevel()));
+            uint32 const why = GrindWhyOf(c, hubNone);
+            std::string whyJson;
+            if (BotRules::Cfg().V3Log)
+            {
+                ai->NoteGrindEntry(uint8(why));
+                whyJson = StringFormat(R"(,"why":"{}","rejected":{{"level":{},"prereq":{},"path":{},"quarantine":{},"blocked_list":{},"other":{}}})", GrindWhyName(why),
+                    c.Rej[GW_LEVEL], c.Rej[GW_PREREQ], c.Rej[GW_PATH], c.Rej[GW_QUARANTINE], c.Rej[GW_BLOCKED], c.Rej[GW_OTHER]);
+            }
+            Decision(ai, bot, "QUEST_GRIND", StringFormat("no quest to do, grinding mobs of level {} (why {})", bot->GetLevel(), GrindWhyName(why)), 0, 0,
+                StringFormat(R"({{"map":{},"x":{:.0f},"y":{:.0f},"level":{}{}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetLevel(), whyJson));
         }
+        return true;
+    }
+
+    // R-V3-04: an entry on Bot.Rules.CampAvoid.Entries is left alone by bots in the level window that have none of the exempt quests in their log.
+    bool CampAvoided(Player* bot, Creature const* m)
+    {
+        BotRules::Settings const& r = BotRules::Cfg();
+        if (!r.CampAvoid || r.CampEntries.empty() || bot->GetLevel() < r.CampMinLevel || bot->GetLevel() > r.CampMaxLevel)
+            return false;
+        if (!BotRule::QuestListed(r.CampEntries, m->GetEntry()) || !BotRules::Applies(bot))
+            return false;
+        for (uint32 qid : r.CampQuests)
+            if (bot->GetQuestStatus(qid) == QUEST_STATUS_INCOMPLETE)
+                return false;
         return true;
     }
 
@@ -2821,6 +2893,11 @@ private:
     {
         if (m->IsCritter() || m->GetCreatureTemplate()->npcflag || m->IsCivilian())
             return false;
+        if (CampAvoided(bot, m))
+        {
+            ++c.CampSkips;
+            return false;
+        }
         if (!CandidateMob(bot, c, t, m, now))
             return false;
         if (EffectiveDiff(bot, m) > Cfg().GrindMaxGap)
@@ -2846,7 +2923,7 @@ private:
     bool HighGapMobNear(Player* bot, std::vector<Creature*> const& list, Creature* m)
     {
         for (Creature* o : list)
-            if (o != m && o->IsAlive() && (EffectiveDiff(bot, o) >= 2 || BotCombatAvoids(bot, o)) && m->GetExactDist2d(o) < 22.0f && bot->IsValidAttackTarget(o))
+            if (o != m && o->IsAlive() && (EffectiveDiff(bot, o) >= 2 || BotCombatAvoids(bot, o) || CampAvoided(bot, o)) && m->GetExactDist2d(o) < 22.0f && bot->IsValidAttackTarget(o))
                 return true;
         return false;
     }
@@ -3027,7 +3104,7 @@ private:
             {
                 c.IdleLoggedLevel = bot->GetLevel();
                 Blocked(ai, bot, c, 0, "NO_GRIND_TARGET", StringFormat("no hostile spawn within 500 yd to grind at level {}", bot->GetLevel()),
-                    StringFormat(R"({{"idle_reason":"NO_GRIND_TARGET","map":{},"x":{:.0f},"y":{:.0f},"shun_skips":{},"shun_blocks":{}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), c.ShunSkips, c.ShunBlocks), 0, false, BOTLOG_WARN);
+                    StringFormat(R"({{"idle_reason":"NO_GRIND_TARGET","map":{},"x":{:.0f},"y":{:.0f},"shun_skips":{},"shun_blocks":{},"camp_skips":{}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), c.ShunSkips, c.ShunBlocks, c.CampSkips), 0, false, BOTLOG_WARN);
             }
             return false;
         }
@@ -6528,6 +6605,8 @@ static char const* const ActivityNames[ACTIVITY_COUNT] = { "none", "go_giver", "
     "trip_trainer", "trip_prof", "trip_workshop", "trip_gather", "trip_fish", "trip_auction", "trip_bank", "trip_other" };
 
 char const* ActivityName(uint32 index) { return index < ACTIVITY_COUNT ? ActivityNames[index] : "none"; }
+
+char const* GrindWhyName(uint32 index) { return index < 8 ? GrindWhyNames[index] : "other"; }
 
 uint32 CurrentActivity(BotAI* ai)
 {

@@ -17,6 +17,7 @@
 
 #include "BotConfigReload.h"
 #include "BotAI.h"
+#include "BotStartGear.h"
 #include "BotCombat.h"
 #include "BotDuel.h"
 #include "BotDuelPlan.h"
@@ -357,11 +358,14 @@ void BotAI::Tick(Player* bot)
         _spellsLogged = true;
         _levelSinceMs = _nowMs;
         _tickStatsMs = _nowMs;
+        RunStartGear(bot, "LOGIN");
         EmitSpellsKnown(bot, "LOGIN");
     }
     else if (uint32 const statsSec = Config().TickStatsSec)
         if (_nowMs - _tickStatsMs >= statsSec * 1000)
             EmitTickStats(bot);
+    if (_startGearLevel && bot->GetLevel() >= _startGearLevel + BotStartGear::LevelStep() && BotStartGear::LevelStep())
+        RunStartGear(bot, "LEVEL");
     uint64 const posStart = NowNs();
     SamplePosition(bot);
     _stats.PosNs.fetch_add(NowNs() - posStart, std::memory_order_relaxed);
@@ -369,6 +373,7 @@ void BotAI::Tick(Player* bot)
     _ledgerState = uint8(_state);
     _ledgerAct = uint8(std::min<uint32>(BotQuest::CurrentActivity(this), LEDGER_ACT - 1));
     _ledgerLastMs = _nowMs;
+    _ledgerMoving = bot->isMoving();
     if (!_ledgerInit)
     {
         _ledgerInit = true;
@@ -978,9 +983,11 @@ void BotAI::OnDamageDealt(Player* bot, Unit* victim, uint32 damage, SpellInfo co
     _stats.HookNs.fetch_add(NowNs() - t0, std::memory_order_relaxed);
 }
 
-void BotAI::OnKilled(Player* /*bot*/, Unit* /*victim*/)
+void BotAI::OnKilled(Player* /*bot*/, Unit* victim, uint8 source)
 {
     ++_killTotal;
+    ++_killSrc[std::min<uint8>(source, 1)];
+    _lastKillVictim = victim ? victim->GetGUID() : ObjectGuid::Empty;
     if (!_fight.Active)
         return;
     ++_fight.Kills;
@@ -1734,6 +1741,20 @@ void BotAI::OnXpGain(Player* bot, uint32 amount, uint32 bonus, Unit* victim)
     {
         _killXpTotal += amount;
         BotQuest::NoteKillXp(this, bot, amount);   // N-07
+        // R-V3-06: kill XP for a victim that no kill hook of this bot saw (a party member's kill, a kill by a unit not owned by the bot):
+        // count it as a credit of source "xp" so the fight outcome is not no_kill
+        if (BotRules::Cfg().KillCredit && victim->GetGUID() != _lastKillVictim)
+        {
+            ++_killTotal;
+            ++_killSrc[2];
+            _lastKillVictim = victim->GetGUID();
+            if (_fight.Active)
+            {
+                ++_fight.Kills;
+                _fight.LastKillMs = _nowMs;
+                _fight.LastCombatMs = _nowMs;
+            }
+        }
     }
 
     std::string d = Trinity::StringFormat(R"({{"source":"{}","amount":{},"bonus":{},"xp_now":{},"xp_max":{},"level":{},"elapsed_s":{})",
@@ -1875,6 +1896,30 @@ std::vector<uint32> BotAI::KnownSpellIds(Player* bot) const
     return ids;
 }
 
+// Bot.StartGear.*: fills empty equipment slots (never replaces worn items) and logs what was granted.
+void BotAI::RunStartGear(Player* bot, char const* cause)
+{
+    _startGearLevel = uint8(std::max<uint32>(1, bot->GetLevel()));
+    if (!BotStartGear::Enabled())
+        return;
+    BotStartGear::Result const r = BotStartGear::Grant(bot);
+    if (!r.Ran || !r.EmptyBefore)
+        return;
+    std::string items;
+    for (BotStartGear::Granted const& g : r.Items)
+    {
+        if (!items.empty())
+            items += ',';
+        std::string name = g.Name;
+        name.erase(std::remove_if(name.begin(), name.end(), [](char c) { return c == '"' || c == '\\'; }), name.end());
+        items += Trinity::StringFormat(R"({{"slot":{},"entry":{},"name":"{}","req":{},"q":{}}})", uint32(g.Slot), g.Entry, name, g.ReqLevel, g.Quality);
+    }
+    BotEvent event = MakeEvent(bot, "gear", BOTLOG_INFO, r.Items.empty() ? "START_GEAR_NONE" : "START_GEAR",
+        Trinity::StringFormat("{} of {} empty slots filled at L{}", r.Items.size(), r.EmptyBefore, uint32(bot->GetLevel())));
+    event.Details = Trinity::StringFormat(R"({{"cause":"{}","empty_before":{},"candidates":{},"granted":{},"items":[{}]}})", cause, r.EmptyBefore, r.Candidates, r.Items.size(), items);
+    Emit(std::move(event));
+}
+
 void BotAI::EmitSpellsKnown(Player* bot, char const* cause)
 {
     std::vector<uint32> const ids = KnownSpellIds(bot);
@@ -1934,6 +1979,8 @@ void BotAI::LedgerCharge()
         return;
     uint32 const delta = _nowMs - _ledgerLastMs;
     _ledgerMs[_ledgerState][_ledgerAct] += delta;
+    if (_ledgerMoving)
+        _ledgerMoveMs[_ledgerAct] += delta;
     _ledgerLastMs = _nowMs;
 }
 
@@ -1959,13 +2006,26 @@ void BotAI::EmitLedger(Player* bot, char const* cause)
         states += Trinity::StringFormat(R"({}"{}":{})", states.empty() ? "" : ",", BotStateName(BotState(st)), (total + 500) / 1000);
         byState += Trinity::StringFormat(R"({}"{}":{{{}}})", byState.empty() ? "" : ",", BotStateName(BotState(st)), acts);
     }
+    // R-V3-01 / extra logging: time moving per activity and grind entries per reason (Bot.Rules.V3Log.Enabled)
+    std::string moving, grindWhy;
+    if (BotRules::Cfg().V3Log)
+    {
+        for (uint32 a = 0; a < LEDGER_ACT; ++a)
+            if (uint32 const ms = _ledgerMoveMs[a])
+                moving += Trinity::StringFormat(R"({}"{}":{})", moving.empty() ? "" : ",", BotQuest::ActivityName(a), (ms + 500) / 1000);
+        for (uint32 w = 0; w < GRIND_WHY; ++w)
+            if (_grindWhy[w])
+                grindWhy += Trinity::StringFormat(R"({}"{}":{})", grindWhy.empty() ? "" : ",", BotQuest::GrindWhyName(w), _grindWhy[w]);
+    }
     for (auto& row : _ledgerMs)
         row.fill(0);
+    _ledgerMoveMs.fill(0);
+    _grindWhy.fill(0);
     _ledgerStartMs = _nowMs;
     if (!windowS || states.empty())
         return;
     BotEvent event = MakeEvent(bot, "ai_stats", BOTLOG_INFO, "STATE_LEDGER", Trinity::StringFormat("time per state over {} s ({})", windowS, cause));
-    event.Details = Trinity::StringFormat(R"({{"window_s":{},"cause":"{}","states":{{{}}},"by_activity":{{{}}}}})", windowS, cause, states, byState);
+    event.Details = Trinity::StringFormat(R"({{"window_s":{},"cause":"{}","states":{{{}}},"by_activity":{{{}}},"moving_s":{{{}}},"grind_entries":{{{}}}}})", windowS, cause, states, byState, moving, grindWhy);
     Emit(std::move(event));
 }
 

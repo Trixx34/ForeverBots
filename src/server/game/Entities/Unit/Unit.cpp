@@ -18,6 +18,7 @@
 #include "Unit.h"
 #include "DeathRecap.h"
 #include "BotAI.h"
+#include "BotRules.h"
 #include "AbstractFollower.h"
 #include "Battlefield.h"
 #include "BattlefieldMgr.h"
@@ -11488,9 +11489,16 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
         if (BotAI* botAI = botVictim->GetSession()->GetBotAI())
             botAI->OnDying(botVictim, attacker);
     if (attacker && attacker != victim)
-        if (Player* botKiller = attacker->ToPlayer())
+    {
+        // R-V3-06: the kill is credited to the bot itself or to the bot that owns the pet, totem or guardian that killed
+        Player* botKiller = attacker->ToPlayer();
+        uint8 const killSource = botKiller ? 0 : 1;
+        if (!botKiller && BotRules::Cfg().KillCredit)
+            botKiller = attacker->GetCharmerOrOwnerPlayerOrPlayerItself();
+        if (botKiller)
             if (BotAI* botAI = botKiller->GetSession()->GetBotAI())
-                botAI->OnKilled(botKiller, victim);
+                botAI->OnKilled(botKiller, victim, killSource);
+    }
 
     if (attacker && !attacker->IsInMap(victim))
         attacker = nullptr;

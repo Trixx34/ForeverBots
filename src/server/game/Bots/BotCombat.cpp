@@ -513,6 +513,7 @@ struct FightData
     uint32 DmgSinceMs = 0;
     bool DmgBreakDone = false;       // the breaker acted once on this target
     uint32 Picked = 0, TargetsDead = 0, Casts = 0, CastFails = 0, Heals = 0;
+    uint32 KillBaseSrc[3] = { 0, 0, 0 };   // BotAI::KillBySource() at the start, for the kill_src member of COMBAT_SUMMARY (R-V3-06)
     uint32 KillBase = 0;             // BotAI::KillTotal() when the fight began: kills of this stay = total - base (the real kill count for the outcome)
     uint32 FirstTargetLevel = 0, MaxTargetLevel = 0, FirstTargetEntry = 0;   // picked targets, for COMBAT_SUMMARY
     void NotePick(Unit const* u)
@@ -653,6 +654,8 @@ void BotCombatCtx::Begin(Player* bot)
     ++Seq;
     static_cast<FightData&>(*this) = FightData();
     KillBase = GetAI()->KillTotal();
+    for (uint32 i = 0; i < 3; ++i)
+        KillBaseSrc[i] = GetAI()->KillBySource(i);
     if (RangedBrokenLevel != bot->GetLevel())
         RangedBroken = false;
     InFight = true;
@@ -700,6 +703,8 @@ void BotCombatCtx::End(Player* bot)
                 kills ? "partial_kills" : Picked ? "no_kill" : "no_target";
             summaryJson += StringFormat(R"(,"fight_id":"{}","outcome":"{}","casts_ok":{},"kills":{},"target_level":{},"target_level_max":{},"target_lvl_diff":{},"target_entry":{},"bot_level":{})",
                 ai->CurrentFightId(), outcome, Casts, kills, FirstTargetLevel, MaxTargetLevel, FirstTargetLevel ? int32(FirstTargetLevel) - int32(bot->GetLevel()) : 0, FirstTargetEntry, uint32(bot->GetLevel()));
+            if (BotRules::Cfg().KillCredit)
+                summaryJson += StringFormat(R"(,"kill_src":{{"self":{},"pet":{},"xp":{}}})", ai->KillBySource(0) - KillBaseSrc[0], ai->KillBySource(1) - KillBaseSrc[1], ai->KillBySource(2) - KillBaseSrc[2]);
         }
         summaryJson += "," + ai->TakeSpellBreakdownJson(bot) + "}";
         ai->EmitEvent(bot, "decision", BOTLOG_INFO, "COMBAT_SUMMARY",

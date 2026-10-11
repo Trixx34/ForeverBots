@@ -56,6 +56,8 @@ namespace BotQuest
     constexpr uint32 ACTIVITY_COUNT = 16;
     TC_GAME_API uint32 CurrentActivity(BotAI* ai);
     TC_GAME_API char const* ActivityName(uint32 index);
+    // R-V3-01: names of the reason codes a bot enters the grind task for (index 0 .. 7), used by the STATE_LEDGER "grind_entries" member.
+    TC_GAME_API char const* GrindWhyName(uint32 index);
     // Position of the nearest quest hub in a zone of the bot's map that has quests for the bot's level; false when there is none.
     // True when `item` would replace worn gear in its best slot by the class-role gear score (BotGear.h). For group loot rolls.
     TC_GAME_API bool IsGearUpgrade(Player* bot, ItemTemplate const* item);

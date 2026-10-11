@@ -87,6 +87,17 @@ namespace BotRules
         uint32 QuestGlobalSec = 3600;       // Bot.Rules.QuestFilter.GlobalQuarantineSec: how long a globally dead quest stays skipped
         uint32 QuestLocalFails = 3;         // Bot.Rules.QuestFilter.LocalFails: failures of one bot before it quarantines the quest
 
+        // R-V3-xx (docs/playerbots/rules-v3-20261011.md)
+        std::vector<uint32> QuestNeverBlock;      // Bot.Rules.QuestFilter.NeverBlock (R-V3-03): never filtered, even when also on BlockedQuests
+        std::vector<uint32> QuestLowLevelBlocked; // Bot.Rules.QuestFilter.LowLevelBlocked (R-V3-05): not offered below LowLevelUntil
+        uint32 QuestLowLevelUntil = 7;            // Bot.Rules.QuestFilter.LowLevelUntil
+        bool CampAvoid = true;                    // Bot.Rules.CampAvoid.Enabled (R-V3-04)
+        std::vector<uint32> CampEntries;          // Bot.Rules.CampAvoid.Entries
+        std::vector<uint32> CampQuests;           // Bot.Rules.CampAvoid.ExemptQuests: a bot with one of these in its log may fight the entries
+        uint32 CampMinLevel = 5, CampMaxLevel = 6; // Bot.Rules.CampAvoid.MinLevel / MaxLevel (bot level window)
+        bool KillCredit = true;                   // Bot.Rules.KillCredit.Enabled (R-V3-06): pet kills and XP-only kills count as kills
+        bool V3Log = true;                        // Bot.Rules.V3Log.Enabled (R-V3-01 and extra logging; logs only, ignores ArmPct)
+
         bool LogDiet = true;            // Bot.Log.Diet.Enabled (N-09)
         std::vector<std::pair<std::string, uint32>> HourlyCaps;
         bool AuraDeathOnly = true;      // Bot.Log.Diet.AuraDeathOnly

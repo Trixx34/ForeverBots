@@ -111,7 +111,17 @@ Settings const& Cfg()
         s.Pick.MinXp = uint32(Int("Bot.Rules.TargetPick.MinXp", 25, 0, 100000));
 
         s.QuestFilter = Bool("Bot.Rules.QuestFilter.Enabled", true);
-        s.QuestBlocked = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.QuestFilter.BlockedQuests", ""));
+        s.QuestBlocked = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.QuestFilter.BlockedQuests", "794,5441,1656,3905,47"));
+        s.QuestNeverBlock = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.QuestFilter.NeverBlock", "404,112,789,792,380,488,92544"));
+        s.QuestLowLevelBlocked = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.QuestFilter.LowLevelBlocked", "92515,92553,92516,92551"));
+        s.QuestLowLevelUntil = uint32(Int("Bot.Rules.QuestFilter.LowLevelUntil", 7, 1, 80));
+        s.CampAvoid = Bool("Bot.Rules.CampAvoid.Enabled", true);
+        s.CampEntries = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.CampAvoid.Entries", "251245"));
+        s.CampQuests = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.CampAvoid.ExemptQuests", "92515,92553"));
+        s.CampMinLevel = uint32(Int("Bot.Rules.CampAvoid.MinLevel", 5, 1, 80));
+        s.CampMaxLevel = uint32(Int("Bot.Rules.CampAvoid.MaxLevel", 6, 1, 80));
+        s.KillCredit = Bool("Bot.Rules.KillCredit.Enabled", true);
+        s.V3Log = Bool("Bot.Rules.V3Log.Enabled", true);
         s.QuestFilterObjective = Bool("Bot.Rules.QuestFilter.UnsupportedObjectives", true);
         s.QuestLevelSlack = uint32(Int("Bot.Rules.QuestFilter.LevelSlack", 0, 0, 10));
         s.QuestGlobalSec = uint32(Int("Bot.Rules.QuestFilter.GlobalQuarantineSec", 3600, 60, 604800));

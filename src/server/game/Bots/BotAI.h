@@ -168,7 +168,8 @@ public:
     // Unit::DealDamage, victim is this bot / attacker is this bot. `type` is DamageEffectType.
     void OnDamageTaken(Player* bot, Unit* attacker, uint32 damage, uint32 hpBefore, uint8 type, SpellInfo const* spell);
     void OnDamageDealt(Player* bot, Unit* victim, uint32 damage, SpellInfo const* spell = nullptr);
-    void OnKilled(Player* bot, Unit* victim);                 // this bot killed `victim`
+    // This bot got a kill: source 0 = its own hit or damage over time, 1 = its pet, totem or other owned unit (R-V3-06).
+    void OnKilled(Player* bot, Unit* victim, uint8 source = 0);
     void SetPendingEnv(uint8 environmentalType) { _pendingEnv = environmentalType; } // Player::EnvironmentalDamage, just before DealDamage
     void OnDying(Player* bot, Unit* attacker);                // Unit::Kill, before the death state strips auras/power/combat
     void OnLogout(Player* bot, char const* reason);           // BotMgr::LogoutBot: closes an open fight row
@@ -189,7 +190,11 @@ public:
     std::string TakeSpellBreakdownJson(Player* bot);
     // Id of the open fight row set ("" when none), so COMBAT_SUMMARY can be joined to COMBAT_START / COMBAT_END.
     std::string const& CurrentFightId() const { return _fight.Id; }
-    uint32 KillTotal() const { return _killTotal; }   // creatures this bot killed since login (OnKilled)
+    uint32 KillTotal() const { return _killTotal; }   // creatures the bot got credit for since login (all sources)
+    // Credits by source since login: 0 own, 1 pet, 2 xp only (kill XP arrived for a victim nobody hooked, e.g. a party member's kill)
+    uint32 KillBySource(uint32 i) const { return i < 3 ? _killSrc[i] : 0; }
+    // R-V3-01: the bot entered the grind task for this reason code (index into BotQuest grind reasons); counted per ledger window.
+    void NoteGrindEntry(uint8 why) { if (why < GRIND_WHY) ++_grindWhy[why]; }
     // Test commands call this so a death (and the fight) within 120 s is tagged source=test_command.
     void NoteTestCommand(char const* command);
 
@@ -210,6 +215,7 @@ private:
     uint32 CountHostiles(Player* bot) const;
     void SnapshotDeath(Player* bot, Unit* attacker);
     void EmitSpellsKnown(Player* bot, char const* cause);
+    void RunStartGear(Player* bot, char const* cause);
     void EmitTickStats(Player* bot);
     std::vector<uint32> KnownSpellIds(Player* bot) const;   // top-rank, non-passive class spells (heuristic: spell family set)
 
@@ -236,10 +242,17 @@ private:
     uint32 _levelSinceMs = 0;                 // AI clock at login / last level-up
     uint32 _killXpTotal = 0;
     bool _spellsLogged = false;
+    uint8 _startGearLevel = 0;   // level of the last starter gear pass (0 = none yet)
     struct EngStat { uint64 Ns = 0, MaxNs = 0; uint32 N = 0; };
     std::array<EngStat, 3> _engStat{};        // per engine, window of Bot.Log.AiTickStatsSec
     uint32 _tickStatsMs = 0;
     uint32 _killTotal = 0;
+    uint32 _killSrc[3] = { 0, 0, 0 };
+    ObjectGuid _lastKillVictim;                // last victim OnKilled counted: XP for it is not a second credit
+    static constexpr uint32 GRIND_WHY = 8;
+    std::array<uint16, GRIND_WHY> _grindWhy{};  // STATE_LEDGER: grind entries per reason in this window
+    std::array<uint32, 16> _ledgerMoveMs{};     // STATE_LEDGER: ms spent moving per quest activity (the rest of the activity time is standing)
+    bool _ledgerMoving = false;
     // per-state time ledger (STATE_LEDGER): ms per engine state and quest activity, charged at the start of each tick to the previous tick's bucket
     static constexpr uint32 LEDGER_ACT = 16;   // == BotQuest::ACTIVITY_COUNT
     std::array<std::array<uint32, LEDGER_ACT>, 3> _ledgerMs{};

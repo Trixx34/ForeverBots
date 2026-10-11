@@ -16,6 +16,7 @@
  */
 
 #include "BotParty.h"
+#include "BotRules.h"
 #include "BotAI.h"
 #include "BotBattleground.h"
 #include "BotBehavior.h"
@@ -36,6 +37,7 @@
 #include <algorithm>
 #include <map>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -149,17 +151,57 @@ std::vector<uint32> OpenQuests(Player* p)
     return out;
 }
 
-bool Free(Player* p, uint32 minLevel)
+// Why a bot cannot join a party right now, or nullptr when it is free.
+char const* FreeWhy(Player* p, uint32 minLevel)
 {
-    if (!p || !p->IsInWorld() || !p->IsAlive() || p->IsInCombat() || p->IsInFlight() || p->GetGroup() || p->IsBeingTeleported() || !AiOf(p))
-        return false;
-    if (p->GetLevel() < minLevel || sBotMgr->IsActiveAlt(p->GetGUID().GetCounter()))
-        return false;
+    if (!p || !p->IsInWorld() || !AiOf(p))
+        return "offline";
+    if (!p->IsAlive())
+        return "dead";
+    if (p->IsInCombat())
+        return "in_combat";
+    if (p->IsInFlight() || p->IsBeingTeleported())
+        return "travelling";
+    if (p->GetGroup())
+        return "already_grouped";
+    if (p->GetLevel() < minLevel)
+        return "level_below_party_min";
+    if (sBotMgr->IsActiveAlt(p->GetGUID().GetCounter()))
+        return "active_alt";
     Map const* m = p->GetMap();
     if (!m || m->Instanceable())
-        return false;
+        return "instanced";
     BotAI* ai = AiOf(p);
-    return !BotDungeonRun::Busy(ai) && !BotTravel::Busy(ai) && !BotPet::Busy(ai) && !BotBattleground::Busy(ai) && !Busy(ai);
+    if (BotDungeonRun::Busy(ai) || BotTravel::Busy(ai) || BotPet::Busy(ai) || BotBattleground::Busy(ai) || Busy(ai))
+        return "busy_other_task";
+    return nullptr;
+}
+
+bool Free(Player* p, uint32 minLevel)
+{
+    return !FreeWhy(p, minLevel);
+}
+
+// An eligible (bot, quest) pair that seeks a group but does not get one: one row per pair whenever the reason changes
+// (reason quest_group_skip, details.why). World thread only.
+std::map<uint64, std::pair<uint32, std::string>> s_noGroupWhy;
+
+void NoteNoGroup(uint64 guid, uint32 quest, std::string const& why, std::string const& extra = std::string())
+{
+    if (!BotRules::Cfg().V3Log)
+        return;
+    auto& last = s_noGroupWhy[guid];
+    if (last.first == quest && last.second == why)
+        return;
+    last = { quest, why };
+    BotEvent ev;
+    ev.BotGuid = guid;
+    ev.Type = "decision";
+    ev.Reason = "quest_group_skip";
+    ev.QuestId = quest;
+    ev.Summary = StringFormat("quest {}: seeks a group but none formed ({})", quest, why);
+    ev.Details = StringFormat(R"({{"quest":{},"why":"{}"{}}})", quest, why, extra);
+    sBotMgr->LogEvent(std::move(ev));
 }
 
 void ReleaseMember(uint64 guid)
@@ -252,6 +294,7 @@ void Step(uint32 dtSec)
 // A seeker that landed in a party: logged once as a decision (reason quest_group_after_deaths), then its counter starts over.
 void NoteSeekerGrouped(uint64 guid, uint64 leader)
 {
+    s_noGroupWhy.erase(guid);
     uint32 quest = 0, deaths = 0, fails = 0;
     std::string trigger = "deaths";
     {
@@ -292,20 +335,35 @@ void NoteSeekerGrouped(uint64 guid, uint64 leader)
 
 void TryForm()
 {
-    if (s_parties.size() >= s_opt.MaxParties)
-        return;
     std::map<uint64, uint32> seekers;
     {
         std::lock_guard<std::mutex> lock(s_deathLock);
         seekers = s_seekers;
     }
+    for (auto it = s_noGroupWhy.begin(); it != s_noGroupWhy.end();)
+        it = seekers.count(it->first) ? std::next(it) : s_noGroupWhy.erase(it);
+    if (s_parties.size() >= s_opt.MaxParties)
+    {
+        for (auto const& sk : seekers)
+            NoteNoGroup(sk.first, sk.second, "max_parties", StringFormat(R"(,"parties":{})", uint32(s_parties.size())));
+        return;
+    }
     if (!s_opt.General && seekers.empty())
         return;
     std::vector<Candidate> cands;
+    std::set<uint64> seenSeekers;
     for (Player* p : sBotMgr->GetOnlineBotPlayers())
     {
-        if (!Free(p, s_opt.MinLevel))
+        if (char const* busy = FreeWhy(p, s_opt.MinLevel))
+        {
+            auto sk = seekers.find(p->GetGUID().GetCounter());
+            if (sk != seekers.end())
+            {
+                seenSeekers.insert(sk->first);
+                NoteNoGroup(sk->first, sk->second, busy);
+            }
             continue;
+        }
         Candidate c;
         c.Guid = p->GetGUID().GetCounter();
         c.MapId = p->GetMapId();
@@ -322,18 +380,40 @@ void TryForm()
                 c.Quests = { sk->second };   // partners must hold this quest
             }
             else
+            {
+                NoteNoGroup(c.Guid, sk->second, "quest_not_in_log");
                 ClearQuest(c.Guid, sk->second);   // the quest left the log without a hook
+            }
         }
         if (!c.Quests.empty())
             cands.push_back(std::move(c));
     }
     if (cands.size() < 2)
+    {
+        for (Candidate const& c : cands)
+            if (c.SeekQuest)
+                NoteNoGroup(c.Guid, c.SeekQuest, "no_candidates", StringFormat(R"(,"free_bots":{})", uint32(cands.size())));
         return;
+    }
 
     Config plan = s_opt.Plan;
     if (!s_opt.General)
         plan.FormChancePct = 0;   // only the bots that want a group on their quest seed a party
-    for (Formed const& f : FormParties(std::move(cands), plan, ++s_salt))
+    std::vector<std::pair<uint64, uint32>> waiting;
+    for (Candidate const& c : cands)
+        if (c.SeekQuest)
+            waiting.emplace_back(c.Guid, c.SeekQuest);
+    uint32 const freeBots = uint32(cands.size());
+    std::vector<Formed> formed = FormParties(std::move(cands), plan, ++s_salt);
+    for (auto const& w : waiting)
+    {
+        bool placed = false;
+        for (Formed const& f : formed)
+            placed = placed || f.Leader == w.first || std::find(f.Members.begin(), f.Members.end(), w.first) != f.Members.end();
+        if (!placed)
+            NoteNoGroup(w.first, w.second, "no_partner_with_quest", StringFormat(R"(,"free_bots":{},"join_radius":{:.0f},"level_spread":{})", freeBots, s_opt.Plan.JoinRadius, s_opt.Plan.MaxLevelSpread));
+    }
+    for (Formed const& f : formed)
     {
         if (s_parties.size() >= s_opt.MaxParties)
             break;
@@ -415,8 +495,26 @@ static void NoteQuestEvent(Player* bot, uint32 questId, bool death, char const* 
         fails = fn;
         bool const byDeaths = threshold && dn >= threshold;
         bool const byTotal = failThreshold && dn + fn >= failThreshold;
-        if ((!byDeaths && !byTotal) || s_seekers.count(guid))
+        if (!byDeaths && !byTotal)
             return;
+        auto cur = s_seekers.find(guid);
+        if (cur != s_seekers.end())
+        {
+            // eligible but the bot already seeks a group for another quest: logged once per pair, when it first reaches the threshold
+            if (cur->second != questId && (dn + fn == (byDeaths ? threshold : failThreshold)) && BotRules::Cfg().V3Log)
+            {
+                uint32 const other = cur->second;
+                BotEvent skip;
+                skip.BotGuid = guid;
+                skip.Type = "decision";
+                skip.Reason = "quest_group_skip";
+                skip.QuestId = questId;
+                skip.Summary = StringFormat("quest {}: eligible for a group but already seeks one for quest {}", questId, other);
+                skip.Details = StringFormat(R"({{"quest":{},"why":"already_seeking_other_quest","other_quest":{},"deaths":{},"fails":{}}})", questId, other, dn, fn);
+                sBotMgr->LogEvent(std::move(skip));
+            }
+            return;
+        }
         trigger = byDeaths ? "deaths" : (fn && dn ? "deaths+fails" : fn ? "fails" : "deaths");
         s_seekers[guid] = questId;
         s_trigger[guid] = trigger;
