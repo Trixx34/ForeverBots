@@ -25,6 +25,7 @@
 #include "AccountMgr.h"
 #include "BotAI.h"
 #include "BotConfigReload.h"
+#include "BotBattleground.h"
 #include "BotDungeonRun.h"
 #include "BotLfg.h"
 #include "BotParty.h"
@@ -367,6 +368,7 @@ void BotMgr::Update(uint32 diff)
     ProcessLogins();
     ProcessBotTeleports();
     BotDungeonRun::Update(diff);
+    BotBattleground::Update(diff);
     BotParty::Update(diff);
     BotQuestAssist::Update(diff);
     BotPlayerLed::Update(diff);

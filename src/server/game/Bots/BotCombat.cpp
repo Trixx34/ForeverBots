@@ -1229,19 +1229,21 @@ private:
         uint32 const now = ai->GetNowMs();
         std::vector<Candidate> cands;
         cands.reserve(13);   // `pick` points into it: no reallocation
-        for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())
+        auto consider = [&](Unit* mob)
         {
-            Unit* mob = ref->GetOther(bot);
-            if (!CanFight(bot, mob))
-                continue;
+            if (cands.size() >= 12 || !CanFight(bot, mob))
+                return;
             if (mob->GetGUID() == ctx->Ignored && now < ctx->IgnoredUntilMs)
-                continue;
+                return;
             if (!StanceAllowsFoe(bot, ai, mob))
-                continue;   // stance (Bot.Chat.Orders.* passive, Bot.Chat.Control.* defensive)
+                return;   // stance (Bot.Chat.Orders.* passive, Bot.Chat.Control.* defensive)
             cands.push_back({ mob, Assess(bot, mob), bot->GetDistance(mob) });
-            if (cands.size() >= 12)
-                break;
-        }
+        };
+        for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())
+            consider(ref->GetOther(bot));
+        // players who fight the bot (a battleground, see BotBattleground.h) are opponents like mobs
+        for (auto const& [guid, ref] : bot->GetCombatManager().GetPvPCombatRefs())
+            consider(ref->GetOther(bot));
         // in a group the bot may be called into a fight it is not in yet: the mobs the other members fight are its candidates
         if (cands.empty() && Cfg().GroupRoles)
             GroupFoes(bot, [&](Unit* mob)

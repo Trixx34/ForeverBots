@@ -32,6 +32,7 @@
 #include "BotBehavior.h"
 #include "BotCombat.h"
 #include "BotCooking.h"
+#include "BotBattleground.h"
 #include "BotDungeonRun.h"
 #include "BotLfg.h"
 #include "BotParty.h"
@@ -1691,6 +1692,12 @@ public:
         if (BotDungeonRun::Busy(ai)) // the dungeon group moves the bot
         {
             c.Why = "dungeon";
+            return false;
+        }
+
+        if (BotBattleground::Busy(ai)) // the battleground orders move the bot
+        {
+            c.Why = "battleground";
             return false;
         }
 

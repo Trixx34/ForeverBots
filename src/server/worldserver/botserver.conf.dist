@@ -78,7 +78,7 @@ BotLog.MaxBatch = 500
 # threat), dummy (training dummy), movement (goto, follow, stuck, path failures, town idling),
 # travel (long distance legs), recovery (death, corpse run, spirit healer, resting, watchdog),
 # quest, progress (xp, levels, talents, spells), economy (auction, trade, vendors, loot, gear,
-# professions, bank, mail), pets, social (chat orders, alts, invites, bot parties, guilds), dungeon,
+# professions, bank, mail), pets, social (chat orders, alts, invites, bot parties, guilds), dungeon, battleground,
 # other (a reason no rule matches).
 #
 ###################################################################################################
@@ -3183,3 +3183,166 @@ Bot.Chat.Food.Enabled = 0
 #        Default:     12
 #        Values:      whole number 1 to 30 (items)
 Bot.Chat.Food.MaxListed = 12
+
+# BATTLEGROUNDS
+#
+# Bots in Warsong Gulch. A player who queues for Warsong Gulch finds bots queued next to them: they join
+# both sides until the match can start, accept the invitation after a short human-like delay, take and
+# carry the flags, kill enemy flag carriers, return their own flag, defend, wait for the spirit healer
+# and leave when the match is over. Off by default. See docs/playerbots/feature-bot-battlegrounds-
+# 20261008.md.
+#
+###################################################################################################
+
+#
+#    Bot.AI.Battleground.Enabled
+#        Description: Bots queue for Warsong Gulch next to players who queue, accept the invitation, play the flag
+#                     objectives and leave when the match is over. Logged as BG_*. Needs Bot.AI.Enabled.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Battleground.Enabled = 0
+
+#
+#    Bot.AI.Battleground.QueueIntervalSec
+#        Description: Seconds between two looks at the Warsong Gulch queue to see whether a waiting player needs
+#                     bots.
+#        Default:     10
+#        Values:      whole number 2 to 120 (seconds)
+Bot.AI.Battleground.QueueIntervalSec = 10
+
+#
+#    Bot.AI.Battleground.FillTo
+#        Description: Players per side the queue is filled to, counting players and bots. 0 uses the
+#                     battleground's minimum per side (the match starts as soon as both sides have it); a higher
+#                     number gives longer, fuller matches and needs more bots online. Clamped to the
+#                     battleground's minimum and maximum.
+#        Default:     0
+#        Values:      whole number 0 to 40 (players per side)
+Bot.AI.Battleground.FillTo = 0
+
+#
+#    Bot.AI.Battleground.MaxBotsPerQueue
+#        Description: Bots waiting in one queue at most.
+#        Default:     20
+#        Values:      whole number 0 to 80 (bots)
+Bot.AI.Battleground.MaxBotsPerQueue = 20
+
+#
+#    Bot.AI.Battleground.JoinPerStep
+#        Description: Bots added to one queue per look, so they do not all appear at once.
+#        Default:     3
+#        Values:      whole number 1 to 20 (bots)
+Bot.AI.Battleground.JoinPerStep = 3
+
+#
+#    Bot.AI.Battleground.JoinDelaySec
+#        Description: A player waits this long alone in the queue before bots join.
+#        Default:     8
+#        Values:      whole number 0 to 300 (seconds)
+Bot.AI.Battleground.JoinDelaySec = 8
+
+#
+#    Bot.AI.Battleground.IdleDropSec
+#        Description: Bots leave a queue that has had no waiting player for this long (the player left or was
+#                     invited), so bots never start a match among themselves.
+#        Default:     120
+#        Values:      whole number 10 to 3600 (seconds)
+Bot.AI.Battleground.IdleDropSec = 120
+
+#
+#    Bot.AI.Battleground.MinLevel
+#        Description: Lowest bot level that is queued. The level must also fall into a battleground bracket.
+#        Default:     10
+#        Values:      whole number 1 to 80
+Bot.AI.Battleground.MinLevel = 10
+
+#
+#    Bot.AI.Battleground.AcceptMinSec
+#        Description: Least delay before a bot accepts the invitation. The invitation lasts 80 seconds.
+#        Default:     3
+#        Values:      whole number 0 to 60 (seconds)
+Bot.AI.Battleground.AcceptMinSec = 3
+
+#
+#    Bot.AI.Battleground.AcceptMaxSec
+#        Description: Longest delay before a bot accepts the invitation. Each bot has its own fixed delay in the
+#                     range.
+#        Default:     15
+#        Values:      whole number AcceptMinSec to 70 (seconds)
+Bot.AI.Battleground.AcceptMaxSec = 15
+
+#
+#    Bot.AI.Battleground.LeaveMinSec
+#        Description: Least delay before a bot leaves a finished battleground.
+#        Default:     6
+#        Values:      whole number 0 to 300 (seconds)
+Bot.AI.Battleground.LeaveMinSec = 6
+
+#
+#    Bot.AI.Battleground.LeaveMaxSec
+#        Description: Longest delay before a bot leaves a finished battleground.
+#        Default:     25
+#        Values:      whole number LeaveMinSec to 600 (seconds)
+Bot.AI.Battleground.LeaveMaxSec = 25
+
+#
+#    Bot.AI.Battleground.EmptyLeaveSec
+#        Description: Bots leave a battleground in which no player has been for this long. 0 keeps them in.
+#        Default:     90
+#        Values:      whole number 0 to 3600 (seconds)
+Bot.AI.Battleground.EmptyLeaveSec = 90
+
+#
+#    Bot.AI.Battleground.StepMs
+#        Description: Time between two decisions of a bot inside the battleground.
+#        Default:     1000
+#        Values:      whole number 250 to 5000 (milliseconds)
+Bot.AI.Battleground.StepMs = 1000
+
+#
+#    Bot.AI.Battleground.OffensePct
+#        Description: Share of the bots of a side that go for the enemy flag. A side of three or more bots always
+#                     has at least one attacker.
+#        Default:     40
+#        Values:      whole number 0 to 100 (percent)
+Bot.AI.Battleground.OffensePct = 40
+
+#
+#    Bot.AI.Battleground.DefensePct
+#        Description: Share of the bots of a side that stay at their own flag room. A side of three or more bots
+#                     always has at least one defender. The rest roam the middle of the field and help where
+#                     needed.
+#        Default:     25
+#        Values:      whole number 0 to 100 minus OffensePct (percent)
+Bot.AI.Battleground.DefensePct = 25
+
+#
+#    Bot.AI.Battleground.EngageYards
+#        Description: An enemy player this close is attacked (flag carriers and bots about to touch a flag only
+#                     fight what is almost on them).
+#        Default:     28
+#        Values:      whole number 5 to 60 (yards)
+Bot.AI.Battleground.EngageYards = 28
+
+#
+#    Bot.AI.Battleground.DefendYards
+#        Description: Defenders stand at a spot within this distance of their own flag room and change the spot
+#                     now and then.
+#        Default:     15
+#        Values:      whole number 6 to 40 (yards)
+Bot.AI.Battleground.DefendYards = 15
+
+#
+#    Bot.AI.Battleground.EscortYards
+#        Description: Escorts close in on their flag carrier when they are further away than this.
+#        Default:     6
+#        Values:      whole number 2 to 20 (yards)
+Bot.AI.Battleground.EscortYards = 6
+
+#
+#    Bot.AI.Battleground.ReturnYards
+#        Description: A bot at most this far from a dropped flag of its side goes to return it; attackers pick up
+#                     a dropped enemy flag from 1.5 times this.
+#        Default:     60
+#        Values:      whole number 10 to 150 (yards)
+Bot.AI.Battleground.ReturnYards = 60
