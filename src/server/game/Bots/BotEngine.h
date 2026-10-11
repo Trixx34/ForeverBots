@@ -247,6 +247,8 @@ void RegisterPetBotObjects(BotRegistry& registry);
 void RegisterTravelBotObjects(BotRegistry& registry);
 // Defined in BotConsumables.cpp: potions in a fight (strategy "consumables").
 void RegisterConsumableBotObjects(BotRegistry& registry);
+// Defined in BotRevive.cpp: raising dead group members (strategy "revive") and accepting offers ("revive_accept").
+void RegisterReviveBotObjects(BotRegistry& registry);
 // Defined in BotWatchdog.cpp: stall recovery (strategy "watchdog").
 void RegisterWatchdogBotObjects(BotRegistry& registry);
 // Defined in BotDummy.cpp: training dummy runs (strategy "dummy").

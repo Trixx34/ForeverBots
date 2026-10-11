@@ -22,6 +22,7 @@
 #include "BotDungeonData.h"
 #include "BotMgr.h"
 #include "BotPlayerLed.h"
+#include "BotRepair.h"
 #include "Config.h"
 #include "Creature.h"
 #include "CreatureData.h"
@@ -257,7 +258,9 @@ namespace
                     ai->Motion().SetFollow(ObjectGuid::Empty);
                     ai->Motion().ClearGoal();
                 }
-                if (s_opt.FreeRepair)
+                if (BotRepair::Cfg().Enabled)
+                    BotRepair::Prepare(AiOf(p), p, "run_end", true);
+                else if (s_opt.FreeRepair)
                     p->DurabilityRepairAll(false, 0.0f, false);
                 if (p->IsAlive() && p->GetMapId() == r.InMap)
                     p->TeleportTo(r.OutMap, r.OutX, r.OutY, r.OutZ, 0.0f);
@@ -420,6 +423,10 @@ namespace
             if (next.Next == Phase::Recover)
                 ++r.Wipes;
             Log(r.Leader.GetCounter(), "DUNGEON_PHASE", StringFormat("{} -> {}: {}", PhaseName(r.Cur), PhaseName(next.Next), next.Why));
+            if (r.Cur == Phase::Gather && next.Next == Phase::Travel && BotRepair::Cfg().Enabled)
+                for (Member const& m : r.Members)
+                    if (Player* p = Find(m.Guid); p && p->IsAlive())
+                        BotRepair::Prepare(AiOf(p), p, "run_start", false); // repair and restock before the group goes in
             r.Cur = next.Next;
             r.PhaseSinceMs = s_nowMs;
             if (r.Cur == Phase::Clear && r.Packs.empty())
@@ -547,6 +554,13 @@ namespace
                     view.push_back(pk.P);
                 }
                 Ready ready = CheckReady(states, cfg.Ready);
+                if (ready == Ready::Repair && BotRepair::Cfg().Enabled)
+                {
+                    // a member's gear is nearly broken: repair it now (paid when the settings say so), the next check goes on
+                    for (Member const& m : r.Members)
+                        if (Player* p = Find(m.Guid); p && p->IsAlive())
+                            BotRepair::Prepare(AiOf(p), p, "ready_check", false); // the next check sees the repaired gear
+                }
                 PullChoice pc = ChoosePull(view, avg, ready, alive, f.Size, cfg.Pull);
                 if (pc.Kind == PullKind::Pull)
                 {

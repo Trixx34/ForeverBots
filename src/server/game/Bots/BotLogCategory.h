@@ -45,7 +45,7 @@ namespace BotLogCat
         Progress,   // xp, levels, talents, known spells
         Economy,    // auction, trade, vendors, loot, gear, professions, consumables, bank, mail
         Pets,       // hunter and warlock pets
-        Social,     // chat orders, alts, group invites, bot parties
+        Social,     // chat orders, alts, group invites, bot parties, guilds
         Dungeon,    // dungeon runs
         Other,      // anything no rule matches
         Count
@@ -64,7 +64,7 @@ namespace BotLogCat
     {
         { "BOT_", Lifecycle }, { "CREATE_", Lifecycle }, { "LOG_", Lifecycle }, { "ENGINE_", Ai }, { "STRATEGY_", Ai }, { "TRACE_", Ai },
         { "AI_", Ai }, { "COMBAT_", Combat }, { "CAST_", Combat }, { "AURA_", Combat }, { "FLEE_", Combat }, { "AGGRO_", Combat },
-        { "THREAT_", Combat }, { "TARGET_PICKED", Combat }, { "REPAIR_", Economy }, { "DUMMY_", Dummy }, { "TEST_", Dummy },
+        { "THREAT_", Combat }, { "TARGET_PICKED", Combat }, { "REPAIR_", Economy }, { "SUPPLY_", Economy }, { "REVIVE_", Recovery }, { "DUMMY_", Dummy }, { "TEST_", Dummy },
         { "GOTO_", Movement }, { "FOLLOW_", Movement }, { "MOVE_", Movement }, { "NO_PATH", Movement }, { "NO_PROGRESS", Movement },
         { "PATH_", Movement }, { "ROUTE_", Movement }, { "STAY_", Movement }, { "MMAP_", Movement }, { "UNREACHABLE_", Movement },
         { "IDLE_STEP", Movement }, { "TOWN_", Movement }, { "TRAVEL_", Travel }, { "CORPSE_", Recovery }, { "SPIRIT_", Recovery },
@@ -74,7 +74,7 @@ namespace BotLogCat
         { "VENDOR_", Economy }, { "SOLD_", Economy }, { "TRAIN_", Economy }, { "BAG_", Economy }, { "GEAR_", Economy },
         { "LOOT_", Economy }, { "PROF_", Economy }, { "GATHER_", Economy }, { "FISH_", Economy }, { "AMMO_", Economy },
         { "POTION_", Economy }, { "EAT_", Economy }, { "DRINK_", Economy }, { "BANK_", Economy }, { "MAIL_", Economy },
-        { "PET_", Pets }, { "CONV_", Social }, { "ALT_", Social }, { "INVITE_", Social }, { "GROUP_", Social }, { "PARTY_", Social }, { "DUNGEON_", Dungeon }
+        { "PET_", Pets }, { "CONV_", Social }, { "ALT_", Social }, { "INVITE_", Social }, { "GUILD_", Social }, { "GROUP_", Social }, { "PARTY_", Social }, { "DUNGEON_", Dungeon }
     };
 
     // Event type fallback, used when the reason code has no prefix rule.
