@@ -18,6 +18,7 @@
 #include "BotSocial.h"
 #include "BotAI.h"
 #include "BotMgr.h"
+#include "BotQuest.h"
 #include "BotTradeLink.h"
 #include "Config.h"
 #include "Group.h"
@@ -303,6 +304,8 @@ void OnQuestPushed(Player* sender, Player* receiver, uint32 questId)
         refuse("QUEST_SHARE_REFUSED_CLASS", QuestPushReason::Class);
     else if (!receiver->SatisfyQuestRace(quest, false))
         refuse("QUEST_SHARE_REFUSED_RACE", QuestPushReason::Race);
+    else if (BotQuest::GetUnknownReputationFaction(quest))
+        refuse("QUEST_SHARE_REFUSED_INVALID_REPUTATION", QuestPushReason::Invalid);
     else if (!receiver->SatisfyQuestMinReputation(quest, false))
         refuse("QUEST_SHARE_REFUSED_REP_LOW", QuestPushReason::LowFaction);
     else if (!receiver->SatisfyQuestMaxReputation(quest, false))

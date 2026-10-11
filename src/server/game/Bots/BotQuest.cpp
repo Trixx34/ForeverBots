@@ -2227,6 +2227,8 @@ private:
             return block("QUEST_LEVEL", StringFormat("quest '{}' needs a different level (bot {}, quest min {})", q->GetLogTitle(), bot->GetLevel(), bot->GetQuestMinLevel(q)));
         if (!bot->SatisfyQuestDependentQuests(q, false) || !bot->SatisfyQuestPreviousQuest(q, false))
             return block("QUEST_PREREQ", StringFormat("quest '{}' needs an earlier quest", q->GetLogTitle()));
+        if (uint32 factionId = GetUnknownReputationFaction(q))
+            return block("QUEST_REPUTATION_FACTION", StringFormat("quest '{}' requires unknown reputation faction {}", q->GetLogTitle(), factionId));
         if (!bot->CanTakeQuest(q, false))
             return 0.0f; // exclusive group, day/week, conditions: not worth a row
 
@@ -2648,6 +2650,8 @@ private:
             if (bot->GetQuestStatus(questId) != QUEST_STATUS_NONE || bot->GetQuestRewardStatus(questId))
                 continue;
             if (CachedAnalysis(q).Code)
+                continue;
+            if (GetUnknownReputationFaction(q))
                 continue;
             if (!bot->CanTakeQuest(q, false))
                 continue;
@@ -4081,10 +4085,15 @@ private:
             StopMoving(ai, bot, c);
             if (giver)
             {
-                if (!npc->hasQuest(questId) || !bot->CanTakeQuest(q, false))
+                uint32 const unknownFaction = GetUnknownReputationFaction(q);
+                bool const canTakeQuest = !unknownFaction && bot->CanTakeQuest(q, false);
+                if (!npc->hasQuest(questId) || !canTakeQuest)
                 {
-                    Drop(ai, bot, c, now, questId, bot->CanTakeQuest(q, false) ? "GIVER_NOT_INTERACTABLE" : "QUEST_PREREQ",
-                        StringFormat("giver {} cannot give '{}' now", t.NpcEntry, q->GetLogTitle()), std::string(), t.NpcEntry, 900);
+                    char const* reason = unknownFaction ? "QUEST_REPUTATION_FACTION" : canTakeQuest ? "GIVER_NOT_INTERACTABLE" : "QUEST_PREREQ";
+                    std::string summary = unknownFaction
+                        ? StringFormat("quest '{}' requires unknown reputation faction {}", q->GetLogTitle(), unknownFaction)
+                        : StringFormat("giver {} cannot give '{}' now", t.NpcEntry, q->GetLogTitle());
+                    Drop(ai, bot, c, now, questId, reason, std::move(summary), std::string(), t.NpcEntry, 900);
                     return true;
                 }
                 if (!bot->CanAddQuest(q, false))
@@ -5550,6 +5559,18 @@ void EnsureIndex()
 }
 
 bool IsReady() { return g.Ready.load(std::memory_order_acquire); }
+
+uint32 GetUnknownReputationFaction(Quest const* quest)
+{
+    if (!quest)
+        return 0;
+
+    for (uint32 factionId : std::array<uint32, 2>{ quest->GetRequiredMinRepFaction(), quest->GetRequiredMaxRepFaction() })
+        if (factionId && !sFactionStore.LookupEntry(factionId))
+            return factionId;
+
+    return 0;
+}
 
 std::string DescribeTask(BotAI* ai)
 {
