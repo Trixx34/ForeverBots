@@ -4195,9 +4195,9 @@ Bot.Rules.QuestFilter.Enabled = 1
 #
 #    Bot.Rules.QuestFilter.BlockedQuests
 #        Description: Comma separated quest ids that are never offered (ids that failed on many bots in earlier runs).
-#        Default:     "92470,789,92515,92553,792,218,92544,2160,93319,92516,182,5441,60,93951"
+#        Default:     ""
 #        Values:      quest ids
-Bot.Rules.QuestFilter.BlockedQuests = "92470,789,92515,92553,792,218,92544,2160,93319,92516,182,5441,60,93951"
+Bot.Rules.QuestFilter.BlockedQuests = ""
 #
 #    Bot.Rules.QuestFilter.UnsupportedObjectives
 #        Description: Do not offer quests that have a criteria-tree objective (type 14), optional ones included.
