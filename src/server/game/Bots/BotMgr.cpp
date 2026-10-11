@@ -15,6 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "BotCraftOrder.h"
 #include "BotMgr.h"
 #include "BotPopulation.h"
 #include "BotSocial.h"
@@ -363,6 +364,7 @@ void BotMgr::Update(uint32 diff)
     BotPlayerLed::Update(diff);
     UpdateProbe(diff);
     BotSocial::Update(diff);
+    BotCraftOrder::Update(diff);
     BotPopulation::Update(diff);
     BotAlts::RestoreOnce();
 

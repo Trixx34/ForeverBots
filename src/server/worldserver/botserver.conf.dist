@@ -2345,6 +2345,38 @@ Bot.Trade.Link.Enabled = 0
 Bot.Trade.Link.MaxListed = 15
 
 #
+#    Bot.Craft.Enabled
+#        Description: Crafting for players. Whisper a bot of your group "craft <item link or name> [x5]" and it
+#                     crafts the item with the recipes and materials it has, then mails the result to you.
+#                     "craft list" lists what it can make right now. Needs Bot.Enabled.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Craft.Enabled = 0
+
+#
+#    Bot.Craft.MaxItems
+#        Description: Most items one craft order makes; the order is also limited by the mail's 12 attachment
+#                     slots. 0 refuses every order.
+#        Default:     20
+#        Values:      whole number 0 to 200 (items)
+Bot.Craft.MaxItems = 20
+
+#
+#    Bot.Craft.MaxListed
+#        Description: Items in the whispered "craft list" answer.
+#        Default:     15
+#        Values:      whole number 1 to 40 (items)
+Bot.Craft.MaxListed = 15
+
+#
+#    Bot.Craft.Fee.VendorPercent
+#        Description: Price of a crafted order as cash on delivery, in percent of the vendor sell price of the items.
+#                     The player pays when picking up the mail. 0 gives the items away.
+#        Default:     0
+#        Values:      whole number 0 to 1000 (percent)
+Bot.Craft.Fee.VendorPercent = 0
+
+#
 #    Bot.Social.QuestShare.LogEach
 #        Description: Log one quest_share bot_event per receiver of a bot quest share. Off: one summary row per
 #                     share command (accepted count, refused count per reason); "verbose on" of the issuer also
