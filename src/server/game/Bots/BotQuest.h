@@ -69,6 +69,14 @@ namespace BotQuest
     TC_GAME_API bool RequestAmmoTrip(BotAI* ai);
     // The quest and the kind of task the bot works on right now, for the death and combat start log rows: "quest", "grind", "trip" or "idle".
     TC_GAME_API void ActiveTask(BotAI* ai, uint32& questId, std::string& task);
+    // N-01 (XP stall): the latest ten quest layer rows as a JSON array, for the STALL_XP row.
+    TC_GAME_API std::string RecentDecisions(BotAI* ai);
+    // N-07: BotAI::OnXpGain, a kill gave `xp`. Ten minutes of grind kills below Bot.Rules.ZoneLeave.MinXpPerKill ask the travel module to leave the zone.
+    TC_GAME_API void NoteKillXp(BotAI* ai, Player* bot, uint32 xp);
+    // N-01 stage 1: drops the task and every blacklist, ignore list and trip guard of the quest layer, so the planners choose afresh.
+    TC_GAME_API void ClearForStall(BotAI* ai, Player* bot);
+    // N-01 stage 3: starts a walk to the best quest hub on the bot's map for its level. False when no hub fits.
+    TC_GAME_API bool SendToHub(BotAI* ai, Player* bot);
 }
 
 #endif

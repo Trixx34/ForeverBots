@@ -49,6 +49,7 @@
 #include "BotAvoid.h"
 #include "BotLoopGuard.h"
 #include "BotQuest.h"
+#include "BotRules.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
@@ -506,6 +507,10 @@ struct FightData
     ObjectGuid Ignored;              // unreachable target given up
     uint32 IgnoredUntilMs = 0;
     BotLoop::ApproachTracker Approach;   // recent APPROACH_TIMEOUT times (Bot.AI.Combat.ApproachEscalate.*)
+    ObjectGuid DmgGuid;              // N-04: target whose damage is measured, its health when the bot started on it and since when
+    uint64 DmgHp0 = 0;
+    uint32 DmgSinceMs = 0;
+    bool DmgBreakDone = false;       // the breaker acted once on this target
     uint32 Picked = 0, TargetsDead = 0, Casts = 0, CastFails = 0, Heals = 0;
     uint32 LastHealMs = 0;
     std::unordered_map<uint32, uint32> LastBuffMs;   // spell id -> time of the last cast: a self buff is not recast within 25 s (the aura id may differ from the spell id); per spell, so a stance never starves Battle Shout
@@ -943,6 +948,13 @@ public:
 // ---------------------------------------------------------------------------------------------------------------------
 // flee
 // ---------------------------------------------------------------------------------------------------------------------
+// N-02: a flee destination inside a zone whose band starts well above the bot is not taken (the bot would run from one killer into more).
+bool FleeFenced(Player* bot, float x, float y, float z)
+{
+    uint32 zone = 0, minLevel = 0;
+    return BotRules::Fenced(bot, x, y, z, zone, minLevel);
+}
+
 // Picks a destination away from `from` that has a complete navmesh path. Returns false when every direction is blocked.
 bool FindFleePoint(Player* bot, Unit* from, float& ox, float& oy, float& oz, float& dirOut)
 {
@@ -960,7 +972,7 @@ bool FindFleePoint(Player* bot, Unit* from, float& ox, float& oy, float& oz, flo
             float x = bestGuard->GetPositionX(), y = bestGuard->GetPositionY(), z = bestGuard->GetPositionZ();
             BotMotion::EnsureGrids(bot, x, y);
             BotPathInfo const pi = BotMotion::QueryPath(bot, x, y, z);
-            if (pi.Valid && !pi.NoPath && !pi.Partial && !pi.GoalOffMesh && !pi.OffMesh)
+            if (pi.Valid && !pi.NoPath && !pi.Partial && !pi.GoalOffMesh && !pi.OffMesh && !FleeFenced(bot, x, y, z))
             {
                 ox = x; oy = y; oz = z; dirOut = from->GetAbsoluteAngle(bot);
                 return true;
@@ -979,7 +991,7 @@ bool FindFleePoint(Player* bot, Unit* from, float& ox, float& oy, float& oz, flo
         BotMotion::EnsureGrids(bot, x, y);
         bot->UpdateGroundPositionZ(x, y, z);
         BotPathInfo const pi = BotMotion::QueryPath(bot, x, y, z);
-        if (pi.Valid && !pi.NoPath && !pi.Partial && !pi.GoalOffMesh && !pi.OffMesh)
+        if (pi.Valid && !pi.NoPath && !pi.Partial && !pi.GoalOffMesh && !pi.OffMesh && !FleeFenced(bot, x, y, z))
         {
             ox = x; oy = y; oz = z; dirOut = a;
             return true;
@@ -1246,6 +1258,55 @@ public:
             if (!bot->Attack(target, true))
                 return changed;
             changed = true;
+        }
+
+        // N-04: the bot hits the mob but takes next to nothing off it. Name the cause, fall back to auto attack / melee, or run from a mob it outlevels.
+        if (BotRules::Cfg().NoDamage && bot->GetVictim() == target && BotRules::Applies(bot))
+        {
+            if (ctx->DmgGuid != target->GetGUID())
+            {
+                ctx->DmgGuid = target->GetGUID();
+                ctx->DmgHp0 = target->GetHealth();
+                ctx->DmgSinceMs = now;
+                ctx->DmgBreakDone = false;
+            }
+            else if (!ctx->DmgBreakDone && BotRule::NoDamage(now - ctx->DmgSinceMs, ctx->DmgHp0, target->GetHealth(), target->GetMaxHealth(), BotRules::Cfg().NoDmg))
+            {
+                ctx->DmgBreakDone = true;
+                BotQuest::GearInspect const gear = BotQuest::InspectCombatGear(bot);
+                Resolved const* primary = RangedPrimary(ctx);
+                bool const casterRole = ctx->BotRole != Role::Melee;
+                bool const noPower = casterRole && primary && !Affordable(bot, primary->Info);
+                bool const noLos = !bot->IsWithinLOSInMap(target);
+                bool const outOfRange = !casterRole && !bot->IsWithinMeleeRange(target);
+                BotRule::NoDmgCause const cause = BotRule::ClassifyNoDamage(gear.MainNeedsWeapon && !casterRole, gear.RangedNeedsAmmo && casterRole, noPower, noLos, outOfRange);
+                Threat const as = Assess(bot, target);
+                char const* action = "none";
+                if (cause == BotRule::NoDmgCause::Weapon)
+                    action = BotQuest::RestoreCombatWeapon(ai, bot, "no_damage") ? "weapon_restored" : "no_weapon_available";
+                else if (cause == BotRule::NoDmgCause::Ammo)
+                    action = BotQuest::RequestAmmoTrip(ai) ? "ammo_trip_requested" : "ammo_trips_off";
+                if (as.TooStrong)
+                    action = "flee_pick";
+                else if (casterRole && !ctx->MeleeFallback)
+                {
+                    ctx->MeleeFallback = true;      // auto attack / melee with whatever the bot holds
+                    ctx->FallbackClearable = true;
+                    action = "melee_fallback";
+                }
+                LogDecision(ai, bot, ctx, "FIGHT_NO_DAMAGE", StringFormat("{} s into the fight with {}: {} of {} hp taken off it, cause {}, action {}", (now - ctx->DmgSinceMs) / 1000, target->GetName(),
+                    ctx->DmgHp0 > target->GetHealth() ? ctx->DmgHp0 - target->GetHealth() : 0u, target->GetMaxHealth(), BotRule::NoDmgCauseName(cause), action),
+                    StringFormat(R"({},"cause":"{}","action":"{}","hp_start":{},"hp_now":{},"hp_max":{},"los":{},"melee_range":{},"power_ok":{},"main_hand":{})", MobJson(bot, target, as), BotRule::NoDmgCauseName(cause), action,
+                        ctx->DmgHp0, target->GetHealth(), target->GetMaxHealth(), noLos ? "false" : "true", bot->IsWithinMeleeRange(target) ? "true" : "false", noPower ? "false" : "true", gear.MainEntry), BOTLOG_WARN);
+                if (as.TooStrong)
+                {
+                    // the mob outlevels the bot: let the target pick decide (flee run or fight to the end) instead of trading blows at melee range
+                    StopChase(bot, ctx);
+                    bot->AttackStop();
+                    ctx->Target = ObjectGuid::Empty;
+                    return true;
+                }
+            }
         }
 
         // approach: melee, or spell range for casters/hunters while they can still cast

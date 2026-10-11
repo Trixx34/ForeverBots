@@ -62,6 +62,14 @@ TEST_CASE("Reason prefixes pick the category", "[BotLogCategory]")
     CHECK(Classify("decision", "TRIP_GIVEN_UP") == Economy);
     CHECK(Classify("decision", "WEAPON_RESTORED") == Economy);
     CHECK(Classify("decision", "VENDOR_RESULT") == Economy);
+    CHECK(Classify("decision", "STALL_XP") == Recovery);
+    CHECK(Classify("decision", "STALL_XP_EXHAUSTED") == Recovery);
+    CHECK(Classify("quest_blocked", "ZONE_FENCE") == Travel);
+    CHECK(Classify("decision", "ZONE_LEAVE") == Travel);
+    CHECK(Classify("decision", "PULL_BLOCKED") == Combat);
+    CHECK(Classify("decision", "FIGHT_NO_DAMAGE") == Combat);
+    CHECK(Classify("decision", "BAG_PRESSURE") == Economy);
+    CHECK(Classify("decision", "CROWD_SPREAD") == Quest);
 }
 
 TEST_CASE("Event type is the fallback, other when nothing matches", "[BotLogCategory]")

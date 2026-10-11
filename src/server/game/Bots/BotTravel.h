@@ -34,6 +34,9 @@ namespace BotTravel
     TC_GAME_API void OnLogout(BotAI* ai, Player* bot);
     // True while a trip holds the bot (walking to the next zone, flying, hearthing). The quest layer yields while it is true.
     TC_GAME_API bool Busy(BotAI* ai);
+    // N-07: the quest layer found nothing to do in this zone; the next check treats the zone as exhausted and picks the next band zone.
+    // False when the travel module is off or a trip is already under way.
+    TC_GAME_API bool RequestLeave(BotAI* ai);
 }
 
 #endif
