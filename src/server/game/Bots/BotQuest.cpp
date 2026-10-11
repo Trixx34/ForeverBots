@@ -67,6 +67,7 @@
 #include "QuestDef.h"
 #include "StringFormat.h"
 #include "Trainer.h"
+#include "BotSpellLearn.h"
 #include "Util.h"
 #include "WorldSession.h"
 #include <algorithm>
@@ -322,6 +323,13 @@ struct BagOffer
     uint32 Price = 0;
     int32 ReqLevel = 0;
 };
+
+// Bot.AI.AutoLearnSpells: bots learn the class spells they qualify for on level up (and on login) without visiting a trainer.
+bool AutoLearnSpells()
+{
+    static bool value = sConfigMgr->GetBoolDefault("Bot.AI.AutoLearnSpells", true);
+    return value;
+}
 
 // Bot.AI.Ammo.*: ranged bots (a bow, crossbow or gun equipped) keep ammo stocked: low ammo plans a vendor trip and buys arrows or bullets. Off by default.
 struct AmmoConfig
@@ -1414,6 +1422,7 @@ public:
     // E1/E4 service state
     uint32 NextSvcMs = 0;                           // next service-due evaluation
     uint8 TrainLevel = 0;                           // level at which spells were last evaluated/trained
+    uint8 LearnLevel = 0;                           // level at which the auto-learn pass last ran (Bot.AI.AutoLearnSpells)
     uint32 TrainWant = 0;                           // copper needed for the cheapest available but unaffordable spell (0 = none)
     uint32 TrainRetryMs = 0;
     uint32 TrainedTotal = 0, VendorTrips = 0;
@@ -2730,6 +2739,8 @@ private:
     // copper the bot still wants to spend on spells at the nearest class trainer (bags come second)
     uint64 TrainReserve(Player* bot, BotQuestCtx& c, uint32 now)
     {
+        if (AutoLearnSpells())
+            return 0;   // spells are learned for free, nothing to save up for
         auto it = g.Trainers.find(bot->GetClass());
         if (it == g.Trainers.end())
             return 0;
@@ -3457,6 +3468,66 @@ private:
         return false;
     }
 
+    // Bot.AI.AutoLearnSpells: teaches the bot every class trainer spell it qualifies for, free of charge. A few passes because a higher
+    // rank can need the lower one (ReqAbility). Spells missing from the client data are skipped.
+    void AutoLearn(BotAI* ai, Player* bot, BotQuestCtx& c)
+    {
+        uint8 const level = bot->GetLevel();
+        c.LearnLevel = level;
+        c.TrainLevel = level;
+        auto tl = g.Trainers.find(bot->GetClass());
+        if (tl == g.Trainers.end())
+            return;
+        std::vector<Trainer::Trainer const*> trainers;
+        std::unordered_set<uint32> seen;
+        for (SvcPt const& pt : tl->second)
+            if (seen.insert(pt.TrainerId).second)
+                if (Trainer::Trainer const* tr = sObjectMgr->GetTrainer(pt.TrainerId))
+                    trainers.push_back(tr);
+        uint32 learned = 0;
+        std::string ids;
+        for (int pass = 0; pass < 4; ++pass)
+        {
+            std::vector<BotSpellLearn::Candidate> cands;
+            std::unordered_map<uint32, Trainer::Spell const*> bySpell;
+            for (Trainer::Trainer const* tr : trainers)
+                for (Trainer::Spell const& sp : tr->GetSpells())
+                {
+                    BotSpellLearn::Candidate cand;
+                    cand.SpellId = sp.SpellId;
+                    cand.ReqLevel = sp.ReqLevel;
+                    cand.InfoValid = sSpellMgr->GetSpellInfo(sp.SpellId, DIFFICULTY_NONE) != nullptr;
+                    cand.Available = cand.InfoValid && tr->GetSpellState(bot, &sp) == Trainer::SpellState::Available && tr->CanTeachSpell(bot, &sp);
+                    cands.push_back(cand);
+                    bySpell.emplace(sp.SpellId, &sp);
+                }
+            uint32 passLearned = 0;
+            for (uint32 spellId : BotSpellLearn::Select(cands, level))
+            {
+                if (bot->HasSpell(spellId))
+                    continue;
+                Trainer::Spell const* sp = bySpell[spellId];
+                if (sp->IsCastable())
+                    bot->CastSpell(bot, spellId, true);
+                else
+                    bot->LearnSpell(spellId, false);
+                if (bot->HasSpell(spellId))
+                {
+                    ++passLearned;
+                    if (ids.size() < 200)
+                        ids += StringFormat("{}{}", ids.empty() ? "" : ",", spellId);
+                }
+            }
+            learned += passLearned;
+            if (!passLearned)
+                break;
+        }
+        c.TrainedTotal += learned;
+        if (learned)
+            Decision(ai, bot, "SPELLS_LEARNED", StringFormat("learned {} class spells at level {} without a trainer", learned, level), 0, 0,
+                StringFormat(R"({{"learned":{},"level":{},"spells":[{}]}})", learned, level, ids));
+    }
+
     // Decides whether a trainer or vendor trip is due and starts it. Throttled, cheap in the common case.
     bool ServiceDue(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
     {
@@ -3487,8 +3558,12 @@ private:
             CraftForSkill(ai, bot, c, now);
         }
 
+        // 1a. free spell learning on level up and login (replaces the class trainer trip)
+        if (BotSpellLearn::Due(AutoLearnSpells(), level, c.LearnLevel))
+            AutoLearn(ai, bot, c);
+
         // 1. trainer: new level, or enough money for the cheapest spell we could not afford before. Spells have money priority.
-        if (level >= 2 && now >= c.TrainRetryMs && (c.TrainLevel != level || (c.TrainWant && bot->GetMoney() >= c.TrainWant)))
+        if (!AutoLearnSpells() && level >= 2 && now >= c.TrainRetryMs && (c.TrainLevel != level || (c.TrainWant && bot->GetMoney() >= c.TrainWant)))
         {
             auto tl = g.Trainers.find(bot->GetClass());
             float d = 0.0f;

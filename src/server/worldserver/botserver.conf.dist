@@ -968,6 +968,25 @@ Bot.Quest.Reputation.FullPoints = 250
 
 
 ###################################################################################################
+# SPELL LEARNING
+#
+# How bots get their class spells.
+###################################################################################################
+
+#
+#    Bot.AI.AutoLearnSpells
+#        Description: Bots learn every class spell they qualify for (level, skill and prerequisite rank)
+#                     when they level up and once after login to catch up, without visiting a class trainer
+#                     and without paying. Logs SPELLS_LEARNED. The money reserve for trainer spells is no longer
+#                     held back for the quest strategy, and the class trainer trips (TRAIN_TRIP, TRAINED,
+#                     TRAIN_NO_MONEY, TRAIN_NO_TRAINER) stop. Profession trainer visits are not affected.
+#                     Spells missing from the client data are skipped. Read once at startup.
+#        Default:     1
+#        Values:      0 (bots walk to the class trainer and pay for spells) or 1 (bots learn spells on their own)
+Bot.AI.AutoLearnSpells = 1
+
+
+###################################################################################################
 # AUCTION HOUSE
 #
 ###################################################################################################
