@@ -22,6 +22,7 @@
 //   3. travel_tick action: decide when to leave a zone, run the trip step by step, learn flight masters, hearth and bind
 //   4. registration of the "travel" strategy
 
+#include "BotConfigReload.h"
 #include "BotTravel.h"
 #include "BotAI.h"
 #include "BotBehavior.h"
@@ -64,7 +65,7 @@ constexpr float FM_INTERACT_YARDS = 4.0f;
 // 1. config and helpers
 // ---------------------------------------------------------------------------------------------------------------------
 Config s_cfg;
-std::once_flag s_cfgOnce;
+BotCfg::Flag s_cfgOnce;
 
 // area (possibly a sub-zone) to the zone of the table; 0 when it is none of the leveling zones (a city, a dungeon, ...)
 uint32 ResolveZone(uint32 area)
@@ -862,7 +863,7 @@ public:
 // ---------------------------------------------------------------------------------------------------------------------
 Config const& Cfg()
 {
-    std::call_once(s_cfgOnce, []()
+    BotCfg::Load(s_cfgOnce, []()
     {
         s_cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Travel.Enabled", false);
         s_cfg.Zones = sConfigMgr->GetBoolDefault("Bot.AI.Travel.Zones", true);

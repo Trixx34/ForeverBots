@@ -19,6 +19,7 @@
 // keeps the bot engaged with the dummy, refills its power, and ends the run on time, on death or when the dummy is gone. The fight is
 // the normal combat strategy: the dummy is in the bot's combat references, so target choice, approach, cast and engage work unchanged.
 
+#include "BotConfigReload.h"
 #include "BotDummy.h"
 #include "BotAI.h"
 #include "BotDummyStats.h"
@@ -43,7 +44,7 @@ namespace
 using Trinity::StringFormat;
 
 Config s_cfg;
-std::once_flag s_cfgOnce;
+BotCfg::Flag s_cfgOnce;
 
 class DummyCtx : public UntypedValue
 {
@@ -180,7 +181,7 @@ public:
 
 Config const& Cfg()
 {
-    std::call_once(s_cfgOnce, []()
+    BotCfg::Load(s_cfgOnce, []()
     {
         s_cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Dummy.Enabled", false);
         s_cfg.Entry = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.AI.Dummy.Entry", 9900001)));

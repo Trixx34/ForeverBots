@@ -17,6 +17,7 @@
 
 // Bot consumables, see BotConsumables.h.
 
+#include "BotConfigReload.h"
 #include "BotConsumables.h"
 #include "BotAI.h"
 #include "BotConsumablePlan.h"
@@ -46,11 +47,11 @@ struct Settings
     Config Plan;
 };
 Settings s_cfg;
-std::once_flag s_cfgOnce;
+BotCfg::Flag s_cfgOnce;
 
 Settings const& Cfg()
 {
-    std::call_once(s_cfgOnce, []()
+    BotCfg::Load(s_cfgOnce, []()
     {
         s_cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Consumables.Enabled", false);
         s_cfg.Plan.HealthBelowPct = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Consumables.HealthBelowPct", 35), 1, 90);

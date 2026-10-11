@@ -17,6 +17,7 @@
 
 // Bot watchdog, see BotWatchdog.h.
 
+#include "BotConfigReload.h"
 #include "BotWatchdog.h"
 #include "BotAI.h"
 #include "BotBehavior.h"
@@ -54,11 +55,11 @@ struct Settings
     Config Plan;
 };
 Settings s_cfg;
-std::once_flag s_cfgOnce;
+BotCfg::Flag s_cfgOnce;
 
 Settings const& Cfg()
 {
-    std::call_once(s_cfgOnce, []()
+    BotCfg::Load(s_cfgOnce, []()
     {
         s_cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Watchdog.Enabled", false);
         s_cfg.Hearth = sConfigMgr->GetBoolDefault("Bot.AI.Watchdog.Hearth", true);

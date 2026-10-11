@@ -22,6 +22,7 @@
 //   4. taming: pet_tame action (Taming Rod quests and the first pet with Tame Beast)
 //   5. registration of the "pet" strategy
 
+#include "BotConfigReload.h"
 #include "BotPet.h"
 #include "BotAI.h"
 #include "BotPetLogic.h"
@@ -66,7 +67,7 @@ constexpr uint32 TAME_RUN_SECONDS = 150;
 // 1. config and helpers
 // ---------------------------------------------------------------------------------------------------------------------
 Config s_cfg;
-std::once_flag s_cfgOnce;
+BotCfg::Flag s_cfgOnce;
 
 bool IsHunter(Player const* bot) { return bot->GetClass() == CLASS_HUNTER; }
 
@@ -775,7 +776,7 @@ public:
 // ---------------------------------------------------------------------------------------------------------------------
 Config const& Cfg()
 {
-    std::call_once(s_cfgOnce, []()
+    BotCfg::Load(s_cfgOnce, []()
     {
         s_cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Pet.Enabled", false);
         s_cfg.Feed = sConfigMgr->GetBoolDefault("Bot.AI.Pet.Feed", true);

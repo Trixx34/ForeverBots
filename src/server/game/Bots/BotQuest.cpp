@@ -22,6 +22,7 @@
 //   4. Actions      quest_think: accept / travel / kill / loot / talk / turn-in
 //   5. Registration "quest" strategy for the NonCombat engine (add it to Bot.AI.Default.NonCombat or with `bot strategy`)
 
+#include "BotConfigReload.h"
 #include "Bag.h"
 #include "BotQuest.h"
 #include "BotQuestClassifier.h"
@@ -128,8 +129,8 @@ struct QuestCfg
 QuestCfg const& Cfg()
 {
     static QuestCfg cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.MaxActive = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Quest.MaxActive", 12)));
         cfg.StallSec = uint32(std::max<int32>(30, sConfigMgr->GetIntDefault("Bot.Quest.StallSec", 240)));
@@ -179,8 +180,8 @@ struct LootCfg
 LootCfg const& Improved()
 {
     static LootCfg cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Loot.Improved.Enabled", false);
         cfg.MaxYards = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Loot.Improved.MaxYards", 150), 20, 1000));
@@ -208,8 +209,8 @@ struct LootSafetyCfg
 LootSafetyCfg const& Safety()
 {
     static LootSafetyCfg cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Loot.Safety.Enabled", true);
         cfg.QuarantineStrikes = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Loot.Safety.QuarantineStrikes", 3), 1, 20));
@@ -336,8 +337,8 @@ struct AmmoConfig
 AmmoConfig const& AmmoCfg()
 {
     static AmmoConfig cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Ammo.Enabled", false);
         cfg.LowCount = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Ammo.LowCount", 60), 1, 2000));

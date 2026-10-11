@@ -15,6 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "BotConfigReload.h"
 #include "BotAI.h"
 #include "BotCombat.h"
 #include "BotDummy.h"
@@ -58,7 +59,7 @@
 namespace
 {
 BotAIConfig _config;
-std::once_flag _configOnce;
+BotCfg::Flag _configOnce;
 std::atomic<bool> _enabled{true};
 std::atomic<bool> _traceAll{false};
 BotAIStats _stats;
@@ -165,7 +166,7 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
 
 BotAIConfig const& BotAI::Config()
 {
-    std::call_once(_configOnce, []()
+    BotCfg::Load(_configOnce, []()
     {
         _config.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Enabled", true);
         _config.TickMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.TickMs", 500), 50, 10000));
@@ -1706,8 +1707,8 @@ struct PremadeTalents
 PremadeTalents const& Premade()
 {
     static PremadeTalents cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.Talents.Premade.Enabled", false);
         if (!cfg.Enabled)

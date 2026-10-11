@@ -23,6 +23,7 @@
 //   recover  (Dead)       release spirit after a short delay, corpse run or spirit healer, resurrection sickness logged
 // Every piece is a strategy built from triggers and actions; they are switched with `bot strategy <bot> +name|-name`.
 
+#include "BotConfigReload.h"
 #include "BotAI.h"
 #include "BotCombat.h"
 #include "BotRevive.h"
@@ -941,8 +942,8 @@ namespace BotMove
 NaturalConfig const& Natural()
 {
     static NaturalConfig cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Move.Natural.Enabled", false);
         cfg.Shortcut = sConfigMgr->GetBoolDefault("Bot.AI.Move.Natural.Shortcut", true);
@@ -965,8 +966,8 @@ namespace BotTownIdle
 Config const& Cfg()
 {
     static Config cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.TownIdle.Enabled", false);
         cfg.SearchYards = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.TownIdle.SearchYards", 70), 20, 150));
