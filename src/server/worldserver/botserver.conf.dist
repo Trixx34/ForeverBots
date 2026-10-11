@@ -1112,6 +1112,114 @@ Bot.AI.Consumables.HealthBelowPct = 35
 Bot.AI.Consumables.ManaBelowPct = 20
 
 #
+#    Bot.AI.Revive.Enabled
+#        Description: Priest, paladin and shaman bots in a group raise dead group members (bots and players) with the class
+#                     resurrection: they walk to the body, cast out of combat and retry. A dead bot takes the offer a moment later,
+#                     and holds its spirit for a while when such a rezzer is on the way. Adds the strategies "revive" and
+#                     "revive_accept". Logged as REVIVE_APPROACH / REVIVE_CAST / REVIVE_ACCEPTED. Druids are left out (Rebirth
+#                     needs a reagent).
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Revive.Enabled = 0
+
+#
+#    Bot.AI.Revive.MaxYards
+#        Description: A rezzer further away from the dead member than this does not come.
+#        Default:     60
+#        Values:      whole number 10 to 300 (yards)
+Bot.AI.Revive.MaxYards = 60
+
+#
+#    Bot.AI.Revive.MinManaPct
+#        Description: Mana percent a rezzer needs before it goes.
+#        Default:     40
+#        Values:      whole number 0 to 100 (percent)
+Bot.AI.Revive.MinManaPct = 40
+
+#
+#    Bot.AI.Revive.RetrySec
+#        Description: Least time between two casts at the same dead member.
+#        Default:     20
+#        Values:      whole number 5 to 120 (seconds)
+Bot.AI.Revive.RetrySec = 20
+
+#
+#    Bot.AI.Revive.MaxAttempts
+#        Description: Casts at one dead member before the rezzer gives up.
+#        Default:     4
+#        Values:      whole number 1 to 20
+Bot.AI.Revive.MaxAttempts = 4
+
+#
+#    Bot.AI.Revive.WaitBeforeReleaseSec
+#        Description: A dead bot in a group keeps its spirit this long while a rezzer is able to come, instead of
+#                     releasing and running back to its corpse. 0 = never waits.
+#        Default:     20
+#        Values:      whole number 0 to 300 (seconds)
+Bot.AI.Revive.WaitBeforeReleaseSec = 20
+
+#
+#    Bot.AI.Revive.AcceptDelaySec
+#        Description: A dead bot takes a resurrection offer this long after it arrived.
+#        Default:     2
+#        Values:      whole number 0 to 30 (seconds)
+Bot.AI.Revive.AcceptDelaySec = 2
+
+#
+#    Bot.AI.Repair.Enabled
+#        Description: Repair gear and restock healing and mana potions before a dungeon run starts, when a member's gear is
+#                     nearly broken (Bot.AI.Dungeon.MinDurabilityPct) and when the run ends. Replaces Bot.AI.Dungeon.FreeRepair.
+#                     There is no walk to a vendor: the visit is abstract. Logged as REPAIR_PAID / REPAIR_FREE / REPAIR_TOO_POOR /
+#                     SUPPLY_BOUGHT. Without enough gold and without FreeWhenBroke, a group whose gear is nearly broken
+#                     waits ("repair") until the gear is fixed some other way.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Repair.Enabled = 0
+
+#
+#    Bot.AI.Repair.Paid
+#        Description: Repairs and potions are paid from the bot's gold. 0 = repairs are free (potions are still bought).
+#        Default:     1
+#        Values:      0 (free) or 1 (paid)
+Bot.AI.Repair.Paid = 1
+
+#
+#    Bot.AI.Repair.FreeWhenBroke
+#        Description: A bot that cannot pay the repair is repaired for free instead of staying broken.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Repair.FreeWhenBroke = 0
+
+#
+#    Bot.AI.Repair.BelowPct
+#        Description: Repair at the start of a run when the worst equipped item is below this durability percent.
+#        Default:     70
+#        Values:      whole number 1 to 100 (percent)
+Bot.AI.Repair.BelowPct = 70
+
+#
+#    Bot.AI.Repair.Supplies
+#        Description: Also buy healing and mana potions (the best rank the bot may use). They are drunk by the consumables
+#                     strategy (Bot.AI.Consumables.Enabled).
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Repair.Supplies = 1
+
+#
+#    Bot.AI.Repair.PotionsPerKind
+#        Description: Target number of healing and of mana potions in the bags after a visit.
+#        Default:     5
+#        Values:      whole number 0 to 20
+Bot.AI.Repair.PotionsPerKind = 5
+
+#
+#    Bot.AI.Repair.MaxSpendPct
+#        Description: Share of the bot's gold that one visit may spend in total (repair first, then potions).
+#        Default:     60
+#        Values:      whole number 0 to 100 (percent)
+Bot.AI.Repair.MaxSpendPct = 60
+
+#
 #    Bot.AI.Watchdog.Enabled
 #        Description: Stall watchdog. A bot that makes no progress (no movement, xp, money or quest-log change;
 #                     fighting, flying, being dead and instance content count as busy) is recovered in steps:
