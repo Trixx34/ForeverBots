@@ -21,11 +21,13 @@
 #include "Define.h"
 #include <string>
 
+class Channel;
+class ChannelMgr;
 class Player;
 
-// The in-game "Discord" chat channel of the Discord bot (contrib/discord_bot): every player joins it at login unless they left
-// it with /leave (remembered in characters.character_discord_optout until they /join it again). The bot posts Discord messages
-// into it with the console command ".discord say"; what players type in it reaches the bot through chat.log.channel.<name>.
+// The in-game "Discord" chat channel of the Discord bot (contrib/discord_bot): every player joins it after logging in unless they
+// left it with /leave (remembered in characters.character_discord_optout until they /join it again). The bot posts Discord messages
+// into it with the console command ".discord say"; what players type in it reaches the bot through Chat.log (chat.log.system).
 // worldserver.conf: Discord.Channel.Enable, Discord.Channel.Name.
 namespace DiscordChannel
 {
@@ -33,7 +35,11 @@ namespace DiscordChannel
     TC_GAME_API std::string const& GetName();
     TC_GAME_API bool IsDiscordChannel(std::string const& channelName);
 
-    TC_GAME_API void OnLogin(Player* player);
+    /// the channel of that faction's manager, created without owner (nobody gets moderator) and without join/leave announcements
+    TC_GAME_API Channel* GetOrCreate(ChannelMgr* mgr);
+
+    /// joins the channel (unless the player left it) once the client's loading screen is gone
+    TC_GAME_API void OnLoadingScreenDone(Player* player);
     TC_GAME_API void OnJoined(Player* player);     // /join: auto-join again from now on
     TC_GAME_API void OnLeft(Player* player);       // /leave: no auto-join any more
 
