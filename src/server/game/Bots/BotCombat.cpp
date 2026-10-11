@@ -47,6 +47,8 @@
 #include "SpellAuras.h"
 #include "SpellHistory.h"
 #include "BotAvoid.h"
+#include "BotLoopGuard.h"
+#include "BotQuest.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
@@ -73,6 +75,10 @@ struct CombatConfig
     uint32 FleeMaxSec = 10;        // Bot.AI.Combat.Flee.MaxSec: after this long the bot stops running and fights back
     uint32 FleeYards = 35;         // Bot.AI.Combat.Flee.Yards: distance of the flee destination
     uint32 ApproachSec = 15;       // Bot.AI.Combat.ApproachTimeoutSec: give up a target that cannot be reached
+    bool ApproachEscalate = true;  // Bot.AI.Combat.ApproachEscalate.Enabled: repeated approach timeouts look for their cause and stop the retries
+    uint32 EscalateCount = 5;      // Bot.AI.Combat.ApproachEscalate.Count: more timeouts than this inside the window escalate
+    uint32 EscalateWindowSec = 600; // Bot.AI.Combat.ApproachEscalate.WindowSec
+    uint32 EscalateIgnoreSec = 600; // Bot.AI.Combat.ApproachEscalate.IgnoreSec: the target that timed out last is not picked again for this long
     uint32 HealBelowPct = 45;      // Bot.AI.Combat.HealBelowPct: self-heal under this health percent
     uint32 CasterRangePct = 80;    // Bot.AI.Combat.CasterRangePct: casters stand at this percent of the spell range
     uint32 FleeMaxAttempts = 3;    // Bot.AI.Combat.Flee.MaxAttempts: flee runs per fight before the bot fights back as a last resort
@@ -127,6 +133,10 @@ CombatConfig const& Cfg()
         cfg.FleeMaxSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.MaxSec", 10), 1, 120));
         cfg.FleeYards = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.Yards", 35), 10, 100));
         cfg.ApproachSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.ApproachTimeoutSec", 15), 3, 120));
+        cfg.ApproachEscalate = sConfigMgr->GetBoolDefault("Bot.AI.Combat.ApproachEscalate.Enabled", true);
+        cfg.EscalateCount = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.ApproachEscalate.Count", 5), 1, 15));
+        cfg.EscalateWindowSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.ApproachEscalate.WindowSec", 600), 30, 3600));
+        cfg.EscalateIgnoreSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.ApproachEscalate.IgnoreSec", 600), 20, 7200));
         cfg.HealBelowPct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.HealBelowPct", 45), 0, 100));
         cfg.CasterRangePct = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.CasterRangePct", 80), 30, 100));
         cfg.FleeMaxAttempts = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.MaxAttempts", 3), 1, 10));
@@ -495,6 +505,7 @@ struct FightData
     bool WeaponSkipLogged = false;   // a spell was skipped because the required weapon is missing/broken (logged once per fight)
     ObjectGuid Ignored;              // unreachable target given up
     uint32 IgnoredUntilMs = 0;
+    BotLoop::ApproachTracker Approach;   // recent APPROACH_TIMEOUT times (Bot.AI.Combat.ApproachEscalate.*)
     uint32 Picked = 0, TargetsDead = 0, Casts = 0, CastFails = 0, Heals = 0;
     uint32 LastHealMs = 0;
     std::unordered_map<uint32, uint32> LastBuffMs;   // spell id -> time of the last cast: a self buff is not recast within 25 s (the aura id may differ from the spell id); per spell, so a stance never starves Battle Shout
@@ -1186,6 +1197,22 @@ public:
                     target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), bot->isMoving() ? "true" : "false", bot->IsWithinLOSInMap(target) ? "true" : "false"), BOTLOG_WARN);
             ctx->Ignored = target->GetGUID();
             ctx->IgnoredUntilMs = now + 20000;
+            if (Cfg().ApproachEscalate && ctx->Approach.Note(now, Cfg().EscalateWindowSec * 1000) > Cfg().EscalateCount)
+            {
+                // R-V2-02: the same bot keeps timing out. Name the cause, fix it where we can, and stop picking this target for a long while.
+                uint32 const timeouts = ctx->Approach.Count;
+                BotQuest::GearInspect const gear = BotQuest::InspectCombatGear(bot);
+                BotLoop::ApproachCause const cause = BotLoop::ClassifyApproach(gear.MainNeedsWeapon, gear.RangedNeedsAmmo);
+                char const* action = "none";
+                if (cause == BotLoop::ApproachCause::Weapon)
+                    action = BotQuest::RestoreCombatWeapon(ai, bot, "approach_loop") ? "weapon_restored" : "no_weapon_available";
+                else if (cause == BotLoop::ApproachCause::Ammo)
+                    action = BotQuest::RequestAmmoTrip(ai) ? "ammo_trip_requested" : "ammo_trips_off";
+                LogDecision(ai, bot, ctx, "APPROACH_ESCALATED", StringFormat("{} approach timeouts in {} s, cause {}, action {}", timeouts, Cfg().EscalateWindowSec, BotLoop::CauseName(cause), action),
+                    StringFormat(R"("timeouts":{},"window_s":{},"cause":"{}","action":"{}","mainhand":{},"ignore_s":{})", timeouts, Cfg().EscalateWindowSec, BotLoop::CauseName(cause), action, gear.MainEntry, Cfg().EscalateIgnoreSec), BOTLOG_WARN);
+                ctx->IgnoredUntilMs = now + Cfg().EscalateIgnoreSec * 1000;
+                ctx->Approach.Clear();
+            }
             target = nullptr;
         }
 

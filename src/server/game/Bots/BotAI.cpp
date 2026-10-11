@@ -470,6 +470,15 @@ void BotAI::ChangeState(Player* bot, BotState to, char const* cause)
                 death.TargetEntry = _deathKillerEntry;
             std::string d = std::move(details);
             {
+                // what the bot was doing: the quest it worked on and the kind of task (quest, grind, trip, idle)
+                uint32 questId = 0;
+                std::string task;
+                BotQuest::ActiveTask(this, questId, task);
+                if (questId)
+                    death.QuestId = questId;
+                d += Trinity::StringFormat(R"(,"task":"{}","quest_id":{})", task, questId);
+            }
+            {
                 // death loop: consecutive deaths of this login within 5 min and 150 yd of the previous one (same map)
                 float const px = bot->GetPositionX(), py = bot->GetPositionY();
                 uint32 sinceS = 0;
@@ -1175,6 +1184,15 @@ void BotAI::EmitFightStart(Player* bot)
     BotEvent event = MakeEvent(bot, "combat", BOTLOG_INFO, "COMBAT_START", Trinity::StringFormat("combat start vs {} L{}", name, level));
     if (entry)
         event.TargetEntry = entry;
+    {
+        uint32 questId = 0;
+        std::string task;
+        BotQuest::ActiveTask(this, questId, task);
+        if (questId)
+            event.QuestId = questId;
+        d.pop_back();
+        d += Trinity::StringFormat(R"(,"task":"{}","quest_id":{}}})", task, questId);
+    }
     event.Details = std::move(d);
     Emit(std::move(event));
     _stats.LogNs.fetch_add(NowNs() - logStart, std::memory_order_relaxed);
