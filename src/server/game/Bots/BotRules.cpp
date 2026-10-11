@@ -18,6 +18,7 @@
 // Settings and shared state of the additional rules, see BotRules.h.
 
 #include "BotRules.h"
+#include "BotAvoid.h"
 #include "BotConfigReload.h"
 #include "BotTravelPlan.h"
 #include "Config.h"
@@ -33,6 +34,7 @@ Settings s_cfg;
 BotCfg::Flag s_cfgOnce;
 BotRule::StallBook s_stalls;
 BotRule::CrowdBook s_crowds;
+BotRule::ShunBook s_shun;
 
 int32 Int(char const* name, int32 def, int32 lo, int32 hi) { return std::clamp<int32>(sConfigMgr->GetIntDefault(name, def), lo, hi); }
 bool Bool(char const* name, bool def) { return sConfigMgr->GetBoolDefault(name, def); }
@@ -85,6 +87,35 @@ Settings const& Cfg()
         s.ClassMarginWeak = Int("Bot.Rules.ClassMargin.WeakClasses", 0, 0, 10);
         s.ClassMarginSturdy = Int("Bot.Rules.ClassMargin.SturdyClasses", 1, 0, 10);
 
+        s.BagFree = Bool("Bot.Rules.BagFree.Enabled", true);
+        s.BagFreeCfg.TargetFree = uint32(Int("Bot.Rules.BagFree.TargetFreeSlots", 3, 1, 20));
+        s.BagFreeCfg.RetryCooldownSec = uint32(Int("Bot.Rules.BagFree.RetryCooldownSec", 300, 30, 86400));
+
+        s.DeathLoop = Bool("Bot.Rules.DeathLoop.Enabled", true);
+        s.DeathLoopCfg.Deaths = uint32(Int("Bot.Rules.DeathLoop.Deaths", 3, 2, 4));
+        s.DeathLoopCfg.WindowSec = uint32(Int("Bot.Rules.DeathLoop.WindowSec", 1800, 60, 86400));
+        s.DeathLoopCfg.AreaYd = float(Int("Bot.Rules.DeathLoop.AreaYards", 150, 20, 2000));
+        s.DeathLoopCfg.BlockSec = uint32(Int("Bot.Rules.DeathLoop.BlockSec", 7200, 60, 172800));
+        s.DeathLoopCfg.SharedBots = uint32(Int("Bot.Rules.DeathLoop.SharedBots", 10, 0, 1000));
+        s.DeathLoopCfg.SharedSec = uint32(Int("Bot.Rules.DeathLoop.SharedSec", 7200, 60, 172800));
+
+        s.FleeEscape = Bool("Bot.Rules.FleeEscape.Enabled", true);
+        s.Escape.MeleeYd = float(Int("Bot.Rules.FleeEscape.MeleeYards", 8, 2, 30));
+        s.Escape.GraceMs = uint32(Int("Bot.Rules.FleeEscape.GraceSec", 3, 1, 30)) * 1000;
+
+        s.TargetPick = Bool("Bot.Rules.TargetPick.Enabled", true);
+        s.Pick.MaxAbove = Int("Bot.Rules.TargetPick.MaxAbove", 1, -5, 10);
+        s.Pick.GreyBelow = Int("Bot.Rules.TargetPick.GreyBelow", 4, 1, 20);
+        s.Pick.MinXp = uint32(Int("Bot.Rules.TargetPick.MinXp", 25, 0, 100000));
+
+        s.QuestFilter = Bool("Bot.Rules.QuestFilter.Enabled", true);
+        s.QuestBlocked = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.QuestFilter.BlockedQuests",
+            "92470,789,92515,92553,792,218,92544,2160,93319,92516,182,5441,60,93951"));
+        s.QuestFilterObjective = Bool("Bot.Rules.QuestFilter.UnsupportedObjectives", true);
+        s.QuestLevelSlack = uint32(Int("Bot.Rules.QuestFilter.LevelSlack", 0, 0, 10));
+        s.QuestGlobalSec = uint32(Int("Bot.Rules.QuestFilter.GlobalQuarantineSec", 3600, 60, 604800));
+        s.QuestLocalFails = uint32(Int("Bot.Rules.QuestFilter.LocalFails", 3, 1, 20));
+
         s.LogDiet = Bool("Bot.Log.Diet.Enabled", true);
         s.HourlyCaps = BotRule::ParseHourlyCaps(sConfigMgr->GetStringDefault("Bot.Log.Diet.HourlyCaps", "TARGET_PICKED:60,AGGRO_AVOID:30"));
         s.AuraDeathOnly = Bool("Bot.Log.Diet.AuraDeathOnly", true);
@@ -106,6 +137,7 @@ bool Applies(Player const* bot)
 
 BotRule::StallBook& Stalls() { return s_stalls; }
 BotRule::CrowdBook& Crowds() { return s_crowds; }
+BotRule::ShunBook& Shunned() { return s_shun; }
 
 bool Fenced(Player* bot, float x, float y, float z, uint32& zone, uint32& minLevel)
 {

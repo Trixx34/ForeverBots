@@ -66,6 +66,25 @@ namespace BotRules
         int32 ClassMarginWeak = 0;
         int32 ClassMarginSturdy = 1;
 
+        bool BagFree = true;            // Bot.Rules.BagFree.Enabled (R-V2-04)
+        BotRule::BagFreeConfig BagFreeCfg;
+
+        bool DeathLoop = true;          // Bot.Rules.DeathLoop.Enabled (R-V2-05)
+        BotRule::DeathLoopConfig DeathLoopCfg;
+
+        bool FleeEscape = true;         // Bot.Rules.FleeEscape.Enabled (R-V2-06)
+        BotRule::FleeEscapeConfig Escape;
+
+        bool TargetPick = true;         // Bot.Rules.TargetPick.Enabled (R-V2-07)
+        BotRule::TargetPickConfig Pick;
+
+        bool QuestFilter = true;        // Bot.Rules.QuestFilter.Enabled (R-V2-08)
+        std::vector<uint32> QuestBlocked;   // Bot.Rules.QuestFilter.BlockedQuests
+        bool QuestFilterObjective = true;   // Bot.Rules.QuestFilter.UnsupportedObjectives
+        uint32 QuestLevelSlack = 0;         // Bot.Rules.QuestFilter.LevelSlack: offered when MinLevel <= bot level + slack
+        uint32 QuestGlobalSec = 3600;       // Bot.Rules.QuestFilter.GlobalQuarantineSec: how long a globally dead quest stays skipped
+        uint32 QuestLocalFails = 3;         // Bot.Rules.QuestFilter.LocalFails: failures of one bot before it quarantines the quest
+
         bool LogDiet = true;            // Bot.Log.Diet.Enabled (N-09)
         std::vector<std::pair<std::string, uint32>> HourlyCaps;
         bool AuraDeathOnly = true;      // Bot.Log.Diet.AuraDeathOnly
@@ -80,6 +99,8 @@ namespace BotRules
     // Shared state: one stall clock per bot, and the crowd claims of all bots.
     TC_GAME_API BotRule::StallBook& Stalls();
     TC_GAME_API BotRule::CrowdBook& Crowds();
+    // R-V2-05: entries many bots had to block after a death loop.
+    TC_GAME_API BotRule::ShunBook& Shunned();
 
     // N-02: the zone at (x, y, z) on the bot's map is above the bot's band (its minimum level is more than Margin above the bot).
     // Fills the zone id and band when it says true. False when the rule is off, the bot is exempt or the zone is not a leveling zone.

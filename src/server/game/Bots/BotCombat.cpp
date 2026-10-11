@@ -499,6 +499,7 @@ struct FightData
     bool Fleeing = false;
     bool FleeGaveUp = false;
     bool FleeNoPath = false;
+    bool NoEscapeLogged = false;     // R-V2-06: FLEE_NO_ESCAPE for the low-hp flee is logged once per fight
     uint32 FleeStartMs = 0;
     uint32 FleeAttempts = 0;         // flee runs started in this fight
     char const* FleeReason = "";     // why the current/last flee started (level_diff, elite_level_diff, world_boss)
@@ -973,6 +974,19 @@ bool FleeFenced(Player* bot, float x, float y, float z)
     return BotRules::Fenced(bot, x, y, z, zone, minLevel);
 }
 
+// R-V2-06: a living attacker that is already on the bot and not slower than it: running only gives it free hits.
+// Null when the rule is off, the bot flees to a guard (mode 2) or no such attacker exists.
+Unit* NoEscapeFoe(Player* bot)
+{
+    BotRules::Settings const& r = BotRules::Cfg();
+    if (!r.FleeEscape || FleeModeOf(bot) == 2 || !BotRules::Applies(bot))
+        return nullptr;
+    for (Unit* u : bot->getAttackers())
+        if (u && u->IsAlive() && BotRule::NoEscape(bot->GetDistance(u), u->GetSpeed(MOVE_RUN), bot->GetSpeed(MOVE_RUN), r.Escape))
+            return u;
+    return nullptr;
+}
+
 // Picks a destination away from `from` that has a complete navmesh path. Returns false when every direction is blocked.
 bool FindFleePoint(Player* bot, Unit* from, float& ox, float& oy, float& oz, float& dirOut)
 {
@@ -1048,6 +1062,15 @@ public:
             giveUp("FLEE_GAVE_UP", "the mob is still on us, fights back");
             return false;
         }
+        if (ai->GetNowMs() - ctx->FleeStartMs >= BotRules::Cfg().Escape.GraceMs)
+        {
+            if (Unit* foe = NoEscapeFoe(bot))
+            {
+                giveUp("FLEE_NO_ESCAPE", StringFormat("{} L{} keeps up (speed {:.1f} vs {:.1f}, {:.0f} yd), running only gives it free hits", foe->GetName(), uint32(foe->GetLevel()),
+                    foe->GetSpeed(MOVE_RUN), bot->GetSpeed(MOVE_RUN), bot->GetDistance(foe)).c_str());
+                return false;
+            }
+        }
         if (!ai->Motion().HasGoal())
         {
             giveUp("FLEE_ENDED", "reached the flee destination while still in combat");
@@ -1082,6 +1105,17 @@ public:
             {
                 from = u;
                 best = bot->GetDistance(u);
+            }
+        if (from)
+            if (Unit* foe = NoEscapeFoe(bot))
+            {
+                if (!ctx->NoEscapeLogged)
+                {
+                    ctx->NoEscapeLogged = true;
+                    LogDecision(ai, bot, ctx, "FLEE_NO_ESCAPE", StringFormat("low health but {} L{} is on us and as fast (speed {:.1f} vs {:.1f}): fights on instead of running", foe->GetName(), uint32(foe->GetLevel()), foe->GetSpeed(MOVE_RUN), bot->GetSpeed(MOVE_RUN)),
+                        StringFormat(R"("flee_reason":"low_hp","hp_pct":{:.0f},"attackers":{},"foe_entry":{},"foe_speed":{:.2f},"bot_speed":{:.2f},"dist":{:.1f})", bot->GetHealthPct(), bot->getAttackers().size(), foe->GetEntry(), foe->GetSpeed(MOVE_RUN), bot->GetSpeed(MOVE_RUN), bot->GetDistance(foe)), BOTLOG_WARN);
+                }
+                return false;
             }
         float fx, fy, fz, dir;
         if (!from || !FindFleePoint(bot, from, fx, fy, fz, dir))
@@ -1574,6 +1608,8 @@ private:
                 why = "FLEE_DISABLED";
             else if (ctx->FleeAttempts >= Cfg().FleeMaxAttempts)
                 why = "FLEE_ALREADY_TRIED";
+            else if (NoEscapeFoe(bot))
+                why = "FLEE_NO_ESCAPE";   // R-V2-06: an attacker is on the bot and as fast: fight back
             else
             {
                 float fx, fy, fz, dir;

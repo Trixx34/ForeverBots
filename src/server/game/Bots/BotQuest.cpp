@@ -59,6 +59,7 @@
 #include "SpellMgr.h"
 #include "DatabaseEnv.h"
 #include "GameObject.h"
+#include "Formulas.h"
 #include "Item.h"
 #include "ItemTemplate.h"
 #include "Log.h"
@@ -1137,6 +1138,7 @@ std::shared_mutex g_deadMx;
 std::unordered_map<uint32, DeadQuest> g_dead;
 constexpr uint32 DEAD_FAILS = 10;
 constexpr uint32 DEAD_MS = 3600 * 1000;
+uint32 DeadMs() { return BotRules::Cfg().QuestFilter ? BotRules::Cfg().QuestGlobalSec * 1000 : DEAD_MS; }   // R-V2-08
 
 bool GloballyDead(uint32 questId)
 {
@@ -1155,7 +1157,7 @@ bool NoteQuestFail(uint32 questId)
     if (++d.Fails < DEAD_FAILS)
         return false;
     d.Fails = 0;
-    d.UntilMs = std::max<uint32>(1, getMSTime() + DEAD_MS);
+    d.UntilMs = std::max<uint32>(1, getMSTime() + DeadMs());
     return true;
 }
 
@@ -1329,7 +1331,7 @@ bool IsReachCode(char const* code)
 }
 
 // Death history. Per bot the last few deaths (kept in the context), globally the recent death places of all bots (for spawn choice).
-struct DeathRec { uint32 Map = 0; float X = 0, Y = 0; uint32 Quest = 0; uint32 Ms = 0; };
+struct DeathRec { uint32 Map = 0; float X = 0, Y = 0; uint32 Quest = 0; uint32 Ms = 0; uint32 Killer = 0; };
 std::mutex g_deathMx;
 std::deque<DeathRec> g_deathAreas;
 constexpr size_t DEATH_AREAS_MAX = 600;
@@ -1396,11 +1398,14 @@ public:
         d.Y = bot->GetPositionY();
         d.Quest = T.Quest;
         d.Ms = getMSTime();
+        d.Killer = ai->DeathKillerEntry();
         DeathRec const prev = Deaths[0];
         for (size_t i = Deaths.size() - 1; i > 0; --i)
             Deaths[i] = Deaths[i - 1];
         Deaths[0] = d;
         NoteDeathArea(d);
+        if (NoteDeathLoopV2(ai, bot, d))
+            return;
         if (!Cfg().DeathLoop || !prev.Ms || uint32(d.Ms - prev.Ms) > 600 * 1000)
             return;
         bool const sameQuest = d.Quest && d.Quest == prev.Quest;
@@ -1430,6 +1435,63 @@ public:
         sBotMgr->LogEvent(std::move(ev));
     }
 
+    // R-V2-05: three deaths to the same killer entry, or in the same area, inside the window: block that entry and that area for this
+    // bot, drop the task and the quest in progress, and tell the shared avoid list. True when the rule acted.
+    bool NoteDeathLoopV2(BotAI* ai, Player* bot, DeathRec const& d)
+    {
+        BotRules::Settings const& vr = BotRules::Cfg();
+        if (!vr.DeathLoop || !BotRules::Applies(bot))
+            return false;
+        BotRule::DeathLoopConfig const& dl = vr.DeathLoopCfg;
+        BotRule::DeathNote notes[4];
+        for (size_t i = 0; i < Deaths.size() && i < 4; ++i)
+            notes[i] = { Deaths[i].Map, Deaths[i].X, Deaths[i].Y, Deaths[i].Killer, Deaths[i].Ms };
+        BotRule::DeathLoopHit const h = BotRule::DeathLoopCount(notes, 4, dl.WindowSec * 1000, dl.AreaYd);
+        bool const byKiller = d.Killer && h.ByKiller >= dl.Deaths;
+        bool const byArea = h.ByArea >= dl.Deaths;
+        if (!byKiller && !byArea)
+            return false;
+        uint32 const now = ai->GetNowMs();
+        uint32 const durMs = dl.BlockSec * 1000;
+        bool shared = false;
+        if (byKiller)
+        {
+            Shun.AddKiller(d.Killer, now, durMs);
+            shared = BotRules::Shunned().Note(d.Killer, bot->GetGUID().GetCounter(), getMSTime(), dl.SharedBots, dl.SharedSec * 1000);
+        }
+        if (byArea)
+            Shun.AddArea(d.Map, d.X, d.Y, dl.AreaYd, now, durMs);
+        uint32 quest = 0;
+        for (uint32 qid : { d.Quest, Deaths[1].Quest })
+            if (qid)
+            {
+                Blacklist[qid] = now + durMs;
+                if (!quest)
+                    quest = qid;
+            }
+        ReleaseLoot();
+        T = Task();
+        GoalFails = 0;
+        ExpectGoal = false;
+        NextChooseMs = 0;
+        LastWasGrind = false;
+        ++LoopBreaks;
+        ++ShunBlocks;
+        BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_WARN, "DEATH_LOOP_BLOCK",
+            StringFormat("{} deaths in {} min ({} by killer {}, {} in the same area): killer {} and area blocked for {} min{}", h.Total, dl.WindowSec / 60, h.ByKiller, d.Killer, h.ByArea,
+                byKiller ? "entry" : "none", dl.BlockSec / 60, shared ? ", killer is now on the shared avoid list" : ""));
+        if (quest)
+            ev.QuestId = quest;
+        ev.TargetEntry = d.Killer;
+        ev.Details = StringFormat(R"({{"killer":{},"by_killer":{},"by_area":{},"total":{},"window_s":{},"area_yd":{:.0f},"block_s":{},"quest":{},"blocked_killer":{},"blocked_area":{},"shared":{},"shared_total":{},"x":{:.0f},"y":{:.0f},"map":{}}})",
+            d.Killer, h.ByKiller, h.ByArea, h.Total, dl.WindowSec, dl.AreaYd, dl.BlockSec, quest, byKiller, byArea, shared, BotRules::Shunned().SharedCount(getMSTime()), d.X, d.Y, d.Map);
+        sBotMgr->LogEvent(std::move(ev));
+        return true;
+    }
+
+    BotRule::AvoidBook Shun;                     // R-V2-05: killer entries and areas this bot keeps away from
+    uint32 ShunBlocks = 0;                       // R-V2-05: death loop blocks so far
+    uint32 ShunSkips = 0;                        // R-V2-05: grind candidates skipped because of the block lists
     std::array<DeathRec, 4> Deaths{};            // newest first
     uint32 LoopBreaks = 0;
     // cache of the leg gate's bot-state part (recent death, hostile mobs 2+ levels above around the bot)
@@ -1513,6 +1575,9 @@ public:
     uint32 LeaveCooldownMs = 0;                     // earliest next ZONE_LEAVE
     uint8 BagPressureLevel = 0;                     // N-05: BAG_PRESSURE is logged once per level
     uint32 NextPressureMs = 0;                      // N-05: earliest next early vendor trip (a bag full of unsellable items must not loop)
+    uint32 PickLogMs = 0;                           // R-V2-07: earliest next TARGET_SKIP_LOW_XP row
+    uint32 VendorRetryMs = 0;                       // R-V2-04: no forced vendor trip before this (the last visit freed no slot)
+    uint32 VendorRetryLogMs = 0;                    // R-V2-04: VENDOR_RETRY_WAIT is logged once per wait
     uint32 CrowdLogMs = 0;                          // earliest next CROWD_SPREAD row
 
     bool Blacklisted(uint32 quest, uint32 now) const
@@ -2067,17 +2132,18 @@ private:
             uint8& n = c.Repeats[(uint64(questId) << 32) | entry];
             if (n < 250)
                 ++n;
-            if (n >= 3)
+            uint32 const localMax = BotRules::Cfg().QuestFilter ? BotRules::Cfg().QuestLocalFails : 3;   // R-V2-08
+            if (n >= localMax)
             {
                 blacklistSec = 6 * 3600;
-                if (n == 3)
+                if (n == localMax)
                     Blocked(ai, bot, c, questId, "QUEST_QUARANTINED", StringFormat("quest '{}' failed {} times ({}) at npc/mob {}, skipped for 6 h", QuestTitle(questId), n, code, entry),
                         StringFormat(R"({{"last_code":"{}","repeats":{}}})", code, n), entry);
             }
             else
                 blacklistSec *= n;
             if (NoteQuestFail(questId))
-                Blocked(ai, bot, c, questId, "QUEST_QUARANTINED_GLOBAL", StringFormat("quest '{}' failed for {} drops across bots ({}), skipped by all bots for 1 h", QuestTitle(questId), DEAD_FAILS, code),
+                Blocked(ai, bot, c, questId, "QUEST_QUARANTINED_GLOBAL", StringFormat("quest '{}' failed for {} drops across bots ({}), skipped by all bots for {} min", QuestTitle(questId), DEAD_FAILS, code, DeadMs() / 60000),
                     StringFormat(R"({{"last_code":"{}","npc":{}}})", code, entry), entry);
         }
         if (questId)
@@ -2455,6 +2521,8 @@ private:
         // not for this race/class: silent (the quest exists, just not for this bot)
         if (!bot->SatisfyQuestRace(q, false) || !bot->SatisfyQuestClass(q, false))
             return 0.0f;
+        BotRules::Settings const& qf = BotRules::Cfg();
+        bool const filterOn = qf.QuestFilter && BotRules::Applies(bot);
 
         bool canLog = logBlocks && dist <= 120.0f && c.SelBlocks < Cfg().SelBlockCap;
         auto block = [&](char const* code, std::string summary, uint32 entry = 0)
@@ -2466,6 +2534,19 @@ private:
             }
             return 0.0f;
         };
+
+        if (filterOn)
+        {
+            // R-V2-08: ids that failed on many bots in earlier runs, and criteria-tree objectives the bots cannot work on
+            if (BotRule::QuestListed(qf.QuestBlocked, ref.Quest))
+                return block("QUEST_FILTERED", StringFormat("quest '{}' is on the blocked list (known to fail for bots)", q->GetLogTitle()));
+            if (qf.QuestFilterObjective)
+                for (QuestObjective const& o : q->GetObjectives())
+                    if (o.Type == QUEST_OBJECTIVE_CRITERIA_TREE)
+                        return block("QUEST_FILTERED", StringFormat("quest '{}' has a criteria-tree objective the bots cannot work on", q->GetLogTitle()));
+            if (bot->GetQuestMinLevel(q) > int32(bot->GetLevel()) + int32(qf.QuestLevelSlack))
+                return block("QUEST_LEVEL", StringFormat("quest '{}' needs level {} (bot {}, slack {})", q->GetLogTitle(), bot->GetQuestMinLevel(q), bot->GetLevel(), qf.QuestLevelSlack));
+        }
 
         Block const& blk = CachedAnalysis(q);
         if (blk.Code)
@@ -2740,6 +2821,18 @@ private:
             return false;
         if (EffectiveDiff(bot, m) > Cfg().GrindMaxGap)
             return false;
+        if (BotRules::Cfg().DeathLoop && BotRules::Applies(bot))
+        {
+            // R-V2-05: killers this bot died to repeatedly, killers many bots gave up on, and the area of the death loop
+            if (c.Shun.KillerBlocked(m->GetEntry(), now) || BotRules::Shunned().Shared(m->GetEntry(), getMSTime()) ||
+                c.Shun.AreaBlocked(m->GetMapId(), m->GetPositionX(), m->GetPositionY(), now))
+            {
+                ++c.ShunSkips;
+                return false;
+            }
+        }
+        if (BotRules::Cfg().TargetPick && BotRules::Applies(bot) && EffectiveDiff(bot, m) > BotRules::Cfg().Pick.MaxAbove)
+            return false;   // R-V2-07: never grind above the cap
         if (Cfg().GrindMaxRadius > 0.0f && c.GrindAnchorMap == m->GetMapId() && Dist2D(c.GrindAnchorX, c.GrindAnchorY, m->GetPositionX(), m->GetPositionY()) > Cfg().GrindMaxRadius)
             return false;
         return true;
@@ -2807,17 +2900,49 @@ private:
             t.ScanOk = 0;
             Creature* best = nullptr;
             float bd = 1e9f;
+            // R-V2-07: a mob 4+ levels below that gives hardly any XP is only taken when no better candidate is in reach
+            Creature* lowBest = nullptr;
+            float lowBd = 1e9f;
+            uint32 lowSeen = 0, lowXp = 0;
+            BotRules::Settings const& pr = BotRules::Cfg();
+            bool const pickRule = pr.TargetPick && BotRules::Applies(bot);
             for (Creature* m : list)
             {
                 if (!GrindMob(bot, c, t, m, now))
                     continue;
                 ++t.ScanOk;
                 float d = bot->GetExactDist2d(m);
+                if (pickRule)
+                {
+                    uint32 const xp = Trinity::XP::BaseGain(bot->GetLevel(), m->GetLevel());
+                    if (BotRule::LowValueTarget(int32(m->GetLevel()) - int32(bot->GetLevel()), xp, pr.Pick))
+                    {
+                        ++lowSeen;
+                        if (d < lowBd && !HighGapMobNear(bot, list, m) && !BotAggroGuarded(ai, bot, m))
+                        {
+                            lowBd = d;
+                            lowBest = m;
+                            lowXp = xp;
+                        }
+                        continue;
+                    }
+                }
                 if (d < bd && !HighGapMobNear(bot, list, m) && !BotAggroGuarded(ai, bot, m))
                 {
                     bd = d;
                     best = m;
                 }
+            }
+            if (!best && lowBest)
+            {
+                best = lowBest;
+                bd = lowBd;
+            }
+            else if (best && lowSeen && BotLoop::Reached(now, c.PickLogMs))
+            {
+                c.PickLogMs = now + 120 * 1000;
+                Decision(ai, bot, "TARGET_SKIP_LOW_XP", StringFormat("skipped {} low-xp mobs ({}+ levels below, under {} xp) for {} L{}", lowSeen, pr.Pick.GreyBelow, pr.Pick.MinXp, best->GetName(), uint32(best->GetLevel())), 0, best->GetEntry(),
+                    StringFormat(R"({{"skipped":{},"grey_below":{},"min_xp":{},"nearest_skipped_xp":{},"picked_level":{},"bot_level":{},"picked_dist":{:.0f}}})", lowSeen, pr.Pick.GreyBelow, pr.Pick.MinXp, lowXp, uint32(best->GetLevel()), uint32(bot->GetLevel()), bd));
             }
             if (best)
             {
@@ -2872,6 +2997,8 @@ private:
                         continue;
                     if (Cfg().GrindMaxRadius > 0.0f && c.GrindAnchorMap == bot->GetMapId() && Dist2D(c.GrindAnchorX, c.GrindAnchorY, p.X, p.Y) > Cfg().GrindMaxRadius)
                         continue;
+                    if (!c.Shun.Areas.empty() && c.Shun.AreaBlocked(bot->GetMapId(), p.X, p.Y, now))
+                        continue;   // R-V2-05
                     float d = Dist2D(p.X, p.Y, bot->GetPositionX(), bot->GetPositionY());
                     if (d < bd)
                     {
@@ -2896,7 +3023,7 @@ private:
             {
                 c.IdleLoggedLevel = bot->GetLevel();
                 Blocked(ai, bot, c, 0, "NO_GRIND_TARGET", StringFormat("no hostile spawn within 500 yd to grind at level {}", bot->GetLevel()),
-                    StringFormat(R"({{"idle_reason":"NO_GRIND_TARGET","map":{},"x":{:.0f},"y":{:.0f}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY()), 0, false, BOTLOG_WARN);
+                    StringFormat(R"({{"idle_reason":"NO_GRIND_TARGET","map":{},"x":{:.0f},"y":{:.0f},"shun_skips":{},"shun_blocks":{}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), c.ShunSkips, c.ShunBlocks), 0, false, BOTLOG_WARN);
             }
             return false;
         }
@@ -3985,10 +4112,18 @@ private:
 
         // 2. vendor
         uint32 const freeSlots = bot->GetFreeInventorySlotCount();
-        bool const forced = c.VendorNow;
+        BotRules::Settings const& rules = BotRules::Cfg();
+        // R-V2-04: a forced trip (reward or loot did not fit) waits while the last visit freed no slot
+        bool const retryWait = c.VendorNow && rules.BagFree && BotRules::Applies(bot) && !BotLoop::Reached(now, c.VendorRetryMs);
+        bool const forced = c.VendorNow && !retryWait;
+        if (retryWait && c.VendorRetryLogMs != c.VendorRetryMs)
+        {
+            c.VendorRetryLogMs = c.VendorRetryMs;
+            Decision(ai, bot, "VENDOR_RETRY_WAIT", StringFormat("bags still full ({} free), the last vendor visit freed no slot: next forced trip in {} s", freeSlots, uint32(c.VendorRetryMs - now) / 1000), 0, 0,
+                StringFormat(R"({{"free_slots":{},"wait_s":{},"cooldown_s":{}}})", freeSlots, uint32(c.VendorRetryMs - now) / 1000, rules.BagFreeCfg.RetryCooldownSec));
+        }
         bool const full = freeSlots <= 1;
         // N-05: plan the vendor trip before the bags are full (a vendor within Bot.Rules.BagPressure.VendorYards only)
-        BotRules::Settings const& rules = BotRules::Cfg();
         bool const pressure = rules.BagPressure && !full && BotLoop::Reached(now, c.NextPressureMs) && BotRule::BagPressure(freeSlots, rules.Bag) && BotRules::Applies(bot);
         uint64 const repairCost = RepairCost(bot);
         bool const needRepair = repairCost >= 150 && bot->GetMoney() >= repairCost * 2;
@@ -4229,6 +4364,56 @@ private:
             if (sold.size() < 120)
                 sold += StringFormat("{}{}", sold.empty() ? "" : ",", entry);
         }
+        // R-V2-04: the bags are still (nearly) full after the usual junk: sell cheap poor/white weapons, armor and junk that are no upgrade
+        BotRules::Settings const& vr = BotRules::Cfg();
+        uint32 nExtra = 0, extraCands = 0;
+        std::string extraSold;
+        if (vr.BagFree && BotRules::Applies(bot) && bot->GetFreeInventorySlotCount() < vr.BagFreeCfg.TargetFree)
+        {
+            std::vector<std::pair<uint32, Item*>> extra;   // sell price, item
+            bot->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
+            {
+                ItemTemplate const* proto = item->GetTemplate();
+                if (!proto || item->IsBag() || IsToolTemplate(proto))
+                    return ItemSearchCallbackResult::Continue;
+                bool const questItem = proto->GetClass() == ITEM_CLASS_QUEST || proto->GetStartQuest() || bot->HasQuestForItem(item->GetEntry());
+                if (!BotRule::ExtraSellable(proto->GetClass(), proto->GetQuality(), questItem, proto->GetSellPrice() != 0))
+                    return ItemSearchCallbackResult::Continue;
+                if (proto->GetClass() == ITEM_CLASS_MISCELLANEOUS && proto->GetSubClass() != 0)   // only the junk subclass, not pets, mounts or reagents
+                    return ItemSearchCallbackResult::Continue;
+                if (proto->IsArmor() || proto->IsWeapon())
+                {
+                    GearChoice gc;
+                    if (bot->CanUseItem(proto, true) == EQUIP_ERR_OK && BestGearSlot(bot, proto, gc))
+                        return ItemSearchCallbackResult::Continue;   // an upgrade or a first piece for an empty slot: keep
+                }
+                extra.push_back({ proto->GetSellPrice() * item->GetCount(), item });
+                return ItemSearchCallbackResult::Continue;
+            });
+            extraCands = uint32(extra.size());
+            std::stable_sort(extra.begin(), extra.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+            for (auto const& [price, item] : extra)
+            {
+                if (bot->GetFreeInventorySlotCount() >= vr.BagFreeCfg.TargetFree)
+                    break;
+                uint32 const entry = item->GetEntry();
+                auto refusal = bot->CanSellItemToVendor(item, item->GetCount());
+                if (!refusal)
+                    refusal = bot->SellItemToVendor(item, item->GetCount());
+                if (refusal)
+                {
+                    ++nRefused;
+                    continue;
+                }
+                ++nExtra;
+                ++nStacks;
+                if (extraSold.size() < 120)
+                    extraSold += StringFormat("{}{}", extraSold.empty() ? "" : ",", entry);
+            }
+            if (nExtra)
+                Decision(ai, bot, "BAG_FREED", StringFormat("bags were full: sold {} more poor/white stacks, free slots {} -> {}", nExtra, freeBefore, bot->GetFreeInventorySlotCount()), 0, npc->GetEntry(),
+                    StringFormat(R"({{"extra_candidates":{},"extra_sold":{},"free_before":{},"free_after":{},"target_free":{},"items":[{}]}})", extraCands, nExtra, freeBefore, bot->GetFreeInventorySlotCount(), vr.BagFreeCfg.TargetFree, extraSold));
+        }
         uint32 const freeAfter = bot->GetFreeInventorySlotCount();
         {
             // Always logged (R-V2-04 evidence): what was sold, what the vendor refused, and what is still in the bags after the visit
@@ -4244,12 +4429,35 @@ private:
                 return ItemSearchCallbackResult::Continue;
             });
             Decision(ai, bot, "VENDOR_RESULT", StringFormat("vendor {}: {} of {} junk stacks sold, free slots {} -> {}", npc->GetEntry(), nStacks, sells.size(), freeBefore, freeAfter), 0, npc->GetEntry(),
-                StringFormat(R"({{"candidates":{},"sold":{},"refused":{},"first_refusal":{},"free_before":{},"free_after":{},"bag_items":{},"white_or_better":{},"starts_quest":{},"copper":{}}})",
-                    sells.size(), nStacks, nRefused, firstRefusal, freeBefore, freeAfter, bagItems, whiteItems, questItems, bot->GetMoney() - money0));
+                StringFormat(R"({{"candidates":{},"sold":{},"refused":{},"first_refusal":{},"free_before":{},"free_after":{},"bag_items":{},"white_or_better":{},"starts_quest":{},"copper":{},"extra_candidates":{},"extra_sold":{}}})",
+                    sells.size(), nStacks, nRefused, firstRefusal, freeBefore, freeAfter, bagItems, whiteItems, questItems, bot->GetMoney() - money0, extraCands, nExtra));
         }
         c.T.SoldStacks = nStacks;
         c.T.SoldCopper = uint32(bot->GetMoney() - money0);
         c.T.FreeBefore = freeBefore;
+        if (vr.BagFree && BotRules::Applies(bot) && BotRule::VendorFreedNothing(freeBefore, freeAfter, 1))
+        {
+            // R-V2-04: the visit freed nothing and the bags are full: say what is in them and do not force another trip right away
+            c.VendorRetryMs = now + vr.BagFreeCfg.RetryCooldownSec * 1000;
+            uint32 nQuest = 0, nGear = 0, nOther = 0, nWhitePlus = 0;
+            bot->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
+            {
+                ItemTemplate const* proto = item->GetTemplate();
+                if (!proto)
+                    return ItemSearchCallbackResult::Continue;
+                if (proto->GetClass() == ITEM_CLASS_QUEST || proto->GetStartQuest() || bot->HasQuestForItem(item->GetEntry()))
+                    ++nQuest;
+                else if (proto->IsArmor() || proto->IsWeapon())
+                    ++nGear;
+                else
+                    ++nOther;
+                if (proto->GetQuality() > ITEM_QUALITY_NORMAL)
+                    ++nWhitePlus;
+                return ItemSearchCallbackResult::Continue;
+            });
+            Blocked(ai, bot, c, 0, "BAG_STILL_FULL", StringFormat("vendor {} freed no slot: {} free, {} quest items, {} gear, {} other, {} green or better", npc->GetEntry(), freeAfter, nQuest, nGear, nOther, nWhitePlus),
+                StringFormat(R"({{"free_before":{},"free_after":{},"quest_items":{},"gear":{},"other":{},"green_or_better":{},"retry_s":{}}})", freeBefore, freeAfter, nQuest, nGear, nOther, nWhitePlus, vr.BagFreeCfg.RetryCooldownSec), npc->GetEntry(), false);
+        }
         if (nStacks)
             Decision(ai, bot, "SOLD_ITEMS", StringFormat("sold {} stacks ({} grey, {} unusable) for {} copper", nStacks, nGrey, nUnusable, bot->GetMoney() - money0), 0, npc->GetEntry(),
                 StringFormat(R"({{"grey":{},"unusable":{},"copper":{},"free_before":{},"free_after":{},"items":[{}]}})", nGrey, nUnusable, bot->GetMoney() - money0, freeBefore, freeAfter, sold));

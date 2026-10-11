@@ -143,6 +143,8 @@ public:
     // --- for engine objects (valid during a tick or a control call) ---
     Player* GetTickBot() const { return _tickBot; }
     uint32 GetNowMs() const { return _nowMs; }
+    // Entry of the creature that killed the bot in its latest death (0: unknown or a player); valid while the bot is dead.
+    uint32 DeathKillerEntry() const { return _deathKillerEntry; }
     uint32 GetIdleMs() const { return _nowMs - _lastActionMs; }
     uint32 GetStateAgeMs() const { return _nowMs - _stateSinceMs; }
     Trigger* GetTrigger(std::string const& name);

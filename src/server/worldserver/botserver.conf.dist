@@ -1754,7 +1754,7 @@ Bot.AI.Ammo.BuyTarget = 400
 #    Bot.AI.Ammo.CooldownSec
 #        Description: Minimum seconds between ammo trips of one bot.
 #        Default:     300
-#        Values:      whole number 30 to 7200 (seconds)
+#        Values:      whole number 30 to 86400 (seconds)
 Bot.AI.Ammo.CooldownSec = 300
 
 #
@@ -2449,7 +2449,7 @@ Bot.AI.Loot.Improved.Enabled = 0
 #    Bot.AI.Loot.Improved.MaxYards
 #        Description: Spawns farther than this (straight line or by path) are skipped.
 #        Default:     150
-#        Values:      whole number 20 to 1000 (yards)
+#        Values:      whole number 20 to 2000 (yards)
 Bot.AI.Loot.Improved.MaxYards = 150
 
 #
@@ -3736,7 +3736,7 @@ Bot.Duel.BotVsBot.Enabled = 0
 #    Bot.Duel.BotVsBot.IntervalSec
 #        Description: Least time between two looks for a sparring partner, per bot.
 #        Default:     240
-#        Values:      whole number 30 to 7200 (seconds)
+#        Values:      whole number 30 to 86400 (seconds)
 Bot.Duel.BotVsBot.IntervalSec = 240
 
 #
@@ -3975,7 +3975,7 @@ Bot.Rules.Crowd.Cap = 8
 #    Bot.Rules.Crowd.RadiusYards
 #        Description: Radius around the quest giver, hub or grind anchor in which bots are counted.
 #        Default:     150
-#        Values:      whole number 20 to 1000 (yards)
+#        Values:      whole number 20 to 2000 (yards)
 Bot.Rules.Crowd.RadiusYards = 150
 
 #
@@ -4046,6 +4046,154 @@ Bot.Rules.ClassMargin.WeakClasses = 0
 #        Default:     1
 #        Values:      whole number 0 to 10 (levels)
 Bot.Rules.ClassMargin.SturdyClasses = 1
+#
+#    Bot.Rules.BagFree.Enabled
+#        Description: R-V2-04. When a vendor visit leaves fewer than TargetFreeSlots bag slots free, sell cheap poor and white
+#                     weapons, armor and junk that are no upgrade (never quest items, tools or trade goods), cheapest first. A visit
+#                     that frees nothing blocks forced vendor trips for RetryCooldownSec. Rows: BAG_FREED, BAG_STILL_FULL, VENDOR_RETRY_WAIT.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.BagFree.Enabled = 1
+#
+#    Bot.Rules.BagFree.TargetFreeSlots
+#        Description: Free slots the extra sell pass aims for.
+#        Default:     3
+#        Values:      whole number 1 to 20
+Bot.Rules.BagFree.TargetFreeSlots = 3
+#
+#    Bot.Rules.BagFree.RetryCooldownSec
+#        Description: Seconds without a forced vendor trip after a visit that freed no slot.
+#        Default:     300
+#        Values:      whole number 30 to 86400
+Bot.Rules.BagFree.RetryCooldownSec = 300
+#
+#    Bot.Rules.DeathLoop.Enabled
+#        Description: R-V2-05. Deaths of a bot to the same killer entry, or inside one area, within WindowSec block that killer and that area
+#                     for the bot (grind scans skip them), drop the task and blacklist the quest. An entry blocked by SharedBots bots
+#                     is avoided by all bots. Row: DEATH_LOOP_BLOCK; NO_GRIND_TARGET gains shun_skips and shun_blocks.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.DeathLoop.Enabled = 1
+#
+#    Bot.Rules.DeathLoop.Deaths
+#        Description: Deaths that make a loop.
+#        Default:     3
+#        Values:      whole number 2 to 4
+Bot.Rules.DeathLoop.Deaths = 3
+#
+#    Bot.Rules.DeathLoop.WindowSec
+#        Description: Window the deaths are counted in.
+#        Default:     1800
+#        Values:      whole number 60 to 86400 (seconds)
+Bot.Rules.DeathLoop.WindowSec = 1800
+#
+#    Bot.Rules.DeathLoop.AreaYards
+#        Description: Radius of the blocked area around the newest death.
+#        Default:     150
+#        Values:      whole number 20 to 2000 (yards)
+Bot.Rules.DeathLoop.AreaYards = 150
+#
+#    Bot.Rules.DeathLoop.BlockSec
+#        Description: How long the killer entry, the area and the quest stay blocked for the bot.
+#        Default:     7200
+#        Values:      whole number 60 to 172800 (seconds)
+Bot.Rules.DeathLoop.BlockSec = 7200
+#
+#    Bot.Rules.DeathLoop.SharedBots
+#        Description: Distinct bots that blocked an entry before all bots avoid it. 0 disables sharing.
+#        Default:     10
+#        Values:      whole number 0 to 1000
+Bot.Rules.DeathLoop.SharedBots = 10
+#
+#    Bot.Rules.DeathLoop.SharedSec
+#        Description: How long a shared avoid entry lasts.
+#        Default:     7200
+#        Values:      whole number 60 to 172800 (seconds)
+Bot.Rules.DeathLoop.SharedSec = 7200
+#
+#    Bot.Rules.FleeEscape.Enabled
+#        Description: R-V2-06. Do not flee from an attacker that is within MeleeYards and at least as fast as the bot: running only
+#                     gives it free hits, the bot fights on. Row: FLEE_NO_ESCAPE (also as the reason of FIGHT_TOO_STRONG). Not used
+#                     when the bot flees to a guard.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.FleeEscape.Enabled = 1
+#
+#    Bot.Rules.FleeEscape.MeleeYards
+#        Description: Distance at which an attacker counts as on the bot.
+#        Default:     8
+#        Values:      whole number 2 to 30 (yards)
+Bot.Rules.FleeEscape.MeleeYards = 8
+#
+#    Bot.Rules.FleeEscape.GraceSec
+#        Description: Seconds a flee in progress gets before the check gives it up.
+#        Default:     3
+#        Values:      whole number 1 to 30
+Bot.Rules.FleeEscape.GraceSec = 3
+#
+#    Bot.Rules.TargetPick.Enabled
+#        Description: R-V2-07. Grind target choice: never a mob more than MaxAbove levels above the bot, and mobs GreyBelow or more
+#                     levels below that give under MinXp experience are only taken when nothing better is in reach. Row:
+#                     TARGET_SKIP_LOW_XP (at most one per 2 minutes per bot).
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.TargetPick.Enabled = 1
+#
+#    Bot.Rules.TargetPick.MaxAbove
+#        Description: Highest mob level above the bot for grind targets.
+#        Default:     1
+#        Values:      whole number -5 to 10
+Bot.Rules.TargetPick.MaxAbove = 1
+#
+#    Bot.Rules.TargetPick.GreyBelow
+#        Description: Levels below the bot from which a mob can count as low value.
+#        Default:     4
+#        Values:      whole number 1 to 20
+Bot.Rules.TargetPick.GreyBelow = 4
+#
+#    Bot.Rules.TargetPick.MinXp
+#        Description: Experience under which such a mob is low value.
+#        Default:     25
+#        Values:      whole number 0 to 100000
+Bot.Rules.TargetPick.MinXp = 25
+#
+#    Bot.Rules.QuestFilter.Enabled
+#        Description: R-V2-08. Quest offer filter: ids on BlockedQuests and quests with criteria-tree objectives are not offered,
+#                     quests whose minimum level is above bot level + LevelSlack are not offered, and the quarantine thresholds are
+#                     configurable. Row: QUEST_FILTERED (reason code, once per bot and quest), QUEST_QUARANTINED rows use the values below.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.QuestFilter.Enabled = 1
+#
+#    Bot.Rules.QuestFilter.BlockedQuests
+#        Description: Comma separated quest ids that are never offered (ids that failed on many bots in earlier runs).
+#        Default:     "92470,789,92515,92553,792,218,92544,2160,93319,92516,182,5441,60,93951"
+#        Values:      quest ids
+Bot.Rules.QuestFilter.BlockedQuests = "92470,789,92515,92553,792,218,92544,2160,93319,92516,182,5441,60,93951"
+#
+#    Bot.Rules.QuestFilter.UnsupportedObjectives
+#        Description: Do not offer quests that have a criteria-tree objective (type 14), optional ones included.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.QuestFilter.UnsupportedObjectives = 1
+#
+#    Bot.Rules.QuestFilter.LevelSlack
+#        Description: Quests are offered only when their minimum level is at most bot level + this value (the usual level check stays on).
+#        Default:     0
+#        Values:      whole number 0 to 10
+Bot.Rules.QuestFilter.LevelSlack = 0
+#
+#    Bot.Rules.QuestFilter.GlobalQuarantineSec
+#        Description: How long a quest that failed for 10 drops across bots is skipped by all bots.
+#        Default:     3600
+#        Values:      whole number 60 to 604800 (seconds)
+Bot.Rules.QuestFilter.GlobalQuarantineSec = 3600
+#
+#    Bot.Rules.QuestFilter.LocalFails
+#        Description: Failures of one bot at one quest step before that bot quarantines the quest for 6 hours.
+#        Default:     3
+#        Values:      whole number 1 to 20
+Bot.Rules.QuestFilter.LocalFails = 3
 
 #
 #    Bot.Log.Diet.Enabled

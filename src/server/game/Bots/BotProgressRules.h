@@ -569,6 +569,230 @@ namespace BotRule
             return ++N > cap;
         }
     };
+    // ---- R-V2-04: free bag slots ---------------------------------------------------------------------------------------------
+
+    struct BagFreeConfig
+    {
+        uint32_t TargetFree = 3;         // the extra sell pass stops when this many slots are free
+        uint32_t RetryCooldownSec = 300; // after a vendor visit that freed nothing, no forced trip for this long
+    };
+
+    // A vendor visit that left the bags full and did not free a slot (freeAfter <= freeBefore); `fullAt` is the largest free count
+    // that still counts as full.
+    inline bool VendorFreedNothing(uint32_t freeBefore, uint32_t freeAfter, uint32_t fullAt)
+    {
+        return freeAfter <= fullAt && freeAfter <= freeBefore;
+    }
+
+    // Item kinds the extra sell pass may consider (poor or white quality weapons, armor and miscellaneous items; never quest items).
+    // itemClass is the ITEM_CLASS_* value of the template (2 weapon, 4 armor, 15 miscellaneous), quality the ITEM_QUALITY_* value.
+    inline bool ExtraSellable(uint32_t itemClass, uint32_t quality, bool questItem, bool hasSellPrice)
+    {
+        if (questItem || !hasSellPrice || quality > 1)
+            return false;
+        return itemClass == 2 || itemClass == 4 || itemClass == 15;
+    }
+
+    // ---- R-V2-05: death loop breaker -----------------------------------------------------------------------------------------
+
+    struct DeathLoopConfig
+    {
+        uint32_t Deaths = 3;             // deaths to the same killer entry, or in the same area, inside the window
+        uint32_t WindowSec = 1800;
+        float AreaYd = 150.0f;
+        uint32_t BlockSec = 7200;        // how long the killer entry and the area stay blocked for the bot
+        uint32_t SharedBots = 10;        // distinct bots that blocked an entry before it goes on the shared avoid list
+        uint32_t SharedSec = 7200;
+    };
+
+    struct DeathNote
+    {
+        uint32_t Map = 0;
+        float X = 0.0f, Y = 0.0f;
+        uint32_t Killer = 0;             // creature entry, 0 when unknown
+        uint32_t AtMs = 0;               // 0 = empty slot
+    };
+
+    struct DeathLoopHit
+    {
+        uint32_t Total = 0;              // deaths that share the killer or the area of the newest death (it included)
+        uint32_t ByKiller = 0;
+        uint32_t ByArea = 0;
+    };
+
+    // d[0] is the newest death. Counts the entries inside the window that share its killer entry or its area.
+    inline DeathLoopHit DeathLoopCount(DeathNote const* d, size_t n, uint32_t windowMs, float areaYd)
+    {
+        DeathLoopHit h;
+        if (!n || !d[0].AtMs)
+            return h;
+        for (size_t i = 0; i < n; ++i)
+        {
+            if (!d[i].AtMs || uint32_t(d[0].AtMs - d[i].AtMs) > windowMs)
+                continue;
+            bool const k = d[0].Killer && d[i].Killer == d[0].Killer;
+            float const dx = d[i].X - d[0].X, dy = d[i].Y - d[0].Y;
+            bool const a = d[i].Map == d[0].Map && std::sqrt(dx * dx + dy * dy) <= areaYd;
+            if (k)
+                ++h.ByKiller;
+            if (a)
+                ++h.ByArea;
+            if (k || a)
+                ++h.Total;
+        }
+        return h;
+    }
+
+    // Per-bot block list: killer entries and circles a bot keeps away from. Times are the bot's AI clock.
+    struct AvoidBook
+    {
+        struct Killer { uint32_t Entry; uint32_t Until; };
+        struct Area { uint32_t Map; float X, Y, R; uint32_t Until; };
+        std::vector<Killer> Killers;
+        std::vector<Area> Areas;
+
+        void Prune(uint32_t now)
+        {
+            Killers.erase(std::remove_if(Killers.begin(), Killers.end(), [now](Killer const& k) { return Reached(now, k.Until); }), Killers.end());
+            Areas.erase(std::remove_if(Areas.begin(), Areas.end(), [now](Area const& a) { return Reached(now, a.Until); }), Areas.end());
+        }
+
+        void AddKiller(uint32_t entry, uint32_t now, uint32_t durMs)
+        {
+            Prune(now);
+            for (Killer& k : Killers)
+                if (k.Entry == entry)
+                {
+                    k.Until = now + durMs;
+                    return;
+                }
+            if (Killers.size() < 16)
+                Killers.push_back({ entry, now + durMs });
+        }
+
+        void AddArea(uint32_t map, float x, float y, float r, uint32_t now, uint32_t durMs)
+        {
+            Prune(now);
+            for (Area& a : Areas)
+            {
+                float const dx = a.X - x, dy = a.Y - y;
+                if (a.Map == map && std::sqrt(dx * dx + dy * dy) < r * 0.5f)
+                {
+                    a.Until = now + durMs;
+                    return;
+                }
+            }
+            if (Areas.size() < 8)
+                Areas.push_back({ map, x, y, r, now + durMs });
+        }
+
+        bool KillerBlocked(uint32_t entry, uint32_t now) const
+        {
+            for (Killer const& k : Killers)
+                if (k.Entry == entry && !Reached(now, k.Until))
+                    return true;
+            return false;
+        }
+
+        bool AreaBlocked(uint32_t map, float x, float y, uint32_t now) const
+        {
+            for (Area const& a : Areas)
+            {
+                float const dx = a.X - x, dy = a.Y - y;
+                if (a.Map == map && !Reached(now, a.Until) && std::sqrt(dx * dx + dy * dy) <= a.R)
+                    return true;
+            }
+            return false;
+        }
+    };
+
+    // Shared avoid list: an entry that enough distinct bots blocked after a death loop is avoided by all bots for a while.
+    // The clock is one global millisecond clock.
+    class ShunBook
+    {
+    public:
+        // Records that `bot` blocked `entry`. True when this call put the entry on the shared list.
+        bool Note(uint32_t entry, uint64_t bot, uint32_t now, uint32_t needBots, uint32_t durMs)
+        {
+            std::lock_guard<std::mutex> lk(_mx);
+            Entry& e = _map[entry];
+            if (e.Shared && !Reached(now, e.Until))
+                return false;
+            if (e.Shared)
+                e = Entry();
+            for (uint64_t b : e.Bots)
+                if (b == bot)
+                    return false;
+            if (e.Bots.size() < 64)
+                e.Bots.push_back(bot);
+            if (needBots && e.Bots.size() >= needBots)
+            {
+                e.Shared = true;
+                e.Until = now + durMs;
+                e.Bots.clear();
+                return true;
+            }
+            return false;
+        }
+
+        bool Shared(uint32_t entry, uint32_t now) const
+        {
+            std::lock_guard<std::mutex> lk(_mx);
+            auto it = _map.find(entry);
+            return it != _map.end() && it->second.Shared && !Reached(now, it->second.Until);
+        }
+
+        size_t SharedCount(uint32_t now) const
+        {
+            std::lock_guard<std::mutex> lk(_mx);
+            size_t n = 0;
+            for (auto const& kv : _map)
+                if (kv.second.Shared && !Reached(now, kv.second.Until))
+                    ++n;
+            return n;
+        }
+
+    private:
+        struct Entry { std::vector<uint64_t> Bots; bool Shared = false; uint32_t Until = 0; };
+        mutable std::mutex _mx;
+        std::unordered_map<uint32_t, Entry> _map;
+    };
+
+    // ---- R-V2-06: flee only with an escape -----------------------------------------------------------------------------------
+
+    struct FleeEscapeConfig
+    {
+        float MeleeYd = 8.0f;            // a mob this close is on the bot
+        uint32_t GraceMs = 3000;         // time a flee gets before it counts as failed
+    };
+
+    // True when running cannot work: the mob is within melee distance and moves at least as fast as the bot.
+    inline bool NoEscape(float mobDist, float mobSpeed, float botSpeed, FleeEscapeConfig const& cfg)
+    {
+        return mobDist <= cfg.MeleeYd && mobSpeed >= botSpeed;
+    }
+
+    // ---- R-V2-07: grind target pick ------------------------------------------------------------------------------------------
+
+    struct TargetPickConfig
+    {
+        int32_t MaxAbove = 1;            // never pick a grind mob more than this many levels above the bot
+        int32_t GreyBelow = 4;           // a mob this many levels or more below the bot ...
+        uint32_t MinXp = 25;             // ... that gives less than this much XP is a low-value pick
+    };
+
+    inline bool LowValueTarget(int32_t levelDiff, uint32_t xp, TargetPickConfig const& cfg)
+    {
+        return levelDiff <= -cfg.GreyBelow && xp < cfg.MinXp;
+    }
+
+    // ---- R-V2-08: quest filter -----------------------------------------------------------------------------------------------
+
+    // True when `id` is in the configured list of quest ids that are never offered.
+    inline bool QuestListed(std::vector<uint32_t> const& list, uint32_t id)
+    {
+        return id && std::find(list.begin(), list.end(), id) != list.end();
+    }
 }
 
 #endif
