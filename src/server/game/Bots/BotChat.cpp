@@ -77,6 +77,9 @@ char const* VerbName(Verb v)
         case Verb::Dismount: return "dismount";
         case Verb::Summon: return "summon";
         case Verb::Revive: return "revive";
+        case Verb::Cc: return "cc";
+        case Verb::Interrupt: return "interrupt";
+        case Verb::Dispel: return "dispel";
         case Verb::Dummy: return "dummy";
         case Verb::Role: return "role";
         case Verb::Stance: return "stance";
@@ -298,7 +301,8 @@ Verb ParseVerb(std::string_view t, bool orders, bool control)
     static constexpr std::pair<char const*, Verb> verbs[] = { { "follow", Verb::Follow }, { "stay", Verb::Stay }, { "goto", Verb::Goto },
         { "rest", Verb::Rest }, { "release", Verb::Release }, { "status", Verb::Status }, { "strategy", Verb::Strategy }, { "verbose", Verb::Verbose }, { "share", Verb::Share }, { "dummy", Verb::Dummy }, { "food", Verb::Food } };
     static constexpr std::pair<char const*, Verb> orderVerbs[] = { { "stop", Verb::Stop }, { "aggressive", Verb::Aggressive }, { "passive", Verb::Passive },
-        { "pull", Verb::Pull }, { "heal", Verb::Heal }, { "mount", Verb::Mount }, { "dismount", Verb::Dismount }, { "summon", Verb::Summon }, { "revive", Verb::Revive } };
+        { "pull", Verb::Pull }, { "heal", Verb::Heal }, { "mount", Verb::Mount }, { "dismount", Verb::Dismount }, { "summon", Verb::Summon }, { "revive", Verb::Revive },
+        { "cc", Verb::Cc }, { "interrupt", Verb::Interrupt }, { "dispel", Verb::Dispel } };
     static constexpr std::pair<char const*, Verb> controlVerbs[] = { { "role", Verb::Role }, { "stance", Verb::Stance }, { "focus", Verb::Focus }, { "distance", Verb::Distance } };
     for (auto const& [name, v] : verbs)
         if (EqI(t, name))
@@ -319,7 +323,7 @@ char const* ValidateOrderArgs(Verb verb, std::string_view args)
     switch (verb)
     {
         case Verb::Stop: case Verb::Aggressive: case Verb::Passive: case Verb::Pull: case Verb::Heal:
-        case Verb::Mount: case Verb::Dismount: case Verb::Summon: case Verb::Revive:
+        case Verb::Mount: case Verb::Dismount: case Verb::Summon: case Verb::Revive: case Verb::Cc: case Verb::Interrupt: case Verb::Dispel:
             return Trim(args).empty() ? nullptr : "BAD_ARGS";
         default:
             return nullptr;
@@ -614,7 +618,7 @@ void Preflight(Ctx& c)
                 c.PreflightError = "BAD_ARGS";
             break;
         case Verb::Stop: case Verb::Aggressive: case Verb::Passive: case Verb::Pull: case Verb::Heal:
-        case Verb::Mount: case Verb::Dismount: case Verb::Summon: case Verb::Revive:
+        case Verb::Mount: case Verb::Dismount: case Verb::Summon: case Verb::Revive: case Verb::Cc: case Verb::Interrupt: case Verb::Dispel:
             c.PreflightError = ValidateOrderArgs(c.V, a);
             break;
         default:
@@ -774,6 +778,18 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
             if (bot->GetDistance(c.Target) > Config().HealRange)
                 return "OUT_OF_RANGE";
             return BotCombatHealUnit(bot, c.Target);
+        }
+        case Verb::Cc:
+        case Verb::Interrupt:
+        case Verb::Dispel:
+        {
+            if (!alive)
+                return "DEAD";
+            if (!c.Target)
+                return "NO_TARGET";
+            if (!c.Target->IsAlive())
+                return "TARGET_DEAD";
+            return BotCombatOrder(bot, c.Target, c.V == Verb::Cc ? BotCombatOrderKind::Control : c.V == Verb::Interrupt ? BotCombatOrderKind::Interrupt : BotCombatOrderKind::Dispel);
         }
         case Verb::Mount:
         {
@@ -1100,7 +1116,8 @@ bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whis
     ctx.Args = args;
     ctx.Roles = roles;
     Preflight(ctx);
-    if ((verb == Verb::Pull || verb == Verb::Heal || (verb == Verb::Focus && !ctx.Off)) && !ctx.PreflightError)
+    if ((verb == Verb::Pull || verb == Verb::Heal || (verb == Verb::Focus && !ctx.Off) ||
+        verb == Verb::Cc || verb == Verb::Interrupt || verb == Verb::Dispel) && !ctx.PreflightError)
         ctx.Target = ObjectAccessor::GetUnit(*issuer, issuer->GetTarget());
 
     std::vector<char const*> codes;

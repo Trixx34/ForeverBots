@@ -50,6 +50,10 @@ TEST_CASE("Reason prefixes pick the category", "[BotLogCategory]")
     CHECK(Classify("decision", "SUPPLY_BOUGHT") == Economy);
     CHECK(Classify("quest_blocked", "NO_PATH") == Movement);
     CHECK(Classify("decision", "QUEST_WALK_START") == Quest);
+    CHECK(Classify("decision", "INTERRUPT_CAST") == Combat);
+    CHECK(Classify("decision", "DISPEL_CAST") == Combat);
+    CHECK(Classify("decision", "CC_CAST") == Combat);
+    CHECK(Classify("decision", "CC_PREPULL") == Combat);
 }
 
 TEST_CASE("Event type is the fallback, other when nothing matches", "[BotLogCategory]")
