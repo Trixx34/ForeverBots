@@ -74,6 +74,9 @@ private:
     std::string GetAuthenticatorUrl(LoginHttpSession const& session) const;
     static RequestHandlerResult HandlePostLoginSrpChallenge(std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context);
     RequestHandlerResult HandlePostRefreshLoginTicket(std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context) const;
+    RequestHandlerResult HandlePostLauncherRemember(std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context) const;
+    RequestHandlerResult HandlePostLauncherLogin(std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context) const;
+    RequestHandlerResult HandlePostLauncherForget(std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context) const;
 
     static std::unique_ptr<Trinity::Crypto::SRP::BnetSRP6Base> CreateSrpImplementation(SrpVersion version, SrpHashFunction hashFunction,
         std::string const& username, Trinity::Crypto::SRP::Salt const& salt, Trinity::Crypto::SRP::Verifier const& verifier);

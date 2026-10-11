@@ -1,6 +1,6 @@
 # Bot travel and leveling progression (2026-10-08)
 
-Branch `claude/project-thread-6fjleh`, started from `forever`. Config switch `Bot.AI.Travel.Enabled` (default **off**, documented in `worldserver.conf.dist`). Decisions are pure functions over plain data (`BotTravelPlan.h/.cpp`, no `Player`, no `Map`, no DBC), Catch2 tests in `tests/game/BotTravelPlan.cpp` (tag `[BotTravel]`, 18 cases), glue in `BotTravel.h/.cpp`.
+Branch `claude/project-thread-6fjleh`, started from `forever`. Config switch `Bot.AI.Travel.Enabled` (default **off**, documented in `botserver.conf.dist`). Decisions are pure functions over plain data (`BotTravelPlan.h/.cpp`, no `Player`, no `Map`, no DBC), Catch2 tests in `tests/game/BotTravelPlan.cpp` (tag `[BotTravel]`, 18 cases), glue in `BotTravel.h/.cpp`.
 
 ## What was missing
 
@@ -30,7 +30,7 @@ Strategy `travel` (NonCombat engine, added to non-alt bots when the switch is on
 
 ## Config
 
-Defaults as listed in `worldserver.conf.dist`: `Bot.AI.Travel.Enabled` (0), `.Zones` (1), `.Taxi` (1), `.Transport` (1), `.Hearth` (1), `.CheckSec` (10), `.TripMinutes` (25), `.MaxRouteSteps` (8), `.RecentZones` (4), `.LeaveMarginLevels` (0), `.DiscoverRadius` (500).
+Defaults as listed in `botserver.conf.dist`: `Bot.AI.Travel.Enabled` (0), `.Zones` (1), `.Taxi` (1), `.Transport` (1), `.Hearth` (1), `.CheckSec` (10), `.TripMinutes` (25), `.MaxRouteSteps` (8), `.RecentZones` (4), `.LeaveMarginLevels` (0), `.DiscoverRadius` (500).
 
 ## Limits and not done
 

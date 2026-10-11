@@ -31,6 +31,13 @@ namespace ClassicOpcodes
     /// core OpcodeServer value -> client number
     TC_GAME_API uint32 TranslateServerOpcode(uint32 coreOpcode);
 
+    /// the same in the numbering of client 70245 (the tables); the two above add the newer builds' group shift
+    TC_GAME_API uint32 TranslateClientOpcode70245(uint32 classicOpcode);
+    TC_GAME_API uint32 TranslateServerOpcode70245(uint32 coreOpcode);
+
+    /// client 70291 or later (Classic.OpcodeGroupShift / realm build): also selects that build's changed packet and update field layouts
+    TC_GAME_API bool IsBuild70291OrLater();
+
     /// server opcodes whose Classic number is not known yet and that crash the client when sent with the shifted retail number
     TC_GAME_API bool IsServerOpcodeBlocked(uint32 coreOpcode);
 

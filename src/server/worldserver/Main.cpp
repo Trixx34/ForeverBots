@@ -226,6 +226,24 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    // Bot settings live in their own file next to worldserver.conf (botserver.conf.dist). Optional: without it every Bot.* key keeps its default.
+    {
+        fs::path const botConfigFile = configFile.parent_path() / "botserver.conf";
+        boost::system::error_code botConfigEc;
+        if (fs::exists(botConfigFile, botConfigEc))
+        {
+            std::string botConfigError;
+            if (!sConfigMgr->LoadAdditionalFile(botConfigFile.generic_string(), true, botConfigError))
+            {
+                printf("Error in bot config file: %s\n", botConfigError.c_str());
+                return 1;
+            }
+            printf("Loaded bot config file %s\n", botConfigFile.generic_string().c_str());
+        }
+        else
+            printf("No bot config file %s, bot settings use their defaults\n", botConfigFile.generic_string().c_str());
+    }
+
     std::vector<std::string> overriddenKeys = sConfigMgr->OverrideWithEnvVariablesIfAny();
 
     std::shared_ptr<Trinity::Asio::IoContext> ioContext = std::make_shared<Trinity::Asio::IoContext>();

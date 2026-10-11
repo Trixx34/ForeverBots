@@ -26,7 +26,7 @@ Acceptance:
 ## Step H: main-realm deploy runbook
 Pre-flight: soak (F) passed on the sim with the same commit; schedule the restart window (a restart drops players), announce it.
 1. Full backup of auth, characters, world, hotfixes; confirm restore works (restore to a scratch instance).
-2. Create the bot log DB on the main DB host (forever-botlog-setup.sql; real password only in the untracked worldserver.conf), check event_scheduler.
+2. Create the bot log DB on the main DB host (forever-botlog-setup.sql; real password only in the untracked botserver.conf), check event_scheduler.
 3. Build the release commit; keep the previous binary for rollback. Start with `Bot.Enabled = 1` but zero bots: `Bot.Log.ServerStatsSec = 60`. Confirm baseline serverDiffMs with real players only (record 30 min).
 4. Ramp: 20 bots, 30 min; 60, 30 min; 180. At each step compare serverDiffMs avg/max and player-facing latency to the baseline. Bot accounts are BOTnnnn; bots never queue ahead of players (check queue/session limits: bots count toward max players, raise `PlayerLimit` or confirm they bypass).
 5. Watch: BOT_TICK_STATS, worldserver log, `error` rows, DB connection counts, disk of the log DB.

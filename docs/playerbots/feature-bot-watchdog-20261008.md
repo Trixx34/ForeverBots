@@ -24,7 +24,7 @@ Each step is handed out once per stall. Hearthstone and home steps are capped at
 ## Config
 
 `Bot.AI.Watchdog.Enabled` (default 0), `StallSec`, `HearthMul`, `HomeMul`, `Hearth`, `Home`, `MoveYards`, `MaxPerHour`; see
-`worldserver.conf.dist`.
+`botserver.conf.dist`.
 
 ## Code
 

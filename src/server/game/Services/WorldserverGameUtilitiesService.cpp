@@ -175,10 +175,12 @@ uint32 GameUtilities::GetLastCharPlayed(WorldSession const* session,
             return -1;
     }, *contentSetFilter) : -1;
 
-    Optional<Battlenet::RealmHandle> realmId = contentSetId >= 0 ? sRealmList->GetRealmIdForContentSet(uint32(contentSetId)) : Optional<Battlenet::RealmHandle>();
+    // client 70291 asks with filter -1 when creating a character (character create waits for this realm entry): this realm
+    Optional<Battlenet::RealmHandle> realmId = contentSetId >= 0 ? sRealmList->GetRealmIdForContentSet(uint32(contentSetId))
+        : Optional<Battlenet::RealmHandle>(sRealmList->GetCurrentRealmId());
     if (!realmId)
         realmId = sRealmList->GetFirstRealmId();   // no realm for that ruleset: fall back to the first one
-    if (contentSetId < 0 || !realmId)
+    if (!realmId)
         return ERROR_OK;
 
     std::string realmEntryJson = sRealmList->GetRealmEntryJSON(*realmId, session->GetClientBuild(), session->GetSecurity());
