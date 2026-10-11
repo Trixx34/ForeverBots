@@ -32,6 +32,7 @@
 #include "Battleground.h"
 #include "BotAI.h"
 #include "BotGuild.h"
+#include "BotDuel.h"
 #include "BotQuestLog.h"
 #include "BattlegroundMgr.h"
 #include "BattlegroundPackets.h"
@@ -8158,6 +8159,7 @@ void Player::DuelComplete(DuelCompleteType type)
     DisablePvpRules();
 
     sScriptMgr->OnPlayerDuelEnd(opponent, this, type);
+    BotDuel::OnDuelEnd(opponent, this, type);
 
     switch (type)
     {

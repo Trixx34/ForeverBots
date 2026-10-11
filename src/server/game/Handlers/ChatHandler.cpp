@@ -27,6 +27,7 @@
 #include "BotConversation.h"
 
 #include "BotGuild.h"
+#include "BotDuel.h"
 #include "BotTradeLink.h"
 #include "Chat.h"
 #include "ChatPackets.h"
@@ -360,6 +361,7 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
             BotConversation::OnWhisper(GetPlayer(), receiver, msg);
 
             BotGuild::OnWhisper(GetPlayer(), receiver, msg);
+            BotDuel::OnWhisper(GetPlayer(), receiver, msg);
             break;
         }
         case CHAT_MSG_PARTY:

@@ -18,6 +18,8 @@
 #include "BotConfigReload.h"
 #include "BotAI.h"
 #include "BotCombat.h"
+#include "BotDuel.h"
+#include "BotDuelPlan.h"
 #include "BotDummy.h"
 #include "BotPet.h"
 #include "BotConsumables.h"
@@ -151,6 +153,8 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
     if (BotTravel::Cfg().Enabled && bot && state == BotState::NonCombat && !(bot->GetSession() && bot->GetSession()->IsAltBot())
         && std::find(names.begin(), names.end(), "travel") == names.end())
         names.push_back("travel");
+    if (BotDuel::Cfg().Enabled && bot && state != BotState::Dead && std::find(names.begin(), names.end(), "duel") == names.end())
+        names.push_back("duel");
     if (BotAI::Config().TestStrategy)
     {
         switch (state)
@@ -273,6 +277,12 @@ BotState BotAI::DesiredState(Player* bot, char const*& cause) const
     {
         cause = "DIED";
         return BotState::Dead;
+    }
+
+    if (BotDuel::ActiveOpponent(bot))
+    {
+        cause = "DUEL";   // the combat engine fights the duel opponent (BotCombat PickTarget)
+        return BotState::Combat;
     }
 
     if (bot->IsInCombat())

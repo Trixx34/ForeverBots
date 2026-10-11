@@ -47,7 +47,7 @@ namespace BotLogCat
         Pets,       // hunter and warlock pets
         Social,     // chat orders, alts, group invites, bot parties, guilds
         Dungeon,    // dungeon runs
-    Battleground, // battleground queue, invitations, flag play
+        Battleground, // battleground queue, invitations, flag play
         Other,      // anything no rule matches
         Count
     };
@@ -76,7 +76,7 @@ namespace BotLogCat
         { "LOOT_", Economy }, { "PROF_", Economy }, { "GATHER_", Economy }, { "FISH_", Economy }, { "FOOD_", Economy }, { "AMMO_", Economy },
         { "CRAFT_", Economy }, { "POTION_", Economy }, { "EAT_", Economy }, { "DRINK_", Economy }, { "BANK_", Economy }, { "MAIL_", Economy },
         { "PET_", Pets }, { "CONV_", Social }, { "ALT_", Social }, { "INVITE_", Social }, { "GUILD_", Social }, { "GROUP_", Social }, { "PARTY_", Social },
-        { "DUNGEON_", Dungeon }, { "LFG_", Dungeon }, { "BG_", Battleground }
+        { "DUEL", Social }, { "DUNGEON_", Dungeon }, { "LFG_", Dungeon }, { "BG_", Battleground }
     };
 
     // Event type fallback, used when the reason code has no prefix rule.
