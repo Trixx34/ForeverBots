@@ -24,6 +24,8 @@
 //   verbs (non-combat): follow [off] | stay [off] | goto here|<x> <y> [z] | rest [off] | release | status | strategy [+a,-b] | verbose on|off
 //   orders (Bot.Chat.Orders.Enabled, default off): stop | aggressive | passive | pull (tanks, the issuer's selected target) | heal (healers, the selected
 //   target) | mount | dismount | summon | revive. See docs/playerbots/feature-bot-chat-orders-20261008.md.
+//   food (Bot.Chat.Food.Enabled, default off): any member of the group may ask; each bot with food whispers what it can hand over. See
+//   docs/playerbots/feature-bot-fishing-cooking-20261008.md.
 // Everyone else is ignored and logged (rate limited). Handle() is the single entry point: the ChatHandler hooks and the
 // `bot say` test command both call it. It never changes or consumes the chat message and does no database access.
 
@@ -66,7 +68,7 @@ TC_GAME_API bool ParseSelector(std::string_view token, RoleMasks const& roles, S
 
 enum class Verb : uint8
 {
-    None, Follow, Stay, Goto, Rest, Release, Status, Strategy, Verbose, Share, Dummy,
+    None, Follow, Stay, Goto, Rest, Release, Status, Strategy, Verbose, Share, Dummy, Food,
     Stop, Aggressive, Passive, Pull, Heal, Mount, Dismount, Summon, Revive   // orders (Bot.Chat.Orders.Enabled)
 };
 
