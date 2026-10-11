@@ -64,14 +64,14 @@ namespace BotLogCat
     inline constexpr Rule kPrefixes[] =
     {
         { "BOT_", Lifecycle }, { "CREATE_", Lifecycle }, { "LOG_", Lifecycle }, { "ENGINE_", Ai }, { "STRATEGY_", Ai }, { "TRACE_", Ai },
-        { "AI_", Ai }, { "COMBAT_", Combat }, { "CAST_", Combat }, { "AURA_", Combat }, { "FLEE_", Combat }, { "AGGRO_", Combat },
+        { "AI_", Ai }, { "COMBAT_", Combat }, { "PULL_", Combat }, { "FIGHT_", Combat }, { "CAST_", Combat }, { "AURA_", Combat }, { "FLEE_", Combat }, { "AGGRO_", Combat },
         { "THREAT_", Combat }, { "TARGET_PICKED", Combat }, { "REPAIR_", Economy }, { "SUPPLY_", Economy }, { "REVIVE_", Recovery }, { "DUMMY_", Dummy }, { "TEST_", Dummy },
         { "INTERRUPT_", Combat }, { "DISPEL_", Combat }, { "CC_", Combat },
         { "GOTO_", Movement }, { "FOLLOW_", Movement }, { "MOVE_", Movement }, { "NO_PATH", Movement }, { "NO_PROGRESS", Movement },
         { "PATH_", Movement }, { "ROUTE_", Movement }, { "STAY_", Movement }, { "MMAP_", Movement }, { "UNREACHABLE_", Movement },
-        { "IDLE_STEP", Movement }, { "TOWN_", Movement }, { "MOUNT_", Movement }, { "TRAVEL_", Travel }, { "CORPSE_", Recovery }, { "SPIRIT_", Recovery },
-        { "RELEASE_", Recovery }, { "RECLAIM_", Recovery }, { "RECOVER_", Recovery }, { "REST_", Recovery }, { "WATCHDOG_", Recovery },
-        { "QUEST_", Quest }, { "POLE_", Quest }, { "XP_", Progress }, { "LEVEL_UP", Progress }, { "TALENTS_", Progress },
+        { "IDLE_STEP", Movement }, { "TOWN_", Movement }, { "MOUNT_", Movement }, { "TRAVEL_", Travel }, { "ZONE_", Travel }, { "CORPSE_", Recovery }, { "SPIRIT_", Recovery },
+        { "RELEASE_", Recovery }, { "RECLAIM_", Recovery }, { "RECOVER_", Recovery }, { "REST_", Recovery }, { "WATCHDOG_", Recovery }, { "STALL_", Recovery },
+        { "QUEST_", Quest }, { "CROWD_", Quest }, { "POLE_", Quest }, { "XP_", Progress }, { "LEVEL_UP", Progress }, { "TALENTS_", Progress },
         { "SPELLS_", Progress }, { "AH_", Economy }, { "TRADE_", Economy },
         { "VENDOR_", Economy }, { "SOLD_", Economy }, { "TRAIN_", Economy }, { "BAG_", Economy }, { "GEAR_", Economy },
         { "LOOT_", Economy }, { "PROF_", Economy }, { "GATHER_", Economy }, { "FISH_", Economy }, { "FOOD_", Economy }, { "AMMO_", Economy },

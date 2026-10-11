@@ -27,6 +27,7 @@
 #include "BotQuest.h"
 #include "BotAvoid.h"
 #include "BotLoopGuard.h"
+#include "BotRules.h"
 #include "BotQuestClassifier.h"
 #include "BotAI.h"
 #include "BotAuction.h"
@@ -1499,6 +1500,17 @@ public:
     uint32 ProfTripSkill = 0;                       // skill of the profession trainer trip under way, 0 = none
     uint8 NoTrainerLevel = 0, NoMoneyLevel = 0, BagNoMoneyLevel = 0, NoVendorLevel = 0, AmmoNoMoneyLevel = 0;
     std::string LastNote;
+    // additional rules (BotRules.h)
+    BotRule::DecisionRing Recent;                   // N-01: the latest quest layer rows, written into the STALL_XP row
+    BotRule::PullWait PullWait;                     // N-03: how long the pull has waited for rest
+    BotRule::PullBlock PullLast = BotRule::PullBlock::None;
+    uint32 PullGateMs = 0;                          // next evaluation of the pull gate
+    uint32 PullLogMs = 0;                           // earliest next PULL_BLOCKED row
+    BotRule::ZoneLeave Leave;                       // N-07: quest-less zone counters
+    uint32 LeaveCooldownMs = 0;                     // earliest next ZONE_LEAVE
+    uint8 BagPressureLevel = 0;                     // N-05: BAG_PRESSURE is logged once per level
+    uint32 NextPressureMs = 0;                      // N-05: earliest next early vendor trip (a bag full of unsellable items must not loop)
+    uint32 CrowdLogMs = 0;                          // earliest next CROWD_SPREAD row
 
     bool Blacklisted(uint32 quest, uint32 now) const
     {
@@ -1556,6 +1568,7 @@ std::string QuestTitle(uint32 questId);
 // quest_blocked event, once per (quest, code) per bot unless `once` is false; the quest title is added to the details
 void Blocked(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 questId, char const* code, std::string summary, std::string details = std::string(), uint32 entry = 0, bool once = true, uint8 severity = BOTLOG_WARN)
 {
+    c.Recent.Add(code, summary);
     if (once && !c.Logged.insert(LogKey(questId, code)).second)
         return;
     BotEvent ev = ai->MakeEvent(bot, "quest_blocked", severity, code, std::move(summary));
@@ -1912,6 +1925,10 @@ public:
     }
 
     // One restore attempt with its log rows (WEAPON_RESTORED, and WEAPON_RESTORE_NONE at most every 10 min when a tool is worn and no weapon is at hand).
+    // for the exported functions below (the choosing code is private)
+    bool SendToHubNow(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now) { return PickHub(ai, bot, c, now); }
+    static void LeaveZoneNow(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, BotRule::LeaveReason why) { LeaveZone(ai, bot, c, now, why); }
+
     static bool StepWeapon(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, char const* why)
     {
         WeaponSwap const r = RestoreWeaponNow(bot);
@@ -2137,6 +2154,17 @@ private:
         if (motion.HasGoal() && std::strcmp(motion.GetTag(), "quest") == 0 &&
             Dist2D(motion.GoalX(), motion.GoalY(), x, y) < 4.0f)
             return true; // already walking there
+        // N-02: no leg into (or across) a zone whose level band starts well above the bot; the quest, trainer or vendor is taken elsewhere
+        {
+            uint32 fenceZone = 0, fenceMin = 0;
+            if (BotRules::LegFenced(bot, x, y, z, fenceZone, fenceMin))
+            {
+                Drop(ai, bot, c, now, t.Quest, "ZONE_FENCE", StringFormat("the way to the {} target enters zone {} (levels from {}) and the bot is level {}", KindName(t.K), fenceZone, fenceMin, bot->GetLevel()),
+                    StringFormat(R"({{"task":"{}","dest":[{:.0f},{:.0f},{:.0f}],"zone":{},"zone_min":{},"level":{},"margin":{}}})", KindName(t.K), x, y, z, fenceZone, fenceMin, bot->GetLevel(), BotRules::Cfg().FenceMargin),
+                    entry, 3600);
+                return false;
+            }
+        }
         auto const pathT0 = std::chrono::steady_clock::now();
         BotPathInfo info = BotMotion::QueryPath(bot, x, y, z);
         uint32 const pathUs = uint32(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - pathT0).count());
@@ -2336,6 +2364,8 @@ private:
 
     static void Decision(BotAI* ai, Player* bot, char const* reason, std::string summary, uint32 questId, uint32 entry, std::string details = std::string())
     {
+        if (BotQuestCtx* rc = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx")))
+            rc->Recent.Add(reason, summary);
         BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, reason, std::move(summary));
         if (questId)
             ev.QuestId = questId;
@@ -2447,7 +2477,7 @@ private:
         float xp = float(q->XPValue(bot)) + 20.0f;
         float work = 40.0f * float(q->GetObjectives().size());
         float const chain = q->GetPrevQuestId() > 0 ? 1.4f : 1.0f;   // chain successors first
-        return chain * fit * ReputationWeight(bot, q) * xp / (dist + 150.0f + work);
+        return chain * fit * ReputationWeight(bot, q) * xp / (dist + 150.0f + work) * CrowdMul(bot, BotRule::ObjectiveKey(1, ref.Quest), ref.P.X, ref.P.Y);
     }
 
     bool PickNew(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, std::vector<LogEntry> const& log)
@@ -2500,6 +2530,7 @@ private:
             std::string altJson;
             for (Alt const& a : alts)
                 altJson += StringFormat(R"({}{{"quest":{},"score":{:.3f}}})", altJson.empty() ? "" : ",", a.Quest, a.Score);
+            CrowdClaim(bot, BotRule::ObjectiveKey(1, best->Quest), best->P.X, best->P.Y);
             Decision(ai, bot, pass == 0 ? "QUEST_PICK" : "QUEST_PICK_FAR", StringFormat("picked '{}' from giver {} {:.0f} yd away", QuestTitle(best->Quest), best->Entry, bestDist), best->Quest, best->Entry,
                 StringFormat(R"({{"score":{:.3f},"dist":{:.0f},"radius":{:.0f},"alternatives":[{}]}})", bestScore, bestDist, radius, altJson));
             c.IdleLoggedLevel = 0;
@@ -2518,6 +2549,8 @@ private:
             c.NextHubMs = now + Cfg().HubScanSec * 1000;
             if (PickHub(ai, bot, c, now))
                 return true;
+            if (BotRules::Cfg().ZoneLeave && BotRules::Applies(bot) && c.Leave.NoteHubNone(bot->GetMapId(), bot->GetLevel(), BotRules::Cfg().Leave))
+                LeaveZone(ai, bot, c, now, BotRule::LeaveReason::NoHub);
             if (c.HubNoneLevel != bot->GetLevel())
             {
                 c.HubNoneLevel = bot->GetLevel();
@@ -2579,6 +2612,7 @@ private:
             }
             if (!hs.N)
                 continue;
+            hs.Score *= CrowdMul(bot, BotRule::ObjectiveKey(3, idx), h.X, h.Y);
             top.push_back(hs);
         }
         std::copy(skipped, skipped + 3, c.HubSkip);
@@ -2599,6 +2633,7 @@ private:
         std::string alt;
         for (size_t i = 1; i < top.size() && i < 4; ++i)
             alt += StringFormat(R"({}{{"hub":{},"score":{:.3f},"quests":{},"dist":{:.0f}}})", alt.empty() ? "" : ",", top[i].Idx, top[i].Score, top[i].N, top[i].Dist);
+        CrowdClaim(bot, BotRule::ObjectiveKey(3, w.Idx), h.X, h.Y);
         uint32 zone = bot->GetMap()->GetZoneId(bot->GetPhaseShift(), h.X, h.Y, h.Z);
         Decision(ai, bot, "QUEST_HUB_TRAVEL", StringFormat("travelling to quest hub {} ({} takeable quests, {:.0f} yd, zone {})", w.Idx, w.N, w.Dist, zone), w.Best->Quest, w.Best->Entry,
             StringFormat(R"({{"hub":{},"x":{:.0f},"y":{:.0f},"z":{:.0f},"zone":{},"dist":{:.0f},"takeable":{},"givers":{},"min_q":{},"max_q":{},"hubs_scanned":{},"select_us":{},"alternatives":[{}]}})",
@@ -2609,6 +2644,51 @@ private:
     }
 
     // ----- grind fallback -----
+    // N-06: more than Bot.Rules.Crowd.Cap bots already grind around this anchor: move it to the nearest uncrowded grind spawn point.
+    static void SpreadGrindAnchor(BotAI* ai, Player* bot, BotQuestCtx& c)
+    {
+        BotRules::Settings const& r = BotRules::Cfg();
+        if (!r.Crowd || !BotRules::Applies(bot))
+            return;
+        uint64 const key = BotRule::ObjectiveKey(2, bot->GetMapId());
+        uint32 const guid = uint32(bot->GetGUID().GetCounter());
+        uint32 const wall = GameTime::GetGameTimeMS();
+        uint32 const here = BotRules::Crowds().Count(key, guid, c.GrindAnchorX, c.GrindAnchorY, r.CrowdRadius, wall);
+        if (BotRule::Crowded(here, r.CrowdCap))
+        {
+            int32 const cx0 = int32(std::floor(c.GrindAnchorX / GRID_CELL));
+            int32 const cy0 = int32(std::floor(c.GrindAnchorY / GRID_CELL));
+            GrindPt const* best = nullptr;
+            float bd = 1e9f;
+            for (int32 dx = -3; dx <= 3; ++dx)
+                for (int32 dy = -3; dy <= 3; ++dy)
+                {
+                    auto it = g.GrindGrid.find(CellKey(bot->GetMapId(), (cx0 + dx) * GRID_CELL + 1.0f, (cy0 + dy) * GRID_CELL + 1.0f));
+                    if (it == g.GrindGrid.end())
+                        continue;
+                    for (GrindPt const& p : it->second)
+                    {
+                        float const d = Dist2D(p.X, p.Y, c.GrindAnchorX, c.GrindAnchorY);
+                        if (d < r.CrowdRadius * 1.2f || d >= bd)
+                            continue;
+                        if (BotRule::Crowded(BotRules::Crowds().Count(key, guid, p.X, p.Y, r.CrowdRadius, wall), r.CrowdCap))
+                            continue;
+                        bd = d;
+                        best = &p;
+                    }
+                }
+            if (best)
+            {
+                Decision(ai, bot, "CROWD_SPREAD", StringFormat("{} other bots grind near ({:.0f}, {:.0f}), moving the grind area {:.0f} yd", here, c.GrindAnchorX, c.GrindAnchorY, bd), 0, 0,
+                    StringFormat(R"({{"others":{},"cap":{},"from":[{:.0f},{:.0f}],"to":[{:.0f},{:.0f}],"dist":{:.0f}}})", here, r.CrowdCap, c.GrindAnchorX, c.GrindAnchorY, best->X, best->Y, bd));
+                c.GrindAnchorX = best->X;
+                c.GrindAnchorY = best->Y;
+                c.Seen.clear();
+            }
+        }
+        BotRules::Crowds().Claim(key, guid, c.GrindAnchorX, c.GrindAnchorY, wall, 600 * 1000);
+    }
+
     bool StartGrind(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
     {
         c.T = Task();
@@ -2623,6 +2703,7 @@ private:
             c.GrindAnchorMap = bot->GetMapId();
             c.GrindAnchorX = bot->GetPositionX();
             c.GrindAnchorY = bot->GetPositionY();
+            SpreadGrindAnchor(ai, bot, c);
             Decision(ai, bot, "QUEST_GRIND", StringFormat("no quest to do, grinding mobs of level {}", bot->GetLevel()), 0, 0,
                 StringFormat(R"({{"map":{},"x":{:.0f},"y":{:.0f},"level":{}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetLevel()));
         }
@@ -3880,6 +3961,9 @@ private:
         uint32 const freeSlots = bot->GetFreeInventorySlotCount();
         bool const forced = c.VendorNow;
         bool const full = freeSlots <= 1;
+        // N-05: plan the vendor trip before the bags are full (a vendor within Bot.Rules.BagPressure.VendorYards only)
+        BotRules::Settings const& rules = BotRules::Cfg();
+        bool const pressure = rules.BagPressure && !full && BotLoop::Reached(now, c.NextPressureMs) && BotRule::BagPressure(freeSlots, rules.Bag) && BotRules::Applies(bot);
         uint64 const repairCost = RepairCost(bot);
         bool const needRepair = repairCost >= 150 && bot->GetMoney() >= repairCost * 2;
         uint32 replaceSize = 0;
@@ -3895,11 +3979,12 @@ private:
                 needAmmo = ammoHave < AmmoCfg().LowCount && bot->GetMoney() >= 10;
             }
         }
-        if (!forced && !(now >= c.NextVendorMs && (full || needRepair || needBags || needAmmo)))
+        if (!forced && !(now >= c.NextVendorMs && (full || pressure || needRepair || needBags || needAmmo)))
             return false;
 
         float d = 0.0f;
-        float const maxD = (full || forced) ? 3000.0f : 800.0f;
+        bool const pressureOnly = pressure && !forced && !needRepair && !needBags && !needAmmo;
+        float const maxD = (full || forced) ? 3000.0f : pressureOnly ? std::min(800.0f, rules.Bag.VendorYd) : 800.0f;
         SvcPt const* vp = nullptr;
         if (needBags && !full && !needRepair)
             vp = NearestSvc(bot, c, now, g.Vendors, false, true, maxD, d);
@@ -3930,6 +4015,11 @@ private:
         if (!vp)
         {
             c.NextVendorMs = now + 120 * 1000;
+            if (pressureOnly)
+            {
+                c.NextPressureMs = now + 300 * 1000;   // no vendor close by: ask again later, no VENDOR_NONE row for an optional trip
+                return false;
+            }
             if (c.NoVendorLevel != level)
             {
                 c.NoVendorLevel = level;
@@ -3937,6 +4027,16 @@ private:
                     StringFormat(R"({{"map":{},"free_slots":{},"repair_cost":{},"x":{:.0f},"y":{:.0f}}})", bot->GetMapId(), freeSlots, repairCost, bot->GetPositionX(), bot->GetPositionY()), 0, false);
             }
             return false;
+        }
+        if (pressure)
+        {
+            c.NextPressureMs = now + 900 * 1000;
+            if (c.BagPressureLevel != level)
+            {
+                c.BagPressureLevel = uint8(level);
+                Decision(ai, bot, "BAG_PRESSURE", StringFormat("{} free bag slots left, planning the vendor trip early", freeSlots), 0, vp->Entry,
+                    StringFormat(R"({{"free_slots":{},"threshold":{},"dist":{:.0f},"max_dist":{:.0f}}})", freeSlots, rules.Bag.TripFreeSlots, d, maxD));
+            }
         }
         StartService(bot, c, now, 2, *vp, needRepair && vp->Repair, needBags);
         ++c.VendorTrips;
@@ -5354,10 +5454,87 @@ private:
         return took;
     }
 
+    // N-06: how many other bots work on the same objective near the same place. The world clock is shared by all bots (the AI clock is per bot).
+    static float CrowdMul(Player* bot, uint64 key, float x, float y)
+    {
+        BotRules::Settings const& r = BotRules::Cfg();
+        if (!r.Crowd || !BotRules::Applies(bot))
+            return 1.0f;
+        uint32 const others = BotRules::Crowds().Count(key, bot->GetGUID().GetCounter(), x, y, r.CrowdRadius, GameTime::GetGameTimeMS());
+        return BotRule::CrowdFactor(others, r.CrowdCap, r.CrowdFactor);
+    }
+
+    static void CrowdClaim(Player* bot, uint64 key, float x, float y)
+    {
+        if (BotRules::Cfg().Crowd && BotRules::Applies(bot))
+            BotRules::Crowds().Claim(key, bot->GetGUID().GetCounter(), x, y, GameTime::GetGameTimeMS(), 600 * 1000);
+    }
+
+    // N-07: asks the travel module for the next band zone; one row says why.
+    static void LeaveZone(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, BotRule::LeaveReason why)
+    {
+        if (!BotLoop::Reached(now, c.LeaveCooldownMs))
+            return;
+        c.LeaveCooldownMs = now + 600 * 1000;
+        bool const asked = BotTravel::RequestLeave(ai);
+        Decision(ai, bot, "ZONE_LEAVE", StringFormat("nothing to gain in zone {} at level {}: {}", bot->GetZoneId(), bot->GetLevel(), BotRule::LeaveReasonName(why)), 0, 0,
+            StringFormat(R"({{"reason":"{}","travel_asked":{},"zone":{},"map":{},"level":{}}})", BotRule::LeaveReasonName(why), asked ? "true" : "false", bot->GetZoneId(), bot->GetMapId(), bot->GetLevel()));
+        c.Leave.Reset();
+    }
+
+    // N-03: no pull with a dead rotation (no weapon, no ammo) or while the bot should rest first. Evaluated every 2 s; a health or power
+    // block that rest could not fix is let go after Bot.Rules.PullGate.MaxWaitSec.
+    static bool PullBlocked(Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        BotRules::Settings const& r = BotRules::Cfg();
+        if (!r.PullGate)
+            return false;
+        if (BotLoop::Reached(now, c.PullGateMs))
+        {
+            c.PullGateMs = now + 2000;
+            if (!BotRules::Applies(bot))
+            {
+                c.PullLast = BotRule::PullBlock::None;
+                return false;
+            }
+            GearInspect const gear = InspectCombatGear(bot);
+            BotRule::PullState ps;
+            ps.MainNeedsWeapon = gear.MainNeedsWeapon;
+            ps.RangedNeedsAmmo = gear.RangedNeedsAmmo;
+            uint32 const maxPower = bot->GetMaxPower(POWER_MANA);
+            ps.UsesMana = bot->GetPowerType() == POWER_MANA && maxPower > 0;
+            ps.PowerPct = maxPower ? 100.0f * float(bot->GetPower(POWER_MANA)) / float(maxPower) : 100.0f;
+            ps.HealthPct = bot->GetHealthPct();
+            BotRule::PullBlock const b = BotRule::PullGate(ps, r.Pull);
+            bool const blocked = c.PullWait.Blocked(now, b, r.Pull);
+            c.PullLast = blocked ? b : BotRule::PullBlock::None;
+            if (blocked)
+            {
+                BotAI* ai = bot->GetSession() ? bot->GetSession()->GetBotAI() : nullptr;
+                if (ai && b == BotRule::PullBlock::Weapon)
+                    StepWeapon(ai, bot, c, now, "pull_gate");
+                else if (b == BotRule::PullBlock::Ammo && AmmoCfg().Enabled)
+                {
+                    c.NextAmmoMs = 0;
+                    c.NextVendorMs = 0;
+                }
+                if (ai && BotLoop::Reached(now, c.PullLogMs))
+                {
+                    c.PullLogMs = now + 60000;
+                    Decision(ai, bot, "PULL_BLOCKED", StringFormat("pull waits: {}", BotRule::PullBlockName(b)), 0, 0,
+                        StringFormat(R"({{"block":"{}","hp_pct":{:.0f},"power_pct":{:.0f},"main_hand":{},"ranged_needs_ammo":{}}})", BotRule::PullBlockName(b), ps.HealthPct, ps.PowerPct, gear.MainEntry, gear.RangedNeedsAmmo ? "true" : "false"));
+                }
+            }
+        }
+        return c.PullLast != BotRule::PullBlock::None;
+    }
+
     // ----- kill / loot -----
     bool CandidateMob(Player* bot, BotQuestCtx& c, Task& t, Creature* m, uint32 now)
     {
         if (!m->IsAlive() || m->IsInCombat() || m->IsPet() || m->IsTotem())
+            return false;
+        if (PullBlocked(bot, c, now))
             return false;
         if (m->hasLootRecipient() && !m->isTappedBy(bot))
             return false;
@@ -5372,7 +5549,14 @@ private:
             ++t.TooStrongSeen;   // Bot.AI.Avoid.*: listed killers are skipped unless within the allowed level gap
             return false;
         }
-        if (m->isWorldBoss() || EffectiveDiff(bot, m) > (BotCombatFleeMode(bot) >= 1 ? std::min<int32>(Cfg().MaxMobLevelDiff, 1) : Cfg().MaxMobLevelDiff))
+        int32 diffCap = BotCombatFleeMode(bot) >= 1 ? std::min<int32>(Cfg().MaxMobLevelDiff, 1) : Cfg().MaxMobLevelDiff;
+        if (BotRules::Cfg().ClassMargin && BotRules::Applies(bot))
+        {
+            // N-08: the weak classes pick lower mobs while they are low level
+            BotRules::Settings const& r = BotRules::Cfg();
+            diffCap = BotRule::EffectivePullCap(diffCap, BotRule::ClassPullMargin(bot->GetClass(), bot->GetLevel(), r.ClassMarginUntil, r.ClassMarginWeak, r.ClassMarginSturdy));
+        }
+        if (m->isWorldBoss() || EffectiveDiff(bot, m) > diffCap)
         {
             if (m->IsElite() || m->isWorldBoss())
                 ++t.EliteSeen;
@@ -5770,10 +5954,29 @@ private:
     void TakeLoot(BotAI* ai, Player* bot, Creature* m, Loot* loot)
     {
         bot->SendLoot(*loot);
+        BotRules::Settings const& rules = BotRules::Cfg();
+        bool const skipGrey = rules.BagPressure && rules.Bag.GreyFreeSlots && BotRules::Applies(bot);
+        uint32 const freeNow = skipGrey ? bot->GetFreeInventorySlotCount() : 0;
         for (uint32 i = 0; i < loot->items.size(); ++i)
             if (LootItem* li = loot->LootItemInSlot(i, bot))
                 if (!li->is_looted)
+                {
+                    if (skipGrey && freeNow < rules.Bag.GreyFreeSlots)
+                    {
+                        // N-05: grey items stay on the corpse when the bags are nearly full (quest items and better are always taken)
+                        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(li->itemid);
+                        if (proto && !li->freeforall && BotRule::SkipLoot(freeNow, proto->GetQuality() == ITEM_QUALITY_POOR, li->needs_quest || proto->GetClass() == ITEM_CLASS_QUEST || bot->HasQuestForItem(li->itemid), rules.Bag))
+                        {
+                            // left behind for good, otherwise the corpse would count as not looted and the bot would return to it
+                            li->is_looted = true;
+                            if (loot->unlootedCount)
+                                --loot->unlootedCount;
+                            loot->NotifyItemRemoved(uint8(i), m->GetMap());
+                            continue;
+                        }
+                    }
                     bot->StoreLootItem(m->GetGUID(), uint8(i), loot);
+                }
         if (loot->gold)
         {
             bot->ModifyMoney(int64(loot->gold));
@@ -5929,6 +6132,61 @@ bool RequestAmmoTrip(BotAI* ai)
     return true;
 }
 
+void NoteKillXp(BotAI* ai, Player* bot, uint32 xp)
+{
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    if (!cp)
+        return;
+    BotRules::Settings const& r = BotRules::Cfg();
+    if (!r.ZoneLeave || !cp->LastWasGrind || !BotRules::Applies(bot))
+    {
+        cp->Leave.LowActive = false;
+        return;
+    }
+    if (cp->Leave.NoteGrindXp(ai->GetNowMs(), xp, r.Leave))
+        QuestThinkAction::LeaveZoneNow(ai, bot, *cp, ai->GetNowMs(), BotRule::LeaveReason::LowXp);
+}
+
+std::string RecentDecisions(BotAI* ai)
+{
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    return cp ? cp->Recent.Json() : std::string("[]");
+}
+
+void ClearForStall(BotAI* ai, Player* bot)
+{
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    if (!cp)
+        return;
+    BotQuestCtx& c = *cp;
+    c.ReleaseLoot();
+    c.T = Task();
+    c.GoalFails = 0;
+    c.ExpectGoal = false;
+    c.NextChooseMs = 0;
+    c.NextHubMs = 0;
+    c.Blacklist.clear();
+    c.Ignore.clear();
+    c.Seen.clear();
+    c.HubBlack.clear();
+    c.SvcBlack.clear();
+    c.GoIgnore.clear();
+    c.Repeats.clear();
+    c.Trips.clear();
+    c.NextVendorMs = 0;
+    c.LastWasGrind = false;
+    c.Leave.Reset();
+    if (bot)
+        bot->AttackStop();
+}
+
+bool SendToHub(BotAI* ai, Player* bot)
+{
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    QuestThinkAction* think = static_cast<QuestThinkAction*>(ai->GetAction("quest_think"));
+    return cp && think && g.Ready.load(std::memory_order_acquire) && think->SendToHubNow(ai, bot, *cp, ai->GetNowMs());
+}
+
 void ActiveTask(BotAI* ai, uint32& questId, std::string& task)
 {
     questId = 0;
@@ -5995,6 +6253,7 @@ void OnLogout(BotAI* ai)
         cp->ReleaseLoot();
         cp->T = Task();
     }
+    BotRules::Crowds().Release(ai->GetGuid());
 }
 } // namespace BotQuest
 
