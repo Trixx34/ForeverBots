@@ -1,6 +1,6 @@
 # Bot pets, natural movement, improved loot (2026-10-08)
 
-Branch `feature/bot-pets-movement-loot`, started from `forever`. Three independent parts. Each has its own config option (all default **off**, documented in `worldserver.conf.dist`), decision logic in pure functions over plain data structs (no `Player`, no `Map`), Catch2 tests in `tests/game`, and glue code that reads the game state and carries the decisions out.
+Branch `feature/bot-pets-movement-loot`, started from `forever`. Three independent parts. Each has its own config option (all default **off**, documented in `botserver.conf.dist`), decision logic in pure functions over plain data structs (no `Player`, no `Map`), Catch2 tests in `tests/game`, and glue code that reads the game state and carries the decisions out.
 
 | Part | Config switch | Pure logic | Glue | Tests (tag) |
 |---|---|---|---|---|

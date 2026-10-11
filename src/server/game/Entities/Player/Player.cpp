@@ -48,6 +48,7 @@
 #include "Config.h"
 #include "ChatPackets.h"
 #include "ChatTextBuilder.h"
+#include "ClassicOpcodes.h"
 #include "CinematicMgr.h"
 #include "ClubUtils.h"
 #include "CombatLogPackets.h"
@@ -3639,7 +3640,10 @@ void Player::BuildCreateUpdateBlockForPlayer(UpdateData* data, Player* target) c
             if (item)
                 item->BuildCreateUpdateBlockForPlayer(data, target);
 
-        GetSession()->GetBattlenetAccount().BuildCreateUpdateBlockForPlayer(data, target);
+        // the bnet account object (type 18, retail housing storage) is gone from client 70291: the official server never sends it
+        // and its create misaligned everything after it (the client read past the end of the login update object and crashed)
+        if (!ClassicOpcodes::IsBuild70291OrLater())
+            GetSession()->GetBattlenetAccount().BuildCreateUpdateBlockForPlayer(data, target);
     }
 
     Unit::BuildCreateUpdateBlockForPlayer(data, target);
@@ -19141,6 +19145,10 @@ bool Player::LoadFromDB(ObjectGuid guid, CharacterDatabaseQueryHolder const& hol
 
     _LoadPetStable(fields.summonedPetNumber, holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_PET_SLOTS));
 
+    // Classic 1.60: stable slots bought (BuyStableSlot)
+    if (QueryResult stableSlots = CharacterDatabase.PQuery("SELECT slots FROM character_stable_slots WHERE guid = {}", GetGUID().GetCounter()))
+        SetNumStableSlots(std::min<uint8>((*stableSlots)[0].GetUInt8(), MAX_CLASSIC_STABLE_SLOTS));
+
     // Honor system
     // Update Honor kills data
     m_lastHonorUpdateTime = logoutTime;
@@ -30283,17 +30291,51 @@ PetStable& Player::GetOrInitPetStable()
     return *m_petStable;
 }
 
-void Player::AddPetToUpdateFields(PetStable::PetInfo const& pet, PetSaveMode slot, PetStableFlags flags)
+void Player::AddPetToUpdateFields(PetStable::PetInfo const& pet, PetSaveMode slot, PetStableFlags /*flags*/)
 {
+    // Classic 1.60 stable layout: client slot numbers and flags, the vanilla pet values the stable window shows
     auto ufStable = m_values.ModifyValue(&Player::m_activePlayerData).ModifyValue(&UF::ActivePlayerData::PetStable, 0);
     auto ufPet = AddDynamicUpdateFieldValue(ufStable.ModifyValue(&UF::StableInfo::Pets));
-    ufPet.ModifyValue(&UF::StablePetInfo::PetSlot).SetValue(slot);
+    ufPet.ModifyValue(&UF::StablePetInfo::PetSlot).SetValue(ToClassicStableSlot(slot));
     ufPet.ModifyValue(&UF::StablePetInfo::PetNumber).SetValue(pet.PetNumber);
     ufPet.ModifyValue(&UF::StablePetInfo::CreatureID).SetValue(pet.CreatureId);
     ufPet.ModifyValue(&UF::StablePetInfo::DisplayID).SetValue(pet.DisplayId);
     ufPet.ModifyValue(&UF::StablePetInfo::ExperienceLevel).SetValue(pet.Level);
-    ufPet.ModifyValue(&UF::StablePetInfo::PetFlags).SetValue(flags);
+    ufPet.ModifyValue(&UF::StablePetInfo::PetFlags).SetValue(ClassicStablePetFlags(slot));
+    ufPet.ModifyValue(&UF::StablePetInfo::LoyaltyLevel).SetValue(1);     // no pet loyalty on this server yet
+    ufPet.ModifyValue(&UF::StablePetInfo::Happiness).SetValue(pet.Mana); // hunter pets keep their happiness in the mana column
+    ufPet.ModifyValue(&UF::StablePetInfo::Experience).SetValue(pet.Experience);
+    ufPet.ModifyValue(&UF::StablePetInfo::NextLevelExperience).SetValue(Pet::GetHunterPetNextLevelExperience(pet.Level));
     ufPet.ModifyValue(&UF::StablePetInfo::Name).SetValue(pet.Name);
+}
+
+void Player::SetNumStableSlots(uint8 slots)
+{
+    SetUpdateFieldValue(m_values.ModifyValue(&Player::m_activePlayerData).ModifyValue(&UF::ActivePlayerData::NumStableSlots), slots);
+}
+
+void Player::BuyStableSlot()
+{
+    // Classic 1.60: vanilla stable slot prices (StableSlotPrices.dbc 1.12: 5 silver, 50 silver)
+    static constexpr std::array<uint64, MAX_CLASSIC_STABLE_SLOTS> StableSlotPrices = { 500, 5000 };
+
+    uint8 slots = GetNumStableSlots();
+    if (slots >= MAX_CLASSIC_STABLE_SLOTS)
+    {
+        GetSession()->SendPetStableResult(StableResult::MaxSlots);
+        return;
+    }
+
+    if (!HasEnoughMoney(StableSlotPrices[slots]))
+    {
+        GetSession()->SendPetStableResult(StableResult::InsufficientFunds);
+        return;
+    }
+
+    ModifyMoney(-int64(StableSlotPrices[slots]));
+    SetNumStableSlots(slots + 1);
+    CharacterDatabase.PExecute("REPLACE INTO character_stable_slots (guid, slots) VALUES ({}, {})", GetGUID().GetCounter(), slots + 1);
+    GetSession()->SendPetStableResult(StableResult::BuySlotSuccess);
 }
 
 void Player::SetPetSlot(uint32 petNumber, PetSaveMode dstPetSlot)
@@ -30429,51 +30471,30 @@ void Player::SetPetSlot(uint32 petNumber, PetSaveMode dstPetSlot)
                 int32 srcPetIndex = m_activePlayerData->PetStable->Pets.FindIndexIf([srcPetSlot](UF::StablePetInfo const& p) { return p.PetSlot == uint32(srcPetSlot); });
                 int32 dstPetIndex = m_activePlayerData->PetStable->Pets.FindIndexIf([dstPetSlot](UF::StablePetInfo const& p) { return p.PetSlot == uint32(dstPetSlot); });
 
-                if (srcPetIndex >= 0)
+                // Classic 1.60: client slot numbers and flags; the moved pets show their saved values (official 70291: happiness
+                // is sent again when the pet is stabled)
+                auto updatePet = [this](int32 index, PetSaveMode slot, Optional<PetStable::PetInfo> const& info)
                 {
-                    PetStableFlags flagToAdd, flagToRemove;
-                    if (IsActivePetSlot(dstPetSlot))
-                    {
-                        flagToAdd = PET_STABLE_ACTIVE;
-                        flagToRemove = PET_STABLE_INACTIVE;
-                    }
-                    else
-                    {
-                        flagToAdd = PET_STABLE_INACTIVE;
-                        flagToRemove = PET_STABLE_ACTIVE;
-                    }
-
                     auto petSetter = m_values.ModifyValue(&Player::m_activePlayerData)
                         .ModifyValue(&UF::ActivePlayerData::PetStable, 0)
-                        .ModifyValue(&UF::StableInfo::Pets, srcPetIndex);
+                        .ModifyValue(&UF::StableInfo::Pets, index);
 
-                    SetUpdateFieldValue(petSetter.ModifyValue(&UF::StablePetInfo::PetSlot), dstPetSlot);
-                    SetUpdateFieldFlagValue(petSetter.ModifyValue(&UF::StablePetInfo::PetFlags), flagToAdd);
-                    RemoveUpdateFieldFlagValue(petSetter.ModifyValue(&UF::StablePetInfo::PetFlags), flagToRemove);
-                }
+                    SetUpdateFieldValue(petSetter.ModifyValue(&UF::StablePetInfo::PetSlot), ToClassicStableSlot(slot));
+                    SetUpdateFieldValue(petSetter.ModifyValue(&UF::StablePetInfo::PetFlags), ClassicStablePetFlags(slot));
+                    if (info)
+                    {
+                        SetUpdateFieldValue(petSetter.ModifyValue(&UF::StablePetInfo::ExperienceLevel), uint32(info->Level));
+                        SetUpdateFieldValue(petSetter.ModifyValue(&UF::StablePetInfo::Happiness), info->Mana);
+                        SetUpdateFieldValue(petSetter.ModifyValue(&UF::StablePetInfo::Experience), info->Experience);
+                        SetUpdateFieldValue(petSetter.ModifyValue(&UF::StablePetInfo::NextLevelExperience), Pet::GetHunterPetNextLevelExperience(info->Level));
+                    }
+                };
+
+                if (srcPetIndex >= 0)
+                    updatePet(srcPetIndex, dstPetSlot, *dst);
 
                 if (dstPetIndex >= 0)
-                {
-                    PetStableFlags flagToAdd, flagToRemove;
-                    if (IsActivePetSlot(srcPetSlot))
-                    {
-                        flagToAdd = PET_STABLE_ACTIVE;
-                        flagToRemove = PET_STABLE_INACTIVE;
-                    }
-                    else
-                    {
-                        flagToAdd = PET_STABLE_INACTIVE;
-                        flagToRemove = PET_STABLE_ACTIVE;
-                    }
-
-                    auto petSetter = m_values.ModifyValue(&Player::m_activePlayerData)
-                        .ModifyValue(&UF::ActivePlayerData::PetStable, 0)
-                        .ModifyValue(&UF::StableInfo::Pets, dstPetIndex);
-
-                    SetUpdateFieldValue(petSetter.ModifyValue(&UF::StablePetInfo::PetSlot), srcPetSlot);
-                    SetUpdateFieldFlagValue(petSetter.ModifyValue(&UF::StablePetInfo::PetFlags), flagToAdd);
-                    RemoveUpdateFieldFlagValue(petSetter.ModifyValue(&UF::StablePetInfo::PetFlags), flagToRemove);
-                }
+                    updatePet(dstPetIndex, srcPetSlot, *src);
 
                 sess->SendPetStableResult(StableResult::StableSuccess);
             }
@@ -30495,7 +30516,8 @@ ObjectGuid Player::GetStableMaster() const
 
 void Player::SetStableMaster(ObjectGuid stableMaster)
 {
-    if (!m_activePlayerData->PetStable.has_value())
+    // Classic 1.60: the stable window opens from this field, also for a hunter without pets (empty stable, slots to buy)
+    if (!m_activePlayerData->PetStable.has_value() && stableMaster.IsEmpty())
         return;
 
     SetUpdateFieldValue(m_values.ModifyValue(&Player::m_activePlayerData)

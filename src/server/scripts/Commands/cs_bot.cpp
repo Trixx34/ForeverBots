@@ -784,7 +784,7 @@ public:
     {
         if (!sBotMgr->IsLogDatabaseAvailable())
         {
-            handler->PSendSysMessage("%s", "Bot log is off: set BotLogDatabaseInfo in worldserver.conf and restart.");
+            handler->PSendSysMessage("%s", "Bot log is off: set BotLogDatabaseInfo in botserver.conf and restart.");
             return true;
         }
 
