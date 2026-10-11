@@ -34,6 +34,10 @@ TEST_CASE("Reason prefixes pick the category", "[BotLogCategory]")
     CHECK(Classify("decision", "TOWN_IDLE_GO") == Movement);
     CHECK(Classify("decision", "DUMMY_SUMMARY") == Dummy);
     CHECK(Classify("decision", "CORPSE_RUN_START") == Recovery);
+    CHECK(Classify("decision", "REVIVE_CAST") == Recovery);
+    CHECK(Classify("decision", "REVIVE_ACCEPTED") == Recovery);
+    CHECK(Classify("decision", "REPAIR_PAID") == Economy);
+    CHECK(Classify("decision", "SUPPLY_BOUGHT") == Economy);
     CHECK(Classify("quest_blocked", "NO_PATH") == Movement);
     CHECK(Classify("decision", "QUEST_WALK_START") == Quest);
 }

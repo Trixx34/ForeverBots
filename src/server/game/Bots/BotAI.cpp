@@ -20,6 +20,7 @@
 #include "BotDummy.h"
 #include "BotPet.h"
 #include "BotConsumables.h"
+#include "BotRevive.h"
 #include "BotTravel.h"
 #include "BotTravelPlan.h"
 #include "BotWatchdog.h"
@@ -136,6 +137,11 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
         names.push_back("pet");
     if (BotConsumable::Enabled() && bot && state == BotState::Combat && std::find(names.begin(), names.end(), "consumables") == names.end())
         names.push_back("consumables");
+    if (BotRevive::Cfg().Enabled && bot && state == BotState::NonCombat && BotRevive::ClassCanRevive(bot->GetClass())
+        && std::find(names.begin(), names.end(), "revive") == names.end())
+        names.push_back("revive");
+    if (BotRevive::Cfg().Enabled && bot && state == BotState::Dead && std::find(names.begin(), names.end(), "revive_accept") == names.end())
+        names.push_back("revive_accept");
     if (BotWatchdog::Enabled() && bot && state == BotState::NonCombat && std::find(names.begin(), names.end(), "watchdog") == names.end())
         names.push_back("watchdog");
     if (BotTravel::Cfg().Enabled && bot && state == BotState::NonCombat && !(bot->GetSession() && bot->GetSession()->IsAltBot())
