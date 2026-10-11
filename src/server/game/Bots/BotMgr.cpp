@@ -486,14 +486,14 @@ void BotMgr::SetLogDatabaseAvailable(bool available)
         _flushRetries = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.FlushRetries", 3), 0, 20));
         _hotSplit = sConfigMgr->GetBoolDefault("Bot.Log.HotSplit", false) && BotLogHasHotTable.load(std::memory_order_relaxed);
         if (sConfigMgr->GetBoolDefault("Bot.Log.HotSplit", false) && !_hotSplit)
-            TC_LOG_WARN("server.worldserver", "Bot.Log.HotSplit is set but the bot_event_hot table does not exist in the bot log database (run forever-botlog-migrate-1.sql): hot rows stay in bot_event");
+            TC_LOG_WARN("server.worldserver", "Bot.Log.HotSplit is set but the bot_event_hot table does not exist in the bot log database (run sql/bots/forever-botlog-migrate-1.sql): hot rows stay in bot_event");
         {
             BotLogSummary::Policy& sp = _summaryPolicy;
             sp = BotLogSummary::Policy();
             sp.Enabled = sConfigMgr->GetBoolDefault("Bot.Log.Summary.Enabled", false);
             if (sp.Enabled && !BotLogHasRollupTable.load(std::memory_order_relaxed))
             {
-                TC_LOG_WARN("server.worldserver", "Bot.Log.Summary.Enabled is set but the bot_event_rollup table does not exist in the bot log database (run forever-botlog-migrate-2.sql): events stay detailed");
+                TC_LOG_WARN("server.worldserver", "Bot.Log.Summary.Enabled is set but the bot_event_rollup table does not exist in the bot log database (run sql/bots/forever-botlog-migrate-2.sql): events stay detailed");
                 sp.Enabled = false;
             }
             sp.WindowSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.Summary.WindowSec", 60), 10, 3600));

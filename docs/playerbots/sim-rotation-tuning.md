@@ -4,7 +4,7 @@ Script: `contrib/sim/rotation_report.py` (Python 3, standard library, needs the 
 
 ## Run
 
-1. One time: run `sql/custom/world/2026_10_08_04_world_forever_bot_dummy.sql` on the world DB, set `Bot.AI.Dummy.Enabled = 1` in `botserver.conf`, and make sure the bot log DB is on (`forever-botlog-setup.sql`).
+1. One time: run `sql/custom/world/2026_10_08_04_world_forever_bot_dummy.sql` on the world DB, set `Bot.AI.Dummy.Enabled = 1` in `botserver.conf`, and make sure the bot log DB is on (`sql/bots/forever-botlog-setup.sql`).
 2. Group one bot per class at the level to test (repeat for 10, 20, 30 ...).
 3. `python3 contrib/sim/rotation_report.py plan --seconds 60` prints one line per class (`warrior dummy 60`, ...). Paste them into party chat one at a time, waiting about 70 s between lines.
 4. Repeat everything with `Bot.AI.Rotation.Enabled = 0` (restart), then `= 1`, so the report can compare.

@@ -24,7 +24,7 @@
 #include "Transaction.h"
 #include <atomic>
 
-// Optional fifth database holding the bot activity log (schema: forever-botlog-setup.sql).
+// Optional fifth database holding the bot activity log (schema: sql/bots/forever-botlog-setup.sql).
 // It is deliberately NOT part of DatabaseEnv.h so that adding it does not recompile the whole core,
 // and it is never auto-created or auto-updated (see DBUpdater<BotLogDatabaseConnection>::IsEnabled).
 enum BotLogDatabaseStatements : uint32

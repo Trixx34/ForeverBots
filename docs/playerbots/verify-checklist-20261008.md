@@ -25,7 +25,7 @@ Open risks, not changed (need the sim):
 ## Common setup
 
 1. Deploy the build from this branch, sim worldserver with `Bot.Enabled`, bot log DB reachable, `Bot.Chat.LogEvents = 1`.
-2. Apply `forever-characters-bot-alt.sql` (A3) and check the log has no "table bot_alt not found" warning.
+2. Apply `sql/bots/forever-characters-bot-alt.sql` (A3) and check the log has no "table bot_alt not found" warning.
 3. Query helper: `SELECT ts, bot_name, type, reason, summary FROM bot_event WHERE type='chat_command' ORDER BY ts DESC LIMIT 50;` (adapt the column names to the schema in use). Alt rows: `type='alt_command'`.
 4. Run each section below with 0 or only the needed bots online (see progress.md: `bot spawn` only with 0 online).
 

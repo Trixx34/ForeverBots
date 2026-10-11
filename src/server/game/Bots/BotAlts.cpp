@@ -88,7 +88,7 @@ void RegisterAlt(uint64 guid)
     AnyAlt.store(true, std::memory_order_relaxed);
 }
 
-// --- persistence (characters DB, table bot_alt, see forever-characters-bot-alt.sql) ---
+// --- persistence (characters DB, table bot_alt, see sql/bots/forever-characters-bot-alt.sql) ---
 // The core DB layer aborts the process on a query to a missing table, so the table is probed once (SHOW TABLES) before any use and
 // persistence switches itself off with one log line when it is absent. Statements are integer-only. World thread only.
 enum class Store { Unknown, On, Off };
@@ -104,7 +104,7 @@ bool StoreOn()
         else if (QueryResult r = CharacterDatabase.Query("SHOW TABLES LIKE 'bot_alt'"))
             StoreState = Store::On;
         else
-            TC_LOG_WARN("server.worldserver", "BotAlts: table bot_alt not found in the characters database, alts are not remembered across restarts (apply forever-characters-bot-alt.sql)");
+            TC_LOG_WARN("server.worldserver", "BotAlts: table bot_alt not found in the characters database, alts are not remembered across restarts (apply sql/bots/forever-characters-bot-alt.sql)");
     }
     return StoreState == Store::On;
 }

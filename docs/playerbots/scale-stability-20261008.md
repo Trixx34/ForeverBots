@@ -3,7 +3,7 @@
 Status: code and SQL written, NOT compiled, NOT sim-verified. Covers next-plan steps F (24 h soak) and H (main-realm deploy).
 
 ## What changed
-- `bot_pos` retention is configurable: new `botlog_roll_partitions3(keep, hot, pos_days)` (forever-botlog-setup.sql and forever-botlog-migrate-1.sql). `botlog_roll_partitions2` is now a wrapper with pos_days = 2, so behaviour is unchanged by default. To keep 7 days: `ALTER EVENT botlog_daily_roll DO CALL botlog_roll_partitions3(14, 5, 7);` (drop of old partitions is by name comparison, so lengthening only needs the new call; shortening drops on the next run). Re-apply forever-botlog-migrate-1.sql on existing databases.
+- `bot_pos` retention is configurable: new `botlog_roll_partitions3(keep, hot, pos_days)` (sql/bots/forever-botlog-setup.sql and sql/bots/forever-botlog-migrate-1.sql). `botlog_roll_partitions2` is now a wrapper with pos_days = 2, so behaviour is unchanged by default. To keep 7 days: `ALTER EVENT botlog_daily_roll DO CALL botlog_roll_partitions3(14, 5, 7);` (drop of old partitions is by name comparison, so lengthening only needs the new call; shortening drops on the next run). Re-apply sql/bots/forever-botlog-migrate-1.sql on existing databases.
 - `BOT_TICK_STATS` server log line every `Bot.Log.ServerStatsSec` (default 60, 0 = off; BotMgr.cpp `LogTickStats`): bots online, world update diff avg/max (ms, from `sWorldUpdateTime.GetLastUpdateTime()` sampled each tick) and `BotMgr::Update` cost avg/max (us). Does not need the bot log DB. This is the A/B handle for the visibility fix: run the same bot count on a build with and without the `SetPlayerLocalFlag(PLAYER_LOCAL_FLAG_OVERRIDE_TRANSPORT_SERVER_TIME)` line (CharacterHandler.cpp, HandleBotPlayerLogin) and compare the serverDiffMs lines. `BotMgr::Update` excludes per-bot AI (ticked in Player::Update; see AI_TICK_STATS) and map visibility work, so the server diff is the number that matters.
 - Visibility switch: NOT added. Without that flag `Player::CanNeverSee` hides everything from a bot, so target validation and spells fail against every creature (progress.md, 2026-10 entry). A config switch would only produce a broken bot, so the A/B must be done with two builds.
 
@@ -26,7 +26,7 @@ Acceptance:
 ## Step H: main-realm deploy runbook
 Pre-flight: soak (F) passed on the sim with the same commit; schedule the restart window (a restart drops players), announce it.
 1. Full backup of auth, characters, world, hotfixes; confirm restore works (restore to a scratch instance).
-2. Create the bot log DB on the main DB host (forever-botlog-setup.sql; real password only in the untracked botserver.conf), check event_scheduler.
+2. Create the bot log DB on the main DB host (sql/bots/forever-botlog-setup.sql; real password only in the untracked botserver.conf), check event_scheduler.
 3. Build the release commit; keep the previous binary for rollback. Start with `Bot.Enabled = 1` but zero bots: `Bot.Log.ServerStatsSec = 60`. Confirm baseline serverDiffMs with real players only (record 30 min).
 4. Ramp: 20 bots, 30 min; 60, 30 min; 180. At each step compare serverDiffMs avg/max and player-facing latency to the baseline. Bot accounts are BOTnnnn; bots never queue ahead of players (check queue/session limits: bots count toward max players, raise `PlayerLimit` or confirm they bypass).
 5. Watch: BOT_TICK_STATS, worldserver log, `error` rows, DB connection counts, disk of the log DB.

@@ -16,7 +16,7 @@
 # BOT LOG DATABASE
 #
 # Optional fifth database for the bot activity log (decisions, deaths, blocked quests...). The
-# schema is NOT created automatically: apply forever-botlog-setup.sql once. Never put the real
+# schema is NOT created automatically: apply sql/bots/forever-botlog-setup.sql once. Never put the real
 # password in a tracked file.
 #
 ###################################################################################################
@@ -109,7 +109,7 @@ Bot.Log.CategoryMinSeverity = ""
 #        Description: Position telemetry for the sim console map (table bot_pos). Every online bot is sampled at
 #                     most once per this many seconds, and only when it moved more than 2 yards since its last
 #                     sample; one extra sample is written on login and on map or zone change. 0 = off. Needs the
-#                     bot log database and its bot_pos table (forever-botlog-setup.sql). Read once at startup.
+#                     bot log database and its bot_pos table (sql/bots/forever-botlog-setup.sql). Read once at startup.
 #        Default:     5
 #        Values:      whole number 0 to 3600 (seconds, 0 = off)
 Bot.Log.PosIntervalSec = 5
@@ -208,7 +208,7 @@ Bot.Log.ProbeIntervalSec = 10
 #    Bot.Log.HotSplit
 #        Description: 1 = event types in Bot.Log.HotTypes (except COMBAT_SUMMARY and LOG_SUPPRESSED rows) are
 #                     written to bot_event_hot (5 days retention) instead of bot_event (14 days). Needs the
-#                     bot_event_hot table (forever-botlog-migrate-1.sql); query bot_event_all to see both. Ignored
+#                     bot_event_hot table (sql/bots/forever-botlog-migrate-1.sql); query bot_event_all to see both. Ignored
 #                     with a warning when the table does not exist.
 #        Default:     0
 #        Values:      0 (off) or 1 (on)
@@ -232,8 +232,8 @@ Bot.Log.HotTypes = "decision,state_change,trace,cast,aura"
 # events, the first and last time, the level, and the summary and details of the first event as a
 # sample, so counts per bot, zone, quest, reason and time stay exact. Rare or important events
 # stay detailed: everything at or above Bot.Log.Summary.KeepSeverity and every reason with a
-# prefix in Bot.Log.Summary.Keep. Needs the table from forever-botlog-migrate-2.sql (also in
-# forever-botlog-setup.sql); the view bot_event_counts_all lists summary and detailed rows
+# prefix in Bot.Log.Summary.Keep. Needs the table from sql/bots/forever-botlog-migrate-2.sql (also in
+# sql/bots/forever-botlog-setup.sql); the view bot_event_counts_all lists summary and detailed rows
 # together for count queries. All settings are read once at startup.
 #
 ###################################################################################################

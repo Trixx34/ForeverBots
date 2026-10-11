@@ -50,7 +50,7 @@ event; config is read once (no reload); trace rows are INFO severity by design (
 
 ## Position telemetry (`bot_pos`, for the sim console map trails; verified on the sim 2026-10-06)
 
-- Table `bot_pos` (forever-botlog-setup.sql, applied to `forever_sim_log`; NOT yet applied to `forever_botlog`): `ts DATETIME(3)`,
+- Table `bot_pos` (sql/bots/forever-botlog-setup.sql, applied to `forever_sim_log`; NOT yet applied to `forever_botlog`): `ts DATETIME(3)`,
   `bot_guid`, `map_id`, `zone_id`, `x`, `y`, `z` (float), `flags` (bit 0 moving, bit 1 in combat, bit 2 dead). Indexes `(map_id, ts)` and
   `(bot_guid, ts)`. Partitioned by day, kept 2 days. `botlog_roll_partitions(keep)` now calls the new `botlog_roll_table(table, keep)` for
   `bot_event` (keep days) and `bot_pos` (2 days) and uses `DATABASE()` instead of a hard-coded schema, so the same script works for

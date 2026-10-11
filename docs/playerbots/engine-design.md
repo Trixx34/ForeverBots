@@ -187,7 +187,7 @@ Death rows (`death`/`DIED`) always carry `details.killer{guid,entry,name,level,l
 Per bot, per login (reset at BOT_LOGIN) and per key `type|reason|quest_id|target_entry`: the first N rows of `quest_blocked`, NO_PROGRESS, UNREACHABLE_TARGET, TEST_IDLE and
 TEST_IDLE_NOTE are written, the rest are counted and flushed as one LOG_SUPPRESSED row. The cap sits in `BotMgr::LogEvent`, so direct emitters (BotQuest.cpp) are covered without changes.
 
-### Schema (forever-botlog-setup.sql, upgrade with forever-botlog-migrate-1.sql)
+### Schema (sql/bots/forever-botlog-setup.sql, upgrade with sql/bots/forever-botlog-migrate-1.sql)
 - `bot_event.session_seq` (BIGINT UNSIGNED, set from BOT_LOGIN on; index `(bot_guid, session_seq)`).
 - STORED generated columns, indexed: `killer_entry`, `killer_level` (`$.killer.entry/level`), `xp_amount` (xp rows), `spell_id` (`$.killer.spell` else `$.spell_id`). They are BIGINT on purpose:
   an out-of-range value in a narrower generated column raises ERROR 1264 and would fail the whole batch. VIRTUAL, not indexed: `outcome` (`$.outcome`), `lvl_diff` (`$.killer.lvl_diff` else `$.target.lvl_diff`).
@@ -208,7 +208,7 @@ High-volume events (types `Bot.Log.Summary.Types`, default cast,aura,trace; reas
 row per window (`Bot.Log.Summary.WindowSec`, 60) and key (bot, type, reason, severity, spell text for cast/aura, map, zone, quest, target): `n`, `first_ts`, `last_ts`, `level`, and the summary/details of the first
 event as a sample. Rows at or above `Bot.Log.Summary.KeepSeverity` (2) and reasons with a `Bot.Log.Summary.Keep` prefix (DUNGEON_, TRAVEL_, DUMMY_, COMBAT_, BOT_, LOG_, CORPSE_, SPIRIT_, WATCHDOG_, PARTY_, BANK_, MAIL_)
 stay detailed. Counts, per-bot/zone/quest/reason breakdowns and time series stay exact; per-event timing inside a window and per-event details beyond the first sample do not. Count queries use the view
-`bot_event_counts_all` (rollup + detailed rows). Needs `forever-botlog-migrate-2.sql`; ignored with a warning when the table is missing. Rollup rows are kept 30 days (`botlog_rollup_prune_daily`).
+`bot_event_counts_all` (rollup + detailed rows). Needs `sql/bots/forever-botlog-migrate-2.sql`; ignored with a warning when the table is missing. Rollup rows are kept 30 days (`botlog_rollup_prune_daily`).
 Add the reason prefix of every new rare event to `Bot.Log.Summary.Keep` if its prefix would otherwise match a summarized one.
 
 ### Writer behaviour (BotMgr)
@@ -242,7 +242,7 @@ Built, never run. Bot sessions have no socket, so the core handlers (world threa
 
 Hooks: GroupHandler (invite queued / already grouped), TradeHandler (initiate, player accept, before execute), QuestHandler (HandlePushQuestToParty, per bot receiver), BotMgr::Update (trade timeout, alt restore once), BotChat verb `share <questId>`.
 
-Policies: invites accepted unless Bot.Invite.Enabled=0, alt bots only from the owner account, one group per bot (core refuses, logged INVITE_REFUSED_ALREADY_GROUPED). Trade: world bots refuse always, alts trade only with the owner account, bot offers nothing, an empty offer is refused, an open window is cancelled after 90 s. Quest push: same checks as the core loop, accepted quest goes to the log and is worked by BotQuest (alts only once a leader enables the quest strategy). Alts: idle defaults (Bot.Alt.Default.NonCombat), remembered in table bot_alt (forever-characters-bot-alt.sql, probe first, off with one warning when absent), `.bot despawn <alt>` owner only.
+Policies: invites accepted unless Bot.Invite.Enabled=0, alt bots only from the owner account, one group per bot (core refuses, logged INVITE_REFUSED_ALREADY_GROUPED). Trade: world bots refuse always, alts trade only with the owner account, bot offers nothing, an empty offer is refused, an open window is cancelled after 90 s. Quest push: same checks as the core loop, accepted quest goes to the log and is worked by BotQuest (alts only once a leader enables the quest strategy). Alts: idle defaults (Bot.Alt.Default.NonCombat), remembered in table bot_alt (sql/bots/forever-characters-bot-alt.sql, probe first, off with one warning when absent), `.bot despawn <alt>` owner only.
 
 Test plan (real client needed where marked; sim GM injection cannot invite or trade):
 1. Invite (client): invite a world bot -> joins, event INVITE_ACCEPTED. Invite a bot already grouped -> INVITE_REFUSED_ALREADY_GROUPED. Invite an alt of another account -> declined, INVITE_REFUSED_NOT_OWNER. Bot.Invite.Enabled=0 -> declined, INVITE_REFUSED_DISABLED.

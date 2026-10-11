@@ -188,7 +188,7 @@ BaseLocation DBUpdater<HotfixDatabaseConnection>::GetBaseLocationType()
     return LOCATION_DOWNLOAD;
 }
 
-// Bot log database: schema is managed by forever-botlog-setup.sql, never auto-created or auto-updated
+// Bot log database: schema is managed by sql/bots/forever-botlog-setup.sql, never auto-created or auto-updated
 template<>
 std::string DBUpdater<BotLogDatabaseConnection>::GetConfigEntry()
 {

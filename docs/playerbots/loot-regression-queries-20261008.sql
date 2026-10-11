@@ -4,7 +4,7 @@
 -- Set @t0 / @t1 to the start and end of the window. All thresholds below are first guesses.
 -- Row kinds used: event_type 'decision' with reason QUEST_LOOT_GO / QUEST_LOOT_OBJECT / QUEST_LOOT_SPAWN_EMPTY / QUEST_LOOT_DANGER /
 -- QUEST_LOOT_SPAWN_QUARANTINED; event_type 'death' (reason DIED); event_type 'stuck' and 'path_fail'.
--- Not checked against a live schema here: the column names come from forever-botlog-setup.sql.
+-- Not checked against a live schema here: the column names come from sql/bots/forever-botlog-setup.sql.
 
 SET @t0 = '2026-10-08 00:00:00', @t1 = '2026-10-08 01:00:00';
 SET @near_s = 90, @near_yd = 60;

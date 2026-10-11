@@ -23,6 +23,13 @@ start takes a few minutes). The result is identical to the released database.
 Already have a database from an older version (including one built with `vmangos_world`)? Just pull and start
 worldserver: it applies the new files on top, and `vmangos_world` can be dropped afterwards.
 
+**Bot databases (optional, only if you run bots).** Not created automatically. Apply once as a MySQL admin:
+`sql/bots/forever-botlog-setup.sql` (creates the bot log database and its user; replace the password and host
+placeholders first; upgrading an older one: `forever-botlog-migrate-1.sql`, `forever-botlog-migrate-2.sql`) and
+`sql/bots/forever-characters-bot-alt.sql` in the characters database (table `bot_alt`, for `.bot alt`). Then fill
+`BotLogDatabaseInfo` in `botserver.conf`. (`forever-db-setup.sql` only creates the four main databases and their user,
+for a manual setup without the auto-setup.)
+
 **2. Config.** The Classic client needs these (everything else can stay default):
 
 `worldserver.conf`

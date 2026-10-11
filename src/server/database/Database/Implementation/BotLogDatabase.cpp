@@ -33,7 +33,7 @@ void BotLogDatabaseConnection::DoPrepareStatements()
         "REPLACE INTO bot (guid, name, class_id, race_id, faction) VALUES (?, ?, ?, ?, ?)",
         CONNECTION_BOTH);
 
-    // Schema probe: bot_event.session_seq exists only after the ALTER in forever-botlog-setup.sql was applied. Without it the
+    // Schema probe: bot_event.session_seq exists only after the ALTER in sql/bots/forever-botlog-setup.sql was applied. Without it the
     // old INSERT is used, so a database that was not upgraded keeps logging (without session ids).
     bool hasSession = false;
     {
