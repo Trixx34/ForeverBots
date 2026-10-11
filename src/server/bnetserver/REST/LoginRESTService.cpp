@@ -104,6 +104,23 @@ bool LoginRESTService::StartNetwork(Trinity::Asio::IoContext& ioContext, std::st
         return HandlePostLoginSrpChallenge(std::move(session), context);
     });
 
+    // Forever launcher auto-login ("remember me"): remember = login ticket -> long-lived token; login = token -> fresh login ticket and the
+    // account ids the game's launcher login needs; forget = drop the token (sign out)
+    RegisterHandler(boost::beast::http::verb::post, "/bnetserver/launcher/remember/"sv, [this](std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context)
+    {
+        return HandlePostLauncherRemember(std::move(session), context);
+    }, RequestHandlerFlag::DoNotLogRequestContent);
+
+    RegisterHandler(boost::beast::http::verb::post, "/bnetserver/launcher/login/"sv, [this](std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context)
+    {
+        return HandlePostLauncherLogin(std::move(session), context);
+    }, RequestHandlerFlag::DoNotLogRequestContent);
+
+    RegisterHandler(boost::beast::http::verb::post, "/bnetserver/launcher/forget/"sv, [this](std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context)
+    {
+        return HandlePostLauncherForget(std::move(session), context);
+    }, RequestHandlerFlag::DoNotLogRequestContent);
+
     RegisterHandler(boost::beast::http::verb::post, "/bnetserver/refreshLoginTicket/"sv, [this](std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context)
     {
         return HandlePostRefreshLoginTicket(std::move(session), context);
@@ -430,6 +447,140 @@ LoginRESTService::RequestHandlerResult LoginRESTService::HandlePostLogin(std::sh
     }));
 
     return RequestHandlerResult::Async;
+}
+
+// ---------------------------------------------------------------- Forever launcher auto-login
+
+namespace
+{
+    constexpr uint32 LauncherTokenDays = 30;
+
+    bool IsHex(std::string_view s, std::size_t length)
+    {
+        return s.length() == length && std::ranges::all_of(s, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); });
+    }
+
+    // login tickets are "TC-" + 40 hex
+    bool IsLoginTicket(std::string_view s)
+    {
+        return s.length() == 43 && s.starts_with("TC-") && IsHex(s.substr(3), 40);
+    }
+
+    std::string JsonEscape(std::string_view s)
+    {
+        std::string out;
+        for (char c : s)
+        {
+            switch (c)
+            {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                default:
+                    if (uint8(c) < 0x20)
+                        out += Trinity::StringFormat("\\u{:04x}", uint8(c));
+                    else
+                        out += c;
+                    break;
+            }
+        }
+        return out;
+    }
+
+    void SendJson(LoginHttpSession& session, Trinity::Net::Http::RequestContext& context, std::string body, boost::beast::http::status status = boost::beast::http::status::ok)
+    {
+        context.response.result(status);
+        context.response.set(boost::beast::http::field::content_type, "application/json;charset=utf-8");
+        context.response.body() = std::move(body);
+    }
+}
+
+LoginRESTService::RequestHandlerResult LoginRESTService::HandlePostLauncherRemember(std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context) const
+{
+    std::string ticket = ExtractAuthorization(context.request);
+    if (!IsLoginTicket(ticket))
+        return HandleUnauthorized(std::move(session), context);
+
+    QueryResult account = LoginDatabase.PQuery("SELECT id FROM battlenet_accounts WHERE LoginTicket = '{}' AND LoginTicketExpiry > UNIX_TIMESTAMP()", ticket);
+    if (!account)
+        return HandleUnauthorized(std::move(session), context);
+
+    uint32 const accountId = (*account)[0].GetUInt32();
+    std::string token = ByteArrayToHexStr(Trinity::Crypto::GetRandomBytes<32>());
+    std::string hash = ByteArrayToHexStr(Trinity::Crypto::SHA256::GetDigestOf(token));
+    uint32 const now = uint32(time(nullptr));
+    uint32 const expires = now + LauncherTokenDays * DAY;
+    LoginDatabase.DirectPExecute("INSERT INTO battlenet_launcher_tokens (account_id, token_hash, created, last_used, expires, ip) VALUES ({}, '{}', {}, {}, {}, '{}')",
+        accountId, hash, now, now, expires, session->GetRemoteIpAddress().to_string());
+
+    TC_LOG_INFO("server.http.login", "[{}, Id {}] launcher auto-login token created", session->GetClientInfo(), accountId);
+    SendJson(*session, context, Trinity::StringFormat(R"({{"token":"{}","expires":{}}})", token, expires));
+    return RequestHandlerResult::Handled;
+}
+
+LoginRESTService::RequestHandlerResult LoginRESTService::HandlePostLauncherLogin(std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context) const
+{
+    std::string token = ExtractAuthorization(context.request);
+    if (!IsHex(token, 64))
+        return HandleUnauthorized(std::move(session), context);
+
+    std::string hash = ByteArrayToHexStr(Trinity::Crypto::SHA256::GetDigestOf(token));
+    // every column needs its own name (the result set asserts on duplicates: t.id / a.id crashed bnetserver 2026-10-08)
+    QueryResult result = LoginDatabase.PQuery("SELECT t.id AS token_id, a.id AS account_id, a.email AS email, a.LoginTicket AS ticket, "
+        "a.LoginTicketExpiry AS ticket_expiry, bab.unbandate > UNIX_TIMESTAMP() OR bab.unbandate = bab.bandate AS banned FROM battlenet_launcher_tokens t "
+        "JOIN battlenet_accounts a ON a.id = t.account_id LEFT JOIN battlenet_account_bans bab ON bab.id = a.id "
+        "WHERE t.token_hash = '{}' AND t.expires > UNIX_TIMESTAMP()", hash);
+    if (!result)
+    {
+        SendJson(*session, context, R"({"error":"expired"})", boost::beast::http::status::unauthorized);
+        return RequestHandlerResult::Handled;
+    }
+
+    Field* fields = result->Fetch();
+    uint32 const tokenId = fields[0].GetUInt32();
+    uint32 const accountId = fields[1].GetUInt32();
+    std::string email = fields[2].GetString();
+    std::string loginTicket = fields[3].IsNull() ? "" : fields[3].GetString();
+    uint32 const ticketExpiry = fields[4].GetUInt32();
+    if (!fields[5].IsNull() && fields[5].GetUInt64() != 0)
+    {
+        SendJson(*session, context, R"({"error":"banned"})", boost::beast::http::status::forbidden);
+        return RequestHandlerResult::Handled;
+    }
+
+    uint32 const now = uint32(time(nullptr));
+    if (loginTicket.empty() || ticketExpiry < now)
+        loginTicket = "TC-" + ByteArrayToHexStr(Trinity::Crypto::GetRandomBytes<20>());
+    LoginDatabase.DirectPExecute("UPDATE battlenet_accounts SET LoginTicket = '{}', LoginTicketExpiry = {} WHERE id = {}", loginTicket, now + _loginTicketDuration, accountId);
+    LoginDatabase.DirectPExecute("UPDATE battlenet_launcher_tokens SET last_used = {}, expires = {}, ip = '{}' WHERE id = {}",
+        now, now + LauncherTokenDays * DAY, session->GetRemoteIpAddress().to_string(), tokenId);
+
+    std::string gameAccounts;
+    if (QueryResult accounts = LoginDatabase.PQuery("SELECT id, username FROM account WHERE battlenet_account = {} ORDER BY battlenet_index", accountId))
+    {
+        do
+        {
+            std::string name = (*accounts)[1].GetString();
+            if (std::size_t hashPos = name.find('#'); hashPos != std::string::npos)
+                name = "WoW" + name.substr(hashPos + 1);
+            gameAccounts += Trinity::StringFormat(R"({}{{"id":{},"name":"{}"}})", gameAccounts.empty() ? "" : ",", (*accounts)[0].GetUInt32(), JsonEscape(name));
+        } while (accounts->NextRow());
+    }
+
+    TC_LOG_INFO("server.http.login", "[{}, Id {}] launcher auto-login", session->GetClientInfo(), accountId);
+    SendJson(*session, context, Trinity::StringFormat(R"({{"login_ticket":"{}","account_id":{},"email":"{}","game_accounts":[{}]}})",
+        loginTicket, accountId, JsonEscape(email), gameAccounts));
+    return RequestHandlerResult::Handled;
+}
+
+LoginRESTService::RequestHandlerResult LoginRESTService::HandlePostLauncherForget(std::shared_ptr<LoginHttpSession> session, HttpRequestContext& context) const
+{
+    std::string token = ExtractAuthorization(context.request);
+    if (!IsHex(token, 64))
+        return HandleUnauthorized(std::move(session), context);
+
+    LoginDatabase.DirectPExecute("DELETE FROM battlenet_launcher_tokens WHERE token_hash = '{}'", ByteArrayToHexStr(Trinity::Crypto::SHA256::GetDigestOf(token)));
+    SendJson(*session, context, R"({"ok":true})");
+    return RequestHandlerResult::Handled;
 }
 
 std::string LoginRESTService::GetAuthenticatorUrl(LoginHttpSession const& session) const
