@@ -31,11 +31,17 @@ TEST_CASE("Reason prefixes pick the category", "[BotLogCategory]")
     CHECK(Classify("decision", "BANK_DEPOSIT") == Economy);
     CHECK(Classify("decision", "MAIL_SENT") == Economy);
     CHECK(Classify("decision", "PARTY_FORMED") == Social);
+    CHECK(Classify("decision", "GUILD_BOT_FOUNDED") == Social);
+    CHECK(Classify("decision", "GUILD_INVITE_ACCEPTED") == Social);
     CHECK(Classify("decision", "TOWN_IDLE_GO") == Movement);
     CHECK(Classify("decision", "MOUNT_UP") == Movement);
     CHECK(Classify("decision", "MOUNT_DOWN") == Movement);
     CHECK(Classify("decision", "DUMMY_SUMMARY") == Dummy);
     CHECK(Classify("decision", "CORPSE_RUN_START") == Recovery);
+    CHECK(Classify("decision", "REVIVE_CAST") == Recovery);
+    CHECK(Classify("decision", "REVIVE_ACCEPTED") == Recovery);
+    CHECK(Classify("decision", "REPAIR_PAID") == Economy);
+    CHECK(Classify("decision", "SUPPLY_BOUGHT") == Economy);
     CHECK(Classify("quest_blocked", "NO_PATH") == Movement);
     CHECK(Classify("decision", "QUEST_WALK_START") == Quest);
 }
@@ -124,4 +130,10 @@ TEST_CASE("Severity floors apply per category", "[BotLogCategory]")
     ParseSeverities("combat:9,nope:1,quest", cfg, unknown);
     CHECK(unknown.size() == 3);
     CHECK(cfg.MinSeverity[Combat] == 2);
+}
+
+TEST_CASE("Conversation replies are social", "[BotLogCategory]")
+{
+    CHECK(Classify("conversation", "CONV_REPLY") == Social);
+    CHECK(Classify("conversation", "") == Social);
 }

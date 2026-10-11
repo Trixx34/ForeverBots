@@ -18,6 +18,7 @@
 #include "Guild.h"
 #include "AccountMgr.h"
 #include "AchievementMgr.h"
+#include "BotGuild.h"
 #include "Bag.h"
 #include "CalendarMgr.h"
 #include "CalendarPackets.h"
@@ -1749,6 +1750,8 @@ void Guild::HandleInviteMember(WorldSession* session, std::string_view name)
 
     pInvitee->SendDirectMessage(invite.Write());
     TC_LOG_DEBUG("guild", "SMSG_GUILD_INVITE [{}]", pInvitee->GetName());
+
+    BotGuild::OnGuildInvite(this, player, pInvitee);
 }
 
 void Guild::HandleAcceptMember(WorldSession* session)
