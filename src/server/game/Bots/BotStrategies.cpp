@@ -185,6 +185,8 @@ void RegisterBuiltinBotObjects(BotRegistry& r)
     RegisterPetBotObjects(r);
     RegisterTravelBotObjects(r);
     RegisterConsumableBotObjects(r);
+    RegisterReviveBotObjects(r);
     RegisterWatchdogBotObjects(r);
+    RegisterMountBotObjects(r);
     RegisterDummyBotObjects(r);
 }

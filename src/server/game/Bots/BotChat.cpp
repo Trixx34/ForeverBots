@@ -20,8 +20,11 @@
 #include "BotBehavior.h"
 #include "BotCombat.h"
 #include "BotControl.h"
+
+#include "BotCooking.h"
 #include "BotDummy.h"
 #include "BotEngine.h"
+#include "BotMount.h"
 #include "BotMgr.h"
 #include "BotSocial.h"
 #include "Chat.h"
@@ -79,6 +82,8 @@ char const* VerbName(Verb v)
         case Verb::Stance: return "stance";
         case Verb::Focus: return "focus";
         case Verb::Distance: return "distance";
+
+        case Verb::Food: return "food";
         default: return "?";
     }
 }
@@ -291,7 +296,7 @@ Verb ParseVerb(std::string_view t, bool orders, bool control)
     if (t.empty() || t.size() > 10)
         return Verb::None;
     static constexpr std::pair<char const*, Verb> verbs[] = { { "follow", Verb::Follow }, { "stay", Verb::Stay }, { "goto", Verb::Goto },
-        { "rest", Verb::Rest }, { "release", Verb::Release }, { "status", Verb::Status }, { "strategy", Verb::Strategy }, { "verbose", Verb::Verbose }, { "share", Verb::Share }, { "dummy", Verb::Dummy } };
+        { "rest", Verb::Rest }, { "release", Verb::Release }, { "status", Verb::Status }, { "strategy", Verb::Strategy }, { "verbose", Verb::Verbose }, { "share", Verb::Share }, { "dummy", Verb::Dummy }, { "food", Verb::Food } };
     static constexpr std::pair<char const*, Verb> orderVerbs[] = { { "stop", Verb::Stop }, { "aggressive", Verb::Aggressive }, { "passive", Verb::Passive },
         { "pull", Verb::Pull }, { "heal", Verb::Heal }, { "mount", Verb::Mount }, { "dismount", Verb::Dismount }, { "summon", Verb::Summon }, { "revive", Verb::Revive } };
     static constexpr std::pair<char const*, Verb> controlVerbs[] = { { "role", Verb::Role }, { "stance", Verb::Stance }, { "focus", Verb::Focus }, { "distance", Verb::Distance } };
@@ -604,6 +609,7 @@ void Preflight(Ctx& c)
             break;
         case Verb::Release:
         case Verb::Status:
+        case Verb::Food:
             if (!a.empty())
                 c.PreflightError = "BAD_ARGS";
             break;
@@ -702,6 +708,8 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
             if (!alive)
                 return "DEAD";
             return BotSocial::ShareQuest(bot, c.QuestId, IsVerbose(issuer));
+        case Verb::Food:
+            return BotCooking::OfferFood(bot, issuer);
         case Verb::Dummy:
             return c.Off ? BotDummy::Stop(ai, bot) : BotDummy::Start(ai, bot, c.DummySec);
         case Verb::Release:
@@ -775,33 +783,10 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
                 return "ALREADY_MOUNTED";
             if (ai->GetState() == BotState::Combat || bot->IsInCombat())
                 return "IN_COMBAT";
-            std::vector<MountOption> options;
-            for (auto const& [id, spell] : bot->GetSpellMap())
-            {
-                if (spell.state == PLAYERSPELL_REMOVED || !spell.active)
-                    continue;
-                SpellInfo const* si = sSpellMgr->GetSpellInfo(id, DIFFICULTY_NONE);
-                if (!si || !si->HasAura(SPELL_AURA_MOUNTED))
-                    continue;
-                MountOption o;
-                o.SpellId = id;
-                for (SpellEffectInfo const& e : si->GetEffects())
-                {
-                    if (e.ApplyAuraName == SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED)
-                        o.Speed = std::max(o.Speed, e.CalcValueAsInt(bot));
-                    else if (e.ApplyAuraName == SPELL_AURA_MOD_INCREASE_FLIGHT_SPEED || e.ApplyAuraName == SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED)
-                        o.Flying = true;
-                }
-                options.push_back(o);
-            }
-            int32 const pick = PickMount(options);
-            if (pick < 0)
-                return "NO_MOUNT";
-            // stop the follow / goto leg: movement interrupts the cast
-            if (ai->Motion().HasGoal())
-                ai->Motion().ClearGoal();
-            bot->StopMoving();
-            return bot->CastSpell(bot, options[size_t(pick)].SpellId, CastSpellExtraArgs(TRIGGERED_NONE)) == SPELL_CAST_OK ? "OK" : "CANT_MOUNT";
+            char const* const res = BotMount::MountUp(ai, bot, 0);
+            if (!std::strcmp(res, "OK"))
+                BotMount::NoteOrder(ai, true);
+            return res;
         }
         case Verb::Dismount:
             if (!alive)
@@ -810,6 +795,7 @@ char const* Exec(Ctx const& c, Player* issuer, Member const& m, uint32 index)
                 return "NOT_MOUNTED";
             bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
             bot->Dismount();
+            BotMount::NoteOrder(ai, false);
             return "OK";
         case Verb::Summon:
         case Verb::Revive:
@@ -1015,8 +1001,10 @@ bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whis
     if (verb == Verb::None)
         return false;
     std::string_view const args = Trim(rest);
+    if (verb == Verb::Food && !BotCooking::ChatEnabled())
+        return false;
 
-    // 2. authorization: only the leader of the bot's group
+    // 2. authorization: only the leader of the bot's group; asking for food is open to every member
     Group* group = channel == Channel::Whisper ? whisperTarget->GetGroup() : issuer->GetGroup();
     if (!group && channel != Channel::Whisper)
         return false;
@@ -1024,7 +1012,7 @@ bool Handle(Player* issuer, Channel channel, std::string_view text, Player* whis
     if (!logBot)
         return false;   // a group without bots is none of our business
 
-    if (!group || !group->IsLeader(issuer->GetGUID()))
+    if (!group || !(group->IsLeader(issuer->GetGUID()) || (verb == Verb::Food && group->IsMember(issuer->GetGUID()))))
     {
         char const* reason = group ? "UNAUTHORIZED" : "NOT_IN_GROUP";
         if (s_unauth.size() >= ISSUER_MAP_CAP && !s_unauth.contains(issuer->GetGUID().GetCounter()))
