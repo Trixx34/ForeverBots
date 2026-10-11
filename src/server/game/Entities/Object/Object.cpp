@@ -1896,6 +1896,10 @@ SpellMissInfo WorldObject::MagicSpellHitResult(Unit* victim, SpellInfo const* sp
         if (spellInfo->HasAttribute(SPELL_ATTR7_NO_ATTACK_MISS))
             return 0.0f;
 
+        // vanilla: SPELL_ATTR_EX3_ALWAYS_HIT spells never miss (they are not subject to the 1% minimum miss below)
+        if (spellInfo->HasAttribute(SPELL_ATTR3_ALWAYS_HIT))
+            return 0.0f;
+
         SpellSchoolMask schoolMask = spellInfo->GetSchoolMask();
         // PvP - PvE spell misschances per leveldif > 2
         int32 lchance = victim->GetTypeId() == TYPEID_PLAYER ? 7 : 11;
@@ -1903,27 +1907,16 @@ SpellMissInfo WorldObject::MagicSpellHitResult(Unit* victim, SpellInfo const* sp
         if (GetTypeId() == TYPEID_UNIT && ToCreature()->IsTrigger())
             thisLevel = std::max<int32>(thisLevel, spellInfo->SpellLevel);
         int32 leveldif = int32(victim->GetLevelForTarget(this)) - thisLevel;
-        int32 levelBasedHitDiff = leveldif;
 
-        // Base hit chance from attacker and victim levels
-        float modHitChance = 100;
-        if (levelBasedHitDiff >= 0)
-        {
-            if (victim->GetTypeId() != TYPEID_PLAYER)
-            {
-                modHitChance = 94 - 3 * std::min(levelBasedHitDiff, 3);
-                levelBasedHitDiff -= 3;
-            }
-            else
-            {
-                modHitChance = 96 - std::min(levelBasedHitDiff, 2);
-                levelBasedHitDiff -= 2;
-            }
-            if (levelBasedHitDiff > 0)
-                modHitChance -= lchance * std::min(levelBasedHitDiff, 7);
-        }
+        // Classic 1.60 (vanilla, VMaNGOS SpellCaster::MagicSpellHitChance): 96% against the same level, -1% per level up to +2,
+        // then -11% per level against creatures (-7% against players): 96 / 95 / 94 / 83 / 72; never below 22%
+        float modHitChance;
+        if (leveldif < 3)
+            modHitChance = float(96 - leveldif);
         else
-            modHitChance = 97 - levelBasedHitDiff;
+            modHitChance = float(94 - (leveldif - 2) * lchance);
+        if (modHitChance < 22.0f)
+            modHitChance = 22.0f;
 
         // Spellmod from SpellModOp::HitChance
         if (Player* modOwner = GetSpellModOwner())
@@ -1941,7 +1934,14 @@ SpellMissInfo WorldObject::MagicSpellHitResult(Unit* victim, SpellInfo const* sp
         if (Unit const* unit = ToUnit())
             HitChance += unit->m_modSpellHitChance;
 
-        RoundToInterval(HitChance, 0.0f, 100.0f);
+        // Classic 1.60 (vanilla, VMaNGOS MagicSpellHitChance): binary spells are fully resisted with the target's average resist
+        // chance for their school (no partial resists for them, Unit::CalcSpellResistedDamage)
+        if (spellInfo->HasAttribute(SPELL_ATTR0_CU_BINARY_SPELL) && (schoolMask & SPELL_SCHOOL_MASK_MAGIC)
+            && !((schoolMask & SPELL_SCHOOL_MASK_HOLY) && victim->GetTypeId() != TYPEID_UNIT))
+            HitChance *= 1.0f - Unit::CalculateAverageResistReduction(this, schoolMask, victim, spellInfo);
+
+        // vanilla: always at least 1% hit and at least 1% miss
+        RoundToInterval(HitChance, 1.0f, 99.0f);
 
         return 100.0f - HitChance;
     }();

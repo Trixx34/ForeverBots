@@ -29,6 +29,7 @@
 #include "MotionMaster.h"
 #include "ObjectDefines.h"
 #include "ScriptedCreature.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_script_text.h"
 #include "classic_sunken_temple.h"
 #include <list>
@@ -66,6 +67,38 @@ ClassicSTStatueEvent const ClassicSTStatueEvents[CLASSIC_ST_MAX_STATUES] =
 Seconds const ClassicSTRespawnForever = Seconds(HOUR * IN_MILLISECONDS); // VMaNGOS DoRespawnGameObject(guid, HOUR * IN_MILLISECONDS)
 }
 
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Sunken Temple (map 109), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+// first id: difficulty 1 (Normal, what the server runs), second id: difficulty 201
+// the difficulty 215 set (20 players) is left out
+enum ClassicSunkenTempleEncounterBosses : uint32
+{
+    CST_ENC_ATALALARION = 0,
+    CST_ENC_AVATAR = 1,
+    CST_ENC_ERANIKUS = 2,
+    CST_ENC_HAZZAS = 3,
+    CST_ENC_MORPHAZ = 4,
+    CST_ENC_WEAVER = 5,
+    CST_ENC_DREAMSCYTHE = 6,
+    CST_ENC_JAMMALAN = 7,
+    CST_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicSunkenTempleEncounterBossEntries[] =
+{
+    { CST_ENC_ATALALARION, 8580 }, // Atal'alarion
+    { CST_ENC_AVATAR, 8443 }, // Avatar of Hakkar
+    { CST_ENC_ERANIKUS, 5709 }, // Shade of Eranikus
+    { CST_ENC_HAZZAS, 5722 }, // Hazzas
+    { CST_ENC_MORPHAZ, 5719 }, // Morphaz
+    { CST_ENC_WEAVER, 5720 }, // Weaver
+    { CST_ENC_DREAMSCYTHE, 5721 }, // Dreamscythe
+    { CST_ENC_JAMMALAN, 5710 } // Jammal'an the Prophet
+};
+}
+
 class classic_instance_sunken_temple : public InstanceMapScript
 {
 public:
@@ -80,8 +113,29 @@ public:
             _dreamscythInCombat(false), _atalarionInCombat(false), _eranikusInCombat(false)
         {
             SetHeaders("ST");
+            SetBossNumber(CST_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CST_ENC_ATALALARION, {{ 3582, 2814 }} },
+                { CST_ENC_AVATAR, {{ 3583, 492 }} },
+                { CST_ENC_ERANIKUS, {{ 3584, 493 }} },
+                { CST_ENC_HAZZAS, {{ 3585, 491 }} },
+                { CST_ENC_MORPHAZ, {{ 3586, 490 }} },
+                { CST_ENC_WEAVER, {{ 3587, 487 }} },
+                { CST_ENC_DREAMSCYTHE, {{ 3588, 486 }} },
+                { CST_ENC_JAMMALAN, {{ 3589, 488 }} }
+            };
+            LoadDungeonEncounterData(encounters);
             for (uint32& i : _encounter)
                 i = 0;
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicSunkenTempleEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
         }
 
         // VMaNGOS Load(): 6 encounter values, IN_PROGRESS -> NOT_STARTED
@@ -271,6 +325,7 @@ public:
         void OnCreatureCreate(Creature* creature) override
         {
             InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
 
             switch (creature->GetEntry())
             {
@@ -386,6 +441,8 @@ public:
         // VMaNGOS OnCreatureDeath
         void OnUnitDeath(Unit* unit) override
         {
+            _encounterTracker.OnUnitDeath(unit);
+
             Creature* creature = unit->ToCreature();
             if (!creature)
                 return;
@@ -602,8 +659,10 @@ public:
             return ObjectGuid::Empty;
         }
 
-        void Update(uint32 /*diff*/) override
+        void Update(uint32 diff) override
         {
+            _encounterTracker.Update(diff);
+
             // (VMaNGOS also flushed the map remove list every 5s here; TC does that itself)
 
             // Check if need to restore state after server crash

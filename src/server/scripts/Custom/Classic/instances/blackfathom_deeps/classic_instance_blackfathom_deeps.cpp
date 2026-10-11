@@ -30,6 +30,7 @@
 #include "Player.h"
 #include "TemporarySummon.h"
 #include "classic_blackfathom_deeps.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include <array>
 #include <initializer_list>
 #include <list>
@@ -110,6 +111,36 @@ constexpr std::array<char const*, CBFD_MAX_ENCOUNTER> ClassicBfdEncounterNames =
 };
 }
 
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Blackfathom Deeps (map 48), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+// first id: difficulty 1 (Normal, what the server runs), second id: difficulty 201
+// the difficulty 198 set (Baron Aquanis etc.) is left out
+enum ClassicBlackfathomDeepsEncounterBosses : uint32
+{
+    CBFD_ENC_GHAMOORA = 0,
+    CBFD_ENC_SAREVESS = 1,
+    CBFD_ENC_GELIHAST = 2,
+    CBFD_ENC_LORGUS_JETT = 3,
+    CBFD_ENC_SERRAKIS = 4,
+    CBFD_ENC_KELRIS = 5,
+    CBFD_ENC_AKUMAI = 6,
+    CBFD_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicBlackfathomDeepsEncounterBossEntries[] =
+{
+    { CBFD_ENC_GHAMOORA, 4887 }, // Ghamoo-ra
+    { CBFD_ENC_SAREVESS, 4831 }, // Lady Sarevess
+    { CBFD_ENC_GELIHAST, 6243 }, // Gelihast
+    { CBFD_ENC_LORGUS_JETT, 12902 }, // Lorgus Jett
+    { CBFD_ENC_SERRAKIS, 4830 }, // Old Serra'kis
+    { CBFD_ENC_KELRIS, 4832 }, // Twilight Lord Kelris
+    { CBFD_ENC_AKUMAI, 4829 } // Aku'mai
+};
+}
+
 class classic_instance_blackfathom_deeps : public InstanceMapScript
 {
 public:
@@ -120,6 +151,18 @@ public:
         classic_instance_blackfathom_deeps_InstanceScript(InstanceMap* map) : InstanceScript(map)
         {
             SetHeaders("CBFD");
+            SetBossNumber(CBFD_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CBFD_ENC_GHAMOORA, {{ 2916, 2761 }} },
+                { CBFD_ENC_SAREVESS, {{ 2915, 2762 }} },
+                { CBFD_ENC_GELIHAST, {{ 2914, 2763 }} },
+                { CBFD_ENC_LORGUS_JETT, {{ 2913, 2764 }} },
+                { CBFD_ENC_SERRAKIS, {{ 2912, 2765 }} },
+                { CBFD_ENC_KELRIS, {{ 2911, 2766 }} },
+                { CBFD_ENC_AKUMAI, {{ 2910, 2767 }} }
+            };
+            LoadDungeonEncounterData(encounters);
 
             // VMaNGOS m_auiEncounter[] + Save()/Load() string -> TC persistent instance values
             for (uint32 i = 0; i < CBFD_MAX_ENCOUNTER; ++i)
@@ -129,6 +172,14 @@ public:
             m_uiCheckEventEnd = 1000;
             for (uint32& i : m_uiSpawnMobsTimer)
                 i = 0;
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicBlackfathomDeepsEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
         }
 
         ObjectGuid m_uiTwilightLordKelrisGUID;
@@ -160,6 +211,7 @@ public:
         void OnCreatureCreate(Creature* creature) override
         {
             InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
 
             if (creature->GetEntry() == CBFD_NPC_TWILIGHT_LORD_KELRIS)
                 m_uiTwilightLordKelrisGUID = creature->GetGUID();
@@ -280,6 +332,8 @@ public:
         // VMaNGOS OnCreatureDeath
         void OnUnitDeath(Unit* unit) override
         {
+            _encounterTracker.OnUnitDeath(unit);
+
             if (unit->GetTypeId() == TYPEID_UNIT && unit->GetEntry() == CBFD_NPC_BARON_AQUANIS)
                 SetData(CBFD_TYPE_AQUANIS, DONE);
         }
@@ -363,6 +417,8 @@ public:
 
         void Update(uint32 diff) override
         {
+            _encounterTracker.Update(diff);
+
             // Only use this function if shrine event is in progress
             if (Enc(CBFD_ENCOUNTER_SHRINE) != IN_PROGRESS)
                 return;

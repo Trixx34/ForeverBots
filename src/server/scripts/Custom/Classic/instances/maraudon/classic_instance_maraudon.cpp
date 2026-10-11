@@ -25,7 +25,38 @@
 #include "Map.h"
 #include "ObjectDefines.h"
 #include "ScriptedCreature.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_maraudon.h"
+
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Maraudon (map 349), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+enum ClassicMaraudonEncounterBosses : uint32
+{
+    CMARA_ENC_NOXXION = 0,
+    CMARA_ENC_RAZORLASH = 1,
+    CMARA_ENC_GIZLOCK = 2,
+    CMARA_ENC_VYLETONGUE = 3,
+    CMARA_ENC_CELEBRAS = 4,
+    CMARA_ENC_LANDSLIDE = 5,
+    CMARA_ENC_ROTGRIP = 6,
+    CMARA_ENC_THERADRAS = 7,
+    CMARA_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicMaraudonEncounterBossEntries[] =
+{
+    { CMARA_ENC_NOXXION, 13282 }, // Noxxion
+    { CMARA_ENC_RAZORLASH, 12258 }, // Razorlash
+    { CMARA_ENC_GIZLOCK, 13601 }, // Tinkerer Gizlock
+    { CMARA_ENC_VYLETONGUE, 12236 }, // Lord Vyletongue
+    { CMARA_ENC_CELEBRAS, 12225 }, // Celebras the Cursed
+    { CMARA_ENC_LANDSLIDE, 12203 }, // Landslide
+    { CMARA_ENC_ROTGRIP, 13596 }, // Rotgrip
+    { CMARA_ENC_THERADRAS, 12201 } // Princess Theradras
+};
+}
 
 class classic_instance_maraudon : public InstanceMapScript
 {
@@ -39,8 +70,34 @@ public:
             _respawnSpewedLarva(false), _spewedLarvaTimer(4000)
         {
             SetHeaders("MARA");
+            SetBossNumber(CMARA_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CMARA_ENC_NOXXION, {{ 422 }} },
+                { CMARA_ENC_RAZORLASH, {{ 423 }} },
+                { CMARA_ENC_GIZLOCK, {{ 427 }} },
+                { CMARA_ENC_VYLETONGUE, {{ 424 }} },
+                { CMARA_ENC_CELEBRAS, {{ 425 }} },
+                { CMARA_ENC_LANDSLIDE, {{ 426 }} },
+                { CMARA_ENC_ROTGRIP, {{ 428 }} },
+                { CMARA_ENC_THERADRAS, {{ 429 }} }
+            };
+            LoadDungeonEncounterData(encounters);
             _encounter[CLASSIC_MARA_TYPE_LARVA_SPEWER] = 0;
             _encounter[CLASSIC_MARA_TYPE_CELEBRAS] = 0;
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicMaraudonEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
+        }
+
+        void OnUnitDeath(Unit* unit) override
+        {
+            _encounterTracker.OnUnitDeath(unit);
         }
 
         // VMaNGOS Load(): IN_PROGRESS -> NOT_STARTED
@@ -56,6 +113,7 @@ public:
         void OnCreatureCreate(Creature* creature) override
         {
             InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
 
             switch (creature->GetEntry())
             {
@@ -174,6 +232,8 @@ public:
 
         void Update(uint32 diff) override
         {
+            _encounterTracker.Update(diff);
+
             // Remove a corrupted vine when a healed one was summoned over
             if (!_vineGUID.IsEmpty())
             {

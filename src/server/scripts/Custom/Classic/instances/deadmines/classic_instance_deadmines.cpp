@@ -28,6 +28,7 @@
 #include "Player.h"
 #include "QuestDef.h"
 #include "classic_deadmines.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_script_text.h"
 #include <list>
 
@@ -49,6 +50,36 @@ void ClassicDeadminesSetGoVisible(GameObject* go, bool visible, bool update)
 }
 }
 
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of The Deadmines (map 36), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+// 3676 Miner Johnson is a Forever-only encounter and is left out
+enum ClassicDeadminesEncounterBosses : uint32
+{
+    CDM_ENC_RHAHKZOR = 0,
+    CDM_ENC_SNEED = 1,
+    CDM_ENC_GILNID = 2,
+    CDM_ENC_GREENSKIN = 3,
+    CDM_ENC_SMITE = 4,
+    CDM_ENC_COOKIE = 5,
+    CDM_ENC_VANCLEEF = 6,
+    CDM_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicDeadminesEncounterBossEntries[] =
+{
+    { CDM_ENC_RHAHKZOR, 644 }, // Rhahk'Zor
+    { CDM_ENC_SNEED, 642, CLASSIC_DUNGEON_BOSS_ENGAGE_ONLY }, // Sneed's Shredder
+    { CDM_ENC_SNEED, 643 }, // Sneed
+    { CDM_ENC_GILNID, 1763 }, // Gilnid
+    { CDM_ENC_GREENSKIN, 647 }, // Captain Greenskin
+    { CDM_ENC_SMITE, 646 }, // Mr. Smite
+    { CDM_ENC_COOKIE, 645 }, // Cookie
+    { CDM_ENC_VANCLEEF, 639 } // Edwin VanCleef
+};
+}
+
 class classic_instance_deadmines : public InstanceMapScript
 {
 public:
@@ -59,6 +90,18 @@ public:
         classic_instance_deadmines_InstanceScript(InstanceMap* map) : InstanceScript(map)
         {
             SetHeaders("CDM");
+            SetBossNumber(CDM_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CDM_ENC_RHAHKZOR, {{ 2741 }} },
+                { CDM_ENC_SNEED, {{ 2742 }} },
+                { CDM_ENC_GILNID, {{ 2743 }} },
+                { CDM_ENC_GREENSKIN, {{ 2744 }} },
+                { CDM_ENC_SMITE, {{ 2745 }} },
+                { CDM_ENC_COOKIE, {{ 2746 }} },
+                { CDM_ENC_VANCLEEF, {{ 2747 }} }
+            };
+            LoadDungeonEncounterData(encounters);
 
             m_auiEncounter[0] = 0;
             m_uiSpawnPatrolOnRhahkDeath = 30000;
@@ -68,6 +111,14 @@ public:
             m_uiSpawnPatrolOnGilnidDeath = 30000;
             m_uiIronDoorTimer = 0;
             m_uiIronDoorStep = 0;
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicDeadminesEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
         }
 
         uint32 m_auiEncounter[CDM_MAX_ENCOUNTER];
@@ -94,6 +145,7 @@ public:
         void OnCreatureCreate(Creature* creature) override
         {
             InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
 
             if (creature->GetEntry() == CDM_NPC_RHAHKZOR)
                 m_uiRhahkGUID = creature->GetGUID();
@@ -122,6 +174,8 @@ public:
         // VMaNGOS OnCreatureDeath
         void OnUnitDeath(Unit* unit) override
         {
+            _encounterTracker.OnUnitDeath(unit);
+
             Creature* who = unit->ToCreature();
             if (!who)
                 return;
@@ -229,6 +283,8 @@ public:
 
         void Update(uint32 diff) override
         {
+            _encounterTracker.Update(diff);
+
             if (m_isRhahkDead && m_uiSpawnPatrolOnRhahkDeath)
             {
                 if (m_uiSpawnPatrolOnRhahkDeath <= diff)

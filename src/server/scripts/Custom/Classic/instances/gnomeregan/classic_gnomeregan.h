@@ -22,6 +22,7 @@
 
 #include "InstanceScript.h"
 #include "ObjectGuid.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include <list>
 
 #define ClassicGnomereganScriptName "classic_instance_gnomeregan"
@@ -90,7 +91,10 @@ public:
     void AfterDataLoad() override;
 
     void OnCreatureCreate(Creature* creature) override;
+    void OnCreatureRemove(Creature* creature) override;
     void OnGameObjectCreate(GameObject* go) override;
+    void OnUnitDeath(Unit* unit) override;
+    void Update(uint32 diff) override;
 
     void SetData(uint32 type, uint32 data) override;
     uint32 GetData(uint32 type) const override;
@@ -118,6 +122,8 @@ private:
 
     PersistentInstanceScriptValue<uint32> _savedGrubbis;
     PersistentInstanceScriptValue<uint32> _savedThermaplugg;
+
+    ClassicDungeonEncounterTracker _encounterTracker;
 };
 
 #endif

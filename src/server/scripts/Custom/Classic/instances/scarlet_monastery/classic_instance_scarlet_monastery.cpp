@@ -32,6 +32,7 @@
 #include "Player.h"
 #include "ScriptedCreature.h"
 #include "TemporarySummon.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_scarlet_monastery.h"
 #include "classic_script_text.h"
 #include <set>
@@ -108,6 +109,35 @@ enum ClassicSMAshbringerEvents
 };
 }
 
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Scarlet Monastery (map 189), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+enum ClassicScarletMonasteryEncounterBosses : uint32
+{
+    CSM_ENC_VISHAS = 0,
+    CSM_ENC_THALNOS = 1,
+    CSM_ENC_LOKSEY = 2,
+    CSM_ENC_DOAN = 3,
+    CSM_ENC_HEROD = 4,
+    CSM_ENC_FAIRBANKS = 5,
+    CSM_ENC_WHITEMANE = 6,
+    CSM_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicScarletMonasteryEncounterBossEntries[] =
+{
+    { CSM_ENC_VISHAS, 3983 }, // Interrogator Vishas
+    { CSM_ENC_THALNOS, 4543 }, // Bloodmage Thalnos
+    { CSM_ENC_LOKSEY, 3974 }, // Houndmaster Loksey
+    { CSM_ENC_DOAN, 6487 }, // Arcanist Doan
+    { CSM_ENC_HEROD, 3975 }, // Herod
+    { CSM_ENC_FAIRBANKS, 4542 }, // High Inquisitor Fairbanks
+    { CSM_ENC_WHITEMANE, 3976 }, // Scarlet Commander Mograine
+    { CSM_ENC_WHITEMANE, 3977 } // High Inquisitor Whitemane
+};
+}
+
 class classic_instance_scarlet_monastery : public InstanceMapScript
 {
 public:
@@ -120,8 +150,28 @@ public:
             _ashbringerActive(false)
         {
             SetHeaders("SM");
+            SetBossNumber(CSM_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CSM_ENC_VISHAS, {{ 444 }} },
+                { CSM_ENC_THALNOS, {{ 2779 }} },
+                { CSM_ENC_LOKSEY, {{ 446 }} },
+                { CSM_ENC_DOAN, {{ 447 }} },
+                { CSM_ENC_HEROD, {{ 448 }} },
+                { CSM_ENC_FAIRBANKS, {{ 449 }} },
+                { CSM_ENC_WHITEMANE, {{ 450 }} }
+            };
+            LoadDungeonEncounterData(encounters);
             _encounter[0] = 0;
             _encounter[1] = 0;
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicScarletMonasteryEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
         }
 
         // VMaNGOS Load(): "m_auiEncounter[0] m_auiEncounter[1]", IN_PROGRESS -> NOT_STARTED
@@ -144,6 +194,7 @@ public:
         void OnCreatureCreate(Creature* creature) override
         {
             InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
 
             switch (creature->GetEntry())
             {
@@ -194,6 +245,8 @@ public:
         // VMaNGOS OnCreatureDeath
         void OnUnitDeath(Unit* unit) override
         {
+            _encounterTracker.OnUnitDeath(unit);
+
             Creature* creature = unit->ToCreature();
             if (!creature)
                 return;
@@ -388,6 +441,8 @@ public:
 
         void Update(uint32 diff) override
         {
+            _encounterTracker.Update(diff);
+
             if (!_ashbringerActive)
                 return;
 

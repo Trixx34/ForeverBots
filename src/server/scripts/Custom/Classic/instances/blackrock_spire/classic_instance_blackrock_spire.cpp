@@ -35,6 +35,7 @@
 #include "SpellScript.h"
 #include "TemporarySummon.h"
 #include "classic_blackrock_spire.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_script_text.h"
 #include <algorithm>
 #include <array>
@@ -214,6 +215,49 @@ namespace
     }
 }
 
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Blackrock Spire (map 229), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+enum ClassicBlackrockSpireEncounterBosses : uint32
+{
+    CBRS_ENC_OMOKK = 0,
+    CBRS_ENC_VOSHGAJIN = 1,
+    CBRS_ENC_VOONE = 2,
+    CBRS_ENC_SMOLDERWEB = 3,
+    CBRS_ENC_UROK = 4,
+    CBRS_ENC_ZIGRIS = 5,
+    CBRS_ENC_HALYCON = 6,
+    CBRS_ENC_GIZRUL = 7,
+    CBRS_ENC_WYRMTHALAK = 8,
+    CBRS_ENC_EMBERSEER = 9,
+    CBRS_ENC_REND = 10,
+    CBRS_ENC_BEAST = 11,
+    CBRS_ENC_DRAKKISATH = 12,
+    CBRS_ENC_VALTHALAK = 13,
+    CBRS_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicBlackrockSpireEncounterBossEntries[] =
+{
+    { CBRS_ENC_OMOKK, 9196 }, // Highlord Omokk
+    { CBRS_ENC_VOSHGAJIN, 9236 }, // Shadow Hunter Vosh'gajin
+    { CBRS_ENC_VOONE, 9237 }, // War Master Voone
+    { CBRS_ENC_SMOLDERWEB, 10596 }, // Mother Smolderweb
+    { CBRS_ENC_UROK, 10584 }, // Urok Doomhowl
+    { CBRS_ENC_ZIGRIS, 9736 }, // Quartermaster Zigris
+    { CBRS_ENC_HALYCON, 10220 }, // Halycon
+    { CBRS_ENC_GIZRUL, 10268 }, // Gizrul the Slavener
+    { CBRS_ENC_WYRMTHALAK, 9568 }, // Overlord Wyrmthalak
+    { CBRS_ENC_EMBERSEER, 9816 }, // Pyroguard Emberseer
+    { CBRS_ENC_REND, 10429 }, // Warchief Rend Blackhand
+    { CBRS_ENC_REND, 10339, CLASSIC_DUNGEON_BOSS_ENGAGE_ONLY }, // Gyth
+    { CBRS_ENC_BEAST, 10430 }, // The Beast
+    { CBRS_ENC_DRAKKISATH, 10363 }, // General Drakkisath
+    { CBRS_ENC_VALTHALAK, 16042 } // Lord Valthalak
+};
+}
+
 class classic_instance_blackrock_spire : public InstanceMapScript
 {
 public:
@@ -224,7 +268,25 @@ public:
         classic_instance_blackrock_spire_InstanceScript(InstanceMap* map) : InstanceScript(map)
         {
             SetHeaders(DataHeader);
-            SetBossNumber(0);
+            SetBossNumber(CBRS_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CBRS_ENC_OMOKK, {{ 267 }} },
+                { CBRS_ENC_VOSHGAJIN, {{ 268 }} },
+                { CBRS_ENC_VOONE, {{ 269 }} },
+                { CBRS_ENC_SMOLDERWEB, {{ 270 }} },
+                { CBRS_ENC_UROK, {{ 271 }} },
+                { CBRS_ENC_ZIGRIS, {{ 272 }} },
+                { CBRS_ENC_HALYCON, {{ 274 }} },
+                { CBRS_ENC_GIZRUL, {{ 273 }} },
+                { CBRS_ENC_WYRMTHALAK, {{ 275 }} },
+                { CBRS_ENC_EMBERSEER, {{ 3062 }} },
+                { CBRS_ENC_REND, {{ 3063 }} },
+                { CBRS_ENC_BEAST, {{ 3068 }} },
+                { CBRS_ENC_DRAKKISATH, {{ 3069 }} },
+                { CBRS_ENC_VALTHALAK, {{ 3070 }} }
+            };
+            LoadDungeonEncounterData(encounters);
 
             _encounter.fill(NOT_STARTED);
             for (uint32 i = 0; i < INSTANCE_BRS_MAX_ENCOUNTER; ++i)
@@ -241,6 +303,14 @@ public:
             _bannokSpawned = false;
             _dialogueIndex = 0;
             _dialogueTimer = 0;
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicBlackrockSpireEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
         }
 
         void AfterDataLoad() override
@@ -381,6 +451,7 @@ public:
         void OnCreatureCreate(Creature* creature) override
         {
             InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
 
             switch (creature->GetEntry())
             {
@@ -577,6 +648,8 @@ public:
 
         void OnUnitDeath(Unit* unit) override
         {
+            _encounterTracker.OnUnitDeath(unit);
+
             Creature* creature = unit->ToCreature();
             if (!creature)
                 return;
@@ -635,6 +708,8 @@ public:
 
         void Update(uint32 diff) override
         {
+            _encounterTracker.Update(diff);
+
             DialogueUpdate(diff);
 
             if (_stadiumEventTimer)

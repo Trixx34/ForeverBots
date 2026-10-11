@@ -3027,31 +3027,28 @@ void GameObject::Use(Unit* user, bool ignoreCastInProgress /*= false*/)
                     ContentTuningEntry const* areaContentTuning = DB2Manager::GetContentTuningForArea(areaEntry);
                     int32 fishingExpansion = areaContentTuning ? areaContentTuning->ExpansionID : 0;
 
-                    player->UpdateFishingSkill(fishingExpansion);
-
                     // Send loot
                     int32 areaFishingLevel = sObjectMgr->GetFishingBaseSkillLevel(areaEntry);
 
                     uint32 playerFishingSkill = player->GetProfessionSkillForExp(SKILL_FISHING, fishingExpansion);
                     int32 playerFishingLevel = player->GetSkillValue(playerFishingSkill);
 
+                    // Classic 1.60 (vanilla, VMaNGOS): catch only with at least the zone skill, then (skill - zone skill + 5)%;
+                    // a fishing pool does not save a failed cast and a failed cast loses the fish (no junk); skill only rises
+                    // on a catch (Player::UpdateFishingSkill)
                     int32 roll = irand(1, 100);
-                    int32 chance = 100;
-                    if (playerFishingLevel < areaFishingLevel)
-                    {
-                        chance = int32(pow((double)playerFishingLevel / areaFishingLevel, 2) * 100);
-                        if (chance < 1)
-                            chance = 1;
-                    }
+                    int32 chance = playerFishingLevel - areaFishingLevel + 5;
+                    bool caught = playerFishingLevel >= areaFishingLevel && chance >= roll;
 
                     TC_LOG_DEBUG("misc", "Fishing check (skill {} level: {} area skill level: {} chance {} roll: {}", playerFishingSkill, playerFishingLevel, areaFishingLevel, chance, roll);
 
                     /// @todo find reasonable value for fishing hole search
-                    GameObject* fishingPool = LookupFishingHoleAround(20.0f + CONTACT_DISTANCE);
+                    GameObject* fishingPool = caught ? LookupFishingHoleAround(20.0f + CONTACT_DISTANCE) : nullptr;
 
-                    // If fishing skill is high enough, or if fishing on a pool, send correct loot.
-                    // Fishing pools have no skill requirement as of patch 3.3.0 (undocumented change).
-                    if (chance >= roll || fishingPool)
+                    if (caught)
+                        player->UpdateFishingSkill(fishingExpansion);
+
+                    if (caught)
                     {
                         /// @todo I do not understand this hack. Need some explanation.
                         // prevent removing GO at spell cancel
@@ -3070,10 +3067,10 @@ void GameObject::Use(Unit* user, bool ignoreCastInProgress /*= false*/)
                             player->SendLoot(*m_loot);
                         }
                     }
-                    else // If fishing skill is too low, send junk loot.
+                    else // vanilla: the fish escaped
                     {
-                        m_loot.reset(GetFishLootJunk(player));
-                        player->SendLoot(*m_loot);
+                        SetLootState(GO_JUST_DEACTIVATED);
+                        player->SendDirectMessage(WorldPackets::GameObject::FishEscaped().Write());
                     }
                     break;
                 }

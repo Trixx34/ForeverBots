@@ -638,6 +638,9 @@ class TC_GAME_API Quest
         int32 GetClassicQuestLevel() const { return _classicQuestLevel; }
         void SetClassicQuestLevel(int32 levelType, int32 level) { _classicLevelType = levelType; _classicQuestLevel = level; }
         // Classic 1.60: fixed level range of the quest (quest_classic_level) instead of ContentTuning, 0 = none
+        // Classic 1.60: vanilla quest money (VMaNGOS RewOrReqMoney, negative = the quest costs that much) and max level gold
+        void SetClassicMoney(int32 money, uint32 moneyMaxLevel) { _hasClassicMoney = true; _classicMoney = money; _classicMoneyMaxLevel = moneyMaxLevel; }
+        uint32 GetClassicRequiredMoney() const { return _hasClassicMoney && _classicMoney < 0 ? uint32(-_classicMoney) : 0; }
         int32 GetClassicMinLevel() const { return _classicMinLevel; }
         void SetClassicLevelRange(int32 minLevel, uint32 maxLevel) { _classicMinLevel = minLevel; if (maxLevel) _maxLevel = maxLevel; }
         uint32 GetContentTuningId() const { return _contentTuningID; }
@@ -795,6 +798,9 @@ class TC_GAME_API Quest
         int32 _classicLevelType = 2;
         int32 _classicQuestLevel = 0;
         int32 _classicMinLevel = 0;
+        bool _hasClassicMoney = false;
+        int32 _classicMoney = 0;
+        uint32 _classicMoneyMaxLevel = 0;
         uint32 _contentTuningID = 0;
         int32 _questSortID = 0;
         uint32 _questInfoID = 0;

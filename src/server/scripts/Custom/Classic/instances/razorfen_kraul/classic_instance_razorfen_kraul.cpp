@@ -23,7 +23,34 @@
 #include "InstanceScript.h"
 #include "Map.h"
 #include "MotionMaster.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_razorfen_kraul.h"
+
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Razorfen Kraul (map 47), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+enum ClassicRazorfenKraulEncounterBosses : uint32
+{
+    CLASSIC_RFK_ENC_ROOGUG = 0,
+    CLASSIC_RFK_ENC_AGGEM = 1,
+    CLASSIC_RFK_ENC_JARGBA = 2,
+    CLASSIC_RFK_ENC_RAMTUSK = 3,
+    CLASSIC_RFK_ENC_AGATHELOS = 4,
+    CLASSIC_RFK_ENC_CHARLGA = 5,
+    CLASSIC_RFK_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicRazorfenKraulEncounterBossEntries[] =
+{
+    { CLASSIC_RFK_ENC_ROOGUG, 6168 }, // Roogug
+    { CLASSIC_RFK_ENC_AGGEM, 4424 }, // Aggem Thorncurse
+    { CLASSIC_RFK_ENC_JARGBA, 4428 }, // Death Speaker Jargba
+    { CLASSIC_RFK_ENC_RAMTUSK, 4420 }, // Overlord Ramtusk
+    { CLASSIC_RFK_ENC_AGATHELOS, 4422 }, // Agathelos the Raging
+    { CLASSIC_RFK_ENC_CHARLGA, 4421 } // Charlga Razorflank
+};
+}
 
 class classic_instance_razorfen_kraul : public InstanceMapScript
 {
@@ -36,8 +63,37 @@ public:
             _wardKeepersRemaining(0), _savedAgathelos(*this, "Agathelos", NOT_STARTED)
         {
             SetHeaders(ClassicRFKDataHeader);
+            SetBossNumber(CLASSIC_RFK_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CLASSIC_RFK_ENC_ROOGUG, {{ 2773 }} },
+                { CLASSIC_RFK_ENC_AGGEM, {{ 2774 }} },
+                { CLASSIC_RFK_ENC_JARGBA, {{ 2775 }} },
+                { CLASSIC_RFK_ENC_RAMTUSK, {{ 2776 }} },
+                { CLASSIC_RFK_ENC_AGATHELOS, {{ 2777 }} },
+                { CLASSIC_RFK_ENC_CHARLGA, {{ 2778 }} }
+            };
+            LoadDungeonEncounterData(encounters);
             for (uint32& encounter : _encounter)
                 encounter = NOT_STARTED;
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicRazorfenKraulEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
+        }
+
+        void OnUnitDeath(Unit* unit) override
+        {
+            _encounterTracker.OnUnitDeath(unit);
+        }
+
+        void Update(uint32 diff) override
+        {
+            _encounterTracker.Update(diff);
         }
 
         // VMaNGOS Load(): saved states, IN_PROGRESS -> NOT_STARTED
@@ -68,6 +124,7 @@ public:
         void OnCreatureCreate(Creature* creature) override
         {
             InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
 
             switch (creature->GetEntry())
             {

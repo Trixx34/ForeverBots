@@ -1110,8 +1110,10 @@ void UnitData::WriteCreate(EnumFlag<UpdateFieldFlag> fieldVisibilityFlags, ByteB
     }
     data << uint8(StandState);
     data << uint8(PetTalentPoints);
-    data << uint8(VisFlags);
+    // Classic 1.60: AnimTier comes before VisFlags (official creates: Spirit Healer 6491 has 1 = invisible in the 4th byte; the
+    // client IsStealthed() tests bit 2 of the 4th byte). Swapped, our stealth flag landed in AnimTier: "must be stealthed" on Ravage.
     data << uint8(AnimTier);
+    data << uint8(VisFlags);
     data << int8(0);                            // Classic 1.60.1.70009: 5th byte field in this group (client UnitData +0x1A8)
     data << uint32(PetNumber);
     data << uint32(PetNameTimestamp);
@@ -1291,6 +1293,8 @@ void UnitData::WriteUpdate(EnumFlag<UpdateFieldFlag> fieldVisibilityFlags, ByteB
 static uint32 ClassicUnitDataBit70009(uint32 bit)
 {
     if (bit == 230) return 141;             // ClassicComboTarget, the guid after CurrentAreaID
+    if (bit == 70) return 71;               // VisFlags: after AnimTier in the Classic client
+    if (bit == 71) return 70;               // AnimTier
     if (bit <= 71) return bit;
     if (bit <= 84) return bit + 1;
     if (bit <= 92) return bit + 3;
@@ -1699,13 +1703,14 @@ void UnitData::WriteUpdate(Mask const& changesMask, ByteBuffer& data, Player con
         {
             data << uint8(PetTalentPoints);
         }
-        if (changesMask[70])
-        {
-            data << uint8(VisFlags);
-        }
+        // Classic 1.60: AnimTier is client bit 70 and VisFlags bit 71 (ClassicUnitDataBit70009), written in that order
         if (changesMask[71])
         {
             data << uint8(AnimTier);
+        }
+        if (changesMask[70])
+        {
+            data << uint8(VisFlags);
         }
         if (changesMask[72])
         {

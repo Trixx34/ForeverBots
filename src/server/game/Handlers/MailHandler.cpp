@@ -287,13 +287,10 @@ void WorldSession::HandleSendMail(WorldPackets::Mail::SendMail& sendMail)
             }
         }
 
-        // If theres is an item, there is a one hour delivery delay if sent to another account's character.
-        uint32 deliver_delay = needItemDelay ? sWorld->getIntConfig(CONFIG_MAIL_DELIVERY_DELAY) : 0;
-
-        // Mail sent between guild members arrives instantly
-        if (Guild* guild = sGuildMgr->GetGuildById(player->GetGuildId()))
-            if (guild->IsMember(receiverGuid))
-                deliver_delay = 0;
+        // Classic 1.60 (vanilla, VMaNGOS): mail carrying items or money arrives after the delivery delay (one hour) whoever it is
+        // sent to, also between your own characters and guild members; text-only mail arrives instantly
+        (void)needItemDelay;
+        uint32 deliver_delay = (!mailInfo.Attachments.empty() || mailInfo.SendMoney > 0) ? sWorld->getIntConfig(CONFIG_MAIL_DELIVERY_DELAY) : 0;
 
         // don't ask for COD if there are no items
         if (mailInfo.Attachments.empty())

@@ -25,6 +25,7 @@
 #include "Map.h"
 #include "MotionMaster.h"
 #include "TemporarySummon.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_zulfarrak.h"
 #include <list>
 
@@ -105,6 +106,37 @@ ClassicZFPyramidSpawn const ClassicZFPyramidSpawns[] =
 float const ClassicZFPyramidSpawnZ = 8.87f;
 }
 
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Zul'Farrak (map 209), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+enum ClassicZulfarrakEncounterBosses : uint32
+{
+    CZF_ENC_VELRATHA = 0,
+    CZF_ENC_GAHZRILLA = 1,
+    CZF_ENC_ANTUSUL = 2,
+    CZF_ENC_THEKA = 3,
+    CZF_ENC_ZUMRAH = 4,
+    CZF_ENC_NEKRUM = 5,
+    CZF_ENC_SEZZZIZ = 6,
+    CZF_ENC_UKORZ = 7,
+    CZF_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicZulfarrakEncounterBossEntries[] =
+{
+    { CZF_ENC_VELRATHA, 7795 }, // Hydromancer Velratha
+    { CZF_ENC_GAHZRILLA, 7273 }, // Gahz'rilla
+    { CZF_ENC_ANTUSUL, 8127 }, // Antu'sul
+    { CZF_ENC_THEKA, 7272 }, // Theka the Martyr
+    { CZF_ENC_ZUMRAH, 7271 }, // Witch Doctor Zum'rah
+    { CZF_ENC_NEKRUM, 7796 }, // Nekrum Gutchewer
+    { CZF_ENC_SEZZZIZ, 7275 }, // Shadowpriest Sezz'ziz
+    { CZF_ENC_UKORZ, 7267 }, // Chief Ukorz Sandscalp
+    { CZF_ENC_UKORZ, 7797, CLASSIC_DUNGEON_BOSS_ENGAGE_ONLY } // Ruuzlu
+};
+}
+
 class classic_instance_zulfarrak : public InstanceMapScript
 {
 public:
@@ -118,6 +150,32 @@ public:
             _pyramidPhase(PYRAMID_ZF_NOT_STARTED), _majorWaveTimer(0), _minorWaveTimer(0), _addGroupSize(0)
         {
             SetHeaders("ZF");
+            SetBossNumber(CZF_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CZF_ENC_VELRATHA, {{ 593 }} },
+                { CZF_ENC_GAHZRILLA, {{ 594 }} },
+                { CZF_ENC_ANTUSUL, {{ 595 }} },
+                { CZF_ENC_THEKA, {{ 596 }} },
+                { CZF_ENC_ZUMRAH, {{ 597 }} },
+                { CZF_ENC_NEKRUM, {{ 598 }} },
+                { CZF_ENC_SEZZZIZ, {{ 599 }} },
+                { CZF_ENC_UKORZ, {{ 600 }} }
+            };
+            LoadDungeonEncounterData(encounters);
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicZulfarrakEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
+        }
+
+        void OnUnitDeath(Unit* unit) override
+        {
+            _encounterTracker.OnUnitDeath(unit);
         }
 
         // VMaNGOS Load(): only the end door state is saved
@@ -131,6 +189,7 @@ public:
         void OnCreatureCreate(Creature* creature) override
         {
             InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
 
             switch (creature->GetEntry())
             {
@@ -251,6 +310,8 @@ public:
 
         void Update(uint32 diff) override
         {
+            _encounterTracker.Update(diff);
+
             switch (_pyramidPhase)
             {
                 case PYRAMID_ZF_NOT_STARTED:

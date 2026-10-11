@@ -28,6 +28,7 @@
 #include "Player.h"
 #include "Random.h"
 #include "TemporarySummon.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_script_text.h"
 #include "classic_stratholme.h"
 #include <list>
@@ -105,6 +106,59 @@ Position const StratUnforgivenTriggerSpot = { 3712.607f, -3429.338f, 131.001f, 0
 constexpr uint32 STRAT_MINUTE_MS = MINUTE * IN_MILLISECONDS;
 }
 
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Stratholme (map 329), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+enum ClassicStratholmeEncounterBosses : uint32
+{
+    CSTRAT_ENC_FORRESTEN = 0,
+    CSTRAT_ENC_TIMMY = 1,
+    CSTRAT_ENC_MALOR = 2,
+    CSTRAT_ENC_WILLEY = 3,
+    CSTRAT_ENC_GALFORD = 4,
+    CSTRAT_ENC_BALNAZZAR = 5,
+    CSTRAT_ENC_UNFORGIVEN = 6,
+    CSTRAT_ENC_ANASTARI = 7,
+    CSTRAT_ENC_NERUBENKAN = 8,
+    CSTRAT_ENC_MALEKI = 9,
+    CSTRAT_ENC_BARTHILAS = 10,
+    CSTRAT_ENC_RAMSTEIN = 11,
+    CSTRAT_ENC_RIVENDARE = 12,
+    CSTRAT_ENC_SWORDSMITH = 13,
+    CSTRAT_ENC_HAMMERSMITH = 14,
+    CSTRAT_ENC_EZRA = 15,
+    CSTRAT_ENC_MALOWN = 16,
+    CSTRAT_ENC_SKUL = 17,
+    CSTRAT_ENC_STONESPINE = 18,
+    CSTRAT_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicStratholmeEncounterBossEntries[] =
+{
+    { CSTRAT_ENC_FORRESTEN, 10558 }, // Hearthsinger Forresten
+    { CSTRAT_ENC_TIMMY, 10808 }, // Timmy the Cruel
+    { CSTRAT_ENC_MALOR, 11032 }, // Malor the Zealous
+    { CSTRAT_ENC_WILLEY, 10997 }, // Cannon Master Willey
+    { CSTRAT_ENC_GALFORD, 10811 }, // Archivist Galford
+    { CSTRAT_ENC_BALNAZZAR, 10812 }, // Grand Crusader Dathrohan, turns into Balnazzar
+    { CSTRAT_ENC_BALNAZZAR, 10813 }, // Balnazzar
+    { CSTRAT_ENC_UNFORGIVEN, 10516 }, // The Unforgiven
+    { CSTRAT_ENC_ANASTARI, 10436 }, // Baroness Anastari
+    { CSTRAT_ENC_NERUBENKAN, 10437 }, // Nerub'enkan
+    { CSTRAT_ENC_MALEKI, 10438 }, // Maleki the Pallid
+    { CSTRAT_ENC_BARTHILAS, 10435 }, // Magistrate Barthilas
+    { CSTRAT_ENC_RAMSTEIN, 10439 }, // Ramstein the Gorger
+    { CSTRAT_ENC_RIVENDARE, 10440 }, // Baron Rivendare
+    { CSTRAT_ENC_SWORDSMITH, 11121 }, // Black Guard Swordsmith
+    { CSTRAT_ENC_HAMMERSMITH, 11120 }, // Crimson Hammersmith
+    { CSTRAT_ENC_EZRA, 11058 }, // Ezra Grimm
+    { CSTRAT_ENC_MALOWN, 11143 }, // Postmaster Malown
+    { CSTRAT_ENC_SKUL, 10393 }, // Skul
+    { CSTRAT_ENC_STONESPINE, 10809 } // Stonespine
+};
+}
+
 class classic_instance_stratholme : public InstanceMapScript
 {
 public:
@@ -116,7 +170,39 @@ public:
             _savedEncounters(*this, "ClassicStratEncounters", uint64(0))
         {
             SetHeaders("CSTR");
+            SetBossNumber(CSTRAT_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CSTRAT_ENC_FORRESTEN, {{ 473 }} },
+                { CSTRAT_ENC_TIMMY, {{ 474 }} },
+                { CSTRAT_ENC_MALOR, {{ 476 }} },
+                { CSTRAT_ENC_WILLEY, {{ 475 }} },
+                { CSTRAT_ENC_GALFORD, {{ 477 }} },
+                { CSTRAT_ENC_BALNAZZAR, {{ 478 }} },
+                { CSTRAT_ENC_UNFORGIVEN, {{ 472 }} },
+                { CSTRAT_ENC_ANASTARI, {{ 479 }} },
+                { CSTRAT_ENC_NERUBENKAN, {{ 480 }} },
+                { CSTRAT_ENC_MALEKI, {{ 481 }} },
+                { CSTRAT_ENC_BARTHILAS, {{ 482 }} },
+                { CSTRAT_ENC_RAMSTEIN, {{ 483 }} },
+                { CSTRAT_ENC_RIVENDARE, {{ 484 }} },
+                { CSTRAT_ENC_SWORDSMITH, {{ 2795 }} },
+                { CSTRAT_ENC_HAMMERSMITH, {{ 2796 }} },
+                { CSTRAT_ENC_EZRA, {{ 2797 }} },
+                { CSTRAT_ENC_MALOWN, {{ 2798 }} },
+                { CSTRAT_ENC_SKUL, {{ 2799 }} },
+                { CSTRAT_ENC_STONESPINE, {{ 2800 }} }
+            };
+            LoadDungeonEncounterData(encounters);
             Initialize();
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicStratholmeEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
         }
 
         uint32 m_auiEncounter[STRAT_MAX_ENCOUNTER];
@@ -261,6 +347,7 @@ public:
         void OnCreatureCreate(Creature* pCreature) override
         {
             InstanceScript::OnCreatureCreate(pCreature);
+            _encounterTracker.OnCreatureCreate(pCreature);
 
             switch (pCreature->GetEntry())
             {
@@ -379,6 +466,8 @@ public:
         // VMaNGOS OnCreatureDeath
         void OnUnitDeath(Unit* who) override
         {
+            _encounterTracker.OnUnitDeath(who);
+
             if (!who->IsCreature())
                 return;
 
@@ -728,6 +817,8 @@ public:
 
         void Update(uint32 uiDiff) override
         {
+            _encounterTracker.Update(uiDiff);
+
             if (_summonRamsteinAfterLoad)
             {
                 _summonRamsteinAfterLoad = false;

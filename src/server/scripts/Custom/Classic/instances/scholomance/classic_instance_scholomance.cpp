@@ -27,6 +27,7 @@
 #include "Map.h"
 #include "Player.h"
 #include "TemporarySummon.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_scholomance.h"
 #include <array>
 #include <memory>
@@ -43,6 +44,48 @@ namespace
     };
 }
 
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Scholomance (map 289), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+enum ClassicScholomanceEncounterBosses : uint32
+{
+    CSCHOLO_ENC_KIRTONOS = 0,
+    CSCHOLO_ENC_JANDICE = 1,
+    CSCHOLO_ENC_RATTLEGORE = 2,
+    CSCHOLO_ENC_MARDUK = 3,
+    CSCHOLO_ENC_VECTUS = 4,
+    CSCHOLO_ENC_KORMOK = 5,
+    CSCHOLO_ENC_RAS = 6,
+    CSCHOLO_ENC_MALICIA = 7,
+    CSCHOLO_ENC_KRASTINOV = 8,
+    CSCHOLO_ENC_POLKELT = 9,
+    CSCHOLO_ENC_RAVENIAN = 10,
+    CSCHOLO_ENC_ALEXEI = 11,
+    CSCHOLO_ENC_ILLUCIA = 12,
+    CSCHOLO_ENC_GANDLING = 13,
+    CSCHOLO_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicScholomanceEncounterBossEntries[] =
+{
+    { CSCHOLO_ENC_KIRTONOS, 10506 }, // Kirtonos the Herald
+    { CSCHOLO_ENC_JANDICE, 10503 }, // Jandice Barov
+    { CSCHOLO_ENC_RATTLEGORE, 11622 }, // Rattlegore
+    { CSCHOLO_ENC_MARDUK, 10433 }, // Marduk Blackpool
+    { CSCHOLO_ENC_VECTUS, 10432 }, // Vectus
+    { CSCHOLO_ENC_KORMOK, 16118 }, // Kormok
+    { CSCHOLO_ENC_RAS, 10508 }, // Ras Frostwhisper
+    { CSCHOLO_ENC_MALICIA, 10505 }, // Instructor Malicia
+    { CSCHOLO_ENC_KRASTINOV, 11261 }, // Doctor Theolen Krastinov
+    { CSCHOLO_ENC_POLKELT, 10901 }, // Lorekeeper Polkelt
+    { CSCHOLO_ENC_RAVENIAN, 10507 }, // The Ravenian
+    { CSCHOLO_ENC_ALEXEI, 10504 }, // Lord Alexei Barov
+    { CSCHOLO_ENC_ILLUCIA, 10502 }, // Lady Illucia Barov
+    { CSCHOLO_ENC_GANDLING, 1853 } // Darkmaster Gandling
+};
+}
+
 class classic_instance_scholomance : public InstanceMapScript
 {
 public:
@@ -53,7 +96,25 @@ public:
         classic_instance_scholomance_InstanceScript(InstanceMap* map) : InstanceScript(map)
         {
             SetHeaders(DataHeader);
-            SetBossNumber(0);
+            SetBossNumber(CSCHOLO_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CSCHOLO_ENC_KIRTONOS, {{ 2805 }} },
+                { CSCHOLO_ENC_JANDICE, {{ 2804 }} },
+                { CSCHOLO_ENC_RATTLEGORE, {{ 2811 }} },
+                { CSCHOLO_ENC_MARDUK, {{ 2809 }} },
+                { CSCHOLO_ENC_VECTUS, {{ 2813 }} },
+                { CSCHOLO_ENC_KORMOK, {{ 3055 }} },
+                { CSCHOLO_ENC_RAS, {{ 2810 }} },
+                { CSCHOLO_ENC_MALICIA, {{ 2803 }} },
+                { CSCHOLO_ENC_KRASTINOV, {{ 2802 }} },
+                { CSCHOLO_ENC_POLKELT, {{ 2808 }} },
+                { CSCHOLO_ENC_RAVENIAN, {{ 2812 }} },
+                { CSCHOLO_ENC_ALEXEI, {{ 2807 }} },
+                { CSCHOLO_ENC_ILLUCIA, {{ 2806 }} },
+                { CSCHOLO_ENC_GANDLING, {{ 2801 }} }
+            };
+            LoadDungeonEncounterData(encounters);
 
             _encounter.fill(NOT_STARTED);
             for (uint32 i = 0; i < INSTANCE_SCHOLOMANCE_MAX_ENCOUNTER; ++i)
@@ -62,9 +123,18 @@ public:
             _summonGandlingPending = false;
         }
 
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicScholomanceEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
+        }
+
         void OnCreatureCreate(Creature* creature) override
         {
             InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
 
             switch (creature->GetEntry())
             {
@@ -156,6 +226,8 @@ public:
 
         void OnUnitDeath(Unit* unit) override
         {
+            _encounterTracker.OnUnitDeath(unit);
+
             switch (unit->GetEntry())
             {
                 case NPC_KIRTONOS:
@@ -230,8 +302,10 @@ public:
             _summonGandlingPending = true;
         }
 
-        void Update(uint32 /*diff*/) override
+        void Update(uint32 diff) override
         {
+            _encounterTracker.Update(diff);
+
             if (_summonGandlingPending)
             {
                 _summonGandlingPending = false;

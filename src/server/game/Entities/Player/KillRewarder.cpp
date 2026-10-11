@@ -142,16 +142,10 @@ inline void KillRewarder::_RewardXP(Player* player, float rate)
     uint32 xp(_xp);
     if (player->GetGroup())
     {
-        // 4.2.1. If player is in group, adjust XP:
-        //        * set to 0 if player's level is more than maximum level of not gray member;
-        //        * cut XP in half if _isFullXP is false.
-        if (_maxNotGrayMember && player->IsAlive() &&
-            _maxNotGrayMember->GetLevel() >= player->GetLevel())
-            xp = _isFullXP ?
-            uint32(xp * rate) :             // Reward FULL XP if all group members are not gray.
-            uint32(xp * rate / 2) + 1;      // Reward only HALF of XP if some of group members are gray.
-        else
-            xp = 0;
+        // 4.2.1. Classic 1.60 (Forever beta notes, October 8 2026): kill XP in a party depends only on the player's own level
+        //        against the victim (it was penalized by the highest level party member); each member gets their own share
+        //        of the group rate, nothing for a victim that is gray to them.
+        xp = player->IsAlive() ? uint32(Trinity::XP::Gain(player, _victim, _isBattleGround) * rate) : 0;
     }
     if (xp)
     {

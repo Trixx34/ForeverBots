@@ -444,17 +444,12 @@ uint32 Quest::XPValue(Player const* player, uint32 contentTuningId, uint32 xpDif
         if (ContentTuningEntry const* contentTuning = sContentTuningStore.LookupEntry(contentTuningId))
             xp = xp * contentTuning->QuestXpMultiplier;
 
-        int32 diffFactor = 2 * (questLevel - player->GetLevel()) + 12;
-        if (diffFactor < 1)
-            diffFactor = 1;
-        else if (diffFactor > 10)
-            diffFactor = 10;
-
-        xp = diffFactor * xp * xpMultiplier / 10;
-        if (player->GetLevel() >= GetMaxLevelForExpansion(CURRENT_EXPANSION - 1) && player->GetSession()->GetExpansion() == CURRENT_EXPANSION && expansion >= 0 && expansion < CURRENT_EXPANSION)
-            xp = uint32(xp / 9.0f);
-
-        xp = RoundXPValue(xp);
+        // Classic 1.60 (vanilla, VMaNGOS Quest::XPValue): full XP up to 5 levels above the quest, then 80 / 60 / 40 / 20%, then
+        // 10%, rounded up (retail started cutting 2 levels above the quest and rounded to steps of 5 / 10 / 50)
+        (void)expansion;
+        int32 levelsAbove = int32(player->GetLevel()) - int32(questLevel);
+        float factor = levelsAbove <= 5 ? 1.0f : levelsAbove == 6 ? 0.8f : levelsAbove == 7 ? 0.6f : levelsAbove == 8 ? 0.4f : levelsAbove == 9 ? 0.2f : 0.1f;
+        xp = uint32(std::ceil(xp * xpMultiplier * factor));
 
         if (sWorld->getIntConfig(CONFIG_MIN_QUEST_SCALED_XP_RATIO))
         {
@@ -478,6 +473,9 @@ uint32 Quest::XPValue(Player const* player, uint32 contentTuningId, uint32 xpDif
 
 uint32 Quest::MoneyValue(Player const* player) const
 {
+    if (_hasClassicMoney)                               // Classic 1.60: vanilla fixed amount (a cost is taken separately)
+        return uint32(std::max(_classicMoney, 0));
+
     if (QuestMoneyRewardEntry const* money = sQuestMoneyRewardStore.LookupEntry(player->GetQuestLevel(this)))
         return money->Difficulty[GetRewMoneyDifficulty()] * GetMoneyMultiplier();
     else
@@ -486,6 +484,9 @@ uint32 Quest::MoneyValue(Player const* player) const
 
 uint32 Quest::MaxMoneyValue() const
 {
+    if (_hasClassicMoney)
+        return uint32(std::max(_classicMoney, 0));
+
     uint32 value = 0;
     if (Optional<ContentTuningLevels> questLevels = sDB2Manager.GetContentTuningData(GetContentTuningId(), {}))
         if (QuestMoneyRewardEntry const* money = sQuestMoneyRewardStore.LookupEntry(questLevels->MaxLevel))
@@ -583,7 +584,8 @@ uint32 Quest::GetRewMoneyMaxLevel() const
         return 0;
 
     // Else, return the rewarded copper sum modified by the rate
-    return uint32(_rewardBonusMoney * sWorld->getRate(RATE_MONEY_MAX_LEVEL_QUEST));
+    // Classic 1.60: vanilla quests use the VMaNGOS RewMoneyMaxLevel
+    return uint32((_hasClassicMoney ? _classicMoneyMaxLevel : _rewardBonusMoney) * sWorld->getRate(RATE_MONEY_MAX_LEVEL_QUEST));
 }
 
 bool Quest::IsAutoAccept() const

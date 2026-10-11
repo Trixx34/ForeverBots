@@ -28,6 +28,7 @@
 #include "SpellAuraEffects.h"
 #include "SpellScript.h"
 #include "Unit.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_shadowfang_keep.h"
 #include <array>
 #include <list>
@@ -46,6 +47,36 @@ constexpr std::array<char const*, CSFK_MAX_ENCOUNTER> ClassicSfkEncounterNames =
 };
 }
 
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Shadowfang Keep (map 33), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+enum ClassicShadowfangKeepEncounterBosses : uint32
+{
+    CSFK_ENC_RETHILGORE = 0,
+    CSFK_ENC_RAZORCLAW = 1,
+    CSFK_ENC_SILVERLAINE = 2,
+    CSFK_ENC_SPRINGVALE = 3,
+    CSFK_ENC_ODO = 4,
+    CSFK_ENC_FENRUS = 5,
+    CSFK_ENC_NANDOS = 6,
+    CSFK_ENC_ARUGAL = 7,
+    CSFK_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicShadowfangKeepEncounterBossEntries[] =
+{
+    { CSFK_ENC_RETHILGORE, 3914 }, // Rethilgore
+    { CSFK_ENC_RAZORCLAW, 3886 }, // Razorclaw the Butcher
+    { CSFK_ENC_SILVERLAINE, 3887 }, // Baron Silverlaine
+    { CSFK_ENC_SPRINGVALE, 4278 }, // Commander Springvale
+    { CSFK_ENC_ODO, 4279 }, // Odo the Blindwatcher
+    { CSFK_ENC_FENRUS, 4274 }, // Fenrus the Devourer
+    { CSFK_ENC_NANDOS, 3927 }, // Wolf Master Nandos
+    { CSFK_ENC_ARUGAL, 4275 } // Archmage Arugal
+};
+}
+
 class classic_instance_shadowfang_keep : public InstanceMapScript
 {
 public:
@@ -56,6 +87,19 @@ public:
         classic_instance_shadowfang_keep_InstanceScript(InstanceMap* map) : InstanceScript(map)
         {
             SetHeaders("CSFK");
+            SetBossNumber(CSFK_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CSFK_ENC_RETHILGORE, {{ 2748 }} },
+                { CSFK_ENC_RAZORCLAW, {{ 2749 }} },
+                { CSFK_ENC_SILVERLAINE, {{ 2750 }} },
+                { CSFK_ENC_SPRINGVALE, {{ 2751 }} },
+                { CSFK_ENC_ODO, {{ 2752 }} },
+                { CSFK_ENC_FENRUS, {{ 2753 }} },
+                { CSFK_ENC_NANDOS, {{ 2754 }} },
+                { CSFK_ENC_ARUGAL, {{ 2755 }} }
+            };
+            LoadDungeonEncounterData(encounters);
 
             // VMaNGOS m_auiEncounter[] + Save()/Load() string -> TC persistent instance values
             for (uint32 i = 0; i < CSFK_MAX_ENCOUNTER; ++i)
@@ -67,6 +111,14 @@ public:
             m_uiSpawnPatrolOnBaronDeath = 6000;
             m_uiSpawnPatrolOnCmdDeath = 6000;
             _fenrusInCombat = false;
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicShadowfangKeepEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
         }
 
         std::array<std::unique_ptr<PersistentInstanceScriptValue<uint32>>, CSFK_MAX_ENCOUNTER> m_auiEncounter;
@@ -108,6 +160,7 @@ public:
         void OnCreatureCreate(Creature* creature) override
         {
             InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
 
             switch (creature->GetEntry())
             {
@@ -152,6 +205,8 @@ public:
         // VMaNGOS OnCreatureDeath
         void OnUnitDeath(Unit* unit) override
         {
+            _encounterTracker.OnUnitDeath(unit);
+
             Creature* creature = unit->ToCreature();
             if (!creature)
                 return;
@@ -214,6 +269,8 @@ public:
 
         void Update(uint32 diff) override
         {
+            _encounterTracker.Update(diff);
+
             // VMaNGOS OnCreatureEnterCombat (no TC instance hook): play Fenrus howl when he enters combat
             if (Creature* fenrus = instance->GetCreature(m_uiFenrusGUID))
             {

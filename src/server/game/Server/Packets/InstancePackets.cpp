@@ -188,6 +188,28 @@ WorldPacket const* InstanceEncounterStart::Write()
     return &_worldPacket;
 }
 
+WorldPacket const* EncounterStart::Write()
+{
+    _worldPacket << int32(EncounterID);
+    _worldPacket << int32(DifficultyID);
+    _worldPacket << int32(GroupSize);
+    _worldPacket << uint16(0);
+
+    return &_worldPacket;
+}
+
+WorldPacket const* EncounterEnd::Write()
+{
+    _worldPacket << int32(EncounterID);
+    _worldPacket << int32(DifficultyID);
+    _worldPacket << int32(GroupSize);
+    _worldPacket << int32(Duration);
+    _worldPacket << Bits<1>(Success);
+    _worldPacket.FlushBits();
+
+    return &_worldPacket;
+}
+
 WorldPacket const* InstanceEncounterGainCombatResurrectionCharge::Write()
 {
     _worldPacket << int32(InCombatResCount);

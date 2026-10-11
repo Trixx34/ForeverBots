@@ -179,9 +179,9 @@ Player::Player(WorldSession* session) : Unit(true), m_sceneMgr(this)
 
     m_session = session;
 
-    m_modMeleeHitChance = 7.5f;
-    m_modRangedHitChance = 7.5f;
-    m_modSpellHitChance = 15.0f;
+    m_modMeleeHitChance = 0.0f;                             // Classic 1.60: no innate hit bonus (Player::UpdateMeleeHitChances)
+    m_modRangedHitChance = 0.0f;
+    m_modSpellHitChance = 0.0f;
 
     m_ingametime = 0;
     m_sharedQuestId = 0;
@@ -5197,14 +5197,17 @@ void Player::UpdateDamageDoneMods(WeaponAttackType attackType, int32 skipEnchant
 
         for (uint8 i = 0; i < MAX_ITEM_ENCHANTMENT_EFFECTS; ++i)
         {
+            // Classic 1.60: the client data keeps the value in EffectPointsMin with no scaling points (Superior Striking +5,
+            // sharpening stones, weightstones, scopes, Rockbiter); retail scaled enchants use EffectScalingPoints
+            float points = enchantmentEntry->EffectScalingPoints[i] != 0.0f ? enchantmentEntry->EffectScalingPoints[i] : float(enchantmentEntry->EffectPointsMin[i]);
             switch (enchantmentEntry->Effect[i])
             {
                 case ITEM_ENCHANTMENT_TYPE_DAMAGE:
-                    amount += enchantmentEntry->EffectScalingPoints[i];
+                    amount += points;
                     break;
                 case ITEM_ENCHANTMENT_TYPE_TOTEM:
                     if (GetClass() == CLASS_SHAMAN)
-                        amount += enchantmentEntry->EffectScalingPoints[i] * item->GetTemplate()->GetDelay() / 1000.0f;
+                        amount += points * item->GetTemplate()->GetDelay() / 1000.0f;
                     break;
                 default:
                     break;
@@ -5697,10 +5700,11 @@ bool Player::UpdateGatherSkill(uint32 skillId, uint32 skillValue, uint32 redLeve
 
     uint32 gatheringSkillGain = sWorld->getIntConfig(CONFIG_SKILL_GAIN_GATHERING);
 
-    uint32 baseSkillLevelStep = 30;
-    uint32 yellowLevel = redLevel + baseSkillLevelStep;
-    uint32 greenLevel = yellowLevel + baseSkillLevelStep;
-    uint32 grayLevel = greenLevel + baseSkillLevelStep;
+    // Classic 1.60 (vanilla, VMaNGOS UpdateGatherSkill): yellow 25, green 50, gray 100 points above the required skill
+    // (retail 30 / 60 / 90)
+    uint32 yellowLevel = redLevel + 25;
+    uint32 greenLevel = redLevel + 50;
+    uint32 grayLevel = redLevel + 100;
 
     if (GameObject const* go = Object::ToGameObject(object))
     {
@@ -5758,18 +5762,11 @@ bool Player::UpdateFishingSkill(int32 expansion)
     if (skillValue >= GetMaxSkillValue(fishingSkill))
         return false;
 
-    uint8 stepsNeededToLevelUp = GetFishingStepsNeededToLevelUp(skillValue);
-    ++m_fishingSteps;
-
-    if (m_fishingSteps >= stepsNeededToLevelUp)
-    {
-        m_fishingSteps = 0;
-
-        uint32 gatheringSkillGain = sWorld->getIntConfig(CONFIG_SKILL_GAIN_GATHERING);
-        return UpdateSkillPro(fishingSkill, 100*10, gatheringSkillGain);
-    }
-
-    return false;
+    // Classic 1.60 (vanilla, VMaNGOS UpdateFishingSkill): called on a catch only; 100% below 75 skill, then 2500 / (skill - 50)%
+    (void)GetFishingStepsNeededToLevelUp;
+    int32 chance = skillValue < 75 ? 100 : int32(2500 / (skillValue - 50));
+    uint32 gatheringSkillGain = sWorld->getIntConfig(CONFIG_SKILL_GAIN_GATHERING);
+    return UpdateSkillPro(fishingSkill, chance * 10, gatheringSkillGain);
 }
 
 // Classic 1.60: retail has no weapon / defense skill gains; vanilla rules (as in MaNGOS / TrinityCore 3.3.5)
@@ -9139,7 +9136,7 @@ void Player::CastItemCombatSpell(DamageInfo const& damageInfo)
                                 slot = EQUIPMENT_SLOT_OFFHAND;
                                 break;
                             case RANGED_ATTACK:
-                                slot = EQUIPMENT_SLOT_MAINHAND;
+                                slot = EQUIPMENT_SLOT_RANGED;   // Classic: ranged attacks proc the ranged weapon, not the main hand
                                 break;
                             default:
                                 slot = EQUIPMENT_SLOT_END;
@@ -9190,8 +9187,8 @@ void Player::CastItemCombatSpell(DamageInfo const& damageInfo, Item* item, ItemT
                     uint32 WeaponSpeed = GetBaseAttackTime(damageInfo.GetAttackType());
                     chance = GetPPMProcChance(WeaponSpeed, proto->SpellPPMRate, spellInfo);
                 }
-                else if (chance > 100.0f)
-                    chance = GetWeaponProcChance();
+                else if (chance > 100.0f || chance <= 0.0f)
+                    chance = GetWeaponProcChance();         // Classic 1.60: chance-on-hit spells with no chance in the data (Jang'thraze, Digmaster 5000, ...) use the weapon speed rate like vanilla
 
                 if (roll_chance(chance) && sScriptMgr->OnCastItemCombatSpell(this, damageInfo.GetVictim(), spellInfo, item))
                     CastSpell(damageInfo.GetVictim(), spellInfo->Id, item);
@@ -10124,7 +10121,10 @@ bool Player::SetAmmo(uint32 itemId)
         if (!proto || proto->GetClass() != ITEM_CLASS_PROJECTILE || !HasItemCount(itemId) || CanUseItem(proto) != EQUIP_ERR_OK)
             return false;
     }
+    bool changed = GetAmmoId() != itemId;
     SetUpdateFieldValue(m_values.ModifyValue(&Player::m_activePlayerData).ModifyValue(&UF::ActivePlayerData::PvpMedals), itemId);
+    if (changed)
+        UpdateDamagePhysical(RANGED_ATTACK);                // the ammo's damage per second is part of ranged weapon damage
     return true;
 }
 
@@ -15259,6 +15259,17 @@ bool Player::CanRewardQuest(Quest const* quest, bool msg) const
     if (GetQuestRewardStatus(quest->GetQuestId()))
         return false;
 
+    // Classic 1.60: vanilla quests that cost money (VMaNGOS negative RewOrReqMoney)
+    if (uint32 cost = quest->GetClassicRequiredMoney())
+    {
+        if (!HasEnoughMoney(uint64(cost)))
+        {
+            if (msg)
+                SendEquipError(EQUIP_ERR_NOT_ENOUGH_MONEY, nullptr, nullptr);
+            return false;
+        }
+    }
+
     // prevent receive reward with quest items in bank
     if (quest->HasQuestObjectiveType(QUEST_OBJECTIVE_ITEM))
     {
@@ -15871,6 +15882,7 @@ void Player::RewardQuest(Quest const* quest, LootItemType rewardType, uint32 rew
         moneyRew = int32(quest->GetRewMoneyMaxLevel() * sWorld->getRate(RATE_DROP_MONEY));
 
     moneyRew += GetQuestMoneyReward(quest);
+    moneyRew -= int32(quest->GetClassicRequiredMoney());    // Classic 1.60: vanilla quests that cost money
 
     if (moneyRew)
     {

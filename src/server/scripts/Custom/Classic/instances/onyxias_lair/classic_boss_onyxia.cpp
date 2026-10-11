@@ -48,7 +48,9 @@ enum ClassicOnyxia : uint32
     SPELL_ONY_CLEAVE                = 19983,
     SPELL_ONY_TAILSWEEP             = 15847,
     SPELL_ONY_KNOCK_AWAY            = 19633,
-    SPELL_ONY_BELLOWINGROAR         = 18431,
+    // Classic 1.60: vanilla 18431 is not in the 1.60 client; 22686 Bellowing Roar (same fear, 4 s, wider) is, and there it also
+    // triggers 1297001 Lava Eruption, the lair's eruptions: Forever's Onyxia roar
+    SPELL_ONY_BELLOWINGROAR         = 22686,
 
     SPELL_ONY_FIREBALL              = 18392,
     SPELL_ONY_DEEPBREATH            = 23461,
