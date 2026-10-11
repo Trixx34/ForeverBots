@@ -78,7 +78,7 @@ BotLog.MaxBatch = 500
 # threat), dummy (training dummy), movement (goto, follow, stuck, path failures, town idling),
 # travel (long distance legs), recovery (death, corpse run, spirit healer, resting, watchdog),
 # quest, progress (xp, levels, talents, spells), economy (auction, trade, vendors, loot, gear,
-# professions, bank, mail), pets, social (chat orders, alts, invites, bot parties), dungeon,
+# professions, bank, mail), pets, social (chat orders, alts, invites, bot parties, guilds), dungeon,
 # other (a reason no rule matches).
 #
 ###################################################################################################
@@ -1110,6 +1110,114 @@ Bot.AI.Consumables.HealthBelowPct = 35
 #        Default:     20
 #        Values:      whole number 1 to 90 (percent)
 Bot.AI.Consumables.ManaBelowPct = 20
+
+#
+#    Bot.AI.Revive.Enabled
+#        Description: Priest, paladin and shaman bots in a group raise dead group members (bots and players) with the class
+#                     resurrection: they walk to the body, cast out of combat and retry. A dead bot takes the offer a moment later,
+#                     and holds its spirit for a while when such a rezzer is on the way. Adds the strategies "revive" and
+#                     "revive_accept". Logged as REVIVE_APPROACH / REVIVE_CAST / REVIVE_ACCEPTED. Druids are left out (Rebirth
+#                     needs a reagent).
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Revive.Enabled = 0
+
+#
+#    Bot.AI.Revive.MaxYards
+#        Description: A rezzer further away from the dead member than this does not come.
+#        Default:     60
+#        Values:      whole number 10 to 300 (yards)
+Bot.AI.Revive.MaxYards = 60
+
+#
+#    Bot.AI.Revive.MinManaPct
+#        Description: Mana percent a rezzer needs before it goes.
+#        Default:     40
+#        Values:      whole number 0 to 100 (percent)
+Bot.AI.Revive.MinManaPct = 40
+
+#
+#    Bot.AI.Revive.RetrySec
+#        Description: Least time between two casts at the same dead member.
+#        Default:     20
+#        Values:      whole number 5 to 120 (seconds)
+Bot.AI.Revive.RetrySec = 20
+
+#
+#    Bot.AI.Revive.MaxAttempts
+#        Description: Casts at one dead member before the rezzer gives up.
+#        Default:     4
+#        Values:      whole number 1 to 20
+Bot.AI.Revive.MaxAttempts = 4
+
+#
+#    Bot.AI.Revive.WaitBeforeReleaseSec
+#        Description: A dead bot in a group keeps its spirit this long while a rezzer is able to come, instead of
+#                     releasing and running back to its corpse. 0 = never waits.
+#        Default:     20
+#        Values:      whole number 0 to 300 (seconds)
+Bot.AI.Revive.WaitBeforeReleaseSec = 20
+
+#
+#    Bot.AI.Revive.AcceptDelaySec
+#        Description: A dead bot takes a resurrection offer this long after it arrived.
+#        Default:     2
+#        Values:      whole number 0 to 30 (seconds)
+Bot.AI.Revive.AcceptDelaySec = 2
+
+#
+#    Bot.AI.Repair.Enabled
+#        Description: Repair gear and restock healing and mana potions before a dungeon run starts, when a member's gear is
+#                     nearly broken (Bot.AI.Dungeon.MinDurabilityPct) and when the run ends. Replaces Bot.AI.Dungeon.FreeRepair.
+#                     There is no walk to a vendor: the visit is abstract. Logged as REPAIR_PAID / REPAIR_FREE / REPAIR_TOO_POOR /
+#                     SUPPLY_BOUGHT. Without enough gold and without FreeWhenBroke, a group whose gear is nearly broken
+#                     waits ("repair") until the gear is fixed some other way.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Repair.Enabled = 0
+
+#
+#    Bot.AI.Repair.Paid
+#        Description: Repairs and potions are paid from the bot's gold. 0 = repairs are free (potions are still bought).
+#        Default:     1
+#        Values:      0 (free) or 1 (paid)
+Bot.AI.Repair.Paid = 1
+
+#
+#    Bot.AI.Repair.FreeWhenBroke
+#        Description: A bot that cannot pay the repair is repaired for free instead of staying broken.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Repair.FreeWhenBroke = 0
+
+#
+#    Bot.AI.Repair.BelowPct
+#        Description: Repair at the start of a run when the worst equipped item is below this durability percent.
+#        Default:     70
+#        Values:      whole number 1 to 100 (percent)
+Bot.AI.Repair.BelowPct = 70
+
+#
+#    Bot.AI.Repair.Supplies
+#        Description: Also buy healing and mana potions (the best rank the bot may use). They are drunk by the consumables
+#                     strategy (Bot.AI.Consumables.Enabled).
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Repair.Supplies = 1
+
+#
+#    Bot.AI.Repair.PotionsPerKind
+#        Description: Target number of healing and of mana potions in the bags after a visit.
+#        Default:     5
+#        Values:      whole number 0 to 20
+Bot.AI.Repair.PotionsPerKind = 5
+
+#
+#    Bot.AI.Repair.MaxSpendPct
+#        Description: Share of the bot's gold that one visit may spend in total (repair first, then potions).
+#        Default:     60
+#        Values:      whole number 0 to 100 (percent)
+Bot.AI.Repair.MaxSpendPct = 60
 
 #
 #    Bot.AI.Watchdog.Enabled
@@ -2242,6 +2350,91 @@ Bot.AI.Loot.Safety.QuarantineSec = 1200
 
 
 ###################################################################################################
+# CONVERSATIONS
+#
+# Bots answer whispers and party chat in a voice of their own instead of staying silent. Everything is
+# local: keyword matching and line templates, no external service. Each bot has a stable personality
+# (friendly, cheerful, grumpy, stoic, sarcastic or nerdy) derived from its guid, so it sounds the same
+# every session. Chat commands keep working: a message that is command-shaped ("follow", "g1 stay",
+# "tank pull") is never answered as conversation. Whisper a bot to talk to it; in party chat say a bot's
+# name, or greet the group and one bot may answer. Replies are queued and sent after a short typing delay.
+# Topics: greetings, goodbyes, thanks, "how are you", "what are you doing", "where are we", "who are
+# you", help, compliments, insults, jokes, apologies, "ready" and "wait".
+#
+###################################################################################################
+
+#
+#    Bot.Conversation.Enabled
+#        Description: Bots answer whispers and party chat.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Conversation.Enabled = 0
+
+#
+#    Bot.Conversation.Whisper.Enabled
+#        Description: A bot answers every whisper that is not a command. A whisper it does not understand
+#                     gets the "did not catch that" line of its personality. Needs Bot.Conversation.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Conversation.Whisper.Enabled = 1
+
+#
+#    Bot.Conversation.Party.Enabled
+#        Description: Bots answer in party chat. A bot whose name is in the message answers (at most two
+#                     bots per message, whatever the topic); otherwise one bot of the party may answer a
+#                     greeting, goodbye, thanks, joke, compliment or "ready" (see Party.ChatterPct).
+#                     Needs Bot.Conversation.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Conversation.Party.Enabled = 1
+
+#
+#    Bot.Conversation.Party.ChatterPct
+#        Description: Chance that one bot answers a social party message that did not name any bot.
+#        Default:     35
+#        Values:      whole number 0 to 100 (percent)
+Bot.Conversation.Party.ChatterPct = 35
+
+#
+#    Bot.Conversation.Personality
+#        Description: Personality of the bots. random gives each bot a stable personality from its guid; a
+#                     name gives every bot that one.
+#        Default:     random
+#        Values:      random, friendly, cheerful, grumpy, stoic, sarcastic or nerdy
+Bot.Conversation.Personality = random
+
+#
+#    Bot.Conversation.Delay.MinMs
+#        Description: Shortest typing delay before a bot sends its reply. The delay grows a little with the
+#                     line and gets some jitter, within MinMs and MaxMs.
+#        Default:     800
+#        Values:      whole number 0 to 10000 (milliseconds)
+Bot.Conversation.Delay.MinMs = 800
+
+#
+#    Bot.Conversation.Delay.MaxMs
+#        Description: Longest typing delay before a bot sends its reply. Raised to MinMs when lower.
+#        Default:     3500
+#        Values:      whole number 0 to 15000 (milliseconds)
+Bot.Conversation.Delay.MaxMs = 3500
+
+#
+#    Bot.Conversation.CooldownSec
+#        Description: A bot does not start a new reply within this time of its previous one, so a spammed
+#                     chat does not make the bots spam back. Only one reply per bot is in flight at a time.
+#        Default:     4
+#        Values:      whole number 0 to 600 (seconds)
+Bot.Conversation.CooldownSec = 4
+
+#
+#    Bot.Conversation.LogEvents
+#        Description: Write a bot_event (type conversation, reason CONV_REPLY, category social) for every reply.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Conversation.LogEvents = 1
+
+
+###################################################################################################
 # CHAT COMMANDS
 #
 # Bots obey chat commands from the leader of their group (party, raid, whisper to a bot). Syntax:
@@ -2439,6 +2632,38 @@ Bot.Trade.Link.Enabled = 0
 Bot.Trade.Link.MaxListed = 15
 
 #
+#    Bot.Craft.Enabled
+#        Description: Crafting for players. Whisper a bot of your group "craft <item link or name> [x5]" and it
+#                     crafts the item with the recipes and materials it has, then mails the result to you.
+#                     "craft list" lists what it can make right now. Needs Bot.Enabled.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Craft.Enabled = 0
+
+#
+#    Bot.Craft.MaxItems
+#        Description: Most items one craft order makes; the order is also limited by the mail's 12 attachment
+#                     slots. 0 refuses every order.
+#        Default:     20
+#        Values:      whole number 0 to 200 (items)
+Bot.Craft.MaxItems = 20
+
+#
+#    Bot.Craft.MaxListed
+#        Description: Items in the whispered "craft list" answer.
+#        Default:     15
+#        Values:      whole number 1 to 40 (items)
+Bot.Craft.MaxListed = 15
+
+#
+#    Bot.Craft.Fee.VendorPercent
+#        Description: Price of a crafted order as cash on delivery, in percent of the vendor sell price of the items.
+#                     The player pays when picking up the mail. 0 gives the items away.
+#        Default:     0
+#        Values:      whole number 0 to 1000 (percent)
+Bot.Craft.Fee.VendorPercent = 0
+
+#
 #    Bot.Social.QuestShare.LogEach
 #        Description: Log one quest_share bot_event per receiver of a bot quest share. Off: one summary row per
 #                     share command (accepted count, refused count per reason); "verbose on" of the issuer also
@@ -2447,3 +2672,419 @@ Bot.Trade.Link.MaxListed = 15
 #        Values:      0 (off) or 1 (on)
 Bot.Social.QuestShare.LogEach = 0
 
+
+###################################################################################################
+# ESCORT AND GROUP QUESTS
+#
+# Bots help players with escort and group quests, and use quest items on creatures.
+# See docs/playerbots/feature-bot-escort-group-quests-20261008.md.
+#
+###################################################################################################
+
+#
+#    Bot.Quest.UseItems
+#        Description: Quests that ask the player to use a quest item on a creature (the item spell needs a target;
+#                      start item, quest-dropped item or quest item objective): the bot walks to the creature, casts
+#                      the item on it and counts the credit. A hostile creature gets one opening cast and is then
+#                      fought as usual; a friendly one is cast on up to MaxCasts times. Logged as QUEST_USE_ITEM /
+#                      QUEST_USE_ITEM_FAILED / QUEST_USE_ITEM_GIVEUP.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.UseItems = 0
+
+#
+#    Bot.Quest.UseItems.MaxCasts
+#        Description: Casts of the item on one creature without credit before the bot gives that creature up for two
+#                      minutes.
+#        Default:     4
+#        Values:      whole number 1 to 10
+Bot.Quest.UseItems.MaxCasts = 4
+
+#
+#    Bot.Quest.UseItems.TimeoutSec
+#        Description: Longest time spent on one creature (walking and casting) before it is given up.
+#        Default:     60
+#        Values:      whole number 10 to 600 (seconds)
+Bot.Quest.UseItems.TimeoutSec = 60
+
+#
+#    Bot.Quest.Assist.Enabled
+#        Description: Bots help players with group and escort quests. Idle bots near a player who carries such a quest
+#                      join the player's party, take the quest, follow the player, and on an escort fight what attacks
+#                      the escorted NPC. The player sends them away by removing them from the group (they are not asked
+#                      again for that quest). Logged as QUEST_ASSIST_STARTED / QUEST_ASSIST_JOINED /
+#                      QUEST_ASSIST_RELEASED / QUEST_ASSIST_ENDED / QUEST_ESCORT_GUARD. Dungeon, raid, PvP and world
+#                      event quests are left to their own features. Bots that belong to a player (alts) are never
+#                      asked.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.Assist.Enabled = 0
+
+#
+#    Bot.Quest.Assist.MaxHelpers
+#        Description: Most bots that join one player.
+#        Default:     2
+#        Values:      whole number 1 to 4
+Bot.Quest.Assist.MaxHelpers = 2
+
+#
+#    Bot.Quest.Assist.RecruitRadius
+#        Description: A bot farther than this from the player is not asked.
+#        Default:     60
+#        Values:      whole number 10 to 300 (yards)
+Bot.Quest.Assist.RecruitRadius = 60
+
+#
+#    Bot.Quest.Assist.MaxLevelGap
+#        Description: Levels a helper may differ from the player, up or down.
+#        Default:     4
+#        Values:      whole number 0 to 20
+Bot.Quest.Assist.MaxLevelGap = 4
+
+#
+#    Bot.Quest.Assist.MinLevel
+#        Description: Lowest level of a helper bot.
+#        Default:     5
+#        Values:      whole number 1 to 80
+Bot.Quest.Assist.MinLevel = 5
+
+#
+#    Bot.Quest.Assist.LifetimeMin
+#        Description: Longest help for one quest. The player may be offered help again afterwards.
+#        Default:     30
+#        Values:      whole number 2 to 240 (minutes)
+Bot.Quest.Assist.LifetimeMin = 30
+
+#
+#    Bot.Quest.Assist.LeashYards
+#        Description: A helper farther than this from the player counts as lost.
+#        Default:     80
+#        Values:      whole number 20 to 500 (yards)
+Bot.Quest.Assist.LeashYards = 80
+
+#
+#    Bot.Quest.Assist.LeashSec
+#        Description: A helper lost this long is let go.
+#        Default:     45
+#        Values:      whole number 5 to 600 (seconds)
+Bot.Quest.Assist.LeashSec = 45
+
+#
+#    Bot.Quest.Assist.DoneGraceSec
+#        Description: The helpers stay this long after the quest is done or abandoned (the walk to the turn-in).
+#        Default:     30
+#        Values:      whole number 0 to 600 (seconds)
+Bot.Quest.Assist.DoneGraceSec = 30
+
+#
+#    Bot.Quest.Assist.EscortGuard
+#        Description: Helpers attack creatures that attack the escorted NPC of an escort quest.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.Assist.EscortGuard = 1
+
+#
+#    Bot.Quest.Assist.GuardRadius
+#        Description: A helper only takes an attacker of the escorted NPC that is closer than this.
+#        Default:     45
+#        Values:      whole number 10 to 100 (yards)
+Bot.Quest.Assist.GuardRadius = 45
+
+#
+#    Bot.Quest.Assist.Notify
+#        Description: Tell the player with a system message when bots join or leave.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.Assist.Notify = 1
+
+#
+#    Bot.Quest.Assist.IntervalSec
+#        Description: Time between two checks of the running helper sessions.
+#        Default:     2
+#        Values:      whole number 1 to 30 (seconds)
+Bot.Quest.Assist.IntervalSec = 2
+
+#
+#    Bot.Quest.Assist.ScanEverySec
+#        Description: Time between two looks for players who could use help.
+#        Default:     10
+#        Values:      whole number 2 to 600 (seconds)
+Bot.Quest.Assist.ScanEverySec = 10
+
+#
+#    Bot.Quest.Assist.MaxSessions
+#        Description: Most players helped at the same time.
+#        Default:     20
+#        Values:      whole number 1 to 500
+Bot.Quest.Assist.MaxSessions = 20
+
+
+###################################################################################################
+# GUILDS
+#
+# Bots take guild invites, talk in guild chat, and can found and fill guilds of their own. Everything
+# is off until Bot.Guild.Enabled = 1. See docs/playerbots/feature-bot-guilds-20261008.md.
+#
+###################################################################################################
+
+#
+#    Bot.Guild.Enabled
+#        Description: Master switch of bot guilds. Off: bots take no guild invites, say nothing in guild chat, and
+#                     found or join no guilds (the core guild rules are unchanged). The groups below still need their
+#                     own switches.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Guild.Enabled = 0
+
+#
+#    Bot.Guild.Invite.Enabled
+#        Description: Bots answer guild invites. Alt bots accept only invites of their owner account; world bots
+#                     accept any invite the core did not refuse (ignore, faction, already guilded),
+#                     Bot.Guild.Invite.AcceptPct of the time. Bots never accept invites of bots. A refused bot
+#                     whispers a short decline to the player. Needs Bot.Guild.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Guild.Invite.Enabled = 1
+
+#
+#    Bot.Guild.Invite.AcceptPct
+#        Description: Chance that a world bot accepts a player's guild invite. Alt bots of the owner always accept.
+#        Default:     100
+#        Values:      whole number 0 to 100 (percent)
+Bot.Guild.Invite.AcceptPct = 100
+
+#
+#    Bot.Guild.Invite.MinLevel
+#        Description: Lowest level of a bot that accepts a guild invite; lower bots decline.
+#        Default:     1
+#        Values:      whole number 1 to 80 (level)
+Bot.Guild.Invite.MinLevel = 1
+
+#
+#    Bot.Guild.Chat.Enabled
+#        Description: Bots speak in guild chat: they welcome a member who logs in, congratulate level-ups, answer a
+#                     hello, goodbye, thanks, "how are you" and their own name, and say something unprompted now and
+#                     then while a player is online. Alt bots (the player's own characters) stay quiet. Needs
+#                     Bot.Guild.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Guild.Chat.Enabled = 1
+
+#
+#    Bot.Guild.Chat.GreetPct
+#        Description: Chance per bot (at most two bots greet) that it welcomes a member who logs in.
+#        Default:     60
+#        Values:      whole number 0 to 100 (percent)
+Bot.Guild.Chat.GreetPct = 60
+
+#
+#    Bot.Guild.Chat.ReplyPct
+#        Description: Chance per bot (at most two answer) that it answers a guild chat line that uses its name.
+#        Default:     85
+#        Values:      whole number 0 to 100 (percent)
+Bot.Guild.Chat.ReplyPct = 85
+
+#
+#    Bot.Guild.Chat.SmallTalkPct
+#        Description: Chance that one bot answers a hello, goodbye, thanks or "how are you" said in guild chat without
+#                     a name. Only short lines count: "hi, can anyone craft a belt" is not a hello.
+#        Default:     35
+#        Values:      whole number 0 to 100 (percent)
+Bot.Guild.Chat.SmallTalkPct = 35
+
+#
+#    Bot.Guild.Chat.CongratsPct
+#        Description: Chance per bot (at most two) that it congratulates a level-up of a guild member (a human, or a
+#                     bot while a human is online).
+#        Default:     60
+#        Values:      whole number 0 to 100 (percent)
+Bot.Guild.Chat.CongratsPct = 60
+
+#
+#    Bot.Guild.Chat.CongratsEvery
+#        Description: Level-ups that are congratulated: every this many levels (5 = level 5, 10, 15 ...). 0 turns
+#                     congratulations off.
+#        Default:     5
+#        Values:      whole number 0 to 80 (levels)
+Bot.Guild.Chat.CongratsEvery = 5
+
+#
+#    Bot.Guild.Chat.CooldownSec
+#        Description: Least time between two lines of one bot in guild chat. A bot that was named gets half of it.
+#        Default:     20
+#        Values:      whole number 0 to 3600 (seconds)
+Bot.Guild.Chat.CooldownSec = 20
+
+#
+#    Bot.Guild.Chat.DelayMinMs
+#        Description: A bot answers after a delay of at least this long, so that it does not reply like a machine.
+#        Default:     1500
+#        Values:      whole number 0 to 60000 (milliseconds)
+Bot.Guild.Chat.DelayMinMs = 1500
+
+#
+#    Bot.Guild.Chat.DelayMaxMs
+#        Description: Longest answer delay. Several bots answering one line are spread over the range. Raised to
+#                     Bot.Guild.Chat.DelayMinMs when lower.
+#        Default:     6000
+#        Values:      whole number 0 to 120000 (milliseconds)
+Bot.Guild.Chat.DelayMaxMs = 6000
+
+#
+#    Bot.Guild.Chat.IdleMinMin
+#        Description: A bot says something unprompted in guild chat when it has been silent for a time between
+#                     IdleMinMin and IdleMaxMin (fixed per bot), and only while a human member is online.
+#        Default:     25
+#        Values:      whole number 1 to 1440 (minutes)
+Bot.Guild.Chat.IdleMinMin = 25
+
+#
+#    Bot.Guild.Chat.IdleMaxMin
+#        Description: Longest silence before an unprompted line. Raised to Bot.Guild.Chat.IdleMinMin when lower.
+#        Default:     70
+#        Values:      whole number 1 to 1440 (minutes)
+Bot.Guild.Chat.IdleMaxMin = 70
+
+#
+#    Bot.Guild.WhisperInvite
+#        Description: A player who whispers "inv", "invite" or "can i join the guild" to a bot of a guild gets an
+#                     invite when the bot's rank may invite; otherwise the bot whispers why not. Alt bots answer only
+#                     their owner. Answers are limited to one per player and bot per minute. Needs Bot.Guild.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Guild.WhisperInvite = 1
+
+#
+#    Bot.Guild.Auto.Enabled
+#        Description: Bots without a guild found guilds (a generated name, the bot as guild master) and join guilds
+#                     led by world bots, so that guilds exist for players to find. Only guilds whose leader bot is
+#                     online count as bot guilds; nothing happens in the first 5 minutes after the server start. Alt
+#                     bots never take part. Needs Bot.Guild.Enabled.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Guild.Auto.Enabled = 0
+
+#
+#    Bot.Guild.Auto.CheckSec
+#        Description: How often the guild plan runs.
+#        Default:     120
+#        Values:      whole number 10 to 3600 (seconds)
+Bot.Guild.Auto.CheckSec = 120
+
+#
+#    Bot.Guild.Auto.MaxGuilds
+#        Description: Most guilds led by world bots; no more are founded above it.
+#        Default:     10
+#        Values:      whole number 1 to 500 (guilds)
+Bot.Guild.Auto.MaxGuilds = 10
+
+#
+#    Bot.Guild.Auto.MaxMembers
+#        Description: A bot guild takes no more members than this.
+#        Default:     25
+#        Values:      whole number 2 to 200 (members)
+Bot.Guild.Auto.MaxMembers = 25
+
+#
+#    Bot.Guild.Auto.MinLevel
+#        Description: Lowest level of a bot that joins a bot guild.
+#        Default:     10
+#        Values:      whole number 1 to 80 (level)
+Bot.Guild.Auto.MinLevel = 10
+
+#
+#    Bot.Guild.Auto.FoundMinLevel
+#        Description: Lowest level of a bot that founds a guild.
+#        Default:     15
+#        Values:      whole number 1 to 80 (level)
+Bot.Guild.Auto.FoundMinLevel = 15
+
+#
+#    Bot.Guild.Auto.JoinPct
+#        Description: Chance per check and free bot that it joins a bot guild of its faction that has room.
+#        Default:     40
+#        Values:      whole number 0 to 100 (percent)
+Bot.Guild.Auto.JoinPct = 40
+
+#
+#    Bot.Guild.Auto.FoundPct
+#        Description: Chance per check and free bot that it founds a guild when no bot guild of its faction has room
+#                     (one founding per faction and check).
+#        Default:     15
+#        Values:      whole number 0 to 100 (percent)
+Bot.Guild.Auto.FoundPct = 15
+
+#
+#    Bot.Guild.Auto.MaxActions
+#        Description: Most foundings and joins per check, to spread guild building over time.
+#        Default:     2
+#        Values:      whole number 1 to 20 (actions)
+Bot.Guild.Auto.MaxActions = 2
+
+
+
+
+###################################################################################################
+# BOT MOUNTS
+#
+# Bots that follow a player ride with them. A bot follows a mounted leader onto a ground mount it
+# knows, a bot that fell far behind a leader on foot rides to catch up, and a bot gets off again
+# once the leader is on foot and close, and always when a fight starts. A ride a player ordered in
+# chat (the order `mount`, see Bot.Chat.Orders.Enabled) stays until the player orders `dismount` or
+# a fight starts. Flying mounts are not used. Log tags: MOUNT_UP, MOUNT_DOWN, MOUNT_REFUSED.
+# See docs/playerbots/feature-bot-mounts-20261008.md.
+#
+###################################################################################################
+
+#
+#    Bot.AI.Mount.Enabled
+#        Description: Automatic mounting and dismounting of bots that follow a leader. Adds the strategy
+#                     "mount" to the non-combat and combat engines.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Mount.Enabled = 0
+
+#
+#    Bot.AI.Mount.MountDelaySec
+#        Description: The leader must have been mounted this long before the bot mounts (a quick hop on and
+#                     off does not make the bots flicker).
+#        Default:     2
+#        Values:      whole number 0 to 60 (seconds)
+Bot.AI.Mount.MountDelaySec = 2
+
+#
+#    Bot.AI.Mount.DismountDelaySec
+#        Description: The leader must have been on foot this long before the bot gets off.
+#        Default:     3
+#        Values:      whole number 0 to 60 (seconds)
+Bot.AI.Mount.DismountDelaySec = 3
+
+#
+#    Bot.AI.Mount.DismountYards
+#        Description: A bot only gets off once it is within this distance of a leader on foot. A bot that is
+#                     farther away keeps riding until it has caught up.
+#        Default:     15
+#        Values:      whole number 3 to 100 (yards)
+Bot.AI.Mount.DismountYards = 15
+
+#
+#    Bot.AI.Mount.CatchUpYards
+#        Description: A bot farther than this from a leader on foot counts as left behind.
+#        Default:     60
+#        Values:      whole number 20 to 500 (yards)
+Bot.AI.Mount.CatchUpYards = 60
+
+#
+#    Bot.AI.Mount.CatchUpSec
+#        Description: ... for this long, then it mounts to catch up. 0 mounts at once.
+#        Default:     8
+#        Values:      whole number 0 to 300 (seconds)
+Bot.AI.Mount.CatchUpSec = 8
+
+#
+#    Bot.AI.Mount.RetrySec
+#        Description: After a refused mount (indoors, a zone without mounts, a shapeshift form) the bot waits
+#                     this long before it tries again.
+#        Default:     30
+#        Values:      whole number 5 to 600 (seconds)
+Bot.AI.Mount.RetrySec = 30

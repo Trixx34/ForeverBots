@@ -53,6 +53,11 @@ ClassifierResult ClassifyQuest(QuestFacts const& q, QuestWorldLookup const& worl
         b.Code = "NEEDS_GROUP"; b.Info = StringFormat("suggested players {}", q.SuggestedPlayers);
         return b;
     }
+    if (q.Escort && !world.EscortQuestSupported(q.QuestId))
+    {
+        b.Code = "NEEDS_ESCORT"; b.Info = "escort quest";
+        return b;
+    }
     if (q.LimitTime > 0)
     {
         b.Code = "TIMED_UNSUPPORTED";
