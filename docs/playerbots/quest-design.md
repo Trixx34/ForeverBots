@@ -754,6 +754,7 @@ Formerly reserved; all now emitted. `blk` = `quest_blocked` row (WARN unless not
 | `NO_GRIND_TARGET` | blk | no hostile spawn within 500 yd to grind |
 | `TRAIN_TRIP` | dec | walking to the class trainer |
 | `TRAINED` | dec | learned spells (trainer entry, copper spent) |
+| `SPELLS_LEARNED` | dec | Bot.AI.AutoLearnSpells: class spells learned on level up or login without a trainer (count, level, spell ids) |
 | `TRAIN_NO_MONEY` | blk | spells available, none affordable (or nothing learned at the trainer) |
 | `TRAIN_NO_TRAINER` | blk | no reachable friendly class trainer on the map within 15000 yd (retried at 4000 yd first), or the NPC has no trainer data; details `why` classifies the gap |
 | `TRAIN_UNREACHABLE` | blk | trainer known but the walk failed (quarantine path, Svc=1) |
