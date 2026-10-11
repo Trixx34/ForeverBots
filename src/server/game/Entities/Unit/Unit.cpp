@@ -10280,6 +10280,11 @@ void Unit::SetPower(Powers power, int32 val, bool withPowerUpdate /*= true*/)
     int32 oldPower = m_unitData->Power[powerIndex];
     SetUpdateFieldValue(m_values.ModifyValue(&Unit::m_unitData).ModifyValue(&UF::UnitData::Power, powerIndex), val);
 
+    // Classic 1.60: also send combo point changes as a power update (the official rogue sniff 70338 has type 4 power updates);
+    // energize changes the power without one. The client shows them only on UnitData ClassicComboTarget (Spell::EffectEnergize)
+    if (power == POWER_COMBO_POINTS && IsPlayer() && oldPower != val)
+        withPowerUpdate = true;
+
     if (IsInWorld() && withPowerUpdate)
     {
         WorldPackets::Combat::PowerUpdate packet;

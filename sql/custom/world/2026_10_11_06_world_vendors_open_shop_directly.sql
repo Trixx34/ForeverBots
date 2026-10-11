@@ -10,7 +10,10 @@
 --   * no C++ script, also none on one of its spawns (creature.ScriptName: spawns inherit the template flags), no quest
 --     it starts or ends, no SmartAI gossip handling (events 62 and 64), also none attached to one of its spawns
 --     (negative entryorguid = spawn guid);
---   * its gossip menu has at least one Vendor option (OptionNpc 1) and no option of any other type.
+--   * its gossip menu has at least one Vendor option (OptionNpc 1) and no option of any other type;
+--   * no condition on its gossip menu or options (conditions SourceType 14 / 15): the vendor list opened without gossip
+--     does not check them, so class, race, reputation, quest or achievement gated vendors (warlock demon vendors,
+--     racial mount vendors, Brew of the Month, ...) keep their dialog.
 -- A spawn row is changed only when its own npcflag override is also made of those bits, it has no ScriptName and no
 -- SmartAI of its own. Vendors with a gossip flag but no menu option at all are NOT touched here (they need a separate
 -- decision). Everything else (trainers, innkeepers, bankers, flight masters, quest givers, scripted creatures) keeps
@@ -30,7 +33,8 @@ WHERE (ct.`npcflag` & 0x3) <> 0
   AND NOT EXISTS (SELECT 1 FROM `creature` c JOIN `smart_scripts` ss ON ss.`source_type` = 0 AND ss.`event_type` IN (62, 64) AND ss.`entryorguid` = -CAST(c.`guid` AS SIGNED) WHERE c.`id` = ct.`entry`)
   AND NOT EXISTS (SELECT 1 FROM `creature` c WHERE c.`id` = ct.`entry` AND c.`ScriptName` <> '')
   AND EXISTS (SELECT 1 FROM `creature_template_gossip` g JOIN `gossip_menu_option` o ON o.`MenuID` = g.`MenuID` WHERE g.`CreatureID` = ct.`entry` AND o.`OptionNpc` = 1)
-  AND NOT EXISTS (SELECT 1 FROM `creature_template_gossip` g JOIN `gossip_menu_option` o ON o.`MenuID` = g.`MenuID` WHERE g.`CreatureID` = ct.`entry` AND o.`OptionNpc` <> 1);
+  AND NOT EXISTS (SELECT 1 FROM `creature_template_gossip` g JOIN `gossip_menu_option` o ON o.`MenuID` = g.`MenuID` WHERE g.`CreatureID` = ct.`entry` AND o.`OptionNpc` <> 1)
+  AND NOT EXISTS (SELECT 1 FROM `creature_template_gossip` g JOIN `conditions` cd ON cd.`SourceTypeOrReferenceId` IN (14, 15) AND cd.`SourceGroup` = g.`MenuID` WHERE g.`CreatureID` = ct.`entry`);
 
 UPDATE `creature_template` SET `npcflag` = `npcflag` & ~0x3 WHERE `entry` IN (SELECT `entry` FROM `tmp_shop_only_vendors`);
 

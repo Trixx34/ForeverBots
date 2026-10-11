@@ -2,8 +2,8 @@
 -- Rath'mael 250657: out of combat a Ghoul rises at one of 7 graves every 8-9 s, stuns itself (1265981) and falls 8 s later
 -- (1266626), until he is pulled (sniff: 67-97 min). Statue (Stalker spawn 21300268 at the statue): a player in range starts it;
 -- Blue Eyes + Ghost Light + Statue Shake and 8 Skeletons, Green Eyes and 4 Ghouls, Red Eyes and a Skeletal Soldier, Plague
--- Ghoul and Skeletal Mage, then Statue Shake and The Abandoned comes out (sniff: 75.8, 76.7, 77.4, 78.3 min; each wave here
--- after the previous one is dead). A wipe (The Abandoned despawns unkilled) or 5 min without finishing re-arms it.
+-- Ghoul and Skeletal Mage, then Statue Shake and The Abandoned comes out of the statue and engages the group. A wave every
+-- 1.5 min, each attacking the player who started it. A wipe (The Abandoned despawns unkilled) or 15 min without finishing re-arms it.
 UPDATE `creature_template` SET `AIName` = 'SmartAI' WHERE `entry` IN (250657,250627,250660,265701,250629);
 DELETE FROM `smart_scripts` WHERE `source_type` = 0 AND `entryorguid` IN (-21300268,250627,250629,250657,250660,265701);
 DELETE FROM `smart_scripts` WHERE `source_type` = 9 AND `entryorguid` IN (25062700,25065700,25065701,25065702,25065703,25065704,25065705,25065706,25515900,25515901,25515902,25515903);
@@ -49,53 +49,56 @@ INSERT INTO `smart_scripts` (`entryorguid`,`source_type`,`id`,`link`,`Difficulti
 (250627,0,0,0,'',38,0,100,0,1,1,0,0,0,'',80,25062700,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Ghoul - On Data Set 1 1 (raised by Rath''mael) - Rise and fall'),
 (25062700,9,0,0,'',0,0,100,0,0,0,0,0,0,'',11,1265981,2,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Ghoul - Cast 1265981 on Self (rising)'),
 (25062700,9,1,0,'',0,0,100,0,8000,8000,0,0,0,'',11,1266626,2,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Ghoul - Cast 1266626 on Self (falls again)'),
-(-21300268,0,0,1,'',25,0,100,0,0,0,0,0,0,'',22,1,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - On Reset - Set Phase 1'),
-(-21300268,0,1,0,'',61,0,100,0,0,0,0,0,0,'',63,1,0,1,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - On Reset - Reset Counter 1'),
-(-21300268,0,2,0,'',10,1,100,0,2,25,0,0,0,'',80,25515900,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Player in range - Wave 1'),
-(-21300268,0,3,0,'',82,2,100,0,0,0,0,0,0,'',63,1,1,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Summon died - Counter 1 +1'),
-(-21300268,0,4,0,'',77,2,100,0,1,8,0,0,0,'',80,25515901,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 1 dead - Wave 2'),
-(-21300268,0,5,0,'',77,2,100,0,1,12,0,0,0,'',80,25515902,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 2 dead - Wave 3'),
-(-21300268,0,6,0,'',77,2,100,0,1,15,0,0,0,'',80,25515903,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 3 dead - The Abandoned'),
-(-21300268,0,7,0,'',82,2,100,0,250631,0,0,0,0,'',22,3,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - The Abandoned died - Set Phase 3 (done)'),
-(-21300268,0,8,9,'',35,2,100,0,250631,0,0,0,0,'',22,1,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - The Abandoned despawned unkilled (wipe) - Set Phase 1'),
-(-21300268,0,9,0,'',61,0,100,0,0,0,0,0,0,'',63,1,0,1,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Reset Counter 1'),
-(-21300268,0,10,11,'',59,2,100,0,1,0,0,0,0,'',22,1,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Not finished after 5 min - Set Phase 1'),
-(-21300268,0,11,0,'',61,0,100,0,0,0,0,0,0,'',63,1,0,1,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Reset Counter 1'),
+(-21300268,0,0,0,'',25,0,100,0,0,0,0,0,0,'',22,1,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - On Reset - Set Phase 1'),
+(-21300268,0,1,0,'',10,1,100,0,2,25,0,0,0,'',80,25515900,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Player in range - Start the waves'),
+(-21300268,0,2,0,'',82,2,100,0,250631,0,0,0,0,'',22,3,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - The Abandoned died - Set Phase 3 (done)'),
+(-21300268,0,3,0,'',35,2,100,0,250631,0,0,0,0,'',22,1,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - The Abandoned despawned unkilled (wipe) - Set Phase 1'),
+(-21300268,0,4,0,'',59,2,100,0,1,0,0,0,0,'',22,1,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Not finished after 15 min - Set Phase 1'),
 (25515900,9,0,0,'',0,0,100,0,0,0,0,0,0,'',22,2,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Set Phase 2'),
-(25515900,9,1,0,'',0,0,100,0,0,0,0,0,0,'',67,1,300000,300000,0,0,100,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Re-arm in 5 min if not finished'),
-(25515900,9,2,0,'',0,0,100,0,0,0,0,0,0,'',11,1265983,2,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Cast 1265983'),
-(25515900,9,3,0,'',0,0,100,0,0,0,0,0,0,'',11,1264413,2,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Cast 1264413'),
-(25515900,9,4,0,'',0,0,100,0,0,0,0,0,0,'',11,1264377,2,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Cast 1264377'),
-(25515900,9,5,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,1,0,0,0,'',8,0,0,0,0,'',1548.99,343.74,61.76,0.341,'Stalker (statue) - Summon 250618'),
-(25515900,9,6,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,1,0,0,0,'',8,0,0,0,0,'',1551.02,346.38,61.76,0.341,'Stalker (statue) - Summon 250618'),
-(25515900,9,7,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,1,0,0,0,'',8,0,0,0,0,'',1553.99,342.22,61.79,0.136,'Stalker (statue) - Summon 250618'),
-(25515900,9,8,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,1,0,0,0,'',8,0,0,0,0,'',1558.84,344.2,61.76,0.233,'Stalker (statue) - Summon 250618'),
-(25515900,9,9,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,1,0,0,0,'',8,0,0,0,0,'',1619.32,393.05,62.49,4.073,'Stalker (statue) - Summon 250618'),
-(25515900,9,10,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,1,0,0,0,'',8,0,0,0,0,'',1621.65,391.09,62.69,4.437,'Stalker (statue) - Summon 250618'),
-(25515900,9,11,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,1,0,0,0,'',8,0,0,0,0,'',1622.9,396.84,62.49,4.18,'Stalker (statue) - Summon 250618'),
-(25515900,9,12,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,1,0,0,0,'',8,0,0,0,0,'',1626.79,392.83,62.49,3.155,'Stalker (statue) - Summon 250618'),
-(25515900,9,13,0,'',0,0,100,0,0,0,0,0,0,'',38,0,0,0,0,0,0,0,'',12,1,0,0,0,'',0,0,0,0,'Stalker (statue) - Summons attack'),
-(25515901,9,0,0,'',0,0,100,0,0,0,0,0,0,'',11,1264400,2,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Cast 1264400'),
-(25515901,9,1,0,'',0,0,100,0,0,0,0,0,0,'',12,250627,4,120000,2,0,0,0,'',8,0,0,0,0,'',1585.65,364.27,61.72,0.0,'Stalker (statue) - Summon 250627'),
-(25515901,9,2,0,'',0,0,100,0,0,0,0,0,0,'',12,250627,4,120000,2,0,0,0,'',8,0,0,0,0,'',1586.16,358.15,61.72,0.424,'Stalker (statue) - Summon 250627'),
-(25515901,9,3,0,'',0,0,100,0,0,0,0,0,0,'',12,250627,4,120000,2,0,0,0,'',8,0,0,0,0,'',1591.46,348.04,61.72,1.352,'Stalker (statue) - Summon 250627'),
-(25515901,9,4,0,'',0,0,100,0,0,0,0,0,0,'',12,250627,4,120000,2,0,0,0,'',8,0,0,0,0,'',1593.44,371.22,61.72,5.224,'Stalker (statue) - Summon 250627'),
-(25515901,9,5,0,'',0,0,100,0,0,0,0,0,0,'',38,0,0,0,0,0,0,0,'',12,2,0,0,0,'',0,0,0,0,'Stalker (statue) - Summons attack'),
-(25515902,9,0,0,'',0,0,100,0,0,0,0,0,0,'',11,1264401,2,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Cast 1264401'),
-(25515902,9,1,0,'',0,0,100,0,0,0,0,0,0,'',12,250626,4,120000,3,0,0,0,'',8,0,0,0,0,'',1618.27,393.95,62.43,4.221,'Stalker (statue) - Summon 250626'),
-(25515902,9,2,0,'',0,0,100,0,0,0,0,0,0,'',12,250630,4,120000,3,0,0,0,'',8,0,0,0,0,'',1621.8,391.4,62.44,3.918,'Stalker (statue) - Summon 250630'),
-(25515902,9,3,0,'',0,0,100,0,0,0,0,0,0,'',12,250624,4,120000,3,0,0,0,'',8,0,0,0,0,'',1560.15,344.06,61.7,0.268,'Stalker (statue) - Summon 250624'),
-(25515902,9,4,0,'',0,0,100,0,0,0,0,0,0,'',38,0,0,0,0,0,0,0,'',12,3,0,0,0,'',0,0,0,0,'Stalker (statue) - Summons attack'),
-(25515903,9,0,0,'',0,0,100,0,0,0,0,0,0,'',11,1264413,2,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Cast 1264413'),
-(25515903,9,1,0,'',0,0,100,0,0,0,0,0,0,'',12,250631,4,120000,4,0,0,0,'',8,0,0,0,0,'',1601.37,340.69,64.49,1.272,'Stalker (statue) - Summon 250631'),
-(25515903,9,2,0,'',0,0,100,0,0,0,0,0,0,'',38,0,0,0,0,0,0,0,'',12,4,0,0,0,'',0,0,0,0,'Stalker (statue) - Summons attack'),
-(25515903,9,3,0,'',0,0,100,0,0,0,0,0,0,'',146,0,0,0,0,0,0,0,'',12,4,0,0,0,'',0,0,0,0,'Stalker (statue) - The Abandoned - Selectable'),
+(25515900,9,1,0,'',0,0,100,0,0,0,0,0,0,'',67,1,900000,900000,0,0,100,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Re-arm in 15 min if not finished'),
+(25515900,9,2,0,'',0,0,100,0,0,0,0,0,0,'',11,1265983,2,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Cast 1265983 (Ghost Light)'),
+(25515900,9,3,0,'',0,0,100,0,0,0,0,0,0,'',11,1264413,2,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Cast 1264413 (Statue Shake)'),
+(25515900,9,4,0,'',0,0,100,0,0,0,0,0,0,'',11,1264377,2,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 1 - Cast 1264377 (Blue Eyes)'),
+(25515900,9,5,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,1,0,0,0,'',8,0,0,0,0,'',1548.99,343.74,61.76,0.341,'Stalker (statue) - Wave 1 - Summon Skeleton'),
+(25515900,9,6,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,2,0,0,0,'',8,0,0,0,0,'',1551.02,346.38,61.76,0.341,'Stalker (statue) - Wave 1 - Summon Skeleton'),
+(25515900,9,7,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,3,0,0,0,'',8,0,0,0,0,'',1553.99,342.22,61.79,0.136,'Stalker (statue) - Wave 1 - Summon Skeleton'),
+(25515900,9,8,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,4,0,0,0,'',8,0,0,0,0,'',1558.84,344.2,61.76,0.233,'Stalker (statue) - Wave 1 - Summon Skeleton'),
+(25515900,9,9,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,5,0,0,0,'',8,0,0,0,0,'',1619.32,393.05,62.49,4.073,'Stalker (statue) - Wave 1 - Summon Skeleton'),
+(25515900,9,10,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,6,0,0,0,'',8,0,0,0,0,'',1621.65,391.09,62.69,4.437,'Stalker (statue) - Wave 1 - Summon Skeleton'),
+(25515900,9,11,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,7,0,0,0,'',8,0,0,0,0,'',1622.9,396.84,62.49,4.18,'Stalker (statue) - Wave 1 - Summon Skeleton'),
+(25515900,9,12,0,'',0,0,100,0,0,0,0,0,0,'',12,250618,4,120000,8,0,0,0,'',8,0,0,0,0,'',1626.79,392.83,62.49,3.155,'Stalker (statue) - Wave 1 - Summon Skeleton'),
+(25515900,9,13,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,1,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 1 - Skeleton engages (Set Data 2 1)'),
+(25515900,9,14,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,2,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 1 - Skeleton engages (Set Data 2 1)'),
+(25515900,9,15,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,3,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 1 - Skeleton engages (Set Data 2 1)'),
+(25515900,9,16,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,4,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 1 - Skeleton engages (Set Data 2 1)'),
+(25515900,9,17,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,5,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 1 - Skeleton engages (Set Data 2 1)'),
+(25515900,9,18,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,6,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 1 - Skeleton engages (Set Data 2 1)'),
+(25515900,9,19,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,7,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 1 - Skeleton engages (Set Data 2 1)'),
+(25515900,9,20,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,8,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 1 - Skeleton engages (Set Data 2 1)'),
+(25515900,9,21,0,'',0,0,100,0,90000,90000,0,0,0,'',11,1264400,2,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 2 after 1.5 min - Cast 1264400 (Green Eyes)'),
+(25515900,9,22,0,'',0,0,100,0,0,0,0,0,0,'',12,250627,4,120000,1,0,0,0,'',8,0,0,0,0,'',1585.65,364.27,61.72,0.0,'Stalker (statue) - Wave 2 after 1.5 min - Summon Ghoul'),
+(25515900,9,23,0,'',0,0,100,0,0,0,0,0,0,'',12,250627,4,120000,2,0,0,0,'',8,0,0,0,0,'',1586.16,358.15,61.72,0.424,'Stalker (statue) - Wave 2 after 1.5 min - Summon Ghoul'),
+(25515900,9,24,0,'',0,0,100,0,0,0,0,0,0,'',12,250627,4,120000,3,0,0,0,'',8,0,0,0,0,'',1591.46,348.04,61.72,1.352,'Stalker (statue) - Wave 2 after 1.5 min - Summon Ghoul'),
+(25515900,9,25,0,'',0,0,100,0,0,0,0,0,0,'',12,250627,4,120000,4,0,0,0,'',8,0,0,0,0,'',1593.44,371.22,61.72,5.224,'Stalker (statue) - Wave 2 after 1.5 min - Summon Ghoul'),
+(25515900,9,26,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,1,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 2 after 1.5 min - Ghoul engages (Set Data 2 1)'),
+(25515900,9,27,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,2,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 2 after 1.5 min - Ghoul engages (Set Data 2 1)'),
+(25515900,9,28,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,3,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 2 after 1.5 min - Ghoul engages (Set Data 2 1)'),
+(25515900,9,29,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,4,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 2 after 1.5 min - Ghoul engages (Set Data 2 1)'),
+(25515900,9,30,0,'',0,0,100,0,90000,90000,0,0,0,'',11,1264401,2,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 3 after 1.5 min - Cast 1264401 (Red Eyes)'),
+(25515900,9,31,0,'',0,0,100,0,0,0,0,0,0,'',12,250626,4,120000,1,0,0,0,'',8,0,0,0,0,'',1618.27,393.95,62.43,4.221,'Stalker (statue) - Wave 3 after 1.5 min - Summon Skeletal Soldier'),
+(25515900,9,32,0,'',0,0,100,0,0,0,0,0,0,'',12,250630,4,120000,2,0,0,0,'',8,0,0,0,0,'',1621.8,391.4,62.44,3.918,'Stalker (statue) - Wave 3 after 1.5 min - Summon Plague Ghoul'),
+(25515900,9,33,0,'',0,0,100,0,0,0,0,0,0,'',12,250624,4,120000,3,0,0,0,'',8,0,0,0,0,'',1560.15,344.06,61.7,0.268,'Stalker (statue) - Wave 3 after 1.5 min - Summon Skeletal Mage'),
+(25515900,9,34,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,1,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 3 after 1.5 min - Skeletal Soldier engages (Set Data 2 1)'),
+(25515900,9,35,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,2,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 3 after 1.5 min - Plague Ghoul engages (Set Data 2 1)'),
+(25515900,9,36,0,'',0,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,3,0,0,0,'',0,0,0,0,'Stalker (statue) - Wave 3 after 1.5 min - Skeletal Mage engages (Set Data 2 1)'),
+(25515900,9,37,0,'',0,0,100,0,90000,90000,0,0,0,'',11,1264413,2,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Stalker (statue) - The Abandoned after 1.5 min - Cast 1264413 (Statue Shake)'),
+(25515900,9,38,0,'',0,0,100,0,5700,5700,0,0,0,'',12,250631,4,120000,0,0,0,0,'',8,0,0,0,0,'',1601.37,340.69,69.49,1.272,'Stalker (statue) - The Abandoned rises out of the statue'),
 (-21300398,1,0,1,'',64,0,100,1,0,0,0,0,0,'',12,250650,4,300000,1,0,0,0,'',8,0,0,0,0,'',1552.66,202.83,63.82,4.695,'Doors (Ruins of Lordaeron) - On Use - Summon Wailing Banshee behind the door'),
-(-21300398,1,1,0,'',61,0,100,0,0,0,0,0,0,'',38,0,0,0,0,0,0,0,'',12,1,0,0,0,'',0,0,0,0,'Doors (Ruins of Lordaeron) - Wailing Banshee attacks');
+(-21300398,1,1,0,'',61,0,100,0,0,0,0,0,0,'',45,2,1,0,0,0,0,0,'',12,1,0,0,0,'',0,0,0,0,'Doors (Ruins of Lordaeron) - Wailing Banshee attacks (Set Data 2 1)');
 -- the statue's Stalker runs a per-spawn script: only a player starts the event
 DELETE FROM `conditions` WHERE `SourceTypeOrReferenceId` = 22 AND `SourceEntry` = -21300268;
 INSERT INTO `conditions` (`SourceTypeOrReferenceId`,`SourceGroup`,`SourceEntry`,`SourceId`,`ElseGroup`,`ConditionTypeOrReference`,`ConditionTarget`,`ConditionValue1`,`ConditionValue2`,`ConditionValue3`,`NegativeCondition`,`ErrorType`,`ErrorTextId`,`ScriptName`,`Comment`) VALUES
-(22,3,-21300268,0,0,32,0,16,0,0,0,0,0,'','Stalker (statue) - start only for players');
+(22,2,-21300268,0,0,32,0,16,0,0,0,0,0,'','Stalker (statue) - start only for players');
 UPDATE `creature` SET `ScriptName` = '' WHERE `guid` = 21300268;
 UPDATE `creature_template` SET `AIName` = 'SmartAI' WHERE `entry` = 255159;
 -- the event spells are not spawn casts: no entry script for the Stalkers and the Ragged Ghouls (older sniff_ai output)
@@ -104,3 +107,20 @@ DELETE FROM `smart_scripts` WHERE `source_type` = 0 AND `entryorguid` IN (255159
 DELETE FROM `creature` WHERE `map` = 2999 AND `id` = 250631;
 -- nor the Wailing Banshee behind the door (one sniffed instance saw her standing there, the door already opened)
 DELETE FROM `creature` WHERE `map` = 2999 AND `id` = 250650 AND ABS(`position_x` - 1552.66) < 1 AND ABS(`position_y` - 202.83) < 1;
+
+-- statue wave mobs and The Abandoned
+-- (summoned by the statue Stalker or the door; SET_IN_COMBAT_WITH_ZONE only acts on the script owner, so each summon engages itself)
+UPDATE `creature_template` SET `AIName` = 'SmartAI' WHERE `entry` IN (250618,250627,250626,250630,250624,250650);
+DELETE FROM `smart_scripts` WHERE `source_type` = 0 AND `id` >= 50 AND `entryorguid` IN (250618,250627,250626,250630,250624,250650,250631);
+INSERT INTO `smart_scripts` (`entryorguid`,`source_type`,`id`,`link`,`Difficulties`,`event_type`,`event_phase_mask`,`event_chance`,`event_flags`,`event_param1`,`event_param2`,`event_param3`,`event_param4`,`event_param5`,`event_param_string`,`action_type`,`action_param1`,`action_param2`,`action_param3`,`action_param4`,`action_param5`,`action_param6`,`action_param7`,`action_param_string`,`target_type`,`target_param1`,`target_param2`,`target_param3`,`target_param4`,`target_param_string`,`target_x`,`target_y`,`target_z`,`target_o`,`comment`) VALUES
+(250618,0,50,0,'',38,0,100,0,2,1,0,0,0,'',38,0,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Skeleton - On Data Set 2 1 (summoned for an event) - Engage the instance'),
+(250627,0,50,0,'',38,0,100,0,2,1,0,0,0,'',38,0,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Ghoul - On Data Set 2 1 (summoned for an event) - Engage the instance'),
+(250626,0,50,0,'',38,0,100,0,2,1,0,0,0,'',38,0,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Skeletal Soldier - On Data Set 2 1 (summoned for an event) - Engage the instance'),
+(250630,0,50,0,'',38,0,100,0,2,1,0,0,0,'',38,0,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Plague Ghoul - On Data Set 2 1 (summoned for an event) - Engage the instance'),
+(250624,0,50,0,'',38,0,100,0,2,1,0,0,0,'',38,0,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Skeletal Mage - On Data Set 2 1 (summoned for an event) - Engage the instance'),
+(250650,0,50,0,'',38,0,100,0,2,1,0,0,0,'',38,0,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'Wailing Banshee - On Data Set 2 1 (summoned for an event) - Engage the instance'),
+(250631,0,50,51,'',54,0,100,0,0,0,0,0,0,'',60,1,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'The Abandoned - Just Summoned - Fly'),
+(250631,0,51,0,'',61,0,100,0,0,0,0,0,0,'',69,1,0,1,0,0,0,0,'',8,0,0,0,0,'',1599.2,359.91,62.52,0,'The Abandoned - Just Summoned - Fly out of the statue to the courtyard'),
+(250631,0,52,53,'',34,0,100,0,8,1,0,0,0,'',60,0,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'The Abandoned - Reached the courtyard - Land'),
+(250631,0,53,54,'',61,0,100,0,0,0,0,0,0,'',146,0,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'The Abandoned - Reached the courtyard - Selectable'),
+(250631,0,54,0,'',61,0,100,0,0,0,0,0,0,'',38,0,0,0,0,0,0,0,'',1,0,0,0,0,'',0,0,0,0,'The Abandoned - Reached the courtyard - Engage the instance');

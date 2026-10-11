@@ -1626,6 +1626,21 @@ void Spell::EffectEnergize()
             break;
     }
 
+    // Classic 1.60 (game rule 112): combo points belong to one target. The client shows them and allows finishers only while
+    // UnitData ClassicComboTarget is the current target (official sniff: set when Sinister Strike awards the first point), and
+    // building points on another target starts over from zero
+    if (power == POWER_COMBO_POINTS && unitTarget == unitCaster && unitCaster->IsPlayer())
+    {
+        if (Unit* comboTarget = m_targets.GetUnitTarget(); comboTarget && comboTarget != unitCaster)
+        {
+            if (unitCaster->GetClassicComboTarget() != comboTarget->GetGUID())
+            {
+                unitCaster->SetPower(POWER_COMBO_POINTS, 0);
+                unitCaster->SetClassicComboTarget(comboTarget->GetGUID());
+            }
+        }
+    }
+
     unitCaster->EnergizeBySpell(unitTarget, m_spellInfo, energizeAmount, power);
 }
 

@@ -4431,6 +4431,7 @@ Load.Locales = 1
 #    Recap.Enable
 #        Description: Record the last seconds around players and let anyone watch a death again
 #                     (".recap <number>", or click [Recap] with the ForeverRecap addon).
+#                     Hardcore realms only: ignored unless Classic.Hardcore = 1.
 #        Default:     1 - (Enabled)
 #                     0 - (Disabled)
 

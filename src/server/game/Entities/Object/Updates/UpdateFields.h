@@ -295,7 +295,7 @@ struct UnitAssistActionData : public IsUpdateFieldStructureTag, public HasChange
     void ClearChangesMask();
 };
 
-struct UnitData : public IsUpdateFieldStructureTag, public HasChangesMask<230>
+struct UnitData : public IsUpdateFieldStructureTag, public HasChangesMask<231>
 {
     UpdateField<bool, 0, 1> Field_314;
     UpdateField<std::vector<uint32>, 0, 2> StateWorldEffectIDs;
@@ -460,6 +460,7 @@ struct UnitData : public IsUpdateFieldStructureTag, public HasChangesMask<230>
     UpdateFieldArray<int32, 7, 208, 209> Resistances;
     UpdateFieldArray<int32, 7, 208, 216> BonusResistanceMods;
     UpdateFieldArray<int32, 7, 208, 223> ManaCostModifier;
+    UpdateField<ObjectGuid, 128, 230> ClassicComboTarget;                       // Classic only (owner guid after CurrentAreaID): the unit the combo points are on
 
     using OwnerObject = Unit;
     void WriteCreate(EnumFlag<UpdateFieldFlag> fieldVisibilityFlags, ByteBuffer& data, Player const* receiver, Unit const* owner) const;
