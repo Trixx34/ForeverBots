@@ -394,13 +394,25 @@ void WorldSession::HandleSetPetSlot(WorldPackets::NPC::SetPetSlot& setPetSlot)
         return;
     }
 
-    if (setPetSlot.DestSlot >= PET_SAVE_LAST_STABLE_SLOT)
+    // Classic 1.60: slot 0 = current pet, 1.. = the stable slots bought (official sniff 70291: 1 stables the pet, 0 takes it back)
+    if (setPetSlot.DestSlot > _player->GetNumStableSlots())
     {
         SendPetStableResult(StableResult::InvalidSlot);
         return;
     }
 
-    _player->SetPetSlot(setPetSlot.PetNumber, PetSaveMode(setPetSlot.DestSlot));
+    _player->SetPetSlot(setPetSlot.PetNumber, FromClassicStableSlot(setPetSlot.DestSlot));
+}
+
+void WorldSession::HandleBuyStableSlot(WorldPackets::NPC::BuyStableSlot& buyStableSlot)
+{
+    if (!CheckStableMaster(buyStableSlot.StableMaster))
+    {
+        SendPetStableResult(StableResult::NotStableMaster);
+        return;
+    }
+
+    _player->BuyStableSlot();
 }
 
 void WorldSession::HandleRepairItemOpcode(WorldPackets::Item::RepairItem& packet)

@@ -271,6 +271,11 @@ void RequestStabledPets::Read()
     _worldPacket >> StableMaster;
 }
 
+void BuyStableSlot::Read()
+{
+    _worldPacket >> StableMaster;
+}
+
 void SetPetSlot::Read()
 {
     _worldPacket >> PetNumber;
