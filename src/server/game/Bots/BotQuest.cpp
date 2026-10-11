@@ -32,10 +32,12 @@
 #include "BotCombat.h"
 #include "BotDungeonRun.h"
 #include "BotParty.h"
+#include "BotQuestAssist.h"
 #include "BotEngine.h"
 #include "BotLootPlan.h"
 #include "BotGear.h"
 #include "BotProfession.h"
+#include "BotQuestUsePlan.h"
 #include "BotReputationPlan.h"
 #include "GameTime.h"
 #include "BotMgr.h"
@@ -46,6 +48,7 @@
 #include "CreatureData.h"
 #include "DB2Stores.h"
 #include "DB2Structure.h"
+#include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "DatabaseEnv.h"
 #include "GameObject.h"
@@ -92,6 +95,8 @@ struct QuestCfg
     uint32 MaxActive = 12;
     uint32 StallSec = 240;
     bool UseObjects = false;       // Bot.Quest.UseObjects: work "use this object" objectives (QUEST_OBJECTIVE_GAMEOBJECT)
+    bool UseItems = false;         // Bot.Quest.UseItems: use the quest item on the creature of a kill objective whose item spell needs a target
+    BotQuestUse::Config Use;       // Bot.Quest.UseItems.MaxCasts / TimeoutSec
     int32 MaxMobLevelDiff = 2;     // kill targets more than this many levels above the bot (elite counts +EliteBonus) are skipped
     int32 EliteBonus = 3;
     float SelectRadius = 350.0f;
@@ -128,6 +133,9 @@ QuestCfg const& Cfg()
         cfg.StallSec = uint32(std::max<int32>(30, sConfigMgr->GetIntDefault("Bot.Quest.StallSec", 240)));
         cfg.MaxMobLevelDiff = sConfigMgr->GetIntDefault("Bot.Quest.MaxMobLevelDiff", 2);
         cfg.UseObjects = sConfigMgr->GetBoolDefault("Bot.Quest.UseObjects", false);
+        cfg.UseItems = sConfigMgr->GetBoolDefault("Bot.Quest.UseItems", false);
+        cfg.Use.MaxCasts = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Quest.UseItems.MaxCasts", 4), 1, 10));
+        cfg.Use.TargetTimeoutMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Quest.UseItems.TimeoutSec", 60), 10, 600)) * 1000;
         cfg.EliteBonus = sConfigMgr->GetIntDefault("Bot.AI.Combat.EliteLevelBonus", 3);
         cfg.SelectRadius = float(sConfigMgr->GetIntDefault("Bot.Quest.SelectRadius", 350));
         cfg.FarRadius = float(sConfigMgr->GetIntDefault("Bot.Quest.FarRadius", 1500));
@@ -515,6 +523,7 @@ Block Analyze(Quest const* q)
     facts.QuestId = q->GetQuestId();
     facts.Repeatable = q->IsDailyOrWeekly() || q->IsMonthly() || q->IsRepeatable();
     facts.SuggestedPlayers = q->GetSuggestedPlayers();
+    facts.Escort = q->GetQuestInfoID() == QUEST_INFO_ESCORT;
     facts.LimitTime = q->GetLimitTime();
     facts.RequiredSkill = q->GetRequiredSkill();
     facts.RequiredMinRepFaction = q->GetRequiredMinRepFaction();
@@ -1015,6 +1024,10 @@ struct Task
     float TargetBest = 0.0f;       // best distance to the target so far (stuck check)
     uint32 TargetBestMs = 0;
     uint32 Kills = 0;
+    uint32 UseCasts = 0;           // Bot.Quest.UseItems: item casts on the current target
+    uint32 UseLastCastMs = 0;
+    uint32 UseSinceMs = 0;         // current target picked
+    int32 UseCountAtPick = 0;      // objective count when the target was picked
     uint32 TooStrongSeen = 0;
     uint32 EliteSeen = 0;
     uint32 SeenLive = 0;           // live candidate mobs seen at least once during the task
@@ -1681,6 +1694,12 @@ public:
         if (BotParty::Busy(ai) && bot->IsAlive()) // a member of a bot party follows its leader
         {
             c.Why = "party";
+            return false;
+        }
+
+        if (BotQuestAssist::Busy(ai) && bot->IsAlive()) // a bot that helps a player on a group or escort quest follows the player
+        {
+            c.Why = "assist";
             return false;
         }
 
@@ -4995,6 +5014,129 @@ private:
         return true;
     }
 
+    // ----- Bot.Quest.UseItems: "use this item on that creature" -----
+    struct UseItemRef
+    {
+        Item* It = nullptr;
+        uint32 Spell = 0;
+        BotQuestUse::SpellFacts Facts;
+    };
+
+    // The quest item the bot carries whose use spell needs a target: the start item, the ItemDrop items and the items of the quest's item
+    // objectives, in that order.
+    static bool FindUseItem(Player* bot, Quest const* q, UseItemRef& out)
+    {
+        std::vector<uint32> items;
+        if (q->GetSrcItemId())
+            items.push_back(q->GetSrcItemId());
+        for (uint32 i = 0; i < QUEST_ITEM_DROP_COUNT; ++i)
+            if (q->ItemDrop[i])
+                items.push_back(q->ItemDrop[i]);
+        for (QuestObjective const& o : q->GetObjectives())
+            if (o.Type == QUEST_OBJECTIVE_ITEM && o.ObjectID > 0)
+                items.push_back(uint32(o.ObjectID));
+        for (uint32 id : items)
+        {
+            Item* it = bot->GetItemByEntry(id);
+            ItemTemplate const* proto = it ? it->GetTemplate() : nullptr;
+            if (!proto)
+                continue;
+            for (ItemEffectEntry const* eff : proto->Effects)
+            {
+                SpellInfo const* si = eff && eff->SpellID > 0 ? sSpellMgr->GetSpellInfo(uint32(eff->SpellID), DIFFICULTY_NONE) : nullptr;
+                if (!si)
+                    continue;
+                BotQuestUse::SpellFacts f;
+                f.OnUse = eff->TriggerType == ITEM_SPELLTRIGGER_ON_USE;
+                f.NeedsUnitTarget = si->NeedsExplicitUnitTarget();
+                f.MaxRange = si->GetMaxRange(false);
+                if (BotQuestUse::IsTargetItem(f))
+                {
+                    out.It = it;
+                    out.Spell = si->Id;
+                    out.Facts = f;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // A creature the item can be used on: the normal kill candidates, and also friendly ones (a hostile one is attacked afterwards).
+    bool CandidateUseTarget(Player* bot, BotQuestCtx& c, Task& t, Creature* m, uint32 now)
+    {
+        if (bot->IsValidAttackTarget(m))
+            return CandidateMob(bot, c, t, m, now);
+        if (!m->IsAlive() || m->IsInCombat() || m->IsPet() || m->IsTotem())
+            return false;
+        auto ign = c.Ignore.find(m->GetGUID().GetCounter());
+        if (ign != c.Ignore.end() && now < ign->second)
+            return false;
+        ++t.SeenLive;
+        return true;
+    }
+
+    // One tick of using the item on the target. Returns true when the step took the tick (the caller returns), false to go on with the
+    // normal approach and pull. A hostile target gets one opening cast and is fought afterwards; a friendly one is cast on until the
+    // objective counts or the plan gives up.
+    bool UseItemStep(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Task& t, Creature* m, UseItemRef const& use, int32 count)
+    {
+        bool const hostile = bot->IsValidAttackTarget(m);
+        bool const credit = count > t.UseCountAtPick;
+        if (hostile && t.UseCasts > 0 && !credit)
+            return false;   // opener done, the fight goes on as usual
+        BotQuestUse::Facts f;
+        f.TargetAlive = m->IsAlive();
+        f.Distance = bot->GetExactDist(m);
+        f.Range = BotQuestUse::CastRange(use.Facts, Cfg().Use);
+        f.LineOfSight = bot->IsWithinLOSInMap(m);
+        f.Casting = bot->IsNonMeleeSpellCast(false);
+        f.BotInCombat = !hostile && bot->IsInCombat();
+        f.CreditGained = credit;
+        f.ElapsedMs = now - t.UseSinceMs;
+        f.Casts = t.UseCasts;
+        f.SinceCastMs = t.UseCasts ? now - t.UseLastCastMs : 0xFFFFFFFFu;
+        BotQuestUse::Decision const d = BotQuestUse::Decide(f, Cfg().Use);
+        switch (d.What)
+        {
+            case BotQuestUse::Step::Done:
+                StopMoving(ai, bot, c);
+                t.Target.Clear();
+                return true;
+            case BotQuestUse::Step::Abort:
+                if (hostile)
+                    return false;
+                c.Ignore[m->GetGUID().GetCounter()] = now + 120000;
+                StopMoving(ai, bot, c);
+                t.Target.Clear();
+                Decision(ai, bot, "QUEST_USE_ITEM_GIVEUP", StringFormat("gave up using item spell {} on {} ({})", use.Spell, m->GetName(), d.Why), t.Quest, m->GetEntry(),
+                    StringFormat(R"({{"spell":{},"casts":{},"why":"{}"}})", use.Spell, t.UseCasts, d.Why));
+                return true;
+            case BotQuestUse::Step::Wait:
+                return !hostile;
+            case BotQuestUse::Step::Approach:
+            {
+                if (hostile)
+                    return false;
+                float const arrive = std::max(2.0f, f.Range * 0.8f);
+                if (!ai->Motion().HasGoal() || Dist2D(ai->Motion().GoalX(), ai->Motion().GoalY(), m->GetPositionX(), m->GetPositionY()) > 6.0f)
+                    Travel(ai, bot, c, now, m->GetPositionX(), m->GetPositionY(), m->GetPositionZ(), arrive, m->GetEntry());
+                return true;
+            }
+            case BotQuestUse::Step::Cast:
+                break;
+        }
+        StopMoving(ai, bot, c);
+        bot->SetFacingToObject(m);
+        t.UseLastCastMs = now ? now : 1;
+        ++t.UseCasts;
+        SpellCastResult const res = bot->CastSpell(m, use.Spell, CastSpellExtraArgs(TRIGGERED_NONE).SetCastItem(use.It));
+        Decision(ai, bot, res == SPELL_CAST_OK ? "QUEST_USE_ITEM" : "QUEST_USE_ITEM_FAILED",
+            StringFormat("{} item spell {} on {} (result {})", res == SPELL_CAST_OK ? "cast" : "could not cast", use.Spell, m->GetName(), uint32(res)), t.Quest, m->GetEntry(),
+            StringFormat(R"({{"spell":{},"result":{},"casts":{},"distance":{:.0f},"hostile":{}}})", use.Spell, uint32(res), t.UseCasts, f.Distance, hostile));
+        return !hostile;
+    }
+
     bool RunKill(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, Quest const* q)
     {
         Task& t = c.T;
@@ -5044,6 +5186,9 @@ private:
         std::vector<uint32> entries;
         ObjectiveEntries(*obj, entries);
 
+        UseItemRef use;
+        bool const useItem = Cfg().UseItems && obj->Type == QUEST_OBJECTIVE_MONSTER && FindUseItem(bot, q, use);
+
         // a corpse of our target waiting to be looted
         if (!t.Target.IsEmpty())
         {
@@ -5072,7 +5217,9 @@ private:
             }
             else
             {
-                // still alive: keep approaching / pull
+                // still alive: use the quest item on it first, then keep approaching / pull
+                if (useItem && UseItemStep(ai, bot, c, now, t, m, use, count))
+                    return false;
                 if (!ApproachAndPull(ai, bot, c, now, t, m))
                     return true;
                 return false;
@@ -5097,7 +5244,7 @@ private:
                 t.ScanRaw += uint32(list.size());
                 for (Creature* m : list)
                 {
-                    if (!CandidateMob(bot, c, t, m, now))
+                    if (!(useItem ? CandidateUseTarget(bot, c, t, m, now) : CandidateMob(bot, c, t, m, now)))
                         continue;
                     ++t.ScanOk;
                     float d = bot->GetExactDist2d(m);
@@ -5121,6 +5268,10 @@ private:
                     }
                 }
                 t.Target = best->GetGUID();
+                t.UseCasts = 0;
+                t.UseLastCastMs = 0;
+                t.UseSinceMs = now;
+                t.UseCountAtPick = count;
                 t.TargetSinceMs = now;
                 t.TargetBest = bd;
                 t.TargetBestMs = now;

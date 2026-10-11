@@ -23,6 +23,7 @@
 #include "BotEngine.h"
 #include "BotMgr.h"
 #include "BotParty.h"
+#include "BotQuestAssist.h"
 #include "BotWatchdogPlan.h"
 #include "Config.h"
 #include "Item.h"
@@ -94,7 +95,7 @@ Snapshot Read(Player* bot)
     Map const* map = bot->GetMap();
     // fights, flights, deaths, teleports and instance content have their own recovery; the watchdog stays out of them
     s.Busy = !bot->IsAlive() || bot->IsInCombat() || bot->IsInFlight() || bot->IsBeingTeleported()
-        || (map && (map->IsDungeon() || map->IsBattlegroundOrArena())) || BotParty::Busy(bot->GetSession() ? bot->GetSession()->GetBotAI() : nullptr);
+        || (map && (map->IsDungeon() || map->IsBattlegroundOrArena())) || BotParty::Busy(bot->GetSession() ? bot->GetSession()->GetBotAI() : nullptr) || BotQuestAssist::Busy(bot->GetSession() ? bot->GetSession()->GetBotAI() : nullptr);
     return s;
 }
 
