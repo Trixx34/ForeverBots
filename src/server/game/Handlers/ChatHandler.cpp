@@ -20,6 +20,8 @@
 #include "Channel.h"
 #include "ChannelMgr.h"
 #include "BotChat.h"
+#include "BotCraftOrder.h"
+
 #include "BotConversation.h"
 
 #include "BotGuild.h"
@@ -350,6 +352,8 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
             GetPlayer()->Whisper(msg, lang, receiver);
             BotChat::Handle(GetPlayer(), BotChat::Channel::Whisper, msg, receiver);
             BotTradeLink::OnWhisper(GetPlayer(), receiver, msg);
+            BotCraftOrder::OnWhisper(GetPlayer(), receiver, msg);
+
             BotConversation::OnWhisper(GetPlayer(), receiver, msg);
 
             BotGuild::OnWhisper(GetPlayer(), receiver, msg);
