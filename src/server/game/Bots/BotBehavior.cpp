@@ -25,6 +25,7 @@
 
 #include "BotAI.h"
 #include "BotCombat.h"
+#include "BotRevive.h"
 #include "Config.h"
 #include "Corpse.h"
 #include "BotTownIdlePlan.h"
@@ -608,7 +609,7 @@ public:
     {
         Player* bot = GetBot();
         BotRecover const& r = GetAI()->Recover();
-        return !bot->IsAlive() && !IsGhost(bot) && GetAI()->GetStateAgeMs() >= r.ReleaseDelayMs;
+        return !bot->IsAlive() && !IsGhost(bot) && GetAI()->GetStateAgeMs() >= r.ReleaseDelayMs && !BotRevive::HoldRelease(GetAI(), bot);
     }
     bool Execute() override
     {
