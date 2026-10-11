@@ -2146,6 +2146,10 @@ private:
                 Blocked(ai, bot, c, questId, "QUEST_QUARANTINED_GLOBAL", StringFormat("quest '{}' failed for {} drops across bots ({}), skipped by all bots for {} min", QuestTitle(questId), DEAD_FAILS, code, DeadMs() / 60000),
                     StringFormat(R"({{"last_code":"{}","npc":{}}})", code, entry), entry);
         }
+        // Bot.Quest.GroupAfterFails: a dropped task of a quest counts as a failed attempt (not loot-only drops, not bag or quest log limits, not the zone fence)
+        if (questId && !fromLoot && std::strcmp(code, "BAG_FULL") != 0 && std::strcmp(code, "QUEST_LOG_FULL") != 0 && std::strcmp(code, "ZONE_FENCE") != 0
+            && bot->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE)
+            BotParty::NoteQuestFail(bot, questId, code);
         if (questId)
             c.Blacklist[questId] = now + blacklistSec * 1000;
         if (c.T.K == Kind::Grind)

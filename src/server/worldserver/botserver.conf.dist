@@ -2208,6 +2208,18 @@ Bot.AI.Party.IntervalSec = 5
 #        Values:      0 = off, otherwise whole number 1 to 100 (deaths)
 Bot.Quest.GroupAfterDeaths = 0
 
+#
+#    Bot.Quest.GroupAfterFails
+#        Description: Failed attempts at a quest (a task of that quest was dropped: unreachable, no path, no target
+#                     spawn, item not dropping, gather or fish failure, trips tied to it; not bag full, quest log
+#                     full, zone fence, loot-only drops) count together with the deaths on that quest. When deaths +
+#                     failed attempts reach this number the bot seeks a group exactly as for GroupAfterDeaths, which
+#                     keeps its own threshold for deaths alone. The party system starts when this is above 0. The log
+#                     row quest_group_after_deaths carries trigger = deaths, fails or deaths+fails.
+#        Default:     3
+#        Values:      0 = off, otherwise whole number 1 to 100
+Bot.Quest.GroupAfterFails = 3
+
 
 ###################################################################################################
 # PLAYER-LED DUNGEON RUNS

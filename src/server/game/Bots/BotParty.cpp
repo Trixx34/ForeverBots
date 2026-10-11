@@ -79,6 +79,8 @@ std::unordered_set<uint64> s_busy;
 std::mutex s_deathLock;
 std::map<std::pair<uint64, uint32>, uint32> s_deaths;
 std::map<uint64, uint32> s_seekers;               // bot -> quest
+std::map<std::pair<uint64, uint32>, uint32> s_fails;   // failed quest attempts per (bot, quest), see NoteQuestFail
+std::map<uint64, std::string> s_trigger;          // bot -> what made it seek (deaths / fails / deaths+fails)
 
 void ReadOpts()
 {
@@ -250,7 +252,8 @@ void Step(uint32 dtSec)
 // A seeker that landed in a party: logged once as a decision (reason quest_group_after_deaths), then its counter starts over.
 void NoteSeekerGrouped(uint64 guid, uint64 leader)
 {
-    uint32 quest = 0, deaths = 0;
+    uint32 quest = 0, deaths = 0, fails = 0;
+    std::string trigger = "deaths";
     {
         std::lock_guard<std::mutex> lock(s_deathLock);
         auto it = s_seekers.find(guid);
@@ -258,6 +261,18 @@ void NoteSeekerGrouped(uint64 guid, uint64 leader)
             return;
         quest = it->second;
         s_seekers.erase(it);
+        auto tg = s_trigger.find(guid);
+        if (tg != s_trigger.end())
+        {
+            trigger = tg->second;
+            s_trigger.erase(tg);
+        }
+        auto f = s_fails.find({ guid, quest });
+        if (f != s_fails.end())
+        {
+            fails = f->second;
+            s_fails.erase(f);
+        }
         auto d = s_deaths.find({ guid, quest });
         if (d != s_deaths.end())
         {
@@ -270,8 +285,8 @@ void NoteSeekerGrouped(uint64 guid, uint64 leader)
     ev.Type = "decision";
     ev.Reason = "quest_group_after_deaths";
     ev.QuestId = quest;
-    ev.Summary = StringFormat("died {} times on quest {}: now grouped with leader {} to continue it", deaths, quest, leader);
-    ev.Details = StringFormat(R"({{"quest":{},"deaths":{},"threshold":{},"leader":{},"is_leader":{},"step":"grouped"}})", quest, deaths, s_opt.GroupAfterDeaths, leader, guid == leader ? "true" : "false");
+    ev.Summary = StringFormat("{} deaths and {} failed attempts on quest {} (trigger: {}): now grouped with leader {} to continue it", deaths, fails, quest, trigger, leader);
+    ev.Details = StringFormat(R"({{"quest":{},"deaths":{},"fails":{},"trigger":"{}","threshold":{},"leader":{},"is_leader":{},"step":"grouped"}})", quest, deaths, fails, trigger, s_opt.GroupAfterDeaths, leader, guid == leader ? "true" : "false");
     sBotMgr->LogEvent(std::move(ev));
 }
 
@@ -376,19 +391,35 @@ bool Busy(BotAI* ai)
     return s_busy.count(bot->GetGUID().GetCounter()) != 0;
 }
 
-void NoteQuestDeath(Player* bot, uint32 questId)
+// Shared by deaths and fails. Seeks when the deaths reach GroupAfterDeaths, or deaths + fails reach GroupAfterFails.
+static void NoteQuestEvent(Player* bot, uint32 questId, bool death, char const* code)
 {
     static uint32 const threshold = uint32(std::max(0, std::min(100, sConfigMgr->GetIntDefault("Bot.Quest.GroupAfterDeaths", 0))));
-    if (!threshold || !bot || !questId)
+    static uint32 const failThreshold = uint32(std::max(0, std::min(100, sConfigMgr->GetIntDefault("Bot.Quest.GroupAfterFails", 3))));
+    if ((!threshold && !failThreshold) || !bot || !questId)
+        return;
+    if (!death && !failThreshold)
         return;
     uint64 const guid = bot->GetGUID().GetCounter();
-    uint32 n;
+    uint32 n, fails;
+    char const* trigger;
     {
         std::lock_guard<std::mutex> lock(s_deathLock);
-        n = ++s_deaths[{ guid, questId }];
-        if (n < threshold || s_seekers.count(guid))
+        uint32& dn = s_deaths[{ guid, questId }];
+        uint32& fn = s_fails[{ guid, questId }];
+        if (death)
+            ++dn;
+        else
+            ++fn;
+        n = dn;
+        fails = fn;
+        bool const byDeaths = threshold && dn >= threshold;
+        bool const byTotal = failThreshold && dn + fn >= failThreshold;
+        if ((!byDeaths && !byTotal) || s_seekers.count(guid))
             return;
+        trigger = byDeaths ? "deaths" : (fn && dn ? "deaths+fails" : fn ? "fails" : "deaths");
         s_seekers[guid] = questId;
+        s_trigger[guid] = trigger;
     }
     BotEvent ev;
     ev.BotGuid = guid;
@@ -400,33 +431,51 @@ void NoteQuestDeath(Player* bot, uint32 questId)
     ev.X = bot->GetPositionX();
     ev.Y = bot->GetPositionY();
     ev.Z = bot->GetPositionZ();
-    ev.Summary = StringFormat("died {} times on quest {}: seeks a group to continue it", n, questId);
-    ev.Details = StringFormat(R"({{"quest":{},"deaths":{},"threshold":{},"step":"seek"}})", questId, n, threshold);
+    ev.Summary = StringFormat("{} deaths and {} failed attempts on quest {} (trigger: {}): seeks a group to continue it", n, fails, questId, trigger);
+    ev.Details = StringFormat(R"({{"quest":{},"deaths":{},"fails":{},"trigger":"{}","last_event":"{}","last_code":"{}","threshold":{},"fail_threshold":{},"step":"seek"}})", questId, n, fails, trigger,
+        death ? "death" : "fail", code ? code : "", threshold, failThreshold);
     sBotMgr->LogEvent(std::move(ev));
+}
+
+void NoteQuestDeath(Player* bot, uint32 questId)
+{
+    NoteQuestEvent(bot, questId, true, "");
+}
+
+void NoteQuestFail(Player* bot, uint32 questId, char const* code)
+{
+    NoteQuestEvent(bot, questId, false, code);
 }
 
 void ClearQuest(uint64 botGuid, uint32 questId)
 {
     std::lock_guard<std::mutex> lock(s_deathLock);
-    if (s_deaths.empty() && s_seekers.empty())
+    if (s_deaths.empty() && s_seekers.empty() && s_fails.empty())
         return;
     s_deaths.erase(std::make_pair(botGuid, questId));
+    s_fails.erase(std::make_pair(botGuid, questId));
     auto it = s_seekers.find(botGuid);
     if (it != s_seekers.end() && it->second == questId)
+    {
         s_seekers.erase(it);
+        s_trigger.erase(botGuid);
+    }
 }
 
 void ClearBot(uint64 botGuid)
 {
     std::lock_guard<std::mutex> lock(s_deathLock);
     s_deaths.erase(s_deaths.lower_bound({ botGuid, 0 }), s_deaths.upper_bound({ botGuid, UINT32_MAX }));
+    s_fails.erase(s_fails.lower_bound({ botGuid, 0 }), s_fails.upper_bound({ botGuid, UINT32_MAX }));
     s_seekers.erase(botGuid);
+    s_trigger.erase(botGuid);
 }
 
 void Update(uint32 diff)
 {
     static bool const enabled = sConfigMgr->GetBoolDefault("Bot.AI.Party.Enabled", false)
-        || sConfigMgr->GetIntDefault("Bot.Quest.GroupAfterDeaths", 0) > 0;
+        || sConfigMgr->GetIntDefault("Bot.Quest.GroupAfterDeaths", 0) > 0
+        || sConfigMgr->GetIntDefault("Bot.Quest.GroupAfterFails", 3) > 0;
     if (!enabled)
         return;
     ReadOpts();

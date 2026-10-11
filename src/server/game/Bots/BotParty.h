@@ -41,6 +41,9 @@ namespace BotParty
     // NoteQuestDeath: map thread of the bot, from BotQuest::NoteDeath with the quest of the bot's current task (0 = none, ignored).
     // ClearQuest / ClearBot: the quest was completed, turned in, abandoned or failed / the bot logged out; they forget the counter.
     TC_GAME_API void NoteQuestDeath(Player* bot, uint32 questId);
+    // Bot.Quest.GroupAfterFails (default 3, 0 = off): a failed attempt at the quest (a task of that quest was dropped) counts together
+    // with the deaths toward the same per-quest total. `code` is the failure code, for the log.
+    TC_GAME_API void NoteQuestFail(Player* bot, uint32 questId, char const* code);
     TC_GAME_API void ClearQuest(uint64 botGuid, uint32 questId);
     TC_GAME_API void ClearBot(uint64 botGuid);
 }
