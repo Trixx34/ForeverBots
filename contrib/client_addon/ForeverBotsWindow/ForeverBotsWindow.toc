@@ -1,7 +1,0 @@
-## Interface: 11507
-## Title: Forever Bots Window
-## Notes: Add bots to your group and give them orders from one window (/botwin).
-## Author: Trixx34
-## Version: 1.0
-## SavedVariables: ForeverBotsWindowDB
-ForeverBotsWindow.lua
