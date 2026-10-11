@@ -665,7 +665,7 @@ public:
     {
         Player* bot = GetBot();
         BotRecover const& r = GetAI()->Recover();
-        if (bot->IsAlive() || !IsGhost(bot) || bot->IsBeingTeleported() || r.Plan == BotRecover::Mode::Healer)
+        if (bot->IsAlive() || !IsGhost(bot) || bot->IsBeingTeleported() || r.Plan == BotRecover::Mode::Healer || bot->InBattleground())   // a ghost in a battleground waits for the spirit healer wave (BotBattleground)
             return false;
         if (r.Plan == BotRecover::Mode::CorpseRun && bot->HasCorpse() && bot->GetCorpseLocation().GetMapId() == bot->GetMapId() &&
             bot->GetExactDist(bot->GetCorpseLocation()) <= CORPSE_RECLAIM_DIST)
@@ -723,7 +723,7 @@ public:
     {
         Player* bot = GetBot();
         BotRecover const& r = GetAI()->Recover();
-        if (bot->IsAlive() || !IsGhost(bot) || bot->IsBeingTeleported() || !bot->HasCorpse())
+        if (bot->IsAlive() || !IsGhost(bot) || bot->IsBeingTeleported() || !bot->HasCorpse() || bot->InBattleground())
             return false;
         WorldLocation const& c = bot->GetCorpseLocation();
         return c.GetMapId() == bot->GetMapId() && bot->GetExactDist(c) <= CORPSE_RECLAIM_DIST && GetAI()->GetNowMs() >= r.NextTryMs;
@@ -770,7 +770,7 @@ public:
         Player* bot = GetBot();
         BotRecover const& r = GetAI()->Recover();
         // reclaim_corpse has priority when the corpse is in reach; this one is for the healer plan (and as the fallback after a failed run)
-        return !bot->IsAlive() && IsGhost(bot) && !bot->IsBeingTeleported() && r.Plan == BotRecover::Mode::Healer && GetAI()->GetNowMs() >= r.NextTryMs;
+        return !bot->IsAlive() && IsGhost(bot) && !bot->IsBeingTeleported() && !bot->InBattleground() && r.Plan == BotRecover::Mode::Healer && GetAI()->GetNowMs() >= r.NextTryMs;
     }
     bool Execute() override
     {

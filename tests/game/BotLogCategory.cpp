@@ -25,6 +25,7 @@ using namespace BotLogCat;
 TEST_CASE("Reason prefixes pick the category", "[BotLogCategory]")
 {
     CHECK(Classify("decision", "DUNGEON_NO_ENTRANCE") == Dungeon);
+    CHECK(Classify("decision", "BG_QUEUE_JOIN") == Battleground);
     CHECK(Classify("decision", "TRAVEL_LEG_START") == Travel);
     CHECK(Classify("decision", "PET_TAME_OK") == Pets);
     CHECK(Classify("decision", "AH_POSTED") == Economy);

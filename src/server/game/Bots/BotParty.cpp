@@ -17,6 +17,7 @@
 
 #include "BotParty.h"
 #include "BotAI.h"
+#include "BotBattleground.h"
 #include "BotBehavior.h"
 #include "BotDungeonRun.h"
 #include "BotMgr.h"
@@ -145,7 +146,7 @@ bool Free(Player* p, uint32 minLevel)
     if (!m || m->Instanceable())
         return false;
     BotAI* ai = AiOf(p);
-    return !BotDungeonRun::Busy(ai) && !BotTravel::Busy(ai) && !BotPet::Busy(ai) && !Busy(ai);
+    return !BotDungeonRun::Busy(ai) && !BotTravel::Busy(ai) && !BotPet::Busy(ai) && !BotBattleground::Busy(ai) && !Busy(ai);
 }
 
 void ReleaseMember(uint64 guid)

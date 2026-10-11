@@ -20,6 +20,7 @@
 #include "BotSocial.h"
 #include "AccountMgr.h"
 #include "BotAI.h"
+#include "BotBattleground.h"
 #include "BotDungeonRun.h"
 #include "BotParty.h"
 #include "BotPlayerLed.h"
@@ -359,6 +360,7 @@ void BotMgr::Update(uint32 diff)
     ProcessLogins();
     ProcessBotTeleports();
     BotDungeonRun::Update(diff);
+    BotBattleground::Update(diff);
     BotParty::Update(diff);
     BotPlayerLed::Update(diff);
     UpdateProbe(diff);
