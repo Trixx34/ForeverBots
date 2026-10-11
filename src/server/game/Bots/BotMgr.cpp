@@ -17,6 +17,8 @@
 
 #include "BotMgr.h"
 #include "BotPopulation.h"
+#include "BotConversation.h"
+
 #include "BotGuild.h"
 #include "BotSocial.h"
 #include "AccountMgr.h"
@@ -366,6 +368,8 @@ void BotMgr::Update(uint32 diff)
     BotPlayerLed::Update(diff);
     UpdateProbe(diff);
     BotSocial::Update(diff);
+    BotConversation::Update(diff);
+
     BotGuild::Update(diff);
     BotPopulation::Update(diff);
     BotAlts::RestoreOnce();
