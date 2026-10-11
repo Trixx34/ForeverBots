@@ -285,6 +285,7 @@ A list of `{ "name": "...", "host": "...", "port": N }`. The example has Auth se
 | Key | Default | Meaning |
 |---|---|---|
 | `channels` | General, Trade, LookingForGroup, LocalDefense | Which in-game channels to relay, and the label each gets in Discord: `{"General": "General", "LookingForGroup": "LFG"}` shows `[LFG]`. An empty `{}` relays every system channel. |
+| `game_channel` | `Discord` | The in-game Discord channel (same name as `Discord.Channel.Name` in the worldserver configs). Always relayed, even when `channels` leaves it out. In-game to Discord needs the worldserver from 2026-10-09 or newer (it writes this channel to `Chat.log`). |
 | `format` | `{faction}[{channel}] <{player}> {message}` | Line format. Placeholders: `{faction}` (`[A] ` or `[H] `), `{channel}`, `{player}`, `{message}`, `{zone}` (e.g. Durotar for General; empty for LFG), `{realm}`. Example: `**[{channel}]** <{player}> {message}`. |
 | `from_discord` | `false` | Discord to game: messages in a realm's `chat_channel_id` go to its in-game Discord channel (`.discord say` over RA). Needs the Message Content intent (step 2) and `Discord.Channel.Enable = 1` (step 5). Text only: attachments, embeds, stickers and reactions are dropped, mentions become names, line breaks become spaces, `|` becomes `/`, the server cuts it to 255 characters. Messages of bots (this one included) are ignored, so nothing echoes. |
 | `poll_seconds` | `1` | How often the logs are read. |

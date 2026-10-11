@@ -24,6 +24,7 @@
 #include "CryptoHash.h"
 #include "CryptoRandom.h"
 #include "DatabaseEnv.h"
+#include "DeadlineTimer.h"
 #include "Errors.h"
 #include "GameTime.h"
 #include "HMAC.h"
@@ -909,6 +910,26 @@ void WorldSocket::LoadSessionPermissionsCallback(PreparedQueryResult result)
     // RBAC must be loaded before adding session to check for skip queue permission
     _worldSession->GetRBACData()->LoadFromDBCallback(std::move(result));
 
+    // Classic 1.60: the client verifies this packet with the server key the launcher writes into its key store, and it builds that
+    // store while logging in. Sent right away it can arrive before the launcher's scan patched the store (the first attempt then fails
+    // with reason 24; every time with the launcher's auto-login, which logs in at once). A short wait gives the launcher time.
+    int32 delay = sConfigMgr->GetIntDefault("Network.EnterEncryptedModeDelay", 1500);
+    if (delay <= 0)
+    {
+        SendEnterEncryptedMode();
+        return;
+    }
+
+    auto timer = std::make_shared<Trinity::Asio::DeadlineTimer>(underlying_stream().get_executor(), std::chrono::milliseconds(delay));
+    timer->async_wait([self = static_pointer_cast<WorldSocket>(shared_from_this()), timer](boost::system::error_code const& error)
+    {
+        if (!error && self->IsOpen())
+            self->SendEnterEncryptedMode();
+    });
+}
+
+void WorldSocket::SendEnterEncryptedMode()
+{
     WorldPackets::Auth::EnterEncryptedMode enterEncryptedMode(_encryptKey, true);
     // Classic (1.60+) clients pick the Ed25519 public key used to verify this packet by RegionGroup
     enterEncryptedMode.RegionGroup = sConfigMgr->GetIntDefault("Network.EnterEncryptedModeRegionGroup", 0);
