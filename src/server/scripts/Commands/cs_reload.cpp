@@ -27,6 +27,7 @@ EndScriptData */
 #include "AchievementMgr.h"
 #include "AreaTriggerDataStore.h"
 #include "AuctionHouseMgr.h"
+#include "BotConfigReload.h"
 #include "BattlegroundMgr.h"
 #include "CharacterTemplateDataStore.h"
 #include "Chat.h"
@@ -336,7 +337,8 @@ public:
         TC_LOG_INFO("misc", "Re-Loading config settings...");
         sWorld->LoadConfigSettings(true);
         sMapMgr->InitializeVisibilityDistanceInfo();
-        handler->SendGlobalGMSysMessage("World config settings reloaded.");
+        BotCfg::RequestReload();
+        handler->SendGlobalGMSysMessage("World config settings reloaded (Bot.* settings apply on the next bot update).");
         return true;
     }
 

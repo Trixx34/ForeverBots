@@ -15,6 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "BotConfigReload.h"
 #include "BotDungeon.h"
 #include "Config.h"
 #include <algorithm>
@@ -24,7 +25,7 @@ namespace BotDungeon
 {
 namespace
 {
-std::once_flag s_once;
+BotCfg::Flag s_once;
 Settings s_cfg;
 
 int32 Opt(char const* name, int32 def, int32 lo, int32 hi) { return std::clamp<int32>(sConfigMgr->GetIntDefault(name, def), lo, hi); }
@@ -32,7 +33,7 @@ int32 Opt(char const* name, int32 def, int32 lo, int32 hi) { return std::clamp<i
 
 Settings const& Cfg()
 {
-    std::call_once(s_once, []()
+    BotCfg::Load(s_once, []()
     {
         Settings& s = s_cfg;
         s.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Dungeon.Enabled", false);

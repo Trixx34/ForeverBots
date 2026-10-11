@@ -25,6 +25,7 @@
 // matter (target picked, flee, give up, cast failure, ranged to melee, heal) are logged once, and a per-fight summary is
 // logged when the Combat engine is left.
 
+#include "BotConfigReload.h"
 #include "BotAI.h"
 #include "BotCombat.h"
 #include "BotRotation.h"
@@ -92,8 +93,8 @@ struct CombatConfig
 CombatConfig const& Cfg()
 {
     static CombatConfig cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.FleeEnabled = sConfigMgr->GetBoolDefault("Bot.AI.Combat.Flee.Enabled", true);
         cfg.FleeLevelDiff = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Combat.Flee.LevelDiff", 2), 0, 60);

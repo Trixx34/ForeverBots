@@ -20,6 +20,7 @@
 #include "BotSocial.h"
 #include "AccountMgr.h"
 #include "BotAI.h"
+#include "BotConfigReload.h"
 #include "BotDungeonRun.h"
 #include "BotParty.h"
 #include "BotPlayerLed.h"
@@ -335,6 +336,7 @@ void BotMgr::LogTickStats(uint32 diff, uint64 updateUs)
 
 void BotMgr::Update(uint32 diff)
 {
+    BotCfg::ApplyPending();   // ".reload config": refill the Bot.* option structs here, outside the map updates
     ++_ticks;
     _uptimeMs += diff;
 
