@@ -20,6 +20,7 @@
 #include "Channel.h"
 #include "ChannelMgr.h"
 #include "BotChat.h"
+#include "BotGuild.h"
 #include "BotTradeLink.h"
 #include "Chat.h"
 #include "ChatPackets.h"
@@ -347,6 +348,7 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
             GetPlayer()->Whisper(msg, lang, receiver);
             BotChat::Handle(GetPlayer(), BotChat::Channel::Whisper, msg, receiver);
             BotTradeLink::OnWhisper(GetPlayer(), receiver, msg);
+            BotGuild::OnWhisper(GetPlayer(), receiver, msg);
             break;
         }
         case CHAT_MSG_PARTY:
@@ -379,6 +381,8 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
                     sScriptMgr->OnPlayerChat(GetPlayer(), type, lang, msg, guild);
 
                     guild->BroadcastToGuild(this, false, msg, lang == LANG_ADDON ? LANG_ADDON : LANG_UNIVERSAL);
+                    if (lang != LANG_ADDON)
+                        BotGuild::OnGuildMessage(GetPlayer(), guild, msg);
                 }
             }
             break;

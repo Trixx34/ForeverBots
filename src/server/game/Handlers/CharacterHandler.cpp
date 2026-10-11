@@ -27,6 +27,7 @@
 #include "BattlegroundPackets.h"
 #include "CalendarMgr.h"
 #include "BotAlts.h"
+#include "BotGuild.h"
 #include "CharacterCache.h"
 #include "CharacterPackets.h"
 #include "Chat.h"
@@ -1506,6 +1507,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
     {
         if (Guild* guild = sGuildMgr->GetGuildById(pCurrChar->GetGuildId()))
             guild->SendLoginInfo(this);
+            BotGuild::OnMemberLogin(pCurrChar);
         else
         {
             // remove wrong guild data
