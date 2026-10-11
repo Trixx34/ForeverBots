@@ -2353,3 +2353,147 @@ Bot.Trade.Link.MaxListed = 15
 #        Values:      0 (off) or 1 (on)
 Bot.Social.QuestShare.LogEach = 0
 
+
+
+###################################################################################################
+# DUELS
+#
+# Players challenge bots to duels, bots answer, fight and react; optionally bots duel each other in cities.
+# See docs/playerbots/feature-bot-duels-20261008.md.
+###################################################################################################
+
+#
+#    Bot.Duel.Enabled
+#        Description: Duels. A player can challenge a bot with the Duel spell and the bot accepts or declines after a
+#                     short pause, says a line, fights to the end and emotes at the result. Adds the strategy "duel"
+#                     to the non-combat and combat engines. Read once at startup.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Duel.Enabled = 0
+
+#
+#    Bot.Duel.AcceptPct
+#        Description: Chance that a free bot accepts a challenge from a player. Bots that are busy, hurt or too far
+#                     apart in level always decline.
+#        Default:     90
+#        Values:      whole number 0 to 100 (percent)
+Bot.Duel.AcceptPct = 90
+
+#
+#    Bot.Duel.ReplyMinMs
+#        Description: Shortest pause before the bot answers a challenge (the pause is a random value between this and
+#                     Bot.Duel.ReplyMaxMs).
+#        Default:     1500
+#        Values:      whole number 0 to 20000 (milliseconds)
+Bot.Duel.ReplyMinMs = 1500
+
+#
+#    Bot.Duel.ReplyMaxMs
+#        Description: Longest pause before the bot answers a challenge.
+#        Default:     4500
+#        Values:      whole number from Bot.Duel.ReplyMinMs to 30000 (milliseconds)
+Bot.Duel.ReplyMaxMs = 4500
+
+#
+#    Bot.Duel.MaxLevelGap
+#        Description: The bot declines when its level and the challenger's differ by more than this, in either
+#                     direction (an even fight only).
+#        Default:     5
+#        Values:      whole number 0 to 80 (levels)
+Bot.Duel.MaxLevelGap = 5
+
+#
+#    Bot.Duel.MinHealthPct
+#        Description: The bot declines while its health is below this percent.
+#        Default:     70
+#        Values:      whole number 0 to 100 (percent)
+Bot.Duel.MinHealthPct = 70
+
+#
+#    Bot.Duel.CooldownSec
+#        Description: The bot declines for this long after its last duel.
+#        Default:     60
+#        Values:      whole number 0 to 3600 (seconds)
+Bot.Duel.CooldownSec = 60
+
+#
+#    Bot.Duel.YieldPct
+#        Description: A bot fighting a player forfeits when its health falls to this percent, so the player can win a
+#                     friendly spar. Bot against bot duels are never yielded.
+#        Default:     0
+#        Values:      whole number 0 to 50 (percent, 0 = fights to the end)
+Bot.Duel.YieldPct = 0
+
+#
+#    Bot.Duel.Chat
+#        Description: The bot says a line when it accepts, declines, yields, wins or loses, and whispers the reason of
+#                     a refusal to the player.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Duel.Chat = 1
+
+#
+#    Bot.Duel.Challenge.Enabled
+#        Description: A player whispers a bot a short message with "duel", "spar", "1v1" or "fight me" in it and the
+#                     bot walks up and challenges them. The checks of a normal challenge apply except the acceptance
+#                     chance.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Duel.Challenge.Enabled = 1
+
+#
+#    Bot.Duel.Challenge.Yards
+#        Description: The bot casts its challenge from within this distance of the player.
+#        Default:     8
+#        Values:      whole number 3 to 10 (yards)
+Bot.Duel.Challenge.Yards = 8
+
+#
+#    Bot.Duel.BotVsBot.Enabled
+#        Description: Free bots in a city challenge a free neighbour to a duel now and then.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Duel.BotVsBot.Enabled = 0
+
+#
+#    Bot.Duel.BotVsBot.IntervalSec
+#        Description: Least time between two looks for a sparring partner, per bot.
+#        Default:     240
+#        Values:      whole number 30 to 7200 (seconds)
+Bot.Duel.BotVsBot.IntervalSec = 240
+
+#
+#    Bot.Duel.BotVsBot.ChancePct
+#        Description: Chance per look that the bot challenges a partner it finds.
+#        Default:     35
+#        Values:      whole number 0 to 100 (percent)
+Bot.Duel.BotVsBot.ChancePct = 35
+
+#
+#    Bot.Duel.BotVsBot.SearchYards
+#        Description: The partner must stand within this distance of the challenging bot.
+#        Default:     25
+#        Values:      whole number 5 to 60 (yards)
+Bot.Duel.BotVsBot.SearchYards = 25
+
+#
+#    Bot.Duel.BotVsBot.NeedWatcher
+#        Description: Bots duel each other only while a real player is within Bot.Duel.BotVsBot.WatchYards, so the
+#                     show is for somebody and costs nothing in empty cities.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Duel.BotVsBot.NeedWatcher = 1
+
+#
+#    Bot.Duel.BotVsBot.WatchYards
+#        Description: Distance within which a real player counts as a watcher.
+#        Default:     60
+#        Values:      whole number 10 to 150 (yards)
+Bot.Duel.BotVsBot.WatchYards = 60
+
+#
+#    Bot.Duel.BotVsBot.TimeoutSec
+#        Description: A bot against bot duel that lasts this long ends: the bot that notices it first forfeits.
+#        Default:     240
+#        Values:      whole number 30 to 1800 (seconds)
+Bot.Duel.BotVsBot.TimeoutSec = 240

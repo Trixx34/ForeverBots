@@ -27,6 +27,7 @@
 
 #include "BotAI.h"
 #include "BotCombat.h"
+#include "BotDuel.h"
 #include "BotRotation.h"
 #include "BotGroupRoles.h"
 #include "CombatManager.h"
@@ -1188,6 +1189,23 @@ private:
     bool PickTarget(Player* bot, BotAI* ai, BotCombatCtx* ctx, Unit*& out)
     {
         uint32 const now = ai->GetNowMs();
+        // a running duel (Bot.Duel.*): the opponent is the only target, never too strong to fight
+        if (Player* foe = BotDuel::ActiveOpponent(bot))
+        {
+            if (ctx->Target != foe->GetGUID())
+            {
+                out = foe;
+                ctx->Target = foe->GetGUID();
+                ctx->TargetSinceMs = now;
+                ctx->InRangeSeen = false;
+                ++ctx->Picked;
+                LogDecision(ai, bot, ctx, "DUEL_TARGET", StringFormat("duels {} L{}", foe->GetName(), uint32(foe->GetLevel())),
+                    StringFormat(R"({})", MobJson(bot, foe, Assess(bot, foe))));
+                return true;
+            }
+            out = foe;
+            return true;
+        }
         std::vector<Candidate> cands;
         for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())
         {

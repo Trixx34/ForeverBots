@@ -16,6 +16,7 @@
  */
 
 #include "Spell.h"
+#include "BotDuel.h"
 #include "BotQuestLog.h"
 #include "AccountMgr.h"
 #include "AreaTrigger.h"
@@ -3327,6 +3328,7 @@ void Spell::EffectDuel()
     target->SetDuelArbiter(go->GetGUID());
 
     sScriptMgr->OnPlayerDuelRequest(target, caster);
+    BotDuel::OnChallenged(target, caster, go->GetGUID());
 }
 
 void Spell::EffectStuck()
