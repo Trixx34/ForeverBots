@@ -21,6 +21,10 @@
 #include "ChannelMgr.h"
 #include "BotChat.h"
 #include "BotCraftOrder.h"
+
+#include "BotConversation.h"
+
+#include "BotGuild.h"
 #include "BotTradeLink.h"
 #include "Chat.h"
 #include "ChatPackets.h"
@@ -349,6 +353,10 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
             BotChat::Handle(GetPlayer(), BotChat::Channel::Whisper, msg, receiver);
             BotTradeLink::OnWhisper(GetPlayer(), receiver, msg);
             BotCraftOrder::OnWhisper(GetPlayer(), receiver, msg);
+
+            BotConversation::OnWhisper(GetPlayer(), receiver, msg);
+
+            BotGuild::OnWhisper(GetPlayer(), receiver, msg);
             break;
         }
         case CHAT_MSG_PARTY:
@@ -370,6 +378,7 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
             packet.Initialize(ChatMsg(type), lang, sender, nullptr, msg);
             group->BroadcastPacket(packet.Write(), false, group->GetMemberGroup(GetPlayer()->GetGUID()));
             BotChat::Handle(GetPlayer(), BotChat::Channel::Party, msg);
+            BotConversation::OnPartyChat(GetPlayer(), msg);
             break;
         }
         case CHAT_MSG_GUILD:
@@ -381,6 +390,8 @@ ChatMessageResult WorldSession::HandleChatMessage(ChatMsg type, Language lang, s
                     sScriptMgr->OnPlayerChat(GetPlayer(), type, lang, msg, guild);
 
                     guild->BroadcastToGuild(this, false, msg, lang == LANG_ADDON ? LANG_ADDON : LANG_UNIVERSAL);
+                    if (lang != LANG_ADDON)
+                        BotGuild::OnGuildMessage(GetPlayer(), guild, msg);
                 }
             }
             break;
