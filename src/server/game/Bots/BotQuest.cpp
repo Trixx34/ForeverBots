@@ -4414,6 +4414,53 @@ private:
                 Decision(ai, bot, "BAG_FREED", StringFormat("bags were full: sold {} more poor/white stacks, free slots {} -> {}", nExtra, freeBefore, bot->GetFreeInventorySlotCount()), 0, npc->GetEntry(),
                     StringFormat(R"({{"extra_candidates":{},"extra_sold":{},"free_before":{},"free_after":{},"target_free":{},"items":[{}]}})", extraCands, nExtra, freeBefore, bot->GetFreeInventorySlotCount(), vr.BagFreeCfg.TargetFree, extraSold));
         }
+        // R-V2-04: selling could not reach the target: destroy the lowest value junk (grey, or white weapons/armor/junk that are no upgrade)
+        if (vr.BagFree && vr.BagDestroy && BotRules::Applies(bot) && bot->GetFreeInventorySlotCount() < vr.BagFreeCfg.TargetFree)
+        {
+            struct Doomed { uint32 Value; Item* It; };
+            std::vector<Doomed> doomed;
+            bot->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
+            {
+                ItemTemplate const* proto = item->GetTemplate();
+                if (!proto || item->IsBag() || IsToolTemplate(proto) || proto->GetQuality() > ITEM_QUALITY_NORMAL)
+                    return ItemSearchCallbackResult::Continue;
+                bool const questItem = proto->GetClass() == ITEM_CLASS_QUEST || proto->GetStartQuest() || bot->HasQuestForItem(item->GetEntry());
+                uint32 const cls = proto->GetClass();
+                if (questItem || cls == ITEM_CLASS_CONSUMABLE || cls == ITEM_CLASS_TRADE_GOODS || cls == ITEM_CLASS_REAGENT || cls == ITEM_CLASS_RECIPE || cls == ITEM_CLASS_CONTAINER || cls == ITEM_CLASS_QUIVER || cls == ITEM_CLASS_KEY)
+                    return ItemSearchCallbackResult::Continue;
+                if (proto->GetQuality() == ITEM_QUALITY_NORMAL)
+                {
+                    // white: only weapons, armor and the junk misc subclass
+                    if (!(cls == ITEM_CLASS_WEAPON || cls == ITEM_CLASS_ARMOR || (cls == ITEM_CLASS_MISCELLANEOUS && proto->GetSubClass() == 0)))
+                        return ItemSearchCallbackResult::Continue;
+                }
+                if (proto->IsArmor() || proto->IsWeapon())
+                {
+                    GearChoice gc;
+                    if (bot->CanUseItem(proto, true) == EQUIP_ERR_OK && BestGearSlot(bot, proto, gc))
+                        return ItemSearchCallbackResult::Continue;   // an upgrade or a first piece: keep
+                }
+                uint32 const value = proto->GetSellPrice() * item->GetCount();
+                if (value > vr.BagDestroyMaxCopper)
+                    return ItemSearchCallbackResult::Continue;
+                doomed.push_back({ value, item });
+                return ItemSearchCallbackResult::Continue;
+            });
+            std::stable_sort(doomed.begin(), doomed.end(), [](Doomed const& a, Doomed const& b) { return a.Value < b.Value; });
+            uint32 nDestroyed = 0;
+            for (Doomed const& d : doomed)
+            {
+                if (bot->GetFreeInventorySlotCount() >= vr.BagFreeCfg.TargetFree)
+                    break;
+                uint32 const entry = d.It->GetEntry(), count = d.It->GetCount();
+                uint8 const q = d.It->GetTemplate()->GetQuality();
+                bot->DestroyItem(d.It->GetBagSlot(), d.It->GetSlot(), true);
+                ++nDestroyed;
+                Decision(ai, bot, "BAG_DESTROYED", StringFormat("bags full and selling was not enough: destroyed item {} x{} (worth {} copper)", entry, count, d.Value), 0, entry,
+                    StringFormat(R"({{"item":{},"count":{},"value_copper":{},"quality":{},"free_after":{},"target_free":{},"max_copper":{}}})", entry, count, d.Value, q, bot->GetFreeInventorySlotCount(), vr.BagFreeCfg.TargetFree, vr.BagDestroyMaxCopper));
+            }
+            nExtra += nDestroyed;
+        }
         uint32 const freeAfter = bot->GetFreeInventorySlotCount();
         {
             // Always logged (R-V2-04 evidence): what was sold, what the vendor refused, and what is still in the bags after the visit

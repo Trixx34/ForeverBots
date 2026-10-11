@@ -89,6 +89,8 @@ Settings const& Cfg()
 
         s.BagFree = Bool("Bot.Rules.BagFree.Enabled", true);
         s.BagFreeCfg.TargetFree = uint32(Int("Bot.Rules.BagFree.TargetFreeSlots", 3, 1, 20));
+        s.BagDestroy = Bool("Bot.Rules.BagFree.Destroy.Enabled", true);
+        s.BagDestroyMaxCopper = uint32(Int("Bot.Rules.BagFree.DestroyMaxCopper", 50, 0, 100000));
         s.BagFreeCfg.RetryCooldownSec = uint32(Int("Bot.Rules.BagFree.RetryCooldownSec", 300, 30, 86400));
 
         s.DeathLoop = Bool("Bot.Rules.DeathLoop.Enabled", true);

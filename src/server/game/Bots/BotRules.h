@@ -68,6 +68,8 @@ namespace BotRules
 
         bool BagFree = true;            // Bot.Rules.BagFree.Enabled (R-V2-04)
         BotRule::BagFreeConfig BagFreeCfg;
+        bool BagDestroy = true;         // Bot.Rules.BagFree.Destroy.Enabled
+        uint32 BagDestroyMaxCopper = 50; // Bot.Rules.BagFree.DestroyMaxCopper
 
         bool DeathLoop = true;          // Bot.Rules.DeathLoop.Enabled (R-V2-05)
         BotRule::DeathLoopConfig DeathLoopCfg;

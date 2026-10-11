@@ -4066,6 +4066,22 @@ Bot.Rules.BagFree.TargetFreeSlots = 3
 #        Default:     300
 #        Values:      whole number 30 to 86400
 Bot.Rules.BagFree.RetryCooldownSec = 300
+
+#
+#    Bot.Rules.BagFree.Destroy.Enabled
+#        Description: R-V2-04. When selling cannot reach TargetFreeSlots, destroy the lowest value grey items and white
+#                     weapons, armor and junk that are no upgrade. Never quest items, tools, trade goods, consumables,
+#                     reagents, recipes, containers, keys or gear that would be an upgrade. Row: BAG_DESTROYED.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.BagFree.Destroy.Enabled = 1
+
+#
+#    Bot.Rules.BagFree.DestroyMaxCopper
+#        Description: Items (stack total) worth more than this to a vendor are never destroyed.
+#        Default:     50
+#        Values:      whole number 0 to 100000 (copper)
+Bot.Rules.BagFree.DestroyMaxCopper = 50
 #
 #    Bot.Rules.DeathLoop.Enabled
 #        Description: R-V2-05. Deaths of a bot to the same killer entry, or inside one area, within WindowSec block that killer and that area
