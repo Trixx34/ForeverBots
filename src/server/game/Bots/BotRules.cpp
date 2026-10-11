@@ -111,7 +111,7 @@ Settings const& Cfg()
         s.Pick.MinXp = uint32(Int("Bot.Rules.TargetPick.MinXp", 25, 0, 100000));
 
         s.QuestFilter = Bool("Bot.Rules.QuestFilter.Enabled", true);
-        s.QuestBlocked = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.QuestFilter.BlockedQuests", "794,5441,1656,3905,47"));
+        s.QuestBlocked = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.QuestFilter.BlockedQuests", "794,5441,1656,3905,47,400,2160"));
         s.QuestNeverBlock = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.QuestFilter.NeverBlock", "404,112,789,792,380,488,92544"));
         s.QuestLowLevelBlocked = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.QuestFilter.LowLevelBlocked", "92515,92553,92516,92551"));
         s.QuestLowLevelUntil = uint32(Int("Bot.Rules.QuestFilter.LowLevelUntil", 7, 1, 80));

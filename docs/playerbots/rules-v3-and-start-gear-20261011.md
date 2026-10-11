@@ -9,7 +9,7 @@ logging-only parts do not.
 | Rule | What it does | Settings (default) |
 |---|---|---|
 | R-V3-01 | A bot that starts grinding logs why: `QUEST_GRIND` details carry `why` (`no_quest`, `level`, `prereq`, `path`, `hub`, `quarantine`, `blocked_list`, `other`) and `rejected` (counts per reason from the quest scoring pass). `STATE_LEDGER` carries `grind_entries` (count per reason). | `Bot.Rules.V3Log.Enabled` (1) |
-| R-V3-02 | Quests 794, 5441, 1656, 3905, 47 are in the shipped `BlockedQuests`. The nav data fixes for 794, 5441, 400, 2160 and 1656 were not done (see below). | `Bot.Rules.QuestFilter.BlockedQuests` ("794,5441,1656,3905,47") |
+| R-V3-02 | Quests 794, 5441, 1656, 3905, 47, 400, 2160 are in the shipped `BlockedQuests`. The nav data fixes for 794, 5441, 400, 2160 and 1656 were not done (see below). | `Bot.Rules.QuestFilter.BlockedQuests` ("794,5441,1656,3905,47,400,2160") |
 | R-V3-03 | `NeverBlock` overrides the blocklist, so the dangerous but completable quests (404, 112, 789, 792, 380, 488, 92544) are never filtered. | `Bot.Rules.QuestFilter.NeverBlock` |
 | R-V3-04 | Levels 5 to 6: creature entry 251245 (Prideclaw) is not a grind target and not a free-target candidate, unless quest 92515 or 92553 is unfinished in the log. Trip pathing is not changed. `NO_GRIND_TARGET` details show `camp_skips`. | `Bot.Rules.CampAvoid.*` |
 | R-V3-05 | Quests 92515, 92553, 92516, 92551 are not offered below level 7. | `Bot.Rules.QuestFilter.LowLevelBlocked`, `LowLevelUntil` (7) |

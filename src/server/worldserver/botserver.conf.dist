@@ -4196,9 +4196,9 @@ Bot.Rules.QuestFilter.Enabled = 1
 #    Bot.Rules.QuestFilter.BlockedQuests
 #        Description: Comma separated quest ids that are never offered (R-V3-02: quests with a reward rate under 10 percent over
 #                     at least 15 acceptances in the last simulation run; 794, 5441, 1656, 3905, 47). Empty the list to offer them again.
-#        Default:     "794,5441,1656,3905,47"
+#        Default:     "794,5441,1656,3905,47,400,2160"
 #        Values:      quest ids
-Bot.Rules.QuestFilter.BlockedQuests = "794,5441,1656,3905,47"
+Bot.Rules.QuestFilter.BlockedQuests = "794,5441,1656,3905,47,400,2160"
 #
 #    Bot.Rules.QuestFilter.NeverBlock
 #        Description: R-V3-03. Quest ids that stay offered even when they appear in BlockedQuests (dangerous but completable
