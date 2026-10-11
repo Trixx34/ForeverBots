@@ -34,6 +34,8 @@ TEST_CASE("Reason prefixes pick the category", "[BotLogCategory]")
     CHECK(Classify("decision", "GUILD_BOT_FOUNDED") == Social);
     CHECK(Classify("decision", "GUILD_INVITE_ACCEPTED") == Social);
     CHECK(Classify("decision", "TOWN_IDLE_GO") == Movement);
+    CHECK(Classify("decision", "MOUNT_UP") == Movement);
+    CHECK(Classify("decision", "MOUNT_DOWN") == Movement);
     CHECK(Classify("decision", "DUMMY_SUMMARY") == Dummy);
     CHECK(Classify("decision", "CORPSE_RUN_START") == Recovery);
     CHECK(Classify("decision", "REVIVE_CAST") == Recovery);
