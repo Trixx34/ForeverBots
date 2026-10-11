@@ -1,6 +1,6 @@
 # Sim run 2, 800 bots, 4 h: analysis (2026-10-11)
 
-Source: sim log database, table `bot_event` (read-only), all rows with `id <= 1340199` (log frozen at 21:41:07, when the run script reported the window complete; bots were left running, later rows are excluded). `last_start_id` was 0 and the table starts at id 1, so the whole log is this run. Window 2026-10-11 17:46 to 21:41 (3.9 h). 800 bots (9 classes, about 88 each; 10 races), ramp 200 to 800 in steps of 20 every 300 s, all 800 online from 20:21. 1,340,199 rows, 2,353 bot-hours (from each bot's login to 21:41). Build under test: the old worldserver (no loop guards, no R-V2-04..08, no group-after-fails) with the per-state time ledger (`ai_stats` / `STATE_LEDGER`), `TRIP_END`, `COMBAT_SUMMARY` fields, group-after-deaths (threshold 3 deaths) and the auction house enabled. Death rows now carry the active task and quest id in `details`. Run 1 is `sim-run-800-analysis-20261011.md` (22 h).
+Source: the `bot_event` table of a simulation log database (read-only), the whole run. Window 2026-10-11 17:46 to 21:41 (3.9 h). 800 bots (9 classes, about 88 each; 10 races), ramp 200 to 800 in steps of 20 every 300 s, all 800 online from 20:21. 1,340,199 rows, 2,353 bot-hours (from each bot's login to 21:41). Build under test: the old worldserver (no loop guards, no R-V2-04..08, no group-after-fails) with the per-state time ledger (`ai_stats` / `STATE_LEDGER`), `TRIP_END`, `COMBAT_SUMMARY` fields, group-after-deaths (threshold 3 deaths) and the auction house enabled. Death rows now carry the active task and quest id in `details`. Run 1 is `sim-run-800-analysis-20261011.md` (22 h).
 
 Hour 21 contains only 41 minutes. Zone names are ids as logged (1 Dun Morogh, 12 Elwynn, 14 Durotar, 85 Tirisfal, 141 Teldrassil, 215 Mulgore, 10 Duskwood; 16593 is the start zone of races 95 and 96).
 
@@ -157,9 +157,9 @@ Deaths by task (5,886): grind 3,354 (57%), kill 1,443 (25%), profession trip 313
 - Ledger covers 80% of bot-hours (hour-aligned rows, the first about one hour after login), and the first hour of each bot is never in it.
 - Whether grinding is the cause of the XP gap or a symptom of weak bots (observational regression, R2 0.42 to 0.47).
 
-## 8. Decisions for the owner
+## 8. Follow-ups
 
-1. Approve or reject the proposed rules in `docs/playerbots/rules/proposed-v3-20261011.md` (R-V3-01 to R-V3-06). None is implemented.
-2. Decide whether the `BlockedQuests` list gets the candidates of section 5 (kept empty so far; this document changes nothing).
-3. Decide on the logging additions of section 7 before the next run (reason on grind entry, moving/standing split, kill credit source, seek reason).
-4. Decide whether the next run is analysed in 1 h buckets by grind share and active XP bots (the metrics that tracked the decline here).
+1. The proposed rules are in `docs/playerbots/rules/proposed-v3-20261011.md` (R-V3-01 to R-V3-06).
+2. Whether the `BlockedQuests` list gets the candidates of section 5 (kept empty so far; this document changes nothing).
+3. Logging additions of section 7 before the next run (reason on grind entry, moving/standing split, kill credit source, seek reason).
+4. Whether the next run is analysed in 1 h buckets by grind share and active XP bots (the metrics that tracked the decline here).
