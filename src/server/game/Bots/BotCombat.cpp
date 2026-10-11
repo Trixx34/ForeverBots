@@ -29,9 +29,11 @@
 #include "BotCombat.h"
 #include "BotRotation.h"
 #include "BotGroupRoles.h"
+#include "BotGroupControl.h"
 #include "CombatManager.h"
 #include "Config.h"
 #include "Creature.h"
+#include "GameTime.h"
 #include "Group.h"
 #include "Item.h"
 #include "Log.h"
@@ -39,6 +41,8 @@
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
+#include "Spell.h"
+#include "SpellAuras.h"
 #include "SpellHistory.h"
 #include "BotAvoid.h"
 #include "SpellInfo.h"
@@ -85,6 +89,24 @@ struct CombatConfig
     bool Rotation = false;         // Bot.AI.Rotation.Enabled: full class rotations (conditional rows of the spell table); off = the old fixed spells
     int32 FleeAbMode = 1;          // Bot.AI.Flee.AbMode: the mode the experiment arm runs
     int32 FleeAbPct = 0;           // Bot.AI.Flee.AbPct: percent of bots (guid counter % 100 below it) on AbMode, 0 = everyone on Flee.Mode
+    // Bot.AI.GroupControl.* (botserver.conf.dist): interrupts, dispels and crowd control that work together in a group
+    struct GroupControlConfig
+    {
+        bool Enabled = false;               // Bot.AI.GroupControl.Enabled
+        bool Interrupt = true;              // Bot.AI.GroupControl.Interrupt.Enabled
+        BotGroupControl::InterruptConfig Cast;   // Interrupt.MinCastMs / Interrupt.MinRemainingMs
+        uint32 InterruptHoldMs = 1500;      // Interrupt.HoldMs: the claim on one cast; a backup interrupts after it
+        bool Dispel = true;                 // Dispel.Enabled
+        bool DispelOutOfCombat = true;      // Dispel.OutOfCombat
+        int32 DispelMinPriority = 20;       // Dispel.MinPriority (in combat; out of combat everything harmful is cleansed)
+        uint32 DispelHoldMs = 2500;         // Dispel.HoldMs
+        bool Control = true;                // Control.Enabled
+        uint32 ControlMarks = 0;            // Control.Marks as a bit mask of raid target icons
+        bool ControlAuto = true;            // Control.Auto: without a mark the strongest extra attacker is controlled
+        uint32 ControlMaxAuto = 1;          // Control.MaxAuto
+        bool ControlPrePull = true;         // Control.PrePull: marked mobs are controlled before the pull
+        uint32 ControlHoldMs = 3000;        // Control.HoldMs
+    } GC;
     std::vector<uint32> AvoidEntries;  // Bot.AI.Avoid.Entries: creature entries to stay away from
     int32 AvoidMaxGap = 1;         // Bot.AI.Avoid.MaxLevelGap: listed creatures are fought only when at most this many levels above the bot, -1 = list off
 };
@@ -123,6 +145,25 @@ CombatConfig const& Cfg()
         cfg.AvoidEntries = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.AI.Avoid.Entries", "116,822,250927,79"));
         cfg.DruidForms = cfg.Rotation && sConfigMgr->GetBoolDefault("Bot.AI.Rotation.DruidForms", false);
         cfg.DruidBear = sConfigMgr->GetBoolDefault("Bot.AI.Rotation.DruidBear", false);
+        auto& gc = cfg.GC;
+        gc.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.GroupControl.Enabled", false);
+        gc.Interrupt = sConfigMgr->GetBoolDefault("Bot.AI.GroupControl.Interrupt.Enabled", true);
+        gc.Cast.MinCastMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.GroupControl.Interrupt.MinCastMs", 1500), 0, 10000));
+        gc.Cast.MinRemainingMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.GroupControl.Interrupt.MinRemainingMs", 400), 0, 5000));
+        gc.InterruptHoldMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.GroupControl.Interrupt.HoldMs", 1500), 200, 10000));
+        gc.Dispel = sConfigMgr->GetBoolDefault("Bot.AI.GroupControl.Dispel.Enabled", true);
+        gc.DispelOutOfCombat = sConfigMgr->GetBoolDefault("Bot.AI.GroupControl.Dispel.OutOfCombat", true);
+        gc.DispelMinPriority = std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.GroupControl.Dispel.MinPriority", BotGroupControl::PRIORITY_SLOW), 1, 100);
+        gc.DispelHoldMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.GroupControl.Dispel.HoldMs", 2500), 500, 15000));
+        gc.Control = sConfigMgr->GetBoolDefault("Bot.AI.GroupControl.Control.Enabled", true);
+        std::vector<std::string> unknownMarks;
+        gc.ControlMarks = BotGroupControl::ParseMarkList(sConfigMgr->GetStringDefault("Bot.AI.GroupControl.Control.Marks", "moon,square,triangle,diamond"), &unknownMarks);
+        for (std::string const& m : unknownMarks)
+            TC_LOG_WARN("server.worldserver", "Bot.AI.GroupControl.Control.Marks: unknown icon '{}' ignored", m);
+        gc.ControlAuto = sConfigMgr->GetBoolDefault("Bot.AI.GroupControl.Control.Auto", true);
+        gc.ControlMaxAuto = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.GroupControl.Control.MaxAuto", 1), 1, 4));
+        gc.ControlPrePull = sConfigMgr->GetBoolDefault("Bot.AI.GroupControl.Control.PrePull", true);
+        gc.ControlHoldMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.GroupControl.Control.HoldMs", 3000), 500, 20000));
     });
     return cfg;
 }
@@ -173,6 +214,7 @@ enum class Kind : uint8
     Shift,      // changes the shapeshift form (Bear Form): a self buff that only runs with Bot.AI.Rotation.DruidForms
     Debuff,     // cast while the target does not carry the spell's aura (Sunder Armor, Hunter's Mark); like Dot but not a damage spell
     Control,    // crowd control on a mob other than the fight target (Polymorph, Shackle Undead, Hibernate, Banish, Scare Beast); see TryControl
+    Dispel,     // removes a harmful effect from a group member (Dispel Magic, Cleanse, Remove Curse...); only used by TryDispel (Bot.AI.GroupControl.Dispel.*)
     Threat      // threat reducer, cast only when the bot is about to pull the mob off the tank (Fade, Feint); see ThreatStep
 };
 
@@ -188,6 +230,7 @@ struct SpellDef
     uint8 MinCombo = 0;        // Finisher: combo points needed
     BotRotation::Rule When;    // condition of the row (BotRotation.h); rows with a condition other than Always only run with Bot.AI.Rotation.Enabled
     uint8 Form = FORM_ANY;     // shapeshift form the row needs: FORM_ANY (any), FORM_NONE (not shifted), or a ShapeshiftForm value
+    bool Interrupt = false;    // the row interrupts a cast (Kick, Counterspell...): with Bot.AI.GroupControl.Interrupt.Enabled TryInterrupt casts it, not the rotation loop
 };
 
 using RC = BotRotation::Cond;
@@ -217,7 +260,8 @@ constexpr SpellDef SPELLS[] =
     // Cheap Shot and Ambush only run from stealth (ReqAura Stealth): a bot that is stealthed when the fight starts opens with them
     { CLASS_ROGUE,   1833,  "Cheap Shot",           Kind::Direct, 1784 },
     { CLASS_ROGUE,   8676,  "Ambush",               Kind::Direct, 1784 },
-    { CLASS_ROGUE,   1766,  "Kick",                 Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
+    { CLASS_ROGUE,   6770,  "Sap",                  Kind::Control, 1784, 0, { RC::EnemiesAtLeast, 2 } },   // only from stealth, out of a fight: marked mobs (Bot.AI.GroupControl.Control.Marks)
+    { CLASS_ROGUE,   1766,  "Kick",                 Kind::Direct, 0, 0, { RC::TargetCasting, 0 }, FORM_ANY, true },
     { CLASS_ROGUE,   5277,  "Evasion",              Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 50 } },
     { CLASS_ROGUE,   5171,  "Slice and Dice",       Kind::Finisher, 0, 2, { RC::TargetHpAbove, 40 } },
     { CLASS_ROGUE,   2098,  "Eviscerate",           Kind::Finisher, 0, 3 },
@@ -226,7 +270,9 @@ constexpr SpellDef SPELLS[] =
     { CLASS_PALADIN, 20154, "Seal of Righteousness", Kind::SelfBuff },
     { CLASS_PALADIN, 498,   "Divine Protection",    Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 35 } },
     { CLASS_PALADIN, 20271, "Judgement",            Kind::Direct, 20154 },
-    { CLASS_PALADIN, 853,   "Hammer of Justice",    Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
+    { CLASS_PALADIN, 853,   "Hammer of Justice",    Kind::Direct, 0, 0, { RC::TargetCasting, 0 }, FORM_ANY, true },
+    { CLASS_PALADIN, 1152,  "Purify",               Kind::Dispel },   // poison and disease; Cleanse (level 42) adds magic and replaces it as the highest rank of its own row
+    { CLASS_PALADIN, 4987,  "Cleanse",              Kind::Dispel },
     { CLASS_PALADIN, 26573, "Consecration",         Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 3 } },
     { CLASS_PALADIN, 635,   "Holy Light",           Kind::Heal },
     { CLASS_PALADIN, 19750, "Flash of Light",       Kind::Heal },
@@ -244,7 +290,8 @@ constexpr SpellDef SPELLS[] =
     { CLASS_HUNTER,  2973,  "Raptor Strike",        Kind::Direct },   // melee, so only used once a mob is on top of the hunter
     // Mage: Counterspell, Frost Nova and Cone of Cold against several mobs, Mana Shield / Ice Barrier when hurt
     { CLASS_MAGE,    118,   "Polymorph",            Kind::Control, 0, 0, { RC::EnemiesAtLeast, 2 } },
-    { CLASS_MAGE,    2139,  "Counterspell",         Kind::Direct, 0, 0, { RC::TargetCasting, 0 } },
+    { CLASS_MAGE,    2139,  "Counterspell",         Kind::Direct, 0, 0, { RC::TargetCasting, 0 }, FORM_ANY, true },
+    { CLASS_MAGE,    475,   "Remove Lesser Curse",  Kind::Dispel },
     { CLASS_MAGE,    122,   "Frost Nova",           Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_MAGE,    1463,  "Mana Shield",          Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 40 } },
     { CLASS_MAGE,    11426, "Ice Barrier",          Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 70 } },
@@ -255,6 +302,8 @@ constexpr SpellDef SPELLS[] =
     { CLASS_MAGE,    5019,  "Shoot",                Kind::Wand },
     // Priest: Power Word: Shield when hurt, Inner Fire at the start, Psychic Scream against several mobs, Mind Blast with a mana reserve
     { CLASS_PRIEST,  586,   "Fade",                 Kind::Threat },
+    { CLASS_PRIEST,  527,   "Dispel Magic",         Kind::Dispel },
+    { CLASS_PRIEST,  528,   "Cure Disease",         Kind::Dispel },
     { CLASS_PRIEST,  9484,  "Shackle Undead",       Kind::Control, 0, 0, { RC::EnemiesAtLeast, 2 } },
     { CLASS_PRIEST,  139,   "Renew",                Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 85 } },
     { CLASS_PRIEST,  17,    "Power Word: Shield",   Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 70 } },
@@ -277,6 +326,8 @@ constexpr SpellDef SPELLS[] =
     { CLASS_WARLOCK, 686,   "Shadow Bolt",          Kind::Direct },
     { CLASS_WARLOCK, 5019,  "Shoot",                Kind::Wand },
     // Shaman: Lightning Shield at the start, Stoneskin / Searing / Healing Stream Totem (a totem needs its totem tool: the cast fails and is logged once without it), Flame Shock (shares the cooldown of Earth Shock), Stormstrike
+    { CLASS_SHAMAN,  526,   "Cure Poison",          Kind::Dispel },
+    { CLASS_SHAMAN,  2870,  "Cure Disease",         Kind::Dispel },
     { CLASS_SHAMAN,  324,   "Lightning Shield",     Kind::SelfBuff, 0, 0, { RC::Opener, 10 } },
     { CLASS_SHAMAN,  8071,  "Stoneskin Totem",      Kind::Totem, 0, 0, { RC::Opener, 10 } },
     { CLASS_SHAMAN,  3599,  "Searing Totem",        Kind::Totem, 0, 0, { RC::TargetHpAbove, 60 } },
@@ -293,6 +344,8 @@ constexpr SpellDef SPELLS[] =
     { CLASS_DRUID,   9634,  "Dire Bear Form",       Kind::Shift },    // level 40; Bear Form is the fallback below it. Only reached with Bot.AI.Rotation.DruidBear (Cat Form comes first otherwise)
     { CLASS_DRUID,   5487,  "Bear Form",            Kind::Shift },
     { CLASS_DRUID,   2637,  "Hibernate",            Kind::Control, 0, 0, { RC::EnemiesAtLeast, 2 }, FORM_NONE },
+    { CLASS_DRUID,   8946,  "Cure Poison",          Kind::Dispel },
+    { CLASS_DRUID,   2782,  "Remove Curse",         Kind::Dispel },
     { CLASS_DRUID,   22812, "Barkskin",             Kind::SelfBuff, 0, 0, { RC::SelfHpBelow, 50 } },
     { CLASS_DRUID,   779,   "Swipe",                Kind::Direct, 0, 0, { RC::EnemiesAtLeast, 2 }, FORM_BEAR_FORM },
     { CLASS_DRUID,   99,    "Demoralizing Roar",    Kind::Debuff, 0, 0, { RC::EnemiesAtLeast, 2 }, FORM_BEAR_FORM },
@@ -410,6 +463,7 @@ struct Resolved
 struct FightData
 {
     std::vector<std::pair<ObjectGuid, uint32>> CcTried;   // crowd control attempts of this fight (target, AI ms), bounded
+    std::vector<std::pair<ObjectGuid, uint32>> DispelTried;   // dispel attempts of this fight (member, AI ms), bounded
     bool InFight = false;
     uint32 StartMs = 0;
     ObjectGuid Target;
@@ -1016,6 +1070,35 @@ void GroupFoes(Player* bot, Fn&& fn)
     }
 }
 
+// The raid target icon (0 star ... 7 skull) that marks `u` in the bot's group, ICON_NONE without a mark.
+int8 MarkOf(Group const* group, Unit const* u)
+{
+    if (group)
+        for (uint8 i = 0; i < 8; ++i)
+            if (group->GetTargetIcon(i) == u->GetGUID())
+                return int8(i);
+    return BotGroupControl::ICON_NONE;
+}
+
+// A mob the fight-target choice leaves alone while something else is left: controlled already, or marked for control by a player.
+bool ReservedForControl(Player* bot, Unit* mob)
+{
+    return Cfg().GC.Enabled && Cfg().GC.Control &&
+        BotGroupControl::ReservedForControl(mob->HasBreakableByDamageCrowdControlAura(), MarkOf(bot->GetGroup(), mob), Cfg().GC.ControlMarks);
+}
+
+// True when the bot has an opponent that is not reserved for control (so a reserved fight target can be dropped for it).
+bool AnyUnreserved(Player* bot)
+{
+    for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())
+    {
+        Unit* mob = ref->GetOther(bot);
+        if (mob && mob->IsAlive() && bot->IsValidAttackTarget(mob) && !ReservedForControl(bot, mob))
+            return true;
+    }
+    return false;
+}
+
 // Hold fire (Bot.AI.Roles.*): a non-tank waits for the tank to gather threat on the mob before it opens (BotGroupRoles::HoldFire).
 bool HeldByTank(Player* bot, BotAI* ai, BotCombatCtx* ctx, Unit* target)
 {
@@ -1057,6 +1140,10 @@ public:
                 ++ctx->TargetsDead;
             target = nullptr;
         }
+
+        // group control: a mob that is controlled or marked for control is left alone while something else is left to fight
+        if (target && ReservedForControl(bot, target) && AnyUnreserved(bot))
+            target = nullptr;
 
         // approach timeout: still not in range after Bot.AI.Combat.ApproachTimeoutSec
         if (target && !ctx->InRangeSeen && now - ctx->TargetSinceMs >= Cfg().ApproachSec * 1000)
@@ -1201,6 +1288,16 @@ private:
             cands.push_back({ mob, Assess(bot, mob), bot->GetDistance(mob) });
             if (cands.size() >= 12)
                 break;
+        }
+        if (cands.size() > 1 && Cfg().GC.Enabled && Cfg().GC.Control)
+        {
+            // controlled or marked mobs are not fought while others are left
+            std::vector<Candidate> open;
+            for (Candidate const& c : cands)
+                if (!ReservedForControl(bot, c.Mob))
+                    open.push_back(c);
+            if (!open.empty())
+                cands = std::move(open);
         }
         // in a group the bot may be called into a fight it is not in yet: the mobs the other members fight are its candidates
         if (cands.empty() && Cfg().GroupRoles)
@@ -1500,7 +1597,7 @@ bool TryControl(BotAI* ai, Player* bot, BotCombatCtx* ctx, Unit* fightTarget, Bo
 {
     Resolved const* spell = nullptr;
     for (Resolved const& r : ctx->Spells)
-        if (r.Def->Type == Kind::Control && (r.Def->Form == FORM_ANY || r.Def->Form == uint8(bot->GetShapeshiftForm())) && BotRotation::Allowed(r.Def->When, facts) && Ready(bot, r) && Affordable(bot, r.Info))
+        if (r.Def->Type == Kind::Control && !r.Def->ReqAura && (r.Def->Form == FORM_ANY || r.Def->Form == uint8(bot->GetShapeshiftForm())) && BotRotation::Allowed(r.Def->When, facts) && Ready(bot, r) && Affordable(bot, r.Info))
         {
             spell = &r;
             break;
@@ -1540,6 +1637,385 @@ bool TryControl(BotAI* ai, Player* bot, BotCombatCtx* ctx, Unit* fightTarget, Bo
     return ok;
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// group control (Bot.AI.GroupControl.*, docs/playerbots/feature-bot-group-control-20261008.md): interrupts, dispels and crowd control
+// that the bots of a group share. The decisions are in BotGroupControl.h (unit tested); its claims keep two bots from answering the same
+// cast, harmful aura or mob. Everything here is off unless Bot.AI.GroupControl.Enabled is on.
+// ---------------------------------------------------------------------------------------------------------------------
+uint64 ClaimKeyOf(Unit const* u) { return uint64(std::hash<ObjectGuid>()(u->GetGUID())); }
+uint64 ClaimerOf(Player const* bot) { return bot->GetGUID().GetCounter(); }
+
+bool FormOk(SpellDef const& d, Player const* bot)
+{
+    return d.Form == FORM_ANY || d.Form == uint8(bot->GetShapeshiftForm());
+}
+
+// Calls `fn` for each hostile unit the bot or its group fights, once, at most 16: `first` (the fight target), the bot's own opponents, then
+// the opponents of the other group members.
+template<typename Fn>
+void ForEachEnemy(Player* bot, Unit* first, Fn&& fn)
+{
+    Unit* seen[16];
+    uint32 n = 0;
+    auto visit = [&](Unit* mob)
+    {
+        if (!mob || n >= 16 || !mob->IsInWorld() || !mob->IsAlive() || !bot->IsValidAttackTarget(mob))
+            return;
+        for (uint32 i = 0; i < n; ++i)
+            if (seen[i] == mob)
+                return;
+        seen[n++] = mob;
+        fn(mob);
+    };
+    visit(first);
+    for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())
+        visit(ref->GetOther(bot));
+    GroupFoes(bot, visit);
+}
+
+// True when a mob other than `fightTarget` within `yards` of the bot is crowd controlled: the area spells of the rotation (Thunder Clap,
+// Cleave, Multi-Shot, Frost Nova, Cone of Cold, Psychic Scream, Consecration) would break it.
+bool ControlledEnemyNear(Player* bot, Unit* fightTarget, float yards)
+{
+    bool found = false;
+    ForEachEnemy(bot, fightTarget, [&](Unit* mob)
+    {
+        found = found || (mob != fightTarget && mob->HasBreakableByDamageCrowdControlAura() && bot->GetDistance(mob) <= yards);
+    });
+    return found;
+}
+
+// A cast of `mob` that an interrupt can stop right now, as plain facts for BotGroupControl::WorthInterrupting.
+bool CastFactsOf(Player* bot, Unit* mob, BotGroupControl::CastFacts& out)
+{
+    for (uint32 i = CURRENT_FIRST_NON_MELEE_SPELL; i < CURRENT_AUTOREPEAT_SPELL; ++i)
+    {
+        Spell* spell = mob->GetCurrentSpell(CurrentSpellTypes(i));
+        if (!spell)
+            continue;
+        bool const channel = spell->getState() == SPELL_STATE_CHANNELING;
+        if (!channel && !(spell->getState() == SPELL_STATE_PREPARING && spell->GetCastTime() > 0))
+            continue;
+        SpellInfo const* si = spell->GetSpellInfo();
+        out = BotGroupControl::CastFacts();
+        out.Interruptible = si->CanBeInterrupted(bot, mob);
+        out.TotalMs = uint32(std::max<int32>(0, channel ? si->GetDuration() : spell->GetCastTime()));
+        out.RemainingMs = uint32(std::max<int32>(0, spell->GetRemainingCastTime()));
+        for (SpellEffectInfo const& e : si->GetEffects())
+        {
+            if (e.Effect == SPELL_EFFECT_HEAL || e.Effect == SPELL_EFFECT_HEAL_PCT || e.Effect == SPELL_EFFECT_HEAL_MAX_HEALTH || e.ApplyAuraName == SPELL_AURA_PERIODIC_HEAL)
+                out.Heal = true;
+            if (e.ApplyAuraName == SPELL_AURA_MOD_STUN || e.ApplyAuraName == SPELL_AURA_MOD_FEAR || e.ApplyAuraName == SPELL_AURA_MOD_ROOT ||
+                e.ApplyAuraName == SPELL_AURA_MOD_CONFUSE || e.ApplyAuraName == SPELL_AURA_MOD_CHARM || e.ApplyAuraName == SPELL_AURA_MOD_SILENCE)
+                out.Control = true;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool IsInterruptRow(Resolved const& r)
+{
+    return r.Def->Interrupt || r.Def->Root == 8042;   // Earth Shock is a filler of the rotation as well
+}
+
+// Casts a row at `target`: through TryCast (counters, failure rows) in a fight, directly out of it.
+bool CastGc(BotAI* ai, Player* bot, BotCombatCtx* ctx, Resolved const& r, Unit* target)
+{
+    if (ctx)
+        return TryCast(ai, bot, ctx, r, target);
+    if (target != bot && !bot->HasInArc(float(M_PI), target))
+        bot->SetInFront(target);
+    return bot->CastSpell(target, r.Id, CastSpellExtraArgs(TRIGGERED_NONE)) == SPELL_CAST_OK;
+}
+
+// What a group control step did, for the log row of the caller (a fight decision row, or the result of the out-of-combat action).
+struct GcOutcome
+{
+    bool Cast = false;
+    char const* Reason = "";
+    std::string Summary;
+    std::string Json;
+};
+
+// Interrupt: the first enemy of the group whose cast is worth stopping (WorthInterrupting) and that this bot can reach with an interrupt it
+// knows. One bot per cast (InterruptClaims): the others skip it, and take over when the holder's hold runs out without the cast being stopped.
+GcOutcome TryInterrupt(BotAI* ai, Player* bot, BotCombatCtx* ctx, Unit* fightTarget)
+{
+    GcOutcome out;
+    std::vector<Resolved const*> rows;
+    for (Resolved const& r : ctx->Spells)
+        if (IsInterruptRow(r) && FormOk(*r.Def, bot) && Ready(bot, r) && Affordable(bot, r.Info))
+            rows.push_back(&r);
+    if (rows.empty())
+        return out;
+    uint32 const now = GameTime::GetGameTimeMS();
+    ForEachEnemy(bot, fightTarget, [&](Unit* mob)
+    {
+        BotGroupControl::CastFacts facts;
+        if (out.Cast || !CastFactsOf(bot, mob, facts) || !BotGroupControl::WorthInterrupting(facts, Cfg().GC.Cast))
+            return;
+        float const dist = bot->GetDistance(mob);
+        for (Resolved const* r : rows)
+        {
+            if (r->MeleeRange ? !bot->IsWithinMeleeRange(mob) : (dist > r->MaxRange - 1.0f || dist < r->MinRange) || !bot->IsWithinLOSInMap(mob))
+                continue;
+            if (!BotGroupControl::InterruptClaims().Claim(ClaimKeyOf(mob), ClaimerOf(bot), now, Cfg().GC.InterruptHoldMs))
+                return;   // another bot answers this cast
+            if (!TryCast(ai, bot, ctx, *r, mob))
+            {
+                BotGroupControl::InterruptClaims().Release(ClaimKeyOf(mob), ClaimerOf(bot));
+                continue;
+            }
+            out.Cast = true;
+            out.Reason = "INTERRUPT_CAST";
+            out.Summary = StringFormat("{} on {} casting ({} ms left)", SpellNameOf(r->Info), mob->GetName(), facts.RemainingMs);
+            out.Json = StringFormat(R"("spell":{},"spell_name":"{}","target":{},"cast_total_ms":{},"cast_left_ms":{},"heal":{},"control":{})", r->Id, Json(SpellNameOf(r->Info)),
+                mob->GetEntry(), facts.TotalMs, facts.RemainingMs, facts.Heal ? "true" : "false", facts.Control ? "true" : "false");
+            return;
+        }
+    });
+    return out;
+}
+
+// The dispel types a dispel spell removes (its dispel effects).
+uint32 DispelMaskOf(SpellInfo const* si)
+{
+    uint32 mask = 0;
+    for (SpellEffectInfo const& e : si->GetEffects())
+        if (e.Effect == SPELL_EFFECT_DISPEL)
+            mask |= BotGroupControl::DispelBitOf(uint8(e.MiscValue));
+    return mask;
+}
+
+// Dispel: the group member (the bot itself included) with the worst harmful effect this bot can remove, by BotGroupControl::PickDispelTarget.
+// In a fight only effects of at least Dispel.MinPriority count (stuns, polymorph, fear... first, then damage over time, slows); out of a fight
+// everything harmful is cleansed. One bot per member (DispelClaims). `tried` holds recent attempts (target, AI ms) so a refused cast is not repeated every tick.
+GcOutcome TryDispel(BotAI* ai, Player* bot, std::vector<Resolved> const& spells, BotCombatCtx* ctx, bool inCombat, std::vector<std::pair<ObjectGuid, uint32>>& tried)
+{
+    GcOutcome out;
+    std::vector<Resolved const*> rows;
+    for (Resolved const& r : spells)
+        if (r.Def->Type == Kind::Dispel && FormOk(*r.Def, bot) && Ready(bot, r) && Affordable(bot, r.Info) && DispelMaskOf(r.Info))
+            rows.push_back(&r);
+    if (rows.empty())
+        return out;
+
+    std::vector<Unit*> members;
+    members.push_back(bot);
+    if (Group* group = bot->GetGroup())
+        for (GroupReference const& ref : group->GetMembers())
+        {
+            Player* m = ref.GetSource();
+            if (m && m != bot && m->IsInWorld() && m->IsAlive() && m->GetMap() == bot->GetMap() && bot->GetDistance(m) <= 40.0f && members.size() < 40)
+                members.push_back(m);
+        }
+
+    uint32 const aiNow = ai->GetNowMs();
+    uint32 const now = GameTime::GetGameTimeMS();
+    std::vector<BotGroupControl::DispelCandidate> cands;
+    std::vector<uint32> bestBit;
+    for (Unit* m : members)
+    {
+        BotGroupControl::DispelCandidate c;
+        c.Key = m->GetGUID().GetCounter();
+        c.HealthPct = int32(m->GetHealthPct());
+        uint32 bit = 0;
+        bool recent = false;
+        for (auto const& t : tried)
+            recent = recent || (t.first == m->GetGUID() && aiNow - t.second < 4000);
+        // the dispel types of the rows that reach this member
+        uint32 reach = 0;
+        for (Resolved const* r : rows)
+            if (m == bot || (bot->GetDistance(m) <= r->MaxRange - 1.0f && bot->IsWithinLOSInMap(m)))
+                reach |= DispelMaskOf(r->Info);
+        if (!recent && reach && !BotGroupControl::DispelClaims().HeldByOther(c.Key, ClaimerOf(bot), now))
+            for (auto const& [id, app] : m->GetAppliedAuras())
+            {
+                if (app->IsPositive())
+                    continue;
+                Aura const* aura = app->GetBase();
+                SpellInfo const* si = aura->GetSpellInfo();
+                uint64 const mech = si->GetAllEffectsMechanicMask();
+                BotGroupControl::AuraFact f;
+                f.DispelType = uint8(si->Dispel);
+                f.Hard = (mech & MECHANIC_LOSS_CONTROL_MASK) != 0;
+                f.Damage = si->HasAura(SPELL_AURA_PERIODIC_DAMAGE);
+                f.Slow = (mech & ((1ull << MECHANIC_SNARE) | (1ull << MECHANIC_SLOW_ATTACK) | (1ull << MECHANIC_DAZE))) != 0;
+                f.RemainingMs = aura->IsPermanent() ? 0xFFFFFFFFu : uint32(std::max<int32>(0, aura->GetDuration()));
+                int32 const prio = BotGroupControl::AuraPriority(f, reach);
+                if (prio > c.Priority)
+                {
+                    c.Priority = prio;
+                    bit = BotGroupControl::DispelBitOf(f.DispelType);
+                }
+            }
+        cands.push_back(c);
+        bestBit.push_back(bit);
+    }
+
+    int32 const idx = BotGroupControl::PickDispelTarget(cands, inCombat ? Cfg().GC.DispelMinPriority : 1);
+    if (idx < 0)
+        return out;
+    Unit* member = members[size_t(idx)];
+    for (Resolved const* r : rows)
+    {
+        if (!(DispelMaskOf(r->Info) & bestBit[size_t(idx)]) || (member != bot && (bot->GetDistance(member) > r->MaxRange - 1.0f || !bot->IsWithinLOSInMap(member))))
+            continue;
+        if (!BotGroupControl::DispelClaims().Claim(cands[size_t(idx)].Key, ClaimerOf(bot), now, Cfg().GC.DispelHoldMs))
+            return out;
+        if (tried.size() >= 8)
+            tried.erase(tried.begin());
+        tried.emplace_back(member->GetGUID(), aiNow);
+        if (!CastGc(ai, bot, ctx, *r, member))
+        {
+            BotGroupControl::DispelClaims().Release(cands[size_t(idx)].Key, ClaimerOf(bot));
+            continue;
+        }
+        out.Cast = true;
+        out.Reason = "DISPEL_CAST";
+        out.Summary = StringFormat("{} on {}", SpellNameOf(r->Info), member == bot ? "itself" : member->GetName());
+        out.Json = StringFormat(R"("spell":{},"spell_name":"{}","self":{},"priority":{},"member_hp_pct":{},"in_combat":{})", r->Id, Json(SpellNameOf(r->Info)), member == bot ? "true" : "false",
+            cands[size_t(idx)].Priority, cands[size_t(idx)].HealthPct, inCombat ? "true" : "false");
+        return out;
+    }
+    return out;
+}
+
+struct ControlPlan
+{
+    Unit* Mob = nullptr;
+    Resolved const* Row = nullptr;
+    int8 Mark = BotGroupControl::ICON_NONE;
+};
+
+// Crowd control: which mob gets which control spell (BotGroupControl::PickControlTarget). The mobs are the enemies of the group (in a fight)
+// plus every mob a player marked with one of the Control.Marks icons, fight or not. A marked mob is controlled by whoever can; an unmarked
+// extra attacker only when the rotation rows allow it (`facts`, Bot.AI.Rotation.CrowdControl) and at most Control.MaxAuto at a time.
+// One bot per mob (ControlClaims). `tried` holds recent attempts (target, AI ms), a mob is not retried for 20 s.
+bool PlanControl(Player* bot, std::vector<Resolved> const& spells, Unit* fightTarget, bool inCombat, BotRotation::Facts const* facts,
+    std::vector<std::pair<ObjectGuid, uint32>> const& tried, uint32 aiNow, ControlPlan& out)
+{
+    std::vector<Resolved const*> rows;
+    for (Resolved const& r : spells)
+    {
+        if (r.Def->Type != Kind::Control || !FormOk(*r.Def, bot) || !Ready(bot, r) || !Affordable(bot, r.Info))
+            continue;
+        // Sap needs a stealthed rogue and a mob that is not fighting yet
+        if (r.Def->ReqAura && (inCombat || !(r.Def->ReqAura == 1784 ? bot->HasAuraType(SPELL_AURA_MOD_STEALTH) : bot->HasAura(r.Def->ReqAura))))
+            continue;
+        if (bot->isMoving() && r.Info->CastTimeEntry && r.Info->CalcCastTime() > 0)
+            continue;
+        rows.push_back(&r);
+    }
+    if (rows.empty())
+        return false;
+
+    Group* group = bot->GetGroup();
+    std::vector<Unit*> mobs;
+    auto add = [&](Unit* u)
+    {
+        if (u && u->IsInWorld() && u->IsAlive() && mobs.size() < 16 && bot->IsValidAttackTarget(u) && std::find(mobs.begin(), mobs.end(), u) == mobs.end())
+            mobs.push_back(u);
+    };
+    if (inCombat)
+        ForEachEnemy(bot, fightTarget, add);
+    if (group)
+        for (uint8 i = 0; i < 8; ++i)
+            if (BotGroupControl::MarkInMask(int8(i), Cfg().GC.ControlMarks))
+                add(ObjectAccessor::GetUnit(*bot, group->GetTargetIcon(i)));
+    if (mobs.empty())
+        return false;
+
+    uint32 const now = GameTime::GetGameTimeMS();
+    bool const autoOk = Cfg().GC.ControlAuto && Cfg().Rotation && Cfg().CrowdControl && inCombat && facts;
+    std::vector<BotGroupControl::ControlCandidate> cands;
+    std::vector<Resolved const*> rowOf;
+    for (Unit* u : mobs)
+    {
+        BotGroupControl::ControlCandidate c;
+        c.Key = ClaimKeyOf(u);
+        c.Level = int32(u->GetLevel());
+        c.Mark = MarkOf(group, u);
+        c.Controlled = u->HasBreakableByDamageCrowdControlAura();
+        c.IsFightTarget = u == fightTarget;
+        bool const marked = BotGroupControl::MarkInMask(c.Mark, Cfg().GC.ControlMarks);
+        c.TypeOk = false;
+        Resolved const* row = nullptr;
+        float const dist = bot->GetDistance(u);
+        for (Resolved const* r : rows)
+        {
+            if (!r->Info->CheckTargetCreatureType(u))
+                continue;
+            c.TypeOk = true;
+            if (dist > r->MaxRange - 1.0f || dist < r->MinRange || !bot->IsWithinLOSInMap(u))
+                continue;
+            if (!marked && !(autoOk && BotRotation::Allowed(r->Def->When, *facts)))
+                continue;   // automatic control follows the rotation row's own condition
+            row = r;
+            break;
+        }
+        c.Reachable = row != nullptr;
+        for (auto const& t : tried)
+            c.Tried = c.Tried || (t.first == u->GetGUID() && aiNow - t.second < 20000);
+        c.ClaimedByOther = BotGroupControl::ControlClaims().HeldByOther(c.Key, ClaimerOf(bot), now);
+        cands.push_back(c);
+        rowOf.push_back(row);
+    }
+    BotGroupControl::ControlConfig cfg;
+    cfg.MarkMask = Cfg().GC.ControlMarks;
+    cfg.Auto = autoOk;
+    cfg.MaxAuto = Cfg().GC.ControlMaxAuto;
+    int32 const idx = BotGroupControl::PickControlTarget(cands, cfg);
+    if (idx < 0)
+        return false;
+    out.Mob = mobs[size_t(idx)];
+    out.Row = rowOf[size_t(idx)];
+    out.Mark = cands[size_t(idx)].Mark;
+    return out.Row != nullptr;
+}
+
+GcOutcome TryGroupControl(BotAI* ai, Player* bot, BotCombatCtx* ctx, std::vector<Resolved> const& spells, Unit* fightTarget, BotRotation::Facts const* facts,
+    std::vector<std::pair<ObjectGuid, uint32>>& tried)
+{
+    GcOutcome out;
+    uint32 const aiNow = ai->GetNowMs();
+    ControlPlan plan;
+    if (!PlanControl(bot, spells, fightTarget, ctx != nullptr, facts, tried, aiNow, plan))
+        return out;
+    if (!BotGroupControl::ControlClaims().Claim(ClaimKeyOf(plan.Mob), ClaimerOf(bot), GameTime::GetGameTimeMS(), Cfg().GC.ControlHoldMs))
+        return out;
+    if (tried.size() >= 8)
+        tried.erase(tried.begin());
+    tried.emplace_back(plan.Mob->GetGUID(), aiNow);
+    if (!CastGc(ai, bot, ctx, *plan.Row, plan.Mob))
+    {
+        BotGroupControl::ControlClaims().Release(ClaimKeyOf(plan.Mob), ClaimerOf(bot));
+        return out;
+    }
+    out.Cast = true;
+    out.Reason = ctx ? "CC_CAST" : "CC_PREPULL";
+    out.Summary = StringFormat("{} on {} (level {}){}", SpellNameOf(plan.Row->Info), plan.Mob->GetName(), uint32(plan.Mob->GetLevel()), plan.Mark >= 0 ? ", marked by a player" : "");
+    out.Json = StringFormat(R"("spell":{},"spell_name":"{}","target":{},"target_level":{},"mark":{})", plan.Row->Id, Json(SpellNameOf(plan.Row->Info)), plan.Mob->GetEntry(),
+        uint32(plan.Mob->GetLevel()), int32(plan.Mark));
+    return out;
+}
+
+// The Combat engine rows of the group control: interrupt first (time critical), then dispel, then crowd control. True when one cast went out.
+bool GroupControlStep(BotAI* ai, Player* bot, BotCombatCtx* ctx, Unit* target, BotRotation::Facts const& facts)
+{
+    GcOutcome out;
+    if (Cfg().GC.Interrupt)
+        out = TryInterrupt(ai, bot, ctx, target);
+    if (!out.Cast && Cfg().GC.Dispel)
+        out = TryDispel(ai, bot, ctx->Spells, ctx, true, ctx->DispelTried);
+    if (!out.Cast && Cfg().GC.Control)
+        out = TryGroupControl(ai, bot, ctx, ctx->Spells, target, &facts, ctx->CcTried);
+    if (out.Cast)
+        LogDecision(ai, bot, ctx, out.Reason, out.Summary, out.Json);
+    return out.Cast;
+}
+
 class CastAction : public Action
 {
 public:
@@ -1555,6 +2031,9 @@ public:
         if (!CanFight(bot, target))
             return false;
 
+        // group control (Bot.AI.GroupControl.*): interrupts, dispels and crowd control come before the hold and the rotation
+        if (Cfg().GC.Enabled && GroupControlStep(ai, bot, ctx, target, RotationFacts(ai, bot, ctx, target)))
+            return true;
         if (bot->GetVictim() != target && HeldByTank(bot, ai, ctx, target))
             return false;
         if (Cfg().GroupRoles && Cfg().Threat && bot->GetGroup() && ThreatStep(ai, bot, ctx, target))
@@ -1569,13 +2048,19 @@ public:
         uint8 const rawForm = uint8(bot->GetShapeshiftForm());
         uint8 const form = rawForm == FORM_DIRE_BEAR_FORM ? uint8(FORM_BEAR_FORM) : rawForm;   // Dire Bear Form runs the Bear rows
         BotRotation::Facts const facts = RotationFacts(ai, bot, ctx, target);
-        if (Cfg().Rotation && Cfg().CrowdControl && facts.EnemiesOnBot >= 2 && !moving && TryControl(ai, bot, ctx, target, facts))
+        if (Cfg().Rotation && Cfg().CrowdControl && !(Cfg().GC.Enabled && Cfg().GC.Control) && facts.EnemiesOnBot >= 2 && !moving && TryControl(ai, bot, ctx, target, facts))
             return true;
+        // a controlled mob next to the fight: no area spell that would break it
+        bool const aoeBlocked = Cfg().GC.Enabled && Cfg().GC.Control && ControlledEnemyNear(bot, target, 30.0f);
 
         for (Resolved const& r : ctx->Spells)
         {
             Kind const kind = r.Def->Type;
-            if (kind == Kind::Heal || kind == Kind::Threat || kind == Kind::Control || !BotRotation::Allowed(r.Def->When, facts))
+            if (kind == Kind::Heal || kind == Kind::Threat || kind == Kind::Control || kind == Kind::Dispel || !BotRotation::Allowed(r.Def->When, facts))
+                continue;
+            if (r.Def->Interrupt && Cfg().GC.Enabled && Cfg().GC.Interrupt)
+                continue;   // TryInterrupt casts it
+            if (aoeBlocked && kind == Kind::Direct && r.Def->When.Condition == RC::EnemiesAtLeast)
                 continue;
             // the tank warrior of a group (Bot.AI.Roles.*) holds Defensive Stance: the Battle Stance row of the table must not undo it
             if (kind == Kind::SelfBuff && r.Def->Root == 2457 && Cfg().GroupRoles && bot->HasAura(71))
@@ -1959,6 +2444,58 @@ public:
     }
 };
 
+// Out of a fight (Bot.AI.GroupControl.*, strategy "groupcontrol", NonCombat): cleanses harmful effects of the group (Dispel.OutOfCombat) and
+// controls the mobs a player marked with a Control.Marks icon before the pull (Control.PrePull).
+class GroupSupportTrigger : public Trigger
+{
+public:
+    explicit GroupSupportTrigger(BotAI* ai) : Trigger(ai, "group_support_due", 1500) { }
+    bool IsActive() override { return Cfg().GC.Enabled; }
+};
+
+class GroupSupportAction : public Action
+{
+public:
+    explicit GroupSupportAction(BotAI* ai) : Action(ai, "combat_group_support", ACTION_FLAG_QUIET_LOG) { }
+    bool IsPossible() override
+    {
+        Player* bot = GetBot();
+        return Cfg().GC.Enabled && bot->IsAlive() && !bot->IsInCombat() && !bot->IsMounted() && !CastingNow(bot) && bot->GetStandState() == UNIT_STAND_STATE_STAND &&
+            !bot->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_CONFUSED | UNIT_STATE_FLEEING);
+    }
+    bool Execute() override
+    {
+        Player* bot = GetBot();
+        BotAI* ai = GetAI();
+        BotCombatCtx* ctx = Ctx(ai);
+        if (ctx->Spells.empty() || ctx->ResolvedLevel != bot->GetLevel())
+            ctx->Resolve(bot);
+        GcOutcome out;
+        if (Cfg().GC.Dispel && Cfg().GC.DispelOutOfCombat && bot->GetPowerPct(bot->GetPowerType()) >= float(Cfg().PrePullManaPct))
+            out = TryDispel(ai, bot, ctx->Spells, nullptr, false, _dispelTried);
+        if (!out.Cast && Cfg().GC.Control && Cfg().GC.ControlPrePull && bot->GetGroup())
+            out = TryGroupControl(ai, bot, nullptr, ctx->Spells, nullptr, nullptr, _controlTried);
+        if (!out.Cast)
+            return false;
+        SetResult(out.Reason, out.Summary, StringFormat("{{{}}}", out.Json));
+        return true;
+    }
+private:
+    std::vector<std::pair<ObjectGuid, uint32>> _dispelTried;
+    std::vector<std::pair<ObjectGuid, uint32>> _controlTried;
+};
+
+class GroupSupportStrategy : public Strategy
+{
+public:
+    GroupSupportStrategy() : Strategy("groupcontrol") { }
+    void InitTriggers(std::vector<BotTriggerNode>& t) override
+    {
+        // right after the prebuffs (Rest + 3), above drinking
+        t.push_back({ "group_support_due", { { "combat_group_support", BotRelevance::Rest + 4.0f } } });
+    }
+};
+
 } // namespace
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1988,6 +2525,11 @@ bool BotCombatRotationEnabled()
     return Cfg().Rotation;
 }
 
+bool BotCombatGroupControlEnabled()
+{
+    return Cfg().GC.Enabled;
+}
+
 uint32 BotCombatPrePullManaPct()
 {
     return Cfg().PrePullManaPct;
@@ -2015,6 +2557,82 @@ char const* BotCombatHealUnit(Player* bot, Unit* target)
     if (target != bot && !bot->HasInArc(float(M_PI), target))
         bot->SetInFront(target);
     return bot->CastSpell(target, heal->Id, CastSpellExtraArgs(TRIGGERED_NONE)) == SPELL_CAST_OK ? "OK" : "CAST_FAILED";
+}
+
+char const* BotCombatOrder(Player* bot, Unit* target, BotCombatOrderKind kind)
+{
+    if (!bot || !target || !target->IsInWorld() || !target->IsAlive() || target->GetMap() != bot->GetMap())
+        return "CAST_FAILED";
+    if (CastingNow(bot) || bot->isMoving())
+        return "BUSY";
+    BotCombatCtx probe(nullptr);
+    probe.Resolve(bot);
+    bool const hostile = bot->IsValidAttackTarget(target);
+    float const dist = bot->GetDistance(target);
+    uint32 const now = GameTime::GetGameTimeMS();
+    Resolved const* row = nullptr;
+    char const* refusal = "NO_SPELL";
+    auto consider = [&](Resolved const& r, bool typeOk)
+    {
+        if (row)
+            return;
+        if (!typeOk) { refusal = "WRONG_TYPE"; return; }
+        if (!Ready(bot, r)) { refusal = "COOLDOWN"; return; }
+        if (!Affordable(bot, r.Info)) { refusal = "NO_POWER"; return; }
+        if (r.MeleeRange ? !bot->IsWithinMeleeRange(target) : (dist > r.MaxRange - 1.0f || dist < r.MinRange)) { refusal = "OUT_OF_RANGE"; return; }
+        if (target != bot && !bot->IsWithinLOSInMap(target)) { refusal = "NO_LOS"; return; }
+        row = &r;
+    };
+    switch (kind)
+    {
+        case BotCombatOrderKind::Control:
+            if (!hostile)
+                return "NOT_HOSTILE";
+            if (target->HasBreakableByDamageCrowdControlAura())
+                return "ALREADY_CONTROLLED";
+            for (Resolved const& r : probe.Spells)
+                if (r.Def->Type == Kind::Control && FormOk(*r.Def, bot) && (!r.Def->ReqAura || bot->HasAuraType(SPELL_AURA_MOD_STEALTH)) && !(bot->IsInCombat() && r.Def->ReqAura))
+                    consider(r, r.Info->CheckTargetCreatureType(target));
+            if (row && !BotGroupControl::ControlClaims().Claim(ClaimKeyOf(target), ClaimerOf(bot), now, Cfg().GC.ControlHoldMs))
+                return "ASSIGNED";
+            break;
+        case BotCombatOrderKind::Interrupt:
+        {
+            if (!hostile)
+                return "NOT_HOSTILE";
+            BotGroupControl::CastFacts facts;
+            if (!CastFactsOf(bot, target, facts))
+                return "NOT_CASTING";
+            for (Resolved const& r : probe.Spells)
+                if (IsInterruptRow(r) && FormOk(*r.Def, bot))
+                    consider(r, true);
+            if (row && !BotGroupControl::InterruptClaims().Claim(ClaimKeyOf(target), ClaimerOf(bot), now, Cfg().GC.InterruptHoldMs))
+                return "ASSIGNED";
+            break;
+        }
+        case BotCombatOrderKind::Dispel:
+        {
+            if (hostile || !bot->IsFriendlyTo(target))
+                return "NOT_FRIENDLY";
+            uint32 have = 0;
+            for (auto const& [id, app] : target->GetAppliedAuras())
+                if (!app->IsPositive())
+                    have |= BotGroupControl::DispelBitOf(uint8(app->GetBase()->GetSpellInfo()->Dispel));
+            if (!have)
+                return "NOTHING_TO_DISPEL";
+            for (Resolved const& r : probe.Spells)
+                if (r.Def->Type == Kind::Dispel && FormOk(*r.Def, bot) && (DispelMaskOf(r.Info) & have))
+                    consider(r, true);
+            if (row && !BotGroupControl::DispelClaims().Claim(ClaimKeyOf(target), ClaimerOf(bot), now, Cfg().GC.DispelHoldMs))
+                return "ASSIGNED";
+            break;
+        }
+    }
+    if (!row)
+        return refusal;
+    if (target != bot && !bot->HasInArc(float(M_PI), target))
+        bot->SetInFront(target);
+    return bot->CastSpell(target, row->Id, CastSpellExtraArgs(TRIGGERED_NONE)) == SPELL_CAST_OK ? "OK" : "CAST_FAILED";
 }
 
 std::vector<std::string> BotCombatDescribeSpells(Player* bot)
@@ -2089,6 +2707,9 @@ void RegisterCombatBotObjects(BotRegistry& r)
     };
     r.AddTrigger("prebuff_due", [](BotAI* ai) -> std::unique_ptr<Trigger> { return std::make_unique<PreBuffTrigger>(ai); });
     r.AddAction("combat_prebuff", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<PreBuffAction>(ai); });
+    r.AddTrigger("group_support_due", [](BotAI* ai) -> std::unique_ptr<Trigger> { return std::make_unique<GroupSupportTrigger>(ai); });
+    r.AddAction("combat_group_support", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<GroupSupportAction>(ai); });
+    r.AddStrategy("groupcontrol", BotStateBit(BotState::NonCombat), []() -> std::unique_ptr<Strategy> { return std::make_unique<GroupSupportStrategy>(); });
     r.AddStrategy("prebuff", BotStateBit(BotState::NonCombat), []() -> std::unique_ptr<Strategy> { return std::make_unique<PreBuffStrategy>(); });
     r.AddStrategy("combat", BotStateBit(BotState::Combat), []() -> std::unique_ptr<Strategy> { return std::make_unique<CombatStrategy>(); });
 }

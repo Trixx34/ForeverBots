@@ -171,7 +171,7 @@ TEST_CASE("BotChat verbs", "[BotChat]")
     CHECK(ParseVerb("", true) == Verb::None);
 
     // the order verbs exist only with Bot.Chat.Orders.Enabled
-    for (char const* word : { "stop", "aggressive", "passive", "pull", "heal", "mount", "dismount", "summon", "revive" })
+    for (char const* word : { "stop", "aggressive", "passive", "pull", "heal", "mount", "dismount", "summon", "revive", "cc", "interrupt", "dispel" })
     {
         INFO(word);
         CHECK(ParseVerb(word, false) == Verb::None);
@@ -186,7 +186,7 @@ TEST_CASE("BotChat verbs", "[BotChat]")
 
 TEST_CASE("BotChat order arguments", "[BotChat]")
 {
-    for (Verb v : { Verb::Stop, Verb::Aggressive, Verb::Passive, Verb::Pull, Verb::Heal, Verb::Mount, Verb::Dismount, Verb::Summon, Verb::Revive })
+    for (Verb v : { Verb::Stop, Verb::Aggressive, Verb::Passive, Verb::Pull, Verb::Heal, Verb::Mount, Verb::Dismount, Verb::Summon, Verb::Revive, Verb::Cc, Verb::Interrupt, Verb::Dispel })
     {
         CHECK(ValidateOrderArgs(v, "") == nullptr);
         CHECK(ValidateOrderArgs(v, "   ") == nullptr);
@@ -204,7 +204,7 @@ TEST_CASE("BotChat order role gate", "[BotChat]")
     CHECK(RoleGate(Verb::Heal, CLASS_PRIEST, roles) == nullptr);
     CHECK(std::string(RoleGate(Verb::Heal, CLASS_WARRIOR, roles)) == "NOT_HEALER");
     CHECK(std::string(RoleGate(Verb::Heal, 40, roles)) == "NOT_HEALER");   // class id out of mask range
-    for (Verb v : { Verb::Stop, Verb::Aggressive, Verb::Passive, Verb::Mount, Verb::Dismount, Verb::Summon, Verb::Revive, Verb::Follow })
+    for (Verb v : { Verb::Stop, Verb::Aggressive, Verb::Passive, Verb::Mount, Verb::Dismount, Verb::Summon, Verb::Revive, Verb::Follow, Verb::Cc, Verb::Interrupt, Verb::Dispel })
         CHECK(RoleGate(v, CLASS_MAGE, roles) == nullptr);
 
     RoleMasks custom = roles;

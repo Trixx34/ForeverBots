@@ -2148,6 +2148,140 @@ Bot.AI.Loot.Safety.QuarantineSec = 1200
 
 
 ###################################################################################################
+# BOT GROUP CONTROL
+#
+# Crowd control, interrupts and dispels of bots in a group (docs/playerbots/feature-bot-group-control-20261008.md).
+# Several bots never answer the same cast, effect or mob: the first one claims it and a second takes over when
+# the claim runs out. Raid target icons set by a player (moon, square, triangle, diamond by default) mark the
+# mobs the bots control. Log rows: INTERRUPT_CAST, DISPEL_CAST, CC_CAST, CC_PREPULL (category combat).
+###################################################################################################
+
+#
+#    Bot.AI.GroupControl.Enabled
+#        Description: Master switch. On: bots interrupt dangerous enemy casts (Kick, Counterspell, Hammer of
+#                     Justice, Earth Shock), dispel harmful effects of group members (Dispel Magic, Cure Disease,
+#                     Purify, Cleanse, Cure Poison, Remove Curse, Remove Lesser Curse), control marked mobs
+#                     (Polymorph, Shackle Undead, Hibernate, Banish, Scare Beast, Sap) and leave controlled mobs
+#                     alone (also no area spell that would break them). Off: the old behavior.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.GroupControl.Enabled = 0
+
+#
+#    Bot.AI.GroupControl.Interrupt.Enabled
+#        Description: Interrupts go through one shared check: any enemy of the group (not only the fight target)
+#                     whose cast is worth stopping is interrupted by one bot that can reach it. Needs
+#                     Bot.AI.GroupControl.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.GroupControl.Interrupt.Enabled = 1
+
+#
+#    Bot.AI.GroupControl.Interrupt.MinCastMs
+#        Description: Casts shorter than this are let through. Heals and stun, fear, root, charm or silence casts
+#                     are always interrupted.
+#        Default:     1500
+#        Values:      whole number 0 to 10000 (milliseconds)
+Bot.AI.GroupControl.Interrupt.MinCastMs = 1500
+
+#
+#    Bot.AI.GroupControl.Interrupt.MinRemainingMs
+#        Description: A cast with less time left than this is not worth the interrupt cooldown.
+#        Default:     400
+#        Values:      whole number 0 to 5000 (milliseconds)
+Bot.AI.GroupControl.Interrupt.MinRemainingMs = 400
+
+#
+#    Bot.AI.GroupControl.Interrupt.HoldMs
+#        Description: How long the bot that took a cast keeps it. If the cast is still running after this, another
+#                     bot with an interrupt tries (a backup).
+#        Default:     1500
+#        Values:      whole number 200 to 10000 (milliseconds)
+Bot.AI.GroupControl.Interrupt.HoldMs = 1500
+
+#
+#    Bot.AI.GroupControl.Dispel.Enabled
+#        Description: Bots with a dispel remove harmful effects from group members and themselves. The worst
+#                     effect goes first: stun, polymorph, fear, root, silence; then damage over time; then slows.
+#                     Needs Bot.AI.GroupControl.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.GroupControl.Dispel.Enabled = 1
+
+#
+#    Bot.AI.GroupControl.Dispel.MinPriority
+#        Description: In a fight only effects of at least this priority are dispelled: 100 stun, polymorph, fear,
+#                     root, silence; 40 damage over time; 20 slow; 10 anything else harmful.
+#        Default:     20
+#        Values:      whole number 1 to 100
+Bot.AI.GroupControl.Dispel.MinPriority = 20
+
+#
+#    Bot.AI.GroupControl.Dispel.OutOfCombat
+#        Description: Out of a fight bots cleanse every harmful effect they can remove (curses, poison and disease
+#                     left after the fight), while their mana is above Bot.AI.Combat.PrePullManaPct.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.GroupControl.Dispel.OutOfCombat = 1
+
+#
+#    Bot.AI.GroupControl.Dispel.HoldMs
+#        Description: How long the bot that took a dispel keeps it before another bot may try the same member.
+#        Default:     2500
+#        Values:      whole number 500 to 15000 (milliseconds)
+Bot.AI.GroupControl.Dispel.HoldMs = 2500
+
+#
+#    Bot.AI.GroupControl.Control.Enabled
+#        Description: Bots control marked mobs and avoid attacking controlled or marked ones while other enemies
+#                     are left. Replaces the single-mob control of Bot.AI.Rotation.CrowdControl. Needs
+#                     Bot.AI.GroupControl.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.GroupControl.Control.Enabled = 1
+
+#
+#    Bot.AI.GroupControl.Control.Marks
+#        Description: Raid target icons that mean "control this mob". Any number of marked mobs are controlled, one
+#                     bot each. The kill icons (skull, cross) are not in the default list.
+#        Default:     "moon,square,triangle,diamond"
+#        Values:      comma list of star, circle, diamond, triangle, moon, square, cross, skull (or 1 to 8); "none" for no icon
+Bot.AI.GroupControl.Control.Marks = "moon,square,triangle,diamond"
+
+#
+#    Bot.AI.GroupControl.Control.Auto
+#        Description: Without a mark, the strongest extra attacker gets controlled as before (rows of the class
+#                     spell table with an enemy count condition). Needs Bot.AI.Rotation.Enabled and
+#                     Bot.AI.Rotation.CrowdControl.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.GroupControl.Control.Auto = 1
+
+#
+#    Bot.AI.GroupControl.Control.MaxAuto
+#        Description: Mobs controlled at a time without a mark.
+#        Default:     1
+#        Values:      whole number 1 to 4
+Bot.AI.GroupControl.Control.MaxAuto = 1
+
+#
+#    Bot.AI.GroupControl.Control.PrePull
+#        Description: Out of a fight a bot controls a marked mob that is in range of its spell (Sap only from
+#                     stealth within 10 yards: bots do not walk up to the mob). Off: marked mobs are controlled
+#                     once the fight has started.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.GroupControl.Control.PrePull = 1
+
+#
+#    Bot.AI.GroupControl.Control.HoldMs
+#        Description: How long the bot that took a mob keeps it before another bot may try the same mob.
+#        Default:     3000
+#        Values:      whole number 500 to 20000 (milliseconds)
+Bot.AI.GroupControl.Control.HoldMs = 3000
+
+
+###################################################################################################
 # CHAT COMMANDS
 #
 # Bots obey chat commands from the leader of their group (party, raid, whisper to a bot). Syntax:
@@ -2228,7 +2362,8 @@ Bot.Chat.Role.Dps = "rogue,mage,warlock,hunter"
 #        Description: More chat verbs (docs/playerbots/feature-bot-chat-orders-20261008.md): stop, aggressive,
 #                     passive, pull (tank bots attack the leader selected target), heal (healer bots heal the
 #                     selected target), mount, dismount, summon (bots port to the leader), revive (dead bots come
-#                     back to life next to the leader). Off: these words are ordinary chat.
+#                     back to life next to the leader), cc / interrupt / dispel (the bots that can control, kick or
+#                     cleanse the selected target do it, see BOT GROUP CONTROL). Off: these words are ordinary chat.
 #        Default:     0
 #        Values:      0 (off) or 1 (on)
 Bot.Chat.Orders.Enabled = 0

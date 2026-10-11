@@ -67,7 +67,8 @@ TC_GAME_API bool ParseSelector(std::string_view token, RoleMasks const& roles, S
 enum class Verb : uint8
 {
     None, Follow, Stay, Goto, Rest, Release, Status, Strategy, Verbose, Share, Dummy,
-    Stop, Aggressive, Passive, Pull, Heal, Mount, Dismount, Summon, Revive   // orders (Bot.Chat.Orders.Enabled)
+    Stop, Aggressive, Passive, Pull, Heal, Mount, Dismount, Summon, Revive,   // orders (Bot.Chat.Orders.Enabled)
+    Cc, Interrupt, Dispel       // orders on the issuer's target (BotCombatOrder, Bot.AI.GroupControl.*)
 };
 
 // Pure: the verb of a chat token, case insensitive. The order verbs (stop ... revive) are only recognized when `orders` is true.

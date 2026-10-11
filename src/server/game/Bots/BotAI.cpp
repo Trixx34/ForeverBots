@@ -131,6 +131,8 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
         names.push_back("natural_idle");
     if (state == BotState::NonCombat && BotCombatRotationEnabled() && std::find(names.begin(), names.end(), "prebuff") == names.end())
         names.push_back("prebuff");   // pre-pull buffs of the class rotations
+    if (state == BotState::NonCombat && BotCombatGroupControlEnabled() && std::find(names.begin(), names.end(), "groupcontrol") == names.end())
+        names.push_back("groupcontrol");   // dispels and marked crowd control out of a fight
     if (BotPet::Cfg().Enabled && bot && bot->GetClass() == CLASS_HUNTER && state != BotState::Dead
         && std::find(names.begin(), names.end(), "pet") == names.end())
         names.push_back("pet");

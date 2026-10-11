@@ -64,7 +64,7 @@ namespace BotLogCat
     {
         { "BOT_", Lifecycle }, { "CREATE_", Lifecycle }, { "LOG_", Lifecycle }, { "ENGINE_", Ai }, { "STRATEGY_", Ai }, { "TRACE_", Ai },
         { "AI_", Ai }, { "COMBAT_", Combat }, { "CAST_", Combat }, { "AURA_", Combat }, { "FLEE_", Combat }, { "AGGRO_", Combat },
-        { "THREAT_", Combat }, { "TARGET_PICKED", Combat }, { "REPAIR_", Economy }, { "DUMMY_", Dummy }, { "TEST_", Dummy },
+        { "THREAT_", Combat }, { "INTERRUPT_", Combat }, { "DISPEL_", Combat }, { "CC_", Combat }, { "TARGET_PICKED", Combat }, { "REPAIR_", Economy }, { "DUMMY_", Dummy }, { "TEST_", Dummy },
         { "GOTO_", Movement }, { "FOLLOW_", Movement }, { "MOVE_", Movement }, { "NO_PATH", Movement }, { "NO_PROGRESS", Movement },
         { "PATH_", Movement }, { "ROUTE_", Movement }, { "STAY_", Movement }, { "MMAP_", Movement }, { "UNREACHABLE_", Movement },
         { "IDLE_STEP", Movement }, { "TOWN_", Movement }, { "TRAVEL_", Travel }, { "CORPSE_", Recovery }, { "SPIRIT_", Recovery },
