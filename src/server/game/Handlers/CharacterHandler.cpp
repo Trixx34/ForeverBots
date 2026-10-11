@@ -1524,8 +1524,10 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
     if (pCurrChar->GetGuildId())
     {
         if (Guild* guild = sGuildMgr->GetGuildById(pCurrChar->GetGuildId()))
+        {
             guild->SendLoginInfo(this);
             BotGuild::OnMemberLogin(pCurrChar);
+        }
         else
         {
             // remove wrong guild data

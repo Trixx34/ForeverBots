@@ -202,13 +202,13 @@ void AutoStep()
     if (!cfg.AutoEnabled || GameTime::GetUptime() < 300)   // wait for the population to log in: guilds are counted by their online leader
         return;
 
-    std::vector<BotInfo> bots;
+    std::vector<BotGuildPlan::BotInfo> bots;
     std::unordered_map<uint64, Player*> byGuid;
     for (Player* p : sBotMgr->GetOnlineBotPlayers())
     {
         if (IsAlt(p) || !p->IsInWorld())
             continue;
-        BotInfo b;
+        BotGuildPlan::BotInfo b;
         b.Guid = p->GetGUID().GetCounter();
         b.Faction = p->GetTeam() == ALLIANCE ? 0 : 1;
         b.Level = p->GetLevel();
@@ -219,10 +219,10 @@ void AutoStep()
         byGuid[b.Guid] = p;
     }
 
-    std::vector<GuildInfo> guilds;
+    std::vector<BotGuildPlan::GuildInfo> guilds;
     for (auto const& [id, guild] : sGuildMgr->GetGuildStore())
     {
-        GuildInfo g;
+        BotGuildPlan::GuildInfo g;
         g.Id = id;
         g.Members = guild->GetMembersCount();
         Player* leader = ObjectAccessor::FindPlayer(guild->GetLeaderGUID());
@@ -232,12 +232,12 @@ void AutoStep()
     }
 
     uint64 const salt = Seed();
-    for (Action const& a : PlanAuto(bots, guilds, cfg, salt))
+    for (BotGuildPlan::Action const& a : PlanAuto(bots, guilds, cfg, salt))
     {
         Player* bot = byGuid[a.Bot];
         if (!bot || bot->GetGuildId())
             continue;
-        if (a.What == Action::Join)
+        if (a.What == BotGuildPlan::Action::Join)
         {
             Guild* guild = sGuildMgr->GetGuildById(a.Guild);
             if (!guild)
@@ -421,7 +421,7 @@ void OnWhisper(Player* sender, Player* receiver, std::string_view text)
         return say(Intent::AlreadyInGuild, {});
     if (!guild)
         return say(Intent::NoGuild, {});
-    Guild::Member const* member = guild->GetMember(receiver->GetGUID());
+    Guild::Member const* member = std::as_const(*guild).GetMember(receiver->GetGUID());
     if (!member || !guild->HasAnyRankRight(member->GetRankId(), GR_RIGHT_INVITE))
         return say(Intent::NoRights, guild->GetName());
     if (sender->GetGuildIdInvited())
