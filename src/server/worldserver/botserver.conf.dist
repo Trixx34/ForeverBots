@@ -699,6 +699,65 @@ Bot.AI.Combat.FreeRepair = 1
 Bot.AI.Combat.ApproachTimeoutSec = 15
 
 #
+#    Bot.AI.Combat.ApproachEscalate.Enabled
+#        Description: A bot that hits APPROACH_TIMEOUT more than Bot.AI.Combat.ApproachEscalate.Count times inside
+#                     Bot.AI.Combat.ApproachEscalate.WindowSec stops retrying. It looks for the cause (a profession
+#                     tool in the main hand, or a ranged weapon without ammo), fixes it where it can (wields the
+#                     combat weapon, plans an ammo trip when Bot.AI.Ammo.Enabled is on) and does not pick the target
+#                     that timed out last for Bot.AI.Combat.ApproachEscalate.IgnoreSec. Logged as APPROACH_ESCALATED
+#                     with the cause and the action taken.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Combat.ApproachEscalate.Enabled = 1
+
+#
+#    Bot.AI.Combat.ApproachEscalate.Count
+#        Description: More approach timeouts than this inside the window escalate.
+#        Default:     5
+#        Values:      whole number 1 to 15
+Bot.AI.Combat.ApproachEscalate.Count = 5
+
+#
+#    Bot.AI.Combat.ApproachEscalate.WindowSec
+#        Description: Length of the window in which the approach timeouts of one bot are counted.
+#        Default:     600
+#        Values:      whole number 30 to 3600 (seconds)
+Bot.AI.Combat.ApproachEscalate.WindowSec = 600
+
+#
+#    Bot.AI.Combat.ApproachEscalate.IgnoreSec
+#        Description: After an escalation the target that timed out last is not picked again for this long.
+#        Default:     600
+#        Values:      whole number 20 to 7200 (seconds)
+Bot.AI.Combat.ApproachEscalate.IgnoreSec = 600
+
+#
+#    Bot.AI.Weapon.Restore
+#        Description: A bot whose main hand holds a profession tool (a fishing pole after fishing, a skinning knife
+#                     or mining pick) wields the best usable combat weapon from its bags again (WEAPON_RESTORED). The
+#                     tools listed in Bot.AI.Weapon.ToolEntries are also never worn as gear. With a tool worn and no
+#                     weapon in the bags it logs WEAPON_RESTORE_NONE at most every 10 minutes.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Weapon.Restore = 1
+
+#
+#    Bot.AI.Weapon.CheckSec
+#        Description: Minimum time between two main hand checks of one bot.
+#        Default:     20
+#        Values:      whole number 5 to 600 (seconds)
+Bot.AI.Weapon.CheckSec = 20
+
+#
+#    Bot.AI.Weapon.ToolEntries
+#        Description: Item entries of profession tools that count as a tool, not as a combat weapon, besides the
+#                     fishing poles (found by item subclass). The default is the Skinning Knife and the Mining Pick
+#                     seen in the main hand in the sim run; check the entries against the item table.
+#        Default:     "7005,2901"
+#        Values:      list of item entries separated by comma, semicolon or space
+Bot.AI.Weapon.ToolEntries = "7005,2901"
+
+#
 #    Bot.AI.Combat.HealBelowPct
 #        Description: Health percent below which a bot with a heal spell casts it on itself in combat.
 #        Default:     45
@@ -918,6 +977,70 @@ Bot.Quest.LootSpawnByCost = 0
 #        Default:     0
 #        Values:      0 (off) or 1 (on)
 Bot.Quest.DeathLoopBreaker = 0
+
+#
+#    Bot.Quest.TripGuard.Enabled
+#        Description: Guard against profession trainer and workshop trip loops. A profession skill or workshop
+#                     skill whose trips keep failing is not tried again at once: a minimum time between trips, a cap
+#                     of failed trips, then a long pause (TRIP_GIVEN_UP). Profession trainer trips also stay inside
+#                     Bot.Quest.TripGuard.ProfMaxYd and, with ProfSameZone, inside the zone of the bot. Every trip
+#                     ends in a TRIP_ARRIVED or TRIP_FAILED row.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.TripGuard.Enabled = 1
+
+#
+#    Bot.Quest.TripGuard.ProfCooldownSec
+#        Description: Minimum time between two profession trainer trips for the same skill, until one succeeds.
+#        Default:     1800
+#        Values:      whole number 0 to 86400 (seconds)
+Bot.Quest.TripGuard.ProfCooldownSec = 1800
+
+#
+#    Bot.Quest.TripGuard.ProfMaxAttempts
+#        Description: Profession trainer trips for one skill without a success before the skill is given up for
+#                     Bot.Quest.TripGuard.GiveUpSec. 0 means no cap.
+#        Default:     5
+#        Values:      whole number 0 to 100
+Bot.Quest.TripGuard.ProfMaxAttempts = 5
+
+#
+#    Bot.Quest.TripGuard.WorkshopCooldownSec
+#        Description: Minimum time between two forge, anvil or fire trips for the same crafting skill, until a craft
+#                     after the trip succeeds.
+#        Default:     600
+#        Values:      whole number 0 to 86400 (seconds)
+Bot.Quest.TripGuard.WorkshopCooldownSec = 600
+
+#
+#    Bot.Quest.TripGuard.WorkshopMaxAttempts
+#        Description: Workshop trips for one skill without a successful craft before the skill is given up for
+#                     Bot.Quest.TripGuard.GiveUpSec. 0 means no cap.
+#        Default:     3
+#        Values:      whole number 0 to 100
+Bot.Quest.TripGuard.WorkshopMaxAttempts = 3
+
+#
+#    Bot.Quest.TripGuard.GiveUpSec
+#        Description: How long a skill stays blocked after its trips were given up.
+#        Default:     21600
+#        Values:      whole number 60 to 604800 (seconds)
+Bot.Quest.TripGuard.GiveUpSec = 21600
+
+#
+#    Bot.Quest.TripGuard.ProfMaxYd
+#        Description: Longest walk to a profession trainer (was a fixed 3000 yd). The sim run showed trips of 1000
+#                     to 3000 yd that ended in path failures or in zones with mobs far above the bot.
+#        Default:     500
+#        Values:      whole number 50 to 5000 (yards)
+Bot.Quest.TripGuard.ProfMaxYd = 500
+
+#
+#    Bot.Quest.TripGuard.ProfSameZone
+#        Description: A profession trainer in another zone than the bot is not walked to.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.TripGuard.ProfSameZone = 1
 
 #
 #    Bot.Quest.DeferQuest8

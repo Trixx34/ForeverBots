@@ -54,6 +54,14 @@ TEST_CASE("Reason prefixes pick the category", "[BotLogCategory]")
     CHECK(Classify("decision", "DISPEL_CAST") == Combat);
     CHECK(Classify("decision", "CC_CAST") == Combat);
     CHECK(Classify("decision", "CC_PREPULL") == Combat);
+    CHECK(Classify("decision", "APPROACH_TIMEOUT") == Combat);
+    CHECK(Classify("decision", "APPROACH_ESCALATED") == Combat);
+    CHECK(Classify("decision", "WORKSHOP_TRIP") == Economy);
+    CHECK(Classify("decision", "TRIP_ARRIVED") == Economy);
+    CHECK(Classify("decision", "TRIP_FAILED") == Economy);
+    CHECK(Classify("decision", "TRIP_GIVEN_UP") == Economy);
+    CHECK(Classify("decision", "WEAPON_RESTORED") == Economy);
+    CHECK(Classify("decision", "VENDOR_RESULT") == Economy);
 }
 
 TEST_CASE("Event type is the fallback, other when nothing matches", "[BotLogCategory]")
