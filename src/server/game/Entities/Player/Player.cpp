@@ -31,6 +31,7 @@
 #include "BattlefieldMgr.h"
 #include "Battleground.h"
 #include "BotAI.h"
+#include "BotGuild.h"
 #include "BotQuestLog.h"
 #include "BattlegroundMgr.h"
 #include "BattlegroundPackets.h"
@@ -2332,6 +2333,7 @@ void Player::GiveLevel(uint8 level)
 
     if (BotAI* botAI = GetSession()->GetBotAI())
         botAI->OnLevelUp(this, oldLevel, level);
+    BotGuild::OnLevelUp(this);
     BattlenetPresence::OnCharacterChanged(this);
 }
 

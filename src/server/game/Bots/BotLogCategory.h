@@ -45,7 +45,7 @@ namespace BotLogCat
         Progress,   // xp, levels, talents, known spells
         Economy,    // auction, trade, vendors, loot, gear, professions, consumables, bank, mail
         Pets,       // hunter and warlock pets
-        Social,     // chat orders, alts, group invites, bot parties
+        Social,     // chat orders, alts, group invites, bot parties, guilds
         Dungeon,    // dungeon runs
         Other,      // anything no rule matches
         Count
@@ -74,7 +74,7 @@ namespace BotLogCat
         { "VENDOR_", Economy }, { "SOLD_", Economy }, { "TRAIN_", Economy }, { "BAG_", Economy }, { "GEAR_", Economy },
         { "LOOT_", Economy }, { "PROF_", Economy }, { "GATHER_", Economy }, { "FISH_", Economy }, { "AMMO_", Economy },
         { "POTION_", Economy }, { "EAT_", Economy }, { "DRINK_", Economy }, { "BANK_", Economy }, { "MAIL_", Economy },
-        { "PET_", Pets }, { "ALT_", Social }, { "INVITE_", Social }, { "GROUP_", Social }, { "PARTY_", Social }, { "DUNGEON_", Dungeon }
+        { "PET_", Pets }, { "ALT_", Social }, { "INVITE_", Social }, { "GUILD_", Social }, { "GROUP_", Social }, { "PARTY_", Social }, { "DUNGEON_", Dungeon }
     };
 
     // Event type fallback, used when the reason code has no prefix rule.
