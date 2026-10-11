@@ -16,6 +16,7 @@
  */
 
 #include "DB2Stores.h"
+#include "ClassicOpcodes.h"
 #include "Containers.h"
 #include "DB2LoadInfo.h"
 #include "DatabaseEnv.h"
@@ -1995,8 +1996,9 @@ uint32 DB2Manager::GetEmptyAnimStateID() const
     // "no state animation" = one past the last AnimationData row OF THE CLIENT. Classic 1.60.1.70170 expects 1866 (official beta
     // sniff: every gameobject create carries 1866); our extracted DB2s are older (1806), and the client then plays animation 1806 as
     // a state: fishing bobbers never splash, NPC/object animations break. Remove when the DB2s are re-extracted from 70170 or newer.
-    static constexpr uint32 CLASSIC_EMPTY_ANIM_STATE_ID = 1866;
-    return std::max<uint32>(sAnimationDataStore.GetNumRows(), CLASSIC_EMPTY_ANIM_STATE_ID);
+    // 1.60.1.70291 added 14 animations: official creates carry 1880 (sending 1866 made the client assert in AnimKit.cpp, originalAnimRec)
+    uint32 const classicEmptyAnimStateId = ClassicOpcodes::IsBuild70291OrLater() ? 1880 : 1866;
+    return std::max<uint32>(sAnimationDataStore.GetNumRows(), classicEmptyAnimStateId);
 }
 
 void DB2Manager::InsertNewHotfix(uint32 tableHash, uint32 recordId)

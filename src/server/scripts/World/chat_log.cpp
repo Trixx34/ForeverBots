@@ -17,6 +17,7 @@
 
 #include "ScriptMgr.h"
 #include "Channel.h"
+#include "DiscordChannel.h"
 #include "Group.h"
 #include "Guild.h"
 #include "Log.h"
@@ -121,11 +122,14 @@ class ChatLogScript : public PlayerScript
 
         void OnChat(Player* player, uint32 /*type*/, uint32 lang, std::string& msg, Channel* channel) override
         {
+            // the Discord bot's channel (DiscordChannel.h) is logged with the system channels: the bot relays chat.log.system, so it
+            // reaches Discord without an extra Logger.chat.log.channel.Discord line (the repack's configs did not have one)
             bool isSystem = channel &&
                             (channel->HasFlag(CHANNEL_FLAG_TRADE) ||
                              channel->HasFlag(CHANNEL_FLAG_GENERAL) ||
                              channel->HasFlag(CHANNEL_FLAG_CITY) ||
-                             channel->HasFlag(CHANNEL_FLAG_LFG));
+                             channel->HasFlag(CHANNEL_FLAG_LFG) ||
+                             DiscordChannel::IsDiscordChannel(channel->GetName()));
 
             // (A) / (H) after the name: the Discord bot (contrib/discord_bot) shows which faction is talking
             char const* faction = player->GetTeam() == ALLIANCE ? "A" : "H";
