@@ -147,6 +147,14 @@ Bot.Log.RepeatCap = 3
 Bot.Log.AiTickStatsSec = 300
 
 #
+#    Bot.Log.StateLedgerSec
+#        Description: STATE_LEDGER row per bot: seconds spent per engine state and quest activity (kill, grind,
+#                     trip_vendor, ...), every N seconds and on logout.
+#        Default:     3600
+#        Values:      whole number 0 to 86400 (seconds, 0 = off)
+Bot.Log.StateLedgerSec = 3600
+
+#
 #    Bot.Log.ServerStatsSec
 #        Description: Interval of the BOT_TICK_STATS line in the server log: bots online, world update diff
 #                     (avg/max ms) and BotMgr::Update cost (avg/max us) over the window. Works without the bot log

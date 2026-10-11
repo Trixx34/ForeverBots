@@ -172,7 +172,9 @@ All rows below go to `bot_event`; `bot_guid`, `level`, map/zone and position are
 | xp | XP_GAIN | `Player::GiveXP` (hook `BotAI::OnXpGain`) | source (`kill`, `quest`, `explore`, `other`), amount, bonus, xp_now, xp_max, level, elapsed_s (since login), victim{entry,level,name} for kills; `target_entry` column = victim, `quest_id` column = quest. Quest/explore sources are tagged by `NoteXpSource` just before the core's `GiveXP` |
 | level_up | LEVEL_UP | end of `Player::GiveLevel` | from, to, elapsed_s (since login), level_time_s (since the previous level-up or login), kill_xp_total |
 | spells | SPELLS_KNOWN | first AI tick after login, and at every level-up | cause (`LOGIN`/`LEVEL_UP`), count, spellbook_total, spells[{id,name,rank}] (max 80, highest rank of each chain, non-passive, class families only). The level-up row is written before trainer-learned spells exist: the next login row is the full picture |
-| ai_stats | AI_TICK_STATS | every `Bot.Log.AiTickStatsSec` (60) per bot | window_s, engines{noncombat/combat/dead:{n,avg_ms,max_ms}} |
+| ai_stats | AI_TICK_STATS | every `Bot.Log.AiTickStatsSec` (300) per bot | window_s, engines{noncombat/combat/dead:{n,avg_ms,max_ms}} |
+| ai_stats | STATE_LEDGER | every `Bot.Log.StateLedgerSec` (3600, 0 = off) per bot and on logout | seconds per engine state and quest activity since the last row |
+| trip | TRIP_END | a service trip with a trip decision ends in `reached` (a failed trip is the `TRIP_FAILED` row) | trip, outcome, elapsed_s, npc, dist_left, free_slots; vendor: sold_stacks, sold_copper, repaired_copper, free_before, free_after |
 | decision | LOG_SUPPRESSED | a repeat-capped row was suppressed and a different row ended the run, or at logout | total, cap, suppressed[{type,reason,quest_id,target_entry,count}] |
 | log | LOG_DROPPED | the database accepted a batch again after rows were dropped (bot_guid 0, WARN) | events_dropped, pos_dropped, rows_in_failed_batches, window_start, window_end, window_s |
 

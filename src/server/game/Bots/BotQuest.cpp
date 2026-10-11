@@ -1101,6 +1101,9 @@ struct Task
     float FishWaterX = 0, FishWaterY = 0;   // Svc 4 (fish): where the bobber should land
     uint64 NodeSpawn = 0;     // Svc 3 (gather): spawn id of the node
     bool SvcRepair = false, SvcBags = false;
+    char const* Trip = nullptr;    // Service task: trip decision code (WORKSHOP_TRIP, PROF_TRIP, VENDOR_TRIP, TRAIN_TRIP) for TRIP_END rows
+    uint32 SoldStacks = 0, SoldCopper = 0, FreeBefore = 0, FreeAfter = 0;   // vendor visit result (TRIP_END)
+    uint64 RepairCopper = 0;
     // Loot task (quest item inside a chest game object)
     uint64 GoSpawn = 0;            // claimed spawn (0 = none picked yet)
     uint64 GoBot = 0;              // claimant key (bot guid counter)
@@ -1998,6 +2001,25 @@ private:
     }
 
     // ----- task bookkeeping -----
+    // One TRIP_END row per service trip that has a trip decision (workshop / profession / vendor / class trainer): outcome reached, dropped or timeout.
+    void TripEnd(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, char const* outcome, char const* code)
+    {
+        Task const& t = c.T;
+        if (t.K != Kind::Service || !t.Trip)
+            return;
+        BotEvent ev = ai->MakeEvent(bot, "trip", BOTLOG_INFO, "TRIP_END", StringFormat("{} {} after {} s", t.Trip, outcome, (now - t.SinceMs) / 1000));
+        ev.TargetEntry = t.NpcEntry;
+        std::string d = StringFormat(R"({{"trip":"{}","outcome":"{}","code":"{}","elapsed_s":{},"npc":{},"dist_left":{:.0f},"free_slots":{}}})",
+            t.Trip, outcome, code, (now - t.SinceMs) / 1000, t.NpcEntry, Dist2D(t.SvcX, t.SvcY, bot->GetPositionX(), bot->GetPositionY()), bot->GetFreeInventorySlotCount());
+        if (t.Svc == 2 && !std::strcmp(outcome, "reached"))
+        {
+            d.pop_back();
+            d += StringFormat(R"(,"sold_stacks":{},"sold_copper":{},"repaired_copper":{},"free_before":{},"free_after":{}}})", t.SoldStacks, t.SoldCopper, t.RepairCopper, t.FreeBefore, t.FreeAfter);
+        }
+        ev.Details = std::move(d);
+        sBotMgr->LogEvent(std::move(ev));
+    }
+
     void Finish(BotQuestCtx& c, uint32 now, bool immediate = true)
     {
         if (c.T.K == Kind::Loot && c.T.GoSpawn)
@@ -3507,6 +3529,7 @@ private:
         StartService(bot, c, now, 5, pt, false, false);
         c.ProfTripSkill = 0;
         c.T.NodeSpawn = best->SpawnId;
+        c.T.Trip = "WORKSHOP_TRIP";
         c.FocusArrivedSkill = info.Skill;
         TripPlanned(ai, bot, c, kTripWorkshop | info.Skill, LoopCfg().Workshop, now, "workshop", info.Skill);
         Decision(ai, bot, "WORKSHOP_TRIP", StringFormat("walking to a spell focus {} ({:.0f} yd) to craft {}", focusId, bd, info.Name), 0, best->Entry,
@@ -3524,6 +3547,7 @@ private:
         }
         if (Dist2D(t.SvcX, t.SvcY, bot->GetPositionX(), bot->GetPositionY()) <= 3.5f)
         {
+            TripEnd(ai, bot, c, now, "reached", "ARRIVED");
             StopMoving(ai, bot, c);
             TripArrived(ai, bot, c, now);
             c.FocusArrivedMs = now;
@@ -3787,6 +3811,7 @@ private:
                 StartService(bot, c, now, 1, *tp, false, false);
                 c.ProfTripSkill = skill;
                 TripPlanned(ai, bot, c, kTripProf | skill, LoopCfg().Prof, now, "profession", skill);
+                c.T.Trip = "PROF_TRIP";
                 Decision(ai, bot, "PROF_TRIP", StringFormat("walking to {} trainer {} ({:.0f} yd), {} spells", name, tp->Entry, d, ev.Affordable), 0, tp->Entry,
                     StringFormat(R"({{"skill":{},"have":{},"trainer_id":{},"dist":{:.0f},"affordable":{},"money":{},"skill_value":{}}})", skill, have, tp->TrainerId, d, ev.Affordable, bot->GetMoney(), bot->GetSkillValue(skill)));
                 return true;
@@ -3940,6 +3965,7 @@ private:
                 if (ev.Affordable)
                 {
                     StartService(bot, c, now, 1, *tp, false, false);
+                    c.T.Trip = "TRAIN_TRIP";
                     Decision(ai, bot, "TRAIN_TRIP", StringFormat("walking to class trainer {} ({:.0f} yd) for {} spells", tp->Entry, d, ev.Affordable), 0, tp->Entry,
                         StringFormat(R"({{"trainer_id":{},"dist":{:.0f},"affordable":{},"available":{},"money":{}}})", tp->TrainerId, d, ev.Affordable, ev.Avail, bot->GetMoney()));
                     return true;
@@ -4039,6 +4065,7 @@ private:
             }
         }
         StartService(bot, c, now, 2, *vp, needRepair && vp->Repair, needBags);
+        c.T.Trip = "VENDOR_TRIP";
         ++c.VendorTrips;
         Decision(ai, bot, "VENDOR_TRIP", StringFormat("walking to vendor {} ({:.0f} yd): free slots {}, repair {} copper, bag upgrade {}", vp->Entry, d, freeSlots, repairCost, needBags ? "yes" : "no"), 0, vp->Entry,
             StringFormat(R"({{"dist":{:.0f},"free_slots":{},"repair_cost":{},"repair_vendor":{},"bag_upgrade":{},"forced":{},"money":{}}})", d, freeSlots, repairCost, vp->Repair, needBags, forced, bot->GetMoney()));
@@ -4073,6 +4100,7 @@ private:
             else
                 DoVendor(ai, bot, c, now, npc);
             c.ProfTripSkill = 0;
+            TripEnd(ai, bot, c, now, "reached", "ARRIVED");
             Finish(c, now);
             return true;
         }
@@ -4219,6 +4247,9 @@ private:
                 StringFormat(R"({{"candidates":{},"sold":{},"refused":{},"first_refusal":{},"free_before":{},"free_after":{},"bag_items":{},"white_or_better":{},"starts_quest":{},"copper":{}}})",
                     sells.size(), nStacks, nRefused, firstRefusal, freeBefore, freeAfter, bagItems, whiteItems, questItems, bot->GetMoney() - money0));
         }
+        c.T.SoldStacks = nStacks;
+        c.T.SoldCopper = uint32(bot->GetMoney() - money0);
+        c.T.FreeBefore = freeBefore;
         if (nStacks)
             Decision(ai, bot, "SOLD_ITEMS", StringFormat("sold {} stacks ({} grey, {} unusable) for {} copper", nStacks, nGrey, nUnusable, bot->GetMoney() - money0), 0, npc->GetEntry(),
                 StringFormat(R"({{"grey":{},"unusable":{},"copper":{},"free_before":{},"free_after":{},"items":[{}]}})", nGrey, nUnusable, bot->GetMoney() - money0, freeBefore, freeAfter, sold));
@@ -4229,6 +4260,8 @@ private:
         {
             uint64 const before = bot->GetMoney();
             bot->DurabilityRepairAll(true, bot->GetReputationPriceDiscount(npc), false);
+            if (bot->GetMoney() < before)
+                c.T.RepairCopper = before - bot->GetMoney();
             if (bot->GetMoney() < before)
                 Decision(ai, bot, "REPAIRED", StringFormat("repaired equipment for {} copper", before - bot->GetMoney()), 0, npc->GetEntry(),
                     StringFormat(R"({{"cost":{},"money_left":{}}})", before - bot->GetMoney(), bot->GetMoney()));
@@ -4288,6 +4321,7 @@ private:
             BuyAmmo(ai, bot, c, npc);
         BuyGearUpgrades(ai, bot, c, now, npc);
         BuyFishingPole(ai, bot, c, npc);
+        c.T.FreeAfter = bot->GetFreeInventorySlotCount();
         c.NextVendorMs = now + (bot->GetFreeInventorySlotCount() <= 1 ? 600 : 120) * 1000;
     }
 
@@ -6209,6 +6243,54 @@ bool IsGrinding(BotAI* ai)
 {
     BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
     return cp && cp->LastWasGrind;
+}
+
+void CurrentTask(BotAI* ai, uint32& questId, char const*& task)
+{
+    questId = 0;
+    task = "none";
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    if (!cp)
+        return;
+    Task const& t = cp->T;
+    questId = t.Quest;
+    switch (t.K)
+    {
+        case Kind::Service:
+            task = !t.Trip ? "trip_other" : !std::strcmp(t.Trip, "VENDOR_TRIP") ? "trip_vendor" : !std::strcmp(t.Trip, "PROF_TRIP") ? "trip_prof" :
+                !std::strcmp(t.Trip, "WORKSHOP_TRIP") ? "trip_workshop" : "trip_trainer";
+            break;
+        case Kind::None: task = cp->LastWasGrind ? "grind" : "none"; break;
+        default: task = KindName(t.K); break;
+    }
+}
+
+static char const* const ActivityNames[ACTIVITY_COUNT] = { "none", "go_giver", "go_ender", "kill", "talk", "grind", "loot", "trip_vendor",
+    "trip_trainer", "trip_prof", "trip_workshop", "trip_gather", "trip_fish", "trip_auction", "trip_bank", "trip_other" };
+
+char const* ActivityName(uint32 index) { return index < ACTIVITY_COUNT ? ActivityNames[index] : "none"; }
+
+uint32 CurrentActivity(BotAI* ai)
+{
+    uint32 questId;
+    char const* task;
+    CurrentTask(ai, questId, task);
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    if (cp && cp->T.K == Kind::Service)
+    {
+        switch (cp->T.Svc)
+        {
+            case 3: return 11;
+            case 4: return 12;
+            case 6: case 7: return 13;
+            case 8: case 9: return 14;
+            default: break;
+        }
+    }
+    for (uint32 i = 0; i < ACTIVITY_COUNT; ++i)
+        if (!std::strcmp(task, ActivityNames[i]))
+            return i;
+    return 0;
 }
 
 // The nearest quest hub of the bot's map inside the zone whose quest levels fit the bot (same level window as the hub choice).

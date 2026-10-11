@@ -200,6 +200,7 @@ BotAIConfig const& BotAI::Config()
         _config.AggroElites = sConfigMgr->GetBoolDefault("Bot.AI.AggroAvoid.Elites", true);
         _config.AggroLogSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.AggroAvoid.LogIntervalSec", 15), 1, 3600));
         _config.AggroMaxSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.AggroAvoid.MaxSec", 45), 5, 600));
+        _config.LedgerSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.StateLedgerSec", 3600), 0, 86400));
         _config.TickStatsSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.AiTickStatsSec", 300), 0, 3600));
         _config.PullDetail = sConfigMgr->GetBoolDefault("Bot.Log.PullDetail", true);
         _config.IdleReasons = sConfigMgr->GetBoolDefault("Bot.Log.IdleReasons", true);
@@ -307,6 +308,7 @@ BotState BotAI::DesiredState(Player* bot, char const*& cause) const
 void BotAI::Tick(Player* bot)
 {
     _tickBot = bot;
+    LedgerCharge();
 
     uint16 const mapId = uint16(bot->GetMapId());
     if (mapId != _lastMapId)
@@ -363,6 +365,18 @@ void BotAI::Tick(Player* bot)
     uint64 const posStart = NowNs();
     SamplePosition(bot);
     _stats.PosNs.fetch_add(NowNs() - posStart, std::memory_order_relaxed);
+    // ledger bucket for the time until the next tick
+    _ledgerState = uint8(_state);
+    _ledgerAct = uint8(std::min<uint32>(BotQuest::CurrentActivity(this), LEDGER_ACT - 1));
+    _ledgerLastMs = _nowMs;
+    if (!_ledgerInit)
+    {
+        _ledgerInit = true;
+        _ledgerStartMs = _nowMs;
+    }
+    else if (uint32 const ledgerSec = Config().LedgerSec)
+        if (_nowMs - _ledgerStartMs >= ledgerSec * 1000)
+            EmitLedger(bot, "PERIODIC");
     _tickBot = nullptr;
 }
 
@@ -966,6 +980,7 @@ void BotAI::OnDamageDealt(Player* bot, Unit* victim, uint32 damage, SpellInfo co
 
 void BotAI::OnKilled(Player* /*bot*/, Unit* /*victim*/)
 {
+    ++_killTotal;
     if (!_fight.Active)
         return;
     ++_fight.Kills;
@@ -987,6 +1002,8 @@ void BotAI::OnDying(Player* bot, Unit* attacker)
 
 void BotAI::OnLogout(Player* bot, char const* reason)
 {
+    if (_ledgerInit && bot)
+        EmitLedger(bot, "LOGOUT");
     if (_fight.Active && _fight.StartLogged)
         EmitFightEnd(bot, reason && !strcmp(reason, "LOGOUT_COMMAND") ? "despawned" : "logout", _nowMs);
     _fight = Fight();
@@ -1909,6 +1926,47 @@ std::string BotAI::TakeSpellBreakdownJson(Player* bot)
     }
     j += ']';
     return j;
+}
+
+void BotAI::LedgerCharge()
+{
+    if (!_ledgerInit)
+        return;
+    uint32 const delta = _nowMs - _ledgerLastMs;
+    _ledgerMs[_ledgerState][_ledgerAct] += delta;
+    _ledgerLastMs = _nowMs;
+}
+
+// STATE_LEDGER: seconds the bot spent per engine state and per quest activity since the last ledger row (hourly and on logout).
+// Volume: one row per bot per Bot.Log.StateLedgerSec. Activities are BotQuest::ActivityName buckets (kill, grind, trip_vendor, ...).
+void BotAI::EmitLedger(Player* bot, char const* cause)
+{
+    LedgerCharge();
+    uint32 const windowS = (_nowMs - _ledgerStartMs) / 1000;
+    std::string states, byState;
+    for (uint32 st = 0; st < 3; ++st)
+    {
+        uint64 total = 0;
+        std::string acts;
+        for (uint32 a = 0; a < LEDGER_ACT; ++a)
+            if (uint32 const ms = _ledgerMs[st][a])
+            {
+                total += ms;
+                acts += Trinity::StringFormat(R"({}"{}":{})", acts.empty() ? "" : ",", BotQuest::ActivityName(a), (ms + 500) / 1000);
+            }
+        if (!total)
+            continue;
+        states += Trinity::StringFormat(R"({}"{}":{})", states.empty() ? "" : ",", BotStateName(BotState(st)), (total + 500) / 1000);
+        byState += Trinity::StringFormat(R"({}"{}":{{{}}})", byState.empty() ? "" : ",", BotStateName(BotState(st)), acts);
+    }
+    for (auto& row : _ledgerMs)
+        row.fill(0);
+    _ledgerStartMs = _nowMs;
+    if (!windowS || states.empty())
+        return;
+    BotEvent event = MakeEvent(bot, "ai_stats", BOTLOG_INFO, "STATE_LEDGER", Trinity::StringFormat("time per state over {} s ({})", windowS, cause));
+    event.Details = Trinity::StringFormat(R"({{"window_s":{},"cause":"{}","states":{{{}}},"by_activity":{{{}}}}})", windowS, cause, states, byState);
+    Emit(std::move(event));
 }
 
 void BotAI::EmitTickStats(Player* bot)

@@ -48,7 +48,8 @@ struct BotAIConfig
     uint32 ReleaseMaxSec = 8;
     uint32 MaxCorpseRunYards = 1200; // Bot.AI.Recover.MaxCorpseRunYards: farther corpses use the spirit healer
     uint32 StuckSec = 8;          // Bot.AI.Move.StuckSec: seconds without progress before a stuck episode
-    uint32 TickStatsSec = 60;     // Bot.Log.AiTickStatsSec: AI_TICK_STATS row per bot every N s (0 = off)
+    uint32 LedgerSec = 3600;      // Bot.Log.StateLedgerSec: STATE_LEDGER row per bot every N s and on logout (0 = off)
+    uint32 TickStatsSec = 300;    // Bot.Log.AiTickStatsSec: AI_TICK_STATS row per bot every N s (0 = off)
     bool PullDetail = true;       // Bot.Log.PullDetail: aggro_cause / aggro_range on COMBAT_START, fight_id / outcome on COMBAT_SUMMARY
     bool IdleReasons = true;      // Bot.Log.IdleReasons: ticks that ran no action, by reason, in AI_TICK_STATS
     uint32 CorpseRunMaxFails = 3; // Bot.AI.Death.CorpseRunMaxFails: failed corpse runs (and spirit healer walks) before the bot gives up
@@ -186,6 +187,7 @@ public:
     std::string TakeSpellBreakdownJson(Player* bot);
     // Id of the open fight row set ("" when none), so COMBAT_SUMMARY can be joined to COMBAT_START / COMBAT_END.
     std::string const& CurrentFightId() const { return _fight.Id; }
+    uint32 KillTotal() const { return _killTotal; }   // creatures this bot killed since login (OnKilled)
     // Test commands call this so a death (and the fight) within 120 s is tagged source=test_command.
     void NoteTestCommand(char const* command);
 
@@ -235,6 +237,15 @@ private:
     struct EngStat { uint64 Ns = 0, MaxNs = 0; uint32 N = 0; };
     std::array<EngStat, 3> _engStat{};        // per engine, window of Bot.Log.AiTickStatsSec
     uint32 _tickStatsMs = 0;
+    uint32 _killTotal = 0;
+    // per-state time ledger (STATE_LEDGER): ms per engine state and quest activity, charged at the start of each tick to the previous tick's bucket
+    static constexpr uint32 LEDGER_ACT = 16;   // == BotQuest::ACTIVITY_COUNT
+    std::array<std::array<uint32, LEDGER_ACT>, 3> _ledgerMs{};
+    uint32 _ledgerLastMs = 0, _ledgerStartMs = 0;
+    uint8 _ledgerState = 0, _ledgerAct = 0;
+    bool _ledgerInit = false;
+    void LedgerCharge();
+    void EmitLedger(Player* bot, char const* cause);
     std::atomic<char const*> _testCmd{nullptr};
     std::atomic<uint32> _testAtMs{0};
 

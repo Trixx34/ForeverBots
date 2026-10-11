@@ -512,6 +512,19 @@ struct FightData
     uint32 DmgSinceMs = 0;
     bool DmgBreakDone = false;       // the breaker acted once on this target
     uint32 Picked = 0, TargetsDead = 0, Casts = 0, CastFails = 0, Heals = 0;
+    uint32 KillBase = 0;             // BotAI::KillTotal() when the fight began: kills of this stay = total - base (the real kill count for the outcome)
+    uint32 FirstTargetLevel = 0, MaxTargetLevel = 0, FirstTargetEntry = 0;   // picked targets, for COMBAT_SUMMARY
+    void NotePick(Unit const* u)
+    {
+        ++Picked;
+        uint32 const lvl = u->GetLevel();
+        if (!FirstTargetLevel)
+        {
+            FirstTargetLevel = lvl;
+            FirstTargetEntry = u->GetEntry();
+        }
+        MaxTargetLevel = std::max(MaxTargetLevel, lvl);
+    }
     uint32 LastHealMs = 0;
     std::unordered_map<uint32, uint32> LastBuffMs;   // spell id -> time of the last cast: a self buff is not recast within 25 s (the aura id may differ from the spell id); per spell, so a stance never starves Battle Shout
     uint32 NoPowerSkips = 0;
@@ -638,6 +651,7 @@ void BotCombatCtx::Begin(Player* bot)
 {
     ++Seq;
     static_cast<FightData&>(*this) = FightData();
+    KillBase = GetAI()->KillTotal();
     if (RangedBrokenLevel != bot->GetLevel())
         RangedBroken = false;
     InFight = true;
@@ -678,9 +692,13 @@ void BotCombatCtx::End(Player* bot)
         if (BotAI::Config().PullDetail)
         {
             // fight_id joins this row to COMBAT_START / COMBAT_END; outcome is this stay's result; casts_ok totals the successful casts
-            char const* outcome = !bot->IsAlive() ? "bot_died" : (Fleeing || FleeGaveUp) ? "fled" : (Picked && TargetsDead >= Picked) ? "all_targets_dead" :
-                TargetsDead ? "partial_kills" : Picked ? "no_kill" : "no_target";
-            summaryJson += StringFormat(R"(,"fight_id":"{}","outcome":"{}","casts_ok":{})", ai->CurrentFightId(), outcome, Casts);
+            // kills come from the AI's kill counter (Unit::Kill hook), not from TargetsDead: a mob killed by a DoT, a pet or after the
+            // target switched was never counted in TargetsDead, which made no_kill disagree with the kill XP rows
+            uint32 const kills = std::max(TargetsDead, ai->KillTotal() - KillBase);
+            char const* outcome = !bot->IsAlive() ? "bot_died" : (Fleeing || FleeGaveUp) ? "fled" : (Picked && kills >= Picked) ? "all_targets_dead" :
+                kills ? "partial_kills" : Picked ? "no_kill" : "no_target";
+            summaryJson += StringFormat(R"(,"fight_id":"{}","outcome":"{}","casts_ok":{},"kills":{},"target_level":{},"target_level_max":{},"target_lvl_diff":{},"target_entry":{},"bot_level":{})",
+                ai->CurrentFightId(), outcome, Casts, kills, FirstTargetLevel, MaxTargetLevel, FirstTargetLevel ? int32(FirstTargetLevel) - int32(bot->GetLevel()) : 0, FirstTargetEntry, uint32(bot->GetLevel()));
         }
         summaryJson += "," + ai->TakeSpellBreakdownJson(bot) + "}";
         ai->EmitEvent(bot, "decision", BOTLOG_INFO, "COMBAT_SUMMARY",
@@ -1412,7 +1430,7 @@ private:
                 ctx->Target = foe->GetGUID();
                 ctx->TargetSinceMs = now;
                 ctx->InRangeSeen = false;
-                ++ctx->Picked;
+                ctx->NotePick(foe);
                 LogDecision(ai, bot, ctx, "DUEL_TARGET", StringFormat("duels {} L{}", foe->GetName(), uint32(foe->GetLevel())),
                     StringFormat(R"({})", MobJson(bot, foe, Assess(bot, foe))));
                 return true;
@@ -1592,7 +1610,7 @@ private:
         ctx->Target = out->GetGUID();
         ctx->TargetSinceMs = now;
         ctx->InRangeSeen = false;
-        ++ctx->Picked;
+        ctx->NotePick(out);
         return true;
     }
 };

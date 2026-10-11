@@ -49,6 +49,13 @@ namespace BotQuest
     TC_GAME_API void NoteDeath(Player* bot);
     // True while the bot has nothing to quest for and grinds mobs instead (the travel module reads it as "this zone is done").
     TC_GAME_API bool IsGrinding(BotAI* ai);
+    // Current task for logging: quest id (0 = none) and a short task name ("kill", "grind", "trip_vendor", ...; "none" when idle or the
+    // strategy is not active). Map thread.
+    TC_GAME_API void CurrentTask(BotAI* ai, uint32& questId, char const*& task);
+    // Per-state time ledger buckets: CurrentActivity returns an index below ACTIVITY_COUNT, ActivityName its stable name.
+    constexpr uint32 ACTIVITY_COUNT = 16;
+    TC_GAME_API uint32 CurrentActivity(BotAI* ai);
+    TC_GAME_API char const* ActivityName(uint32 index);
     // Position of the nearest quest hub in a zone of the bot's map that has quests for the bot's level; false when there is none.
     // True when `item` would replace worn gear in its best slot by the class-role gear score (BotGear.h). For group loot rolls.
     TC_GAME_API bool IsGearUpgrade(Player* bot, ItemTemplate const* item);
