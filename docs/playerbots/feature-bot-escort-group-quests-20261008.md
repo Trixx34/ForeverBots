@@ -1,6 +1,6 @@
 # Escort and group quests (2026-10-08)
 
-Requested by Trixx34. Three things, all off by default. Settings are in `docs/playerbots/botserver-conf-escort-group-quests.dist.txt` (append to `botserver.conf.dist` once PR #50 is in; the code reads the keys either way).
+Requested by Trixx34. Three things, all off by default. Settings are in `src/server/worldserver/botserver.conf.dist` (section ESCORT AND GROUP QUESTS).
 
 ## 1. Bots help players on group and escort quests (`Bot.Quest.Assist.*`)
 
