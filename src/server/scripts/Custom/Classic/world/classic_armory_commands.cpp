@@ -32,6 +32,7 @@
 #include "ScriptMgr.h"
 #include "StringFormat.h"
 #include "Timer.h"
+#include "World.h"
 #include <unordered_map>
 
 using namespace Trinity::ChatCommands;
@@ -112,13 +113,13 @@ public:
         };
 
         for (ChrRacesEntry const* race : sChrRacesStore)
-            add("race", race->ID, race->Name[LOCALE_enUS], 0, race->Alliance);   // 0 Alliance, 1 Horde, 2 neutral
+            add("race", race->ID, race->Name[sWorld->GetDefaultDbcLocale()], 0, race->Alliance);   // 0 Alliance, 1 Horde, 2 neutral
         for (ChrClassesEntry const* cls : sChrClassesStore)
-            add("class", cls->ID, cls->Name[LOCALE_enUS], 0, 0);
+            add("class", cls->ID, cls->Name[sWorld->GetDefaultDbcLocale()], 0, 0);
         for (SkillLineEntry const* skill : sSkillLineStore)
-            add("skill", skill->ID, skill->DisplayName[LOCALE_enUS], skill->SpellIconFileID, skill->CategoryID);
+            add("skill", skill->ID, skill->DisplayName[sWorld->GetDefaultDbcLocale()], skill->SpellIconFileID, skill->CategoryID);
         for (AchievementEntry const* achievement : sAchievementStore)
-            add("achievement", achievement->ID, achievement->Title[LOCALE_enUS], achievement->IconFileID, achievement->Points);
+            add("achievement", achievement->ID, achievement->Title[sWorld->GetDefaultDbcLocale()], achievement->IconFileID, achievement->Points);
 
         if (!values.empty())
             trans->Append(("INSERT INTO armory_name (kind, id, name, iconFileDataId, extra) VALUES " + values).c_str());
@@ -168,7 +169,7 @@ public:
             for (ItemEffectEntry const* effect : proto.Effects)
             {
                 SpellNameEntry const* spellName = sSpellNameStore.LookupEntry(effect->SpellID);
-                std::string name = spellName ? spellName->Name[LOCALE_enUS] : "";
+                std::string name = spellName ? spellName->Name[sWorld->GetDefaultDbcLocale()] : "";
                 std::erase_if(name, [](char c) { return c == '|' || c == ':'; });
                 effects += Trinity::StringFormat("{}{}:{}:{}", effects.empty() ? "" : "|", effect->TriggerType, effect->SpellID, name);
             }
@@ -184,9 +185,9 @@ public:
             int32 iconFileDataId = icon != icons.end() && icon->second ? icon->second : proto.BasicData->IconFileDataID;
 
             values += Trinity::StringFormat("{}({},{},{},{},{},{},{},{},{},{},{:.1f},{:.1f},{},{},{},{},{},{},{},{},{},{},{})",
-                values.empty() ? "" : ",", itemId, Quote(proto.GetName(LOCALE_enUS)), proto.GetQuality(), itemLevel, proto.GetBaseRequiredLevel(),
+                values.empty() ? "" : ",", itemId, Quote(proto.GetName(sWorld->GetDefaultDbcLocale())), proto.GetQuality(), itemLevel, proto.GetBaseRequiredLevel(),
                 proto.GetClass(), proto.GetSubClass(), uint32(proto.GetInventoryType()), uint32(proto.GetBonding()), proto.GetArmor(itemLevel),
-                dmgMin, dmgMax, proto.GetDelay(), Quote(stats), Quote(effects), Quote(proto.ExtendedData->Description[LOCALE_enUS]), iconFileDataId,
+                dmgMin, dmgMax, proto.GetDelay(), Quote(stats), Quote(effects), Quote(proto.ExtendedData->Description[sWorld->GetDefaultDbcLocale()]), iconFileDataId,
                 proto.GetSellPrice(), proto.GetAllowableClass(), proto.GetItemSet(), proto.GetRequiredSkill(), proto.GetRequiredSkillRank(),
                 proto.ExtendedData->Flags[0]);
             ++rows;

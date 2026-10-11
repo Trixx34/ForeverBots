@@ -15,8 +15,11 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "BotConfigReload.h"
 #include "BotAI.h"
 #include "BotCombat.h"
+#include "BotDuel.h"
+#include "BotDuelPlan.h"
 #include "BotDummy.h"
 #include "BotPet.h"
 #include "BotConsumables.h"
@@ -58,7 +61,7 @@
 namespace
 {
 BotAIConfig _config;
-std::once_flag _configOnce;
+BotCfg::Flag _configOnce;
 std::atomic<bool> _enabled{true};
 std::atomic<bool> _traceAll{false};
 BotAIStats _stats;
@@ -133,6 +136,8 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
         names.push_back("natural_idle");
     if (state == BotState::NonCombat && BotCombatRotationEnabled() && std::find(names.begin(), names.end(), "prebuff") == names.end())
         names.push_back("prebuff");   // pre-pull buffs of the class rotations
+    if (state == BotState::NonCombat && BotCombatGroupControlEnabled() && std::find(names.begin(), names.end(), "groupcontrol") == names.end())
+        names.push_back("groupcontrol");   // dispels and marked crowd control out of a fight
     if (BotPet::Cfg().Enabled && bot && bot->GetClass() == CLASS_HUNTER && state != BotState::Dead
         && std::find(names.begin(), names.end(), "pet") == names.end())
         names.push_back("pet");
@@ -150,6 +155,8 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
     if (BotTravel::Cfg().Enabled && bot && state == BotState::NonCombat && !(bot->GetSession() && bot->GetSession()->IsAltBot())
         && std::find(names.begin(), names.end(), "travel") == names.end())
         names.push_back("travel");
+    if (BotDuel::Cfg().Enabled && bot && state != BotState::Dead && std::find(names.begin(), names.end(), "duel") == names.end())
+        names.push_back("duel");
     if (BotAI::Config().TestStrategy)
     {
         switch (state)
@@ -165,7 +172,7 @@ std::vector<std::string> DefaultStrategies(BotState state, Player* bot)
 
 BotAIConfig const& BotAI::Config()
 {
-    std::call_once(_configOnce, []()
+    BotCfg::Load(_configOnce, []()
     {
         _config.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Enabled", true);
         _config.TickMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.TickMs", 500), 50, 10000));
@@ -272,6 +279,12 @@ BotState BotAI::DesiredState(Player* bot, char const*& cause) const
     {
         cause = "DIED";
         return BotState::Dead;
+    }
+
+    if (BotDuel::ActiveOpponent(bot))
+    {
+        cause = "DUEL";   // the combat engine fights the duel opponent (BotCombat PickTarget)
+        return BotState::Combat;
     }
 
     if (bot->IsInCombat())
@@ -716,6 +729,14 @@ bool BotAI::RemoveStrategy(Player* bot, std::string const& name, char const* sou
         Emit(std::move(event));
     }
     return removed;
+}
+
+bool BotAI::HasStrategy(std::string const& name) const
+{
+    for (uint32 s = 0; s < BOT_STATE_COUNT; ++s)
+        if (_engines[s]->HasStrategy(name))
+            return true;
+    return false;
 }
 
 std::vector<std::string> BotAI::DescribeStrategies() const
@@ -1698,8 +1719,8 @@ struct PremadeTalents
 PremadeTalents const& Premade()
 {
     static PremadeTalents cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.Talents.Premade.Enabled", false);
         if (!cfg.Enabled)

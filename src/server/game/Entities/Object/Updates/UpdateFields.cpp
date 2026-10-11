@@ -1227,7 +1227,7 @@ void UnitData::WriteCreate(EnumFlag<UpdateFieldFlag> fieldVisibilityFlags, ByteB
     data << uint32(CurrentAreaID);
     if (fieldVisibilityFlags.HasFlag(UpdateFieldFlag::Owner))
     {
-        data << ObjectGuid::Empty;              // +0x360
+        data << *ClassicComboTarget;            // +0x360
         data << int32(0);                       // +0x370
         data << float(0.0f);                    // +0x374
     }
@@ -1258,7 +1258,7 @@ void UnitData::WriteCreate(EnumFlag<UpdateFieldFlag> fieldVisibilityFlags, ByteB
 static constexpr void UnitDataAppendAllowedFieldsMaskForFlag(UnitData::Mask& allowedMaskForTarget, EnumFlag<UpdateFieldFlag> fieldVisibilityFlags)
 {
     if (fieldVisibilityFlags.HasFlag(UpdateFieldFlag::Owner))
-        allowedMaskForTarget |= std::array<uint32, 8>{ 0x00010000u, 0x80200000u, 0xF840400Eu, 0x00003FFEu, 0x00000800u, 0xF80FFFFFu, 0xFFFFFFFFu, 0x0000003Fu };
+        allowedMaskForTarget |= std::array<uint32, 8>{ 0x00010000u, 0x80200000u, 0xF840400Eu, 0x00003FFEu, 0x00000800u, 0xF80FFFFFu, 0xFFFFFFFFu, 0x0000007Fu };
     if (fieldVisibilityFlags.HasFlag(UpdateFieldFlag::UnitAll))
         allowedMaskForTarget |= std::array<uint32, 8>{ 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000800u, 0x000FFFFFu, 0x00000000u, 0x00000000u };
     if (fieldVisibilityFlags.HasFlag(UpdateFieldFlag::Empath))
@@ -1290,6 +1290,7 @@ void UnitData::WriteUpdate(EnumFlag<UpdateFieldFlag> fieldVisibilityFlags, ByteB
 // array group bits 148 (power), 189 (VirtualItems, 32 byte entries from +0x438), 193, 196, 217 (the reader tests each group bit before its first element)
 static uint32 ClassicUnitDataBit70009(uint32 bit)
 {
+    if (bit == 230) return 141;             // ClassicComboTarget, the guid after CurrentAreaID
     if (bit <= 71) return bit;
     if (bit <= 84) return bit + 1;
     if (bit <= 92) return bit + 3;
@@ -1956,6 +1957,10 @@ void UnitData::WriteUpdate(Mask const& changesMask, ByteBuffer& data, Player con
         {
             data << uint32(CurrentAreaID);
         }
+        if (changesMask[230])
+        {
+            data << *ClassicComboTarget;
+        }
         if (changesMask[135])
         {
             data << float(NameplateDistanceMod);
@@ -2201,6 +2206,7 @@ void UnitData::ClearChangesMask()
     Base::ClearChangesMask(NameplateDistanceMod);
     Base::ClearChangesMask(AutoAttackRangeMod);
     Base::ClearChangesMask(NameplateAttachToGUID);
+    Base::ClearChangesMask(ClassicComboTarget);
     Base::ClearChangesMask(AssistActionData);
     Base::ClearChangesMask(Power);
     Base::ClearChangesMask(MaxPower);

@@ -138,7 +138,7 @@ event; config is read once (no reload); trace rows are INFO severity by design (
 
 ## Quest pipeline (BotQuest.*), verified on the sim 2026-10-06 (partially); code is committed on `forever`
 - New: `src/server/game/Bots/BotQuest.{h,cpp}`; hunks in BotEngine.h, BotStrategies.cpp, BotMgr.cpp (EnsureIndex in StartLogin), botserver.conf.dist (Bot.Quest.*).
-- Enable with "quest" in Bot.AI.Default.NonCombat (sim worldserver.conf has it; the .dist default is unchanged).
+- Enable with "quest" in Bot.AI.Default.NonCombat (set it in the sim's botserver.conf; the .dist default is unchanged).
 - Static index at startup (starter grid, spawns, kill credit, quest-item drop sources from one world-thread query); per-bot task state in `quest_ctx`.
 - Events: `decision` (QUEST_PICK, QUEST_PICK_FAR, QUEST_WORK, QUEST_TURNIN_PLAN, QUEST_TURNED_IN, QUEST_PULL trace), `quest_blocked` codes: NEEDS_GROUP, TIMED_UNSUPPORTED, SKILL_REQUIRED, REPUTATION_REQUIRED, NEEDS_EVENT, OBJECTIVE_UNSUPPORTED, NO_TARGET_SPAWN, MISSING_ITEM_SOURCE, NO_ENDER_ROW, NO_ENDER_SPAWN, QUEST_LEVEL, QUEST_PREREQ, NO_QUEST_AVAILABLE, NO_PATH, PATH_PARTIAL_FAR, UNREACHABLE, TARGET_UNREACHABLE, ELITE_TOO_STRONG, TARGET_LEVEL_TOO_HIGH, ITEM_NOT_DROPPING, GIVER_NOT_INTERACTABLE, QUEST_LOG_FULL, BAG_FULL, DATA_ERROR.
 - Auto-equip of quest rewards (armour/weapons only, clear upgrades usable by the bot), logged as decision QUEST_REWARD_EQUIPPED.

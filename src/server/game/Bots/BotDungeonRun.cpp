@@ -17,6 +17,7 @@
 
 #include "BotDungeonRun.h"
 #include "BotAI.h"
+#include "BotBattleground.h"
 #include "BotBehavior.h"
 #include "BotDungeon.h"
 #include "BotDungeonData.h"
@@ -134,7 +135,7 @@ namespace
 
     bool Eligible(Player* p, uint32 minLevel, uint32 maxLevel)
     {
-        if (!p || !p->IsInWorld() || !p->IsAlive() || p->IsInCombat() || p->GetGroup() || p->IsBeingTeleported() || !AiOf(p))
+        if (!p || !p->IsInWorld() || !p->IsAlive() || p->IsInCombat() || p->GetGroup() || p->IsBeingTeleported() || !AiOf(p) || BotBattleground::Busy(AiOf(p)))
             return false;
         if (p->GetLevel() < minLevel || p->GetLevel() > maxLevel || sBotMgr->IsActiveAlt(p->GetGUID().GetCounter()))
             return false;

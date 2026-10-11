@@ -167,11 +167,13 @@ TEST_CASE("BotChat verbs", "[BotChat]")
     CHECK(ParseVerb("follow", false) == Verb::Follow);
     CHECK(ParseVerb("FOLLOW", true) == Verb::Follow);
     CHECK(ParseVerb("release", false) == Verb::Release);
+    CHECK(ParseVerb("food", false) == Verb::Food);
+    CHECK(ParseVerb("FOOD", true) == Verb::Food);
     CHECK(ParseVerb("hello", true) == Verb::None);
     CHECK(ParseVerb("", true) == Verb::None);
 
     // the order verbs exist only with Bot.Chat.Orders.Enabled
-    for (char const* word : { "stop", "aggressive", "passive", "pull", "heal", "mount", "dismount", "summon", "revive" })
+    for (char const* word : { "stop", "aggressive", "passive", "pull", "heal", "mount", "dismount", "summon", "revive", "cc", "interrupt", "dispel" })
     {
         INFO(word);
         CHECK(ParseVerb(word, false) == Verb::None);
@@ -186,7 +188,7 @@ TEST_CASE("BotChat verbs", "[BotChat]")
 
 TEST_CASE("BotChat order arguments", "[BotChat]")
 {
-    for (Verb v : { Verb::Stop, Verb::Aggressive, Verb::Passive, Verb::Pull, Verb::Heal, Verb::Mount, Verb::Dismount, Verb::Summon, Verb::Revive })
+    for (Verb v : { Verb::Stop, Verb::Aggressive, Verb::Passive, Verb::Pull, Verb::Heal, Verb::Mount, Verb::Dismount, Verb::Summon, Verb::Revive, Verb::Cc, Verb::Interrupt, Verb::Dispel })
     {
         CHECK(ValidateOrderArgs(v, "") == nullptr);
         CHECK(ValidateOrderArgs(v, "   ") == nullptr);
@@ -204,7 +206,7 @@ TEST_CASE("BotChat order role gate", "[BotChat]")
     CHECK(RoleGate(Verb::Heal, CLASS_PRIEST, roles) == nullptr);
     CHECK(std::string(RoleGate(Verb::Heal, CLASS_WARRIOR, roles)) == "NOT_HEALER");
     CHECK(std::string(RoleGate(Verb::Heal, 40, roles)) == "NOT_HEALER");   // class id out of mask range
-    for (Verb v : { Verb::Stop, Verb::Aggressive, Verb::Passive, Verb::Mount, Verb::Dismount, Verb::Summon, Verb::Revive, Verb::Follow })
+    for (Verb v : { Verb::Stop, Verb::Aggressive, Verb::Passive, Verb::Mount, Verb::Dismount, Verb::Summon, Verb::Revive, Verb::Follow, Verb::Cc, Verb::Interrupt, Verb::Dispel })
         CHECK(RoleGate(v, CLASS_MAGE, roles) == nullptr);
 
     RoleMasks custom = roles;
@@ -295,4 +297,15 @@ TEST_CASE("BotChat mount choice", "[BotChat]")
 
     std::vector<MountOption> unknown = { { 5, 0, false }, { 4, 0, false } };
     CHECK(unknown[size_t(PickMount(unknown))].SpellId == 4);
+}
+
+TEST_CASE("BotChat control verbs need the control switch", "[BotChat]")
+{
+    CHECK(ParseVerb("role", false, false) == Verb::None);
+    CHECK(ParseVerb("stance", true, false) == Verb::None);
+    CHECK(ParseVerb("ROLE", false, true) == Verb::Role);
+    CHECK(ParseVerb("stance", false, true) == Verb::Stance);
+    CHECK(ParseVerb("focus", false, true) == Verb::Focus);
+    CHECK(ParseVerb("distance", false, true) == Verb::Distance);
+    CHECK(ParseVerb("follow", false, false) == Verb::Follow);
 }

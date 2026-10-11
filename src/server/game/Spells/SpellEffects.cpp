@@ -16,6 +16,7 @@
  */
 
 #include "Spell.h"
+#include "BotDuel.h"
 #include "BotQuestLog.h"
 #include "AccountMgr.h"
 #include "AreaTrigger.h"
@@ -1390,6 +1391,15 @@ void Spell::DoCreateItem(uint32 itemId, ItemContext context /*= ItemContext::NON
 
     uint32 num_to_add = std::clamp<int32>(GetEffectValueAsInt(), 1, pProto->GetMaxStackSize());
 
+    // Classic 1.60 Legacy perk Master Chef 1225457: cooking recipes have a chance to create an extra result
+    if (int32 extraChance = player->GetClassicLegacyPerkAmount(1225457, EFFECT_0))
+    {
+        SkillLineAbilityMapBounds bounds = sSpellMgr->GetSkillLineAbilityMapBounds(m_spellInfo->Id);
+        bool cooking = std::any_of(bounds.first, bounds.second, [](auto const& pair) { return pair.second->SkillLine == SKILL_COOKING; });
+        if (cooking && roll_chance(extraChance))
+            num_to_add = std::min<uint32>(num_to_add * 2, pProto->GetMaxStackSize());
+    }
+
     /* == gem perfection handling == */
     // this is bad, should be done using spell_loot_template (and conditions)
 
@@ -1614,6 +1624,21 @@ void Spell::EffectEnergize()
         }
         default:
             break;
+    }
+
+    // Classic 1.60 (game rule 112): combo points belong to one target. The client shows them and allows finishers only while
+    // UnitData ClassicComboTarget is the current target (official sniff: set when Sinister Strike awards the first point), and
+    // building points on another target starts over from zero
+    if (power == POWER_COMBO_POINTS && unitTarget == unitCaster && unitCaster->IsPlayer())
+    {
+        if (Unit* comboTarget = m_targets.GetUnitTarget(); comboTarget && comboTarget != unitCaster)
+        {
+            if (unitCaster->GetClassicComboTarget() != comboTarget->GetGUID())
+            {
+                unitCaster->SetPower(POWER_COMBO_POINTS, 0);
+                unitCaster->SetClassicComboTarget(comboTarget->GetGUID());
+            }
+        }
     }
 
     unitCaster->EnergizeBySpell(unitTarget, m_spellInfo, energizeAmount, power);
@@ -3327,6 +3352,7 @@ void Spell::EffectDuel()
     target->SetDuelArbiter(go->GetGUID());
 
     sScriptMgr->OnPlayerDuelRequest(target, caster);
+    BotDuel::OnChallenged(target, caster, go->GetGUID());
 }
 
 void Spell::EffectStuck()

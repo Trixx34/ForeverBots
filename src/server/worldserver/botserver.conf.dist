@@ -1,10 +1,10 @@
 ###################################################################################################
 # BOTSERVER CONFIGURATION
 #
-# Settings of the player-bot subsystem (docs/playerbots/), kept out of worldserver.conf because there are many.
-# Copy this file to botserver.conf next to worldserver.conf and edit the copy. worldserver loads it right after
-# worldserver.conf and the worldserver.conf.d directory. A key set in botserver.conf wins over the same key in
-# worldserver.conf. Without a botserver.conf every setting keeps its default.
+# Settings of the player-bot subsystem (docs/playerbots/), kept in a dedicated file.
+# Copy this file to botserver.conf next to worldserver.conf and edit the copy. Bot.* and BotLog* settings are read
+# only from botserver.conf; values in worldserver.conf or worldserver.conf.d are ignored. Without botserver.conf,
+# every setting keeps its default.
 #
 # How to read an entry: Description says what the setting does, Default is the value the server uses when the key is
 # absent (and the value written below the comment), Values lists what is accepted. Numbers outside the accepted range are
@@ -78,7 +78,7 @@ BotLog.MaxBatch = 500
 # threat), dummy (training dummy), movement (goto, follow, stuck, path failures, town idling),
 # travel (long distance legs), recovery (death, corpse run, spirit healer, resting, watchdog),
 # quest, progress (xp, levels, talents, spells), economy (auction, trade, vendors, loot, gear,
-# professions, bank, mail), pets, social (chat orders, alts, invites, bot parties, guilds), dungeon,
+# professions, bank, mail), pets, social (chat orders, alts, invites, bot parties, guilds), dungeon, battleground,
 # other (a reason no rule matches).
 #
 ###################################################################################################
@@ -2063,6 +2063,19 @@ Bot.AI.Party.LeaderGoneSec = 30
 #        Values:      whole number 1 to 60 (seconds)
 Bot.AI.Party.IntervalSec = 5
 
+#
+#    Bot.Quest.GroupAfterDeaths
+#        Description: A bot that died this many times on the same quest (counted per bot and quest, while it
+#                     works on that quest) looks for other bots that hold the same quest and joins or forms a
+#                     bot party to continue it, instead of staying solo. Uses the party code above (follow,
+#                     leash, break-up rules, MinLevel, JoinRadius, MaxLevelSpread, MaxParties); it works even
+#                     with Bot.AI.Party.Enabled = 0, then only these bots seed parties. The counter resets when
+#                     the quest is completed, turned in, abandoned or failed, when the bot logs out, and once
+#                     the bot has been grouped. Logged as decision `quest_group_after_deaths`.
+#        Default:     0 (off)
+#        Values:      0 = off, otherwise whole number 1 to 100 (deaths)
+Bot.Quest.GroupAfterDeaths = 0
+
 
 ###################################################################################################
 # PLAYER-LED DUNGEON RUNS
@@ -2454,6 +2467,140 @@ Bot.Conversation.LogEvents = 1
 
 
 ###################################################################################################
+# BOT GROUP CONTROL
+#
+# Crowd control, interrupts and dispels of bots in a group (docs/playerbots/feature-bot-group-control-20261008.md).
+# Several bots never answer the same cast, effect or mob: the first one claims it and a second takes over when
+# the claim runs out. Raid target icons set by a player (moon, square, triangle, diamond by default) mark the
+# mobs the bots control. Log rows: INTERRUPT_CAST, DISPEL_CAST, CC_CAST, CC_PREPULL (category combat).
+###################################################################################################
+
+#
+#    Bot.AI.GroupControl.Enabled
+#        Description: Master switch. On: bots interrupt dangerous enemy casts (Kick, Counterspell, Hammer of
+#                     Justice, Earth Shock), dispel harmful effects of group members (Dispel Magic, Cure Disease,
+#                     Purify, Cleanse, Cure Poison, Remove Curse, Remove Lesser Curse), control marked mobs
+#                     (Polymorph, Shackle Undead, Hibernate, Banish, Scare Beast, Sap) and leave controlled mobs
+#                     alone (also no area spell that would break them). Off: the old behavior.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.GroupControl.Enabled = 0
+
+#
+#    Bot.AI.GroupControl.Interrupt.Enabled
+#        Description: Interrupts go through one shared check: any enemy of the group (not only the fight target)
+#                     whose cast is worth stopping is interrupted by one bot that can reach it. Needs
+#                     Bot.AI.GroupControl.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.GroupControl.Interrupt.Enabled = 1
+
+#
+#    Bot.AI.GroupControl.Interrupt.MinCastMs
+#        Description: Casts shorter than this are let through. Heals and stun, fear, root, charm or silence casts
+#                     are always interrupted.
+#        Default:     1500
+#        Values:      whole number 0 to 10000 (milliseconds)
+Bot.AI.GroupControl.Interrupt.MinCastMs = 1500
+
+#
+#    Bot.AI.GroupControl.Interrupt.MinRemainingMs
+#        Description: A cast with less time left than this is not worth the interrupt cooldown.
+#        Default:     400
+#        Values:      whole number 0 to 5000 (milliseconds)
+Bot.AI.GroupControl.Interrupt.MinRemainingMs = 400
+
+#
+#    Bot.AI.GroupControl.Interrupt.HoldMs
+#        Description: How long the bot that took a cast keeps it. If the cast is still running after this, another
+#                     bot with an interrupt tries (a backup).
+#        Default:     1500
+#        Values:      whole number 200 to 10000 (milliseconds)
+Bot.AI.GroupControl.Interrupt.HoldMs = 1500
+
+#
+#    Bot.AI.GroupControl.Dispel.Enabled
+#        Description: Bots with a dispel remove harmful effects from group members and themselves. The worst
+#                     effect goes first: stun, polymorph, fear, root, silence; then damage over time; then slows.
+#                     Needs Bot.AI.GroupControl.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.GroupControl.Dispel.Enabled = 1
+
+#
+#    Bot.AI.GroupControl.Dispel.MinPriority
+#        Description: In a fight only effects of at least this priority are dispelled: 100 stun, polymorph, fear,
+#                     root, silence; 40 damage over time; 20 slow; 10 anything else harmful.
+#        Default:     20
+#        Values:      whole number 1 to 100
+Bot.AI.GroupControl.Dispel.MinPriority = 20
+
+#
+#    Bot.AI.GroupControl.Dispel.OutOfCombat
+#        Description: Out of a fight bots cleanse every harmful effect they can remove (curses, poison and disease
+#                     left after the fight), while their mana is above Bot.AI.Combat.PrePullManaPct.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.GroupControl.Dispel.OutOfCombat = 1
+
+#
+#    Bot.AI.GroupControl.Dispel.HoldMs
+#        Description: How long the bot that took a dispel keeps it before another bot may try the same member.
+#        Default:     2500
+#        Values:      whole number 500 to 15000 (milliseconds)
+Bot.AI.GroupControl.Dispel.HoldMs = 2500
+
+#
+#    Bot.AI.GroupControl.Control.Enabled
+#        Description: Bots control marked mobs and avoid attacking controlled or marked ones while other enemies
+#                     are left. Replaces the single-mob control of Bot.AI.Rotation.CrowdControl. Needs
+#                     Bot.AI.GroupControl.Enabled.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.GroupControl.Control.Enabled = 1
+
+#
+#    Bot.AI.GroupControl.Control.Marks
+#        Description: Raid target icons that mean "control this mob". Any number of marked mobs are controlled, one
+#                     bot each. The kill icons (skull, cross) are not in the default list.
+#        Default:     "moon,square,triangle,diamond"
+#        Values:      comma list of star, circle, diamond, triangle, moon, square, cross, skull (or 1 to 8); "none" for no icon
+Bot.AI.GroupControl.Control.Marks = "moon,square,triangle,diamond"
+
+#
+#    Bot.AI.GroupControl.Control.Auto
+#        Description: Without a mark, the strongest extra attacker gets controlled as before (rows of the class
+#                     spell table with an enemy count condition). Needs Bot.AI.Rotation.Enabled and
+#                     Bot.AI.Rotation.CrowdControl.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.GroupControl.Control.Auto = 1
+
+#
+#    Bot.AI.GroupControl.Control.MaxAuto
+#        Description: Mobs controlled at a time without a mark.
+#        Default:     1
+#        Values:      whole number 1 to 4
+Bot.AI.GroupControl.Control.MaxAuto = 1
+
+#
+#    Bot.AI.GroupControl.Control.PrePull
+#        Description: Out of a fight a bot controls a marked mob that is in range of its spell (Sap only from
+#                     stealth within 10 yards: bots do not walk up to the mob). Off: marked mobs are controlled
+#                     once the fight has started.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.GroupControl.Control.PrePull = 1
+
+#
+#    Bot.AI.GroupControl.Control.HoldMs
+#        Description: How long the bot that took a mob keeps it before another bot may try the same mob.
+#        Default:     3000
+#        Values:      whole number 500 to 20000 (milliseconds)
+Bot.AI.GroupControl.Control.HoldMs = 3000
+
+
+###################################################################################################
 # CHAT COMMANDS
 #
 # Bots obey chat commands from the leader of their group (party, raid, whisper to a bot). Syntax:
@@ -2534,7 +2681,8 @@ Bot.Chat.Role.Dps = "rogue,mage,warlock,hunter"
 #        Description: More chat verbs (docs/playerbots/feature-bot-chat-orders-20261008.md): stop, aggressive,
 #                     passive, pull (tank bots attack the leader selected target), heal (healer bots heal the
 #                     selected target), mount, dismount, summon (bots port to the leader), revive (dead bots come
-#                     back to life next to the leader). Off: these words are ordinary chat.
+#                     back to life next to the leader), cc / interrupt / dispel (bots that can control, kick or cleanse
+#                     the selected target do it; see BOT GROUP CONTROL). Off: these words are ordinary chat.
 #        Default:     0
 #        Values:      0 (off) or 1 (on)
 Bot.Chat.Orders.Enabled = 0
@@ -2567,6 +2715,39 @@ Bot.Chat.Orders.ReviveHealthPct = 35
 #        Default:     1
 #        Values:      0 (off) or 1 (on)
 Bot.Chat.Orders.ReviveSickness = 1
+
+#
+#    Bot.Chat.Control.Enabled
+#        Description: Control panel for the bots of your group (docs/playerbots/feature-bot-control-commands-20261008.md).
+#                     The group leader sets, by party chat, raid chat or whisper: "role tank|healer|dps|auto",
+#                     "stance aggressive|defensive|passive", "focus" (the bots attack the selected target first) and
+#                     "focus off", "distance <yards>" or "distance default" (follow distance), and asks "what are you
+#                     doing?" (one status line per bot). Off: these words are ordinary chat.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Chat.Control.Enabled = 0
+
+#
+#    Bot.Chat.Control.FocusRangeYards
+#        Description: Farthest distance from a bot to its focus target. A focus target farther away is ignored
+#                     until it comes closer; a target that is too strong for the bot is never taken.
+#        Default:     40
+#        Values:      whole number 5 to 100 (yards)
+Bot.Chat.Control.FocusRangeYards = 40
+
+#
+#    Bot.Chat.Control.MinFollowYards
+#        Description: Smallest follow distance the "distance" command accepts.
+#        Default:     3
+#        Values:      whole number 2 to 40 (yards)
+Bot.Chat.Control.MinFollowYards = 3
+
+#
+#    Bot.Chat.Control.MaxFollowYards
+#        Description: Largest follow distance the "distance" command accepts (not below MinFollowYards).
+#        Default:     40
+#        Values:      whole number 2 to 100 (yards)
+Bot.Chat.Control.MaxFollowYards = 40
 
 
 ###################################################################################################
@@ -2690,8 +2871,6 @@ Bot.Craft.Fee.VendorPercent = 0
 #        Default:     0
 #        Values:      0 (off) or 1 (on)
 Bot.Social.QuestShare.LogEach = 0
-
-
 ###################################################################################################
 # ESCORT AND GROUP QUESTS
 #
@@ -3107,3 +3286,359 @@ Bot.AI.Mount.CatchUpSec = 8
 #        Default:     30
 #        Values:      whole number 5 to 600 (seconds)
 Bot.AI.Mount.RetrySec = 30
+
+
+#
+#    Bot.AI.Cooking.Enabled
+#        Description: Bots with the cooking skill keep a stock of food and buff food ("Well Fed") for the players
+#                     they travel with. They cook what they caught or carry until the stock targets below are met,
+#                     even when the recipes no longer raise the skill, and walk to a cooking fire when a recipe needs
+#                     one. Buff food is cooked first. Logged as FOOD_COOK. Cooking for skill-ups works as before
+#                     whatever this says.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Cooking.Enabled = 0
+
+#
+#    Bot.AI.Cooking.StockPlain
+#        Description: Plain food (health only) the bot cooks up to.
+#        Default:     20
+#        Values:      whole number 0 to 200 (items)
+Bot.AI.Cooking.StockPlain = 20
+
+#
+#    Bot.AI.Cooking.StockBuff
+#        Description: Buff food the bot cooks up to.
+#        Default:     10
+#        Values:      whole number 0 to 200 (items)
+Bot.AI.Cooking.StockBuff = 10
+
+#
+#    Bot.AI.Cooking.MinFreeSlots
+#        Description: The bot stops cooking for the stock when fewer bag slots than this are free.
+#        Default:     4
+#        Values:      whole number 1 to 20 (slots)
+Bot.AI.Cooking.MinFreeSlots = 4
+
+#
+#    Bot.Chat.Food.Enabled
+#        Description: The chat verb "food" (also with a selector, for example "healers food", or whispered to one
+#                     bot). Every member of the bot's group may use it. Each bot that carries food the player can
+#                     use whispers it as item links, buff food first, and tells the player to open a trade. Handing
+#                     the food over uses Bot.Trade.Link.Enabled. Needs Bot.Chat.Enabled. Off: the word is ordinary
+#                     chat.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Chat.Food.Enabled = 0
+
+#
+#    Bot.Chat.Food.MaxListed
+#        Description: Foods in the whispered list.
+#        Default:     12
+#        Values:      whole number 1 to 30 (items)
+Bot.Chat.Food.MaxListed = 12
+
+# BATTLEGROUNDS
+#
+# Bots in Warsong Gulch. A player who queues for Warsong Gulch finds bots queued next to them: they join
+# both sides until the match can start, accept the invitation after a short human-like delay, take and
+# carry the flags, kill enemy flag carriers, return their own flag, defend, wait for the spirit healer
+# and leave when the match is over. Off by default. See docs/playerbots/feature-bot-battlegrounds-
+# 20261008.md.
+#
+###################################################################################################
+
+#
+#    Bot.AI.Battleground.Enabled
+#        Description: Bots queue for Warsong Gulch next to players who queue, accept the invitation, play the flag
+#                     objectives and leave when the match is over. Logged as BG_*. Needs Bot.AI.Enabled.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Battleground.Enabled = 0
+
+#
+#    Bot.AI.Battleground.QueueIntervalSec
+#        Description: Seconds between two looks at the Warsong Gulch queue to see whether a waiting player needs
+#                     bots.
+#        Default:     10
+#        Values:      whole number 2 to 120 (seconds)
+Bot.AI.Battleground.QueueIntervalSec = 10
+
+#
+#    Bot.AI.Battleground.FillTo
+#        Description: Players per side the queue is filled to, counting players and bots. 0 uses the
+#                     battleground's minimum per side (the match starts as soon as both sides have it); a higher
+#                     number gives longer, fuller matches and needs more bots online. Clamped to the
+#                     battleground's minimum and maximum.
+#        Default:     0
+#        Values:      whole number 0 to 40 (players per side)
+Bot.AI.Battleground.FillTo = 0
+
+#
+#    Bot.AI.Battleground.MaxBotsPerQueue
+#        Description: Bots waiting in one queue at most.
+#        Default:     20
+#        Values:      whole number 0 to 80 (bots)
+Bot.AI.Battleground.MaxBotsPerQueue = 20
+
+#
+#    Bot.AI.Battleground.JoinPerStep
+#        Description: Bots added to one queue per look, so they do not all appear at once.
+#        Default:     3
+#        Values:      whole number 1 to 20 (bots)
+Bot.AI.Battleground.JoinPerStep = 3
+
+#
+#    Bot.AI.Battleground.JoinDelaySec
+#        Description: A player waits this long alone in the queue before bots join.
+#        Default:     8
+#        Values:      whole number 0 to 300 (seconds)
+Bot.AI.Battleground.JoinDelaySec = 8
+
+#
+#    Bot.AI.Battleground.IdleDropSec
+#        Description: Bots leave a queue that has had no waiting player for this long (the player left or was
+#                     invited), so bots never start a match among themselves.
+#        Default:     120
+#        Values:      whole number 10 to 3600 (seconds)
+Bot.AI.Battleground.IdleDropSec = 120
+
+#
+#    Bot.AI.Battleground.MinLevel
+#        Description: Lowest bot level that is queued. The level must also fall into a battleground bracket.
+#        Default:     10
+#        Values:      whole number 1 to 80
+Bot.AI.Battleground.MinLevel = 10
+
+#
+#    Bot.AI.Battleground.AcceptMinSec
+#        Description: Least delay before a bot accepts the invitation. The invitation lasts 80 seconds.
+#        Default:     3
+#        Values:      whole number 0 to 60 (seconds)
+Bot.AI.Battleground.AcceptMinSec = 3
+
+#
+#    Bot.AI.Battleground.AcceptMaxSec
+#        Description: Longest delay before a bot accepts the invitation. Each bot has its own fixed delay in the
+#                     range.
+#        Default:     15
+#        Values:      whole number AcceptMinSec to 70 (seconds)
+Bot.AI.Battleground.AcceptMaxSec = 15
+
+#
+#    Bot.AI.Battleground.LeaveMinSec
+#        Description: Least delay before a bot leaves a finished battleground.
+#        Default:     6
+#        Values:      whole number 0 to 300 (seconds)
+Bot.AI.Battleground.LeaveMinSec = 6
+
+#
+#    Bot.AI.Battleground.LeaveMaxSec
+#        Description: Longest delay before a bot leaves a finished battleground.
+#        Default:     25
+#        Values:      whole number LeaveMinSec to 600 (seconds)
+Bot.AI.Battleground.LeaveMaxSec = 25
+
+#
+#    Bot.AI.Battleground.EmptyLeaveSec
+#        Description: Bots leave a battleground in which no player has been for this long. 0 keeps them in.
+#        Default:     90
+#        Values:      whole number 0 to 3600 (seconds)
+Bot.AI.Battleground.EmptyLeaveSec = 90
+
+#
+#    Bot.AI.Battleground.StepMs
+#        Description: Time between two decisions of a bot inside the battleground.
+#        Default:     1000
+#        Values:      whole number 250 to 5000 (milliseconds)
+Bot.AI.Battleground.StepMs = 1000
+
+#
+#    Bot.AI.Battleground.OffensePct
+#        Description: Share of the bots of a side that go for the enemy flag. A side of three or more bots always
+#                     has at least one attacker.
+#        Default:     40
+#        Values:      whole number 0 to 100 (percent)
+Bot.AI.Battleground.OffensePct = 40
+
+#
+#    Bot.AI.Battleground.DefensePct
+#        Description: Share of the bots of a side that stay at their own flag room. A side of three or more bots
+#                     always has at least one defender. The rest roam the middle of the field and help where
+#                     needed.
+#        Default:     25
+#        Values:      whole number 0 to 100 minus OffensePct (percent)
+Bot.AI.Battleground.DefensePct = 25
+
+#
+#    Bot.AI.Battleground.EngageYards
+#        Description: An enemy player this close is attacked (flag carriers and bots about to touch a flag only
+#                     fight what is almost on them).
+#        Default:     28
+#        Values:      whole number 5 to 60 (yards)
+Bot.AI.Battleground.EngageYards = 28
+
+#
+#    Bot.AI.Battleground.DefendYards
+#        Description: Defenders stand at a spot within this distance of their own flag room and change the spot
+#                     now and then.
+#        Default:     15
+#        Values:      whole number 6 to 40 (yards)
+Bot.AI.Battleground.DefendYards = 15
+
+#
+#    Bot.AI.Battleground.EscortYards
+#        Description: Escorts close in on their flag carrier when they are further away than this.
+#        Default:     6
+#        Values:      whole number 2 to 20 (yards)
+Bot.AI.Battleground.EscortYards = 6
+
+#
+#    Bot.AI.Battleground.ReturnYards
+#        Description: A bot at most this far from a dropped flag of its side goes to return it; attackers pick up
+#                     a dropped enemy flag from 1.5 times this.
+#        Default:     60
+#        Values:      whole number 10 to 150 (yards)
+Bot.AI.Battleground.ReturnYards = 60
+
+# DUELS
+#
+# Players challenge bots to duels, bots answer, fight and react; optionally bots duel each other in cities.
+# See docs/playerbots/feature-bot-duels-20261008.md.
+###################################################################################################
+
+#
+#    Bot.Duel.Enabled
+#        Description: Duels. A player can challenge a bot with the Duel spell and the bot accepts or declines after a
+#                     short pause, says a line, fights to the end and emotes at the result. Adds the strategy "duel"
+#                     to the non-combat and combat engines. Read once at startup.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Duel.Enabled = 0
+
+#
+#    Bot.Duel.AcceptPct
+#        Description: Chance that a free bot accepts a challenge from a player. Bots that are busy, hurt or too far
+#                     apart in level always decline.
+#        Default:     90
+#        Values:      whole number 0 to 100 (percent)
+Bot.Duel.AcceptPct = 90
+
+#
+#    Bot.Duel.ReplyMinMs
+#        Description: Shortest pause before the bot answers a challenge (the pause is a random value between this and
+#                     Bot.Duel.ReplyMaxMs).
+#        Default:     1500
+#        Values:      whole number 0 to 20000 (milliseconds)
+Bot.Duel.ReplyMinMs = 1500
+
+#
+#    Bot.Duel.ReplyMaxMs
+#        Description: Longest pause before the bot answers a challenge.
+#        Default:     4500
+#        Values:      whole number from Bot.Duel.ReplyMinMs to 30000 (milliseconds)
+Bot.Duel.ReplyMaxMs = 4500
+
+#
+#    Bot.Duel.MaxLevelGap
+#        Description: The bot declines when its level and the challenger's differ by more than this, in either
+#                     direction (an even fight only).
+#        Default:     5
+#        Values:      whole number 0 to 80 (levels)
+Bot.Duel.MaxLevelGap = 5
+
+#
+#    Bot.Duel.MinHealthPct
+#        Description: The bot declines while its health is below this percent.
+#        Default:     70
+#        Values:      whole number 0 to 100 (percent)
+Bot.Duel.MinHealthPct = 70
+
+#
+#    Bot.Duel.CooldownSec
+#        Description: The bot declines for this long after its last duel.
+#        Default:     60
+#        Values:      whole number 0 to 3600 (seconds)
+Bot.Duel.CooldownSec = 60
+
+#
+#    Bot.Duel.YieldPct
+#        Description: A bot fighting a player forfeits when its health falls to this percent, so the player can win a
+#                     friendly spar. Bot against bot duels are never yielded.
+#        Default:     0
+#        Values:      whole number 0 to 50 (percent, 0 = fights to the end)
+Bot.Duel.YieldPct = 0
+
+#
+#    Bot.Duel.Chat
+#        Description: The bot says a line when it accepts, declines, yields, wins or loses, and whispers the reason of
+#                     a refusal to the player.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Duel.Chat = 1
+
+#
+#    Bot.Duel.Challenge.Enabled
+#        Description: A player whispers a bot a short message with "duel", "spar", "1v1" or "fight me" in it and the
+#                     bot walks up and challenges them. The checks of a normal challenge apply except the acceptance
+#                     chance.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Duel.Challenge.Enabled = 1
+
+#
+#    Bot.Duel.Challenge.Yards
+#        Description: The bot casts its challenge from within this distance of the player.
+#        Default:     8
+#        Values:      whole number 3 to 10 (yards)
+Bot.Duel.Challenge.Yards = 8
+
+#
+#    Bot.Duel.BotVsBot.Enabled
+#        Description: Free bots in a city challenge a free neighbour to a duel now and then.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Duel.BotVsBot.Enabled = 0
+
+#
+#    Bot.Duel.BotVsBot.IntervalSec
+#        Description: Least time between two looks for a sparring partner, per bot.
+#        Default:     240
+#        Values:      whole number 30 to 7200 (seconds)
+Bot.Duel.BotVsBot.IntervalSec = 240
+
+#
+#    Bot.Duel.BotVsBot.ChancePct
+#        Description: Chance per look that the bot challenges a partner it finds.
+#        Default:     35
+#        Values:      whole number 0 to 100 (percent)
+Bot.Duel.BotVsBot.ChancePct = 35
+
+#
+#    Bot.Duel.BotVsBot.SearchYards
+#        Description: The partner must stand within this distance of the challenging bot.
+#        Default:     25
+#        Values:      whole number 5 to 60 (yards)
+Bot.Duel.BotVsBot.SearchYards = 25
+
+#
+#    Bot.Duel.BotVsBot.NeedWatcher
+#        Description: Bots duel each other only while a real player is within Bot.Duel.BotVsBot.WatchYards, so the
+#                     show is for somebody and costs nothing in empty cities.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Duel.BotVsBot.NeedWatcher = 1
+
+#
+#    Bot.Duel.BotVsBot.WatchYards
+#        Description: Distance within which a real player counts as a watcher.
+#        Default:     60
+#        Values:      whole number 10 to 150 (yards)
+Bot.Duel.BotVsBot.WatchYards = 60
+
+#
+#    Bot.Duel.BotVsBot.TimeoutSec
+#        Description: A bot against bot duel that lasts this long ends: the bot that notices it first forfeits.
+#        Default:     240
+#        Values:      whole number 30 to 1800 (seconds)
+Bot.Duel.BotVsBot.TimeoutSec = 240

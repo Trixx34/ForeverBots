@@ -54,6 +54,7 @@
 #include "RealmList.h"
 #include "ScriptMgr.h"
 #include "SocialMgr.h"
+#include "Util.h"
 #include "World.h"
 #include "WorldSocket.h"
 #include <boost/circular_buffer.hpp>
@@ -853,6 +854,14 @@ bool WorldSession::IsConnectionIdle() const
 
 void WorldSession::Handle_NULL(WorldPackets::Null& null)
 {
+    if (null.GetOpcode() == CMSG_QUICK_JOIN_REQUEST_INVITE_WITH_CONFIRMATION)
+    {
+        WorldPacket const* packet = null.GetRawPacket();
+        std::size_t const payloadSize = packet->size() >= sizeof(uint32) ? packet->size() - sizeof(uint32) : 0;
+        TC_LOG_INFO("network.opcode", "Quick Join invite request payload from {} ({} bytes): {}", GetPlayerInfo(), payloadSize,
+            Trinity::Impl::ByteArrayToHexStr(packet->data() + (packet->size() - payloadSize), std::min<std::size_t>(payloadSize, 64)));
+    }
+
     TC_LOG_ERROR("network.opcode", "Received unhandled opcode {} from {}", GetOpcodeNameForLogging(null.GetOpcode()), GetPlayerInfo());
 }
 

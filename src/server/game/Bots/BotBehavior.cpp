@@ -23,6 +23,7 @@
 //   recover  (Dead)       release spirit after a short delay, corpse run or spirit healer, resurrection sickness logged
 // Every piece is a strategy built from triggers and actions; they are switched with `bot strategy <bot> +name|-name`.
 
+#include "BotConfigReload.h"
 #include "BotAI.h"
 #include "BotCombat.h"
 #include "BotRevive.h"
@@ -171,8 +172,7 @@ public:
 // ---------------------------------------------------------------------------------------------------------------------
 // follow / stay
 // ---------------------------------------------------------------------------------------------------------------------
-constexpr float FOLLOW_START_DIST = 10.0f; // start walking when the leader is farther than this
-constexpr float FOLLOW_ARRIVE_DIST = 5.0f;  // and stop within this distance
+// start and stop distances: BotControl::FollowThresholds (10 / 5 yards unless the leader set a follow distance)
 
 class FollowLeaderAction : public Action
 {
@@ -201,18 +201,20 @@ public:
 
         bool const following = motion.HasGoal() && !std::strcmp(motion.GetTag(), "follow");
         float const dist = bot->GetExactDist2d(leader);
+        float startDist, arriveDist;   // the leader's follow distance setting (Bot.Chat.Control.*), else the built-in values
+        BotControl::FollowThresholds(motion.GetFollowDistance(), startDist, arriveDist);
         if (!following)
         {
-            if (dist <= FOLLOW_START_DIST)
+            if (dist <= startDist)
                 return false; // close enough, nothing to do
-            motion.SetGoal(bot->GetMapId(), leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(), FOLLOW_ARRIVE_DIST, "follow");
+            motion.SetGoal(bot->GetMapId(), leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(), arriveDist, "follow");
         }
         else
         {
             // the leader moved on: retarget (no new GOTO_START row, follow goals are quiet)
             float const dx = leader->GetPositionX() - motion.GoalX(), dy = leader->GetPositionY() - motion.GoalY();
             if (dx * dx + dy * dy > 16.0f)
-                motion.SetGoal(bot->GetMapId(), leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(), FOLLOW_ARRIVE_DIST, "follow");
+                motion.SetGoal(bot->GetMapId(), leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ(), arriveDist, "follow");
         }
         motion.Step(ai, bot);
         return true;
@@ -666,7 +668,7 @@ public:
     {
         Player* bot = GetBot();
         BotRecover const& r = GetAI()->Recover();
-        if (bot->IsAlive() || !IsGhost(bot) || bot->IsBeingTeleported() || r.Plan == BotRecover::Mode::Healer)
+        if (bot->IsAlive() || !IsGhost(bot) || bot->IsBeingTeleported() || r.Plan == BotRecover::Mode::Healer || bot->InBattleground())   // a ghost in a battleground waits for the spirit healer wave (BotBattleground)
             return false;
         if (r.Plan == BotRecover::Mode::CorpseRun && bot->HasCorpse() && bot->GetCorpseLocation().GetMapId() == bot->GetMapId() &&
             bot->GetExactDist(bot->GetCorpseLocation()) <= CORPSE_RECLAIM_DIST)
@@ -724,7 +726,7 @@ public:
     {
         Player* bot = GetBot();
         BotRecover const& r = GetAI()->Recover();
-        if (bot->IsAlive() || !IsGhost(bot) || bot->IsBeingTeleported() || !bot->HasCorpse())
+        if (bot->IsAlive() || !IsGhost(bot) || bot->IsBeingTeleported() || !bot->HasCorpse() || bot->InBattleground())
             return false;
         WorldLocation const& c = bot->GetCorpseLocation();
         return c.GetMapId() == bot->GetMapId() && bot->GetExactDist(c) <= CORPSE_RECLAIM_DIST && GetAI()->GetNowMs() >= r.NextTryMs;
@@ -771,7 +773,7 @@ public:
         Player* bot = GetBot();
         BotRecover const& r = GetAI()->Recover();
         // reclaim_corpse has priority when the corpse is in reach; this one is for the healer plan (and as the fallback after a failed run)
-        return !bot->IsAlive() && IsGhost(bot) && !bot->IsBeingTeleported() && r.Plan == BotRecover::Mode::Healer && GetAI()->GetNowMs() >= r.NextTryMs;
+        return !bot->IsAlive() && IsGhost(bot) && !bot->IsBeingTeleported() && !bot->InBattleground() && r.Plan == BotRecover::Mode::Healer && GetAI()->GetNowMs() >= r.NextTryMs;
     }
     bool Execute() override
     {
@@ -940,8 +942,8 @@ namespace BotMove
 NaturalConfig const& Natural()
 {
     static NaturalConfig cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Move.Natural.Enabled", false);
         cfg.Shortcut = sConfigMgr->GetBoolDefault("Bot.AI.Move.Natural.Shortcut", true);
@@ -964,8 +966,8 @@ namespace BotTownIdle
 Config const& Cfg()
 {
     static Config cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.TownIdle.Enabled", false);
         cfg.SearchYards = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.TownIdle.SearchYards", 70), 20, 150));

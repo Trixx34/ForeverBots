@@ -245,6 +245,8 @@ void RegisterQuestBotObjects(BotRegistry& registry);
 // Defined in BotPet.cpp: hunter pet upkeep and taming (strategy "pet").
 void RegisterPetBotObjects(BotRegistry& registry);
 void RegisterTravelBotObjects(BotRegistry& registry);
+// Defined in BotDuel.cpp: answering and fighting duels (strategy "duel").
+void RegisterDuelBotObjects(BotRegistry& registry);
 // Defined in BotConsumables.cpp: potions in a fight (strategy "consumables").
 void RegisterConsumableBotObjects(BotRegistry& registry);
 // Defined in BotRevive.cpp: raising dead group members (strategy "revive") and accepting offers ("revive_accept").

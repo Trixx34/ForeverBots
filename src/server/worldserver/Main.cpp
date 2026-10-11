@@ -226,20 +226,26 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // Bot settings live in their own file next to worldserver.conf (botserver.conf.dist). Optional: without it every Bot.* key keeps its default.
+    // Bot settings are read only from their dedicated file; Bot.* values in worldserver.conf are ignored.
     {
         fs::path const botConfigFile = configFile.parent_path() / "botserver.conf";
         boost::system::error_code botConfigEc;
-        if (fs::exists(botConfigFile, botConfigEc))
+        bool const botConfigExists = fs::exists(botConfigFile, botConfigEc);
+        if (botConfigEc)
         {
-            std::string botConfigError;
-            if (!sConfigMgr->LoadAdditionalFile(botConfigFile.generic_string(), true, botConfigError))
-            {
-                printf("Error in bot config file: %s\n", botConfigError.c_str());
-                return 1;
-            }
-            printf("Loaded bot config file %s\n", botConfigFile.generic_string().c_str());
+            printf("Error checking bot config file %s: %s\n", botConfigFile.generic_string().c_str(), botConfigEc.message().c_str());
+            return 1;
         }
+
+        std::string botConfigError;
+        if (!sConfigMgr->LoadBotConfigFile(botConfigFile.generic_string(), botConfigError))
+        {
+            printf("Error in bot config file: %s\n", botConfigError.c_str());
+            return 1;
+        }
+
+        if (botConfigExists)
+            printf("Loaded bot config file %s\n", botConfigFile.generic_string().c_str());
         else
             printf("No bot config file %s, bot settings use their defaults\n", botConfigFile.generic_string().c_str());
     }

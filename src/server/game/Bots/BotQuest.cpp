@@ -22,6 +22,7 @@
 //   4. Actions      quest_think: accept / travel / kill / loot / talk / turn-in
 //   5. Registration "quest" strategy for the NonCombat engine (add it to Bot.AI.Default.NonCombat or with `bot strategy`)
 
+#include "BotConfigReload.h"
 #include "Bag.h"
 #include "BotQuest.h"
 #include "BotQuestClassifier.h"
@@ -30,6 +31,8 @@
 #include "BotBank.h"
 #include "BotBehavior.h"
 #include "BotCombat.h"
+#include "BotCooking.h"
+#include "BotBattleground.h"
 #include "BotDungeonRun.h"
 #include "BotLfg.h"
 #include "BotParty.h"
@@ -128,8 +131,8 @@ struct QuestCfg
 QuestCfg const& Cfg()
 {
     static QuestCfg cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.MaxActive = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Quest.MaxActive", 12)));
         cfg.StallSec = uint32(std::max<int32>(30, sConfigMgr->GetIntDefault("Bot.Quest.StallSec", 240)));
@@ -179,8 +182,8 @@ struct LootCfg
 LootCfg const& Improved()
 {
     static LootCfg cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Loot.Improved.Enabled", false);
         cfg.MaxYards = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Loot.Improved.MaxYards", 150), 20, 1000));
@@ -208,8 +211,8 @@ struct LootSafetyCfg
 LootSafetyCfg const& Safety()
 {
     static LootSafetyCfg cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Loot.Safety.Enabled", true);
         cfg.QuarantineStrikes = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Loot.Safety.QuarantineStrikes", 3), 1, 20));
@@ -343,8 +346,8 @@ struct AmmoConfig
 AmmoConfig const& AmmoCfg()
 {
     static AmmoConfig cfg;
-    static std::once_flag once;
-    std::call_once(once, []()
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
     {
         cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.AI.Ammo.Enabled", false);
         cfg.LowCount = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Ammo.LowCount", 60), 1, 2000));
@@ -1701,6 +1704,12 @@ public:
             return false;
         }
 
+        if (BotBattleground::Busy(ai)) // the battleground orders move the bot
+        {
+            c.Why = "battleground";
+            return false;
+        }
+
         if (BotParty::Busy(ai) && bot->IsAlive()) // a member of a bot party follows its leader
         {
             c.Why = "party";
@@ -2227,6 +2236,8 @@ private:
             return block("QUEST_LEVEL", StringFormat("quest '{}' needs a different level (bot {}, quest min {})", q->GetLogTitle(), bot->GetLevel(), bot->GetQuestMinLevel(q)));
         if (!bot->SatisfyQuestDependentQuests(q, false) || !bot->SatisfyQuestPreviousQuest(q, false))
             return block("QUEST_PREREQ", StringFormat("quest '{}' needs an earlier quest", q->GetLogTitle()));
+        if (uint32 factionId = GetUnknownReputationFaction(q))
+            return block("QUEST_REPUTATION_FACTION", StringFormat("quest '{}' requires unknown reputation faction {}", q->GetLogTitle(), factionId));
         if (!bot->CanTakeQuest(q, false))
             return 0.0f; // exclusive group, day/week, conditions: not worth a row
 
@@ -2648,6 +2659,8 @@ private:
             if (bot->GetQuestStatus(questId) != QUEST_STATUS_NONE || bot->GetQuestRewardStatus(questId))
                 continue;
             if (CachedAnalysis(q).Code)
+                continue;
+            if (GetUnknownReputationFaction(q))
                 continue;
             if (!bot->CanTakeQuest(q, false))
                 continue;
@@ -3113,9 +3126,11 @@ private:
             if (back != c.CraftBackoff.end() && now < back->second)
                 continue;
             int32 const skill = int32(bot->GetSkillValue(info.Skill));
-            if (skill >= int32(bot->GetMaxSkillValue(info.Skill)))
+            bool const stockCook = info.Skill == BotProfession::SKILL_COOKING && BotCooking::Enabled();
+            if (skill >= int32(bot->GetMaxSkillValue(info.Skill)) && !stockCook)
                 continue;
             std::vector<BotProfession::Recipe> craftable;
+            std::vector<BotCook::Recipe> foods;   // cooking only: what the stock needs, skill-up or not
             for (auto const& [spellId, ps] : bot->GetSpellMap())
             {
                 if (ps.state == PLAYERSPELL_REMOVED || !ps.active || ps.disabled)
@@ -3140,16 +3155,42 @@ private:
                 if (!any || !haveAll || bot->GetFreeInventorySlotCount() == 0)
                     continue;
                 craftable.push_back({ spellId, (ab->TrivialSkillLineRankHigh + ab->TrivialSkillLineRankLow) / 2, ab->TrivialSkillLineRankHigh });
+                BotCook::Recipe food;
+                if (stockCook && BotCooking::Describe(bot, si, food))
+                {
+                    food.SpellId = spellId;
+                    food.Yellow = craftable.back().Yellow;
+                    food.Grey = craftable.back().Grey;
+                    foods.push_back(food);
+                }
             }
-            int const pick = BotProfession::PickRecipe(skill, craftable);
-            if (pick < 0)
+            // stock first: food and buff food for the players the bot travels with; a skill-up recipe otherwise
+            uint32 spellId = 0;
+            bool forStock = false;
+            if (stockCook && !BotCook::BagsTooFull(bot->GetFreeInventorySlotCount(), BotCooking::Cfg()))
+            {
+                int const sp = BotCook::PickStock(skill, BotCooking::CountStock(bot), BotCooking::Cfg(), foods);
+                if (sp >= 0)
+                {
+                    spellId = foods[size_t(sp)].SpellId;
+                    forStock = true;
+                }
+            }
+            if (!spellId && skill < int32(bot->GetMaxSkillValue(info.Skill)))
+            {
+                int const pick = BotProfession::PickRecipe(skill, craftable);
+                if (pick >= 0)
+                    spellId = craftable[size_t(pick)].SpellId;
+            }
+            if (!spellId)
                 continue;
-            uint32 const spellId = craftable[pick].SpellId;
             SpellCastResult const res = bot->CastSpell(bot, spellId, CastSpellExtraArgs(TRIGGERED_NONE));
             if (res == SPELL_CAST_OK)
             {
-                Decision(ai, bot, "PROF_CRAFT", StringFormat("crafting spell {} for {} (skill {})", spellId, info.Name, skill), 0, 0,
-                    StringFormat(R"({{"skill":{},"spell":{},"skill_value":{}}})", info.Skill, spellId, skill));
+                if (forStock)
+                    c.CraftNextMs = now + 4000;   // a stock is many casts: keep going once the cast is over
+                Decision(ai, bot, forStock ? "FOOD_COOK" : "PROF_CRAFT", StringFormat("crafting spell {} for {} (skill {}{})", spellId, info.Name, skill, forStock ? ", for the food stock" : ""), 0, 0,
+                    StringFormat(R"({{"skill":{},"spell":{},"skill_value":{},"stock":{}}})", info.Skill, spellId, skill, forStock ? 1 : 0));
                 return;
             }
             if (res == SPELL_FAILED_REQUIRES_SPELL_FOCUS && !(c.FocusArrivedSkill == info.Skill && now - c.FocusArrivedMs < 60000))
@@ -4119,10 +4160,15 @@ private:
             StopMoving(ai, bot, c);
             if (giver)
             {
-                if (!npc->hasQuest(questId) || !bot->CanTakeQuest(q, false))
+                uint32 const unknownFaction = GetUnknownReputationFaction(q);
+                bool const canTakeQuest = !unknownFaction && bot->CanTakeQuest(q, false);
+                if (!npc->hasQuest(questId) || !canTakeQuest)
                 {
-                    Drop(ai, bot, c, now, questId, bot->CanTakeQuest(q, false) ? "GIVER_NOT_INTERACTABLE" : "QUEST_PREREQ",
-                        StringFormat("giver {} cannot give '{}' now", t.NpcEntry, q->GetLogTitle()), std::string(), t.NpcEntry, 900);
+                    char const* reason = unknownFaction ? "QUEST_REPUTATION_FACTION" : canTakeQuest ? "GIVER_NOT_INTERACTABLE" : "QUEST_PREREQ";
+                    std::string summary = unknownFaction
+                        ? StringFormat("quest '{}' requires unknown reputation faction {}", q->GetLogTitle(), unknownFaction)
+                        : StringFormat("giver {} cannot give '{}' now", t.NpcEntry, q->GetLogTitle());
+                    Drop(ai, bot, c, now, questId, reason, std::move(summary), std::string(), t.NpcEntry, 900);
                     return true;
                 }
                 if (!bot->CanAddQuest(q, false))
@@ -5589,6 +5635,18 @@ void EnsureIndex()
 
 bool IsReady() { return g.Ready.load(std::memory_order_acquire); }
 
+uint32 GetUnknownReputationFaction(Quest const* quest)
+{
+    if (!quest)
+        return 0;
+
+    for (uint32 factionId : std::array<uint32, 2>{ quest->GetRequiredMinRepFaction(), quest->GetRequiredMaxRepFaction() })
+        if (factionId && !sFactionStore.LookupEntry(factionId))
+            return factionId;
+
+    return 0;
+}
+
 std::string DescribeTask(BotAI* ai)
 {
     BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
@@ -5639,6 +5697,11 @@ void NoteDeath(Player* bot)
 {
     if (Improved().Enabled || Safety().Enabled)
         g_deadly.Note(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), getMSTime());
+    // Bot.Quest.GroupAfterDeaths: count the death against the quest the bot was working on
+    if (BotAI* ai = bot->GetSession() ? bot->GetSession()->GetBotAI() : nullptr)
+        if (BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx")))
+            if (cp->T.Quest && bot->GetQuestStatus(cp->T.Quest) == QUEST_STATUS_INCOMPLETE)
+                BotParty::NoteQuestDeath(bot, cp->T.Quest);
 }
 
 void OnLogout(BotAI* ai)

@@ -888,7 +888,16 @@ bool Loot::FillLoot(uint32 lootId, LootStore const& store, Player* lootOwner, bo
 
     items.reserve(MAX_NR_LOOT_ITEMS);
 
+    // Classic 1.60 Legacy perk Bountiful Harvest: more Scarce materials from gathering nodes and skinning
+    float scarceMod = 1.0f;
+    if (&store == &LootTemplates_Gameobject || &store == &LootTemplates_Skinning)
+        if (int32 pct = lootOwner->GetClassicLegacyPerkAmount(1225435, EFFECT_0); pct > 0)
+            scarceMod = 1.0f + pct / 100.0f;
+    SetClassicScarceMaterialChanceMod(scarceMod);
+
     tab->Process(*this, store.IsRatesAllowed(), lootMode, 0);    // Processing is done there, callback via Loot::AddItem()
+
+    SetClassicScarceMaterialChanceMod(1.0f);
 
     // Setting access rights for group loot case
     Group const* group = lootOwner->GetGroup();

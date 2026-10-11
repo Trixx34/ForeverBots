@@ -25,10 +25,13 @@ using namespace BotLogCat;
 TEST_CASE("Reason prefixes pick the category", "[BotLogCategory]")
 {
     CHECK(Classify("decision", "DUNGEON_NO_ENTRANCE") == Dungeon);
+    CHECK(Classify("decision", "BG_QUEUE_JOIN") == Battleground);
     CHECK(Classify("decision", "TRAVEL_LEG_START") == Travel);
     CHECK(Classify("decision", "PET_TAME_OK") == Pets);
     CHECK(Classify("decision", "AH_POSTED") == Economy);
     CHECK(Classify("decision", "BANK_DEPOSIT") == Economy);
+    CHECK(Classify("decision", "FOOD_COOK") == Economy);
+
     CHECK(Classify("decision", "CRAFT_DONE") == Economy);
     CHECK(Classify("decision", "MAIL_SENT") == Economy);
     CHECK(Classify("decision", "PARTY_FORMED") == Social);
@@ -47,6 +50,10 @@ TEST_CASE("Reason prefixes pick the category", "[BotLogCategory]")
     CHECK(Classify("decision", "SUPPLY_BOUGHT") == Economy);
     CHECK(Classify("quest_blocked", "NO_PATH") == Movement);
     CHECK(Classify("decision", "QUEST_WALK_START") == Quest);
+    CHECK(Classify("decision", "INTERRUPT_CAST") == Combat);
+    CHECK(Classify("decision", "DISPEL_CAST") == Combat);
+    CHECK(Classify("decision", "CC_CAST") == Combat);
+    CHECK(Classify("decision", "CC_PREPULL") == Combat);
 }
 
 TEST_CASE("Event type is the fallback, other when nothing matches", "[BotLogCategory]")

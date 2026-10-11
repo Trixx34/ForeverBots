@@ -34,6 +34,9 @@ class Unit;
 TC_GAME_API bool BotCombatRotationEnabled();
 TC_GAME_API uint32 BotCombatPrePullManaPct();
 
+// Bot.AI.GroupControl.Enabled: BotAI adds the "groupcontrol" strategy (dispels and marked crowd control out of a fight) to NonCombat bots while it is on.
+TC_GAME_API bool BotCombatGroupControlEnabled();
+
 // Death avoidance (Bot.AI.Avoid.*, docs/playerbots/death-avoidance-20261008.md): true when `mob` is on the configured avoid list and
 // more than Bot.AI.Avoid.MaxLevelGap levels above the bot. Quest/grind target choice skips such mobs, the combat target choice fights
 // them last.
@@ -48,6 +51,13 @@ TC_GAME_API bool BotCombatGroupEngaged(Player* bot);
 // Bot.Chat.Orders (`heal`): the bot casts its best known heal of the combat spell table at `target` right now (no fight context needed).
 // Returns "OK" or a refusal code: NO_HEAL_SPELL, OUT_OF_RANGE, NO_LOS, NO_POWER, COOLDOWN, BUSY (casting or moving), CAST_FAILED.
 TC_GAME_API char const* BotCombatHealUnit(Player* bot, Unit* target);
+
+// Bot.Chat.Orders (`cc`, `interrupt`, `dispel`): the bot answers a player's request on the player's target right now. cc: the bot's control
+// spell (Polymorph, Shackle Undead, Hibernate...) on a hostile target; interrupt: Kick / Counterspell... on a casting hostile target; dispel: the
+// worst harmful effect it can remove from a friendly target. Returns "OK" or a refusal code: NO_SPELL, OUT_OF_RANGE, NO_LOS, WRONG_TYPE,
+// ALREADY_CONTROLLED, ASSIGNED (another bot took it), NOT_CASTING, NOTHING_TO_DISPEL, NOT_HOSTILE, NOT_FRIENDLY, NO_POWER, COOLDOWN, BUSY, CAST_FAILED.
+enum class BotCombatOrderKind : uint8 { Control, Interrupt, Dispel };
+TC_GAME_API char const* BotCombatOrder(Player* bot, Unit* target, BotCombatOrderKind kind);
 
 // Console aid (`bot spells <name>`): the spells the bot knows (id, name) and what the combat strategy resolved from them
 // (role, highest known rank per table entry, why an entry is not usable). Not for per-tick use.

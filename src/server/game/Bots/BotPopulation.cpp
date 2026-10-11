@@ -17,6 +17,7 @@
 
 // Dynamic bot population, see BotPopulation.h.
 
+#include "BotConfigReload.h"
 #include "BotPopulation.h"
 #include "BotMgr.h"
 #include "BotPopulationPlan.h"
@@ -42,14 +43,14 @@ struct Settings
     uint32 StartDelayMs = 60000; // Bot.Population.StartDelaySec: no change before this much uptime, so a restart does not fight the saved bots
 };
 Settings s_cfg;
-std::once_flag s_cfgOnce;
+BotCfg::Flag s_cfgOnce;
 uint32 s_sinceMs = 0;
 uint32 s_uptimeMs = 0;
 uint32 s_lastTarget = 0xFFFFFFFFu;
 
 Settings const& Cfg()
 {
-    std::call_once(s_cfgOnce, []()
+    BotCfg::Load(s_cfgOnce, []()
     {
         Config& c = s_cfg.Plan;
         c.Enabled = sConfigMgr->GetBoolDefault("Bot.Population.Enabled", false);

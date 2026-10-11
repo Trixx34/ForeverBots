@@ -1886,6 +1886,20 @@ Loot* GameObject::GetFishLoot(Player* lootOwner)
     if (fishLoot->isLooted())
         fishLoot->FillLoot(defaultzone, LootTemplates_Fishing, lootOwner, true, true, LOOT_MODE_DEFAULT, itemContext);
 
+    // Classic 1.60 Legacy perk Luremaster 1225455: while fishing with a lure active (temporary enchantment on the fishing pole),
+    // a chance to catch an extra fish
+    if (int32 extraFishChance = lootOwner->GetClassicLegacyPerkAmount(1225455, EFFECT_0); extraFishChance > 0 && !fishLoot->items.empty())
+    {
+        Item const* pole = lootOwner->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+        if (pole && pole->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) && roll_chance(extraFishChance))
+        {
+            LootItem& fish = fishLoot->items.front();
+            ItemTemplate const* fishTemplate = sObjectMgr->GetItemTemplate(fish.itemid);
+            if (fish.type == LootItemType::Item && fishTemplate && fish.count < fishTemplate->GetMaxStackSize())
+                ++fish.count;
+        }
+    }
+
     return fishLoot;
 }
 

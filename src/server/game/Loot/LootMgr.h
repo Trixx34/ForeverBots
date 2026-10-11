@@ -165,6 +165,8 @@ TC_GAME_API extern LootStore LootTemplates_Milling;
 TC_GAME_API extern LootStore LootTemplates_Pickpocketing;
 TC_GAME_API extern LootStore LootTemplates_Reference;
 TC_GAME_API extern LootStore LootTemplates_Skinning;
+
+TC_GAME_API void SetClassicScarceMaterialChanceMod(float mod);  // Classic 1.60 Legacy perk Bountiful Harvest
 TC_GAME_API extern LootStore LootTemplates_Disenchant;
 TC_GAME_API extern LootStore LootTemplates_Prospecting;
 TC_GAME_API extern LootStore LootTemplates_Spell;

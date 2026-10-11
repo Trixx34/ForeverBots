@@ -51,6 +51,7 @@ namespace BotParty
         uint32 Level = 1;
         float X = 0.0f, Y = 0.0f;
         std::vector<uint32> Quests;   // unfinished quests in the log (any order)
+        uint32 SeekQuest = 0;         // != 0: died too often on this quest and wants company on it (Quests then holds only this quest); seeds a party regardless of FormChancePct
     };
 
     struct Formed

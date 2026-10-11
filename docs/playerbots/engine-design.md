@@ -109,7 +109,9 @@ template's reward ids, not the final standing change. The accept time is kept in
 `bot quest add|complete|reward|abandon|fail <bot> <questId> [choiceItemId]` (test aids using the normal Player quest APIs).
 Use the existing `revive <name>` to revive a bot.
 
-## Config (botserver.conf.dist, PLAYER BOTS block)
+## Config (botserver.conf.dist)
+
+`Bot.*` and `BotLog*` settings are read only from `botserver.conf`, not from `worldserver.conf` or `worldserver.conf.d`.
 `Bot.AI.Enabled`, `Bot.AI.TickMs`, `Bot.AI.TestStrategy`, `Bot.AI.Test.IdleSec`, `Bot.AI.Test.CombatSec`. Read once at first
 use (not reloadable); `bot ai on|off` pauses ticking at runtime.
 

@@ -8965,6 +8965,11 @@ void Unit::UpdateSpeed(UnitMoveType mtype)
                 main_speed_mod  = GetMaxPositiveAuraModifier(SPELL_AURA_MOD_INCREASE_SPEED);
                 stack_bonus     = GetTotalAuraMultiplier(SPELL_AURA_MOD_SPEED_ALWAYS);
                 non_stack_bonus += GetMaxPositiveAuraModifier(SPELL_AURA_MOD_SPEED_NOT_STACK) / 100.0f;
+
+                // Classic 1.60 Legacy perk The Quick and the Dead 1225500: movement speed while dead (ghost)
+                if (Player const* player = ToPlayer(); player && HasAuraType(SPELL_AURA_GHOST))
+                    if (int32 ghostSpeed = player->GetClassicLegacyPerkAmount(1225500, EFFECT_0))
+                        stack_bonus *= 1.0f + ghostSpeed / 100.0f;
             }
             break;
         }
@@ -10274,6 +10279,11 @@ void Unit::SetPower(Powers power, int32 val, bool withPowerUpdate /*= true*/)
 
     int32 oldPower = m_unitData->Power[powerIndex];
     SetUpdateFieldValue(m_values.ModifyValue(&Unit::m_unitData).ModifyValue(&UF::UnitData::Power, powerIndex), val);
+
+    // Classic 1.60: also send combo point changes as a power update (the official rogue sniff 70338 has type 4 power updates);
+    // energize changes the power without one. The client shows them only on UnitData ClassicComboTarget (Spell::EffectEnergize)
+    if (power == POWER_COMBO_POINTS && IsPlayer() && oldPower != val)
+        withPowerUpdate = true;
 
     if (IsInWorld() && withPowerUpdate)
     {

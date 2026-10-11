@@ -28,6 +28,7 @@
 #include "ObjectGuid.h"
 #include "BotMovePlan.h"
 #include "BotTownIdlePlan.h"
+#include <atomic>
 #include <optional>
 #include <string>
 #include <vector>
@@ -97,6 +98,9 @@ public:
     // Follow target (a player or bot on the same map). Guid empty = none.
     void SetFollow(ObjectGuid guid) { _follow = guid; }
     ObjectGuid GetFollow() const { return _follow; }
+    // Bot.Chat.Control.*: follow distance set by the group leader, yards; 0 = the built-in distance. World thread writes, map thread reads.
+    void SetFollowDistance(float yards) { _followDistance.store(yards, std::memory_order_relaxed); }
+    float GetFollowDistance() const { return _followDistance.load(std::memory_order_relaxed); }
 
     // Map thread: one movement step (arrival check, path start/re-issue, stuck detection). Emits GOTO_START, GOTO_ARRIVED and the
     // stuck/path_fail events. Returns Moving while the goal is active, Arrived/Failed once (the goal is then cleared).
@@ -154,6 +158,7 @@ private:
     bool _walkLogged = false;   // a QUEST_WALK_START row was written for this goal (arrival is logged only then)
     uint32 _pathUs = 0;         // microseconds of the last path query of this goal
     ObjectGuid _follow;
+    std::atomic<float> _followDistance{0.0f};
     BotAggro _aggro;
     bool _detour = false;       // walking to a detour point instead of the goal
     float _dx = 0.0f, _dy = 0.0f, _dz = 0.0f;

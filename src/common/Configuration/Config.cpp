@@ -39,6 +39,11 @@ namespace
     bpt::ptree _config;
     std::mutex _configLock;
 
+    bool IsBotConfigKey(std::string_view key)
+    {
+        return key.starts_with("Bot.") || key.starts_with("BotLog");
+    }
+
     bool LoadFile(std::string const& file, bpt::ptree& fullTree, std::string& error)
     {
         try
@@ -169,6 +174,34 @@ bool ConfigMgr::LoadAdditionalFile(std::string file, bool keepOnReload, std::str
     return true;
 }
 
+bool ConfigMgr::LoadBotConfigFile(std::string file, std::string& error)
+{
+    fs::path const path(file);
+    boost::system::error_code ec;
+    if (!fs::exists(path, ec))
+    {
+        if (ec)
+        {
+            error = "could not check bot config file (" + file + "): " + ec.message();
+            return false;
+        }
+
+        std::scoped_lock lock(_configLock);
+        _botConfig.clear();
+        _botConfigFilename = std::move(file);
+        return true;
+    }
+
+    bpt::ptree fullTree;
+    if (!LoadFile(file, fullTree, error))
+        return false;
+
+    std::scoped_lock lock(_configLock);
+    _botConfig = std::move(fullTree);
+    _botConfigFilename = std::move(file);
+    return true;
+}
+
 bool ConfigMgr::LoadAdditionalDir(std::string const& dir, bool keepOnReload, std::vector<std::string>& loadedFiles, std::vector<std::string>& errors)
 {
     fs::path dirPath = dir;
@@ -201,19 +234,25 @@ std::vector<std::string> ConfigMgr::OverrideWithEnvVariablesIfAny()
 
     std::vector<std::string> overriddenKeys;
 
-    for (bpt::ptree::value_type& itr: _config)
+    auto overrideConfig = [&overriddenKeys](bpt::ptree& config, bool botConfig)
     {
-        if (!itr.second.empty() || itr.first.empty())
-            continue;
+        for (bpt::ptree::value_type& itr : config)
+        {
+            if (!itr.second.empty() || itr.first.empty() || IsBotConfigKey(itr.first) != botConfig)
+                continue;
 
-        Optional<std::string> envVar = EnvVarForIniKey(itr.first);
-        if (!envVar)
-            continue;
+            Optional<std::string> envVar = EnvVarForIniKey(itr.first);
+            if (!envVar)
+                continue;
 
-        itr.second = bpt::ptree(*envVar);
+            itr.second = bpt::ptree(*envVar);
 
-        overriddenKeys.push_back(itr.first);
-    }
+            overriddenKeys.push_back(itr.first);
+        }
+    };
+
+    overrideConfig(_config, false);
+    overrideConfig(_botConfig, true);
 
     return overriddenKeys;
 }
@@ -234,17 +273,29 @@ bool ConfigMgr::Reload(std::vector<std::string>& errors)
         if (!LoadAdditionalFile(additionalFile, false, error))
             errors.push_back(std::move(error));
 
+    if (!_botConfigFilename.empty() && !LoadBotConfigFile(_botConfigFilename, error))
+        errors.push_back(std::move(error));
+
     OverrideWithEnvVariablesIfAny();
 
     return errors.empty();
 }
 
+std::string const& ConfigMgr::GetFilenameForKey(std::string_view name) const
+{
+    return IsBotConfigKey(name) && !_botConfigFilename.empty() ? _botConfigFilename : _filename;
+}
+
 template<class T, class R>
 R ConfigMgr::GetValueDefault(std::string_view const& name, T def, bool quiet) const
 {
+    bool const botConfig = IsBotConfigKey(name);
+    bpt::ptree const& config = botConfig ? _botConfig : _config;
+    std::string const& filename = GetFilenameForKey(name);
+
     try
     {
-        return _config.get<T>(bpt::ptree::path_type(std::string(name), '/'));
+        return config.get<T>(bpt::ptree::path_type(std::string(name), '/'));
     }
     catch (bpt::ptree_bad_path const&)
     {
@@ -258,20 +309,20 @@ R ConfigMgr::GetValueDefault(std::string_view const& name, T def, bool quiet) co
             }
 
             if (!quiet)
-                TC_LOG_WARN("server.loading", "Missing name {} in config file {}, recovered with environment '{}' value.", name, _filename, *envVar);
+                TC_LOG_WARN("server.loading", "Missing name {} in config file {}, recovered with environment '{}' value.", name, filename, *envVar);
 
             return *castedVar;
         }
         else if (!quiet)
         {
             TC_LOG_WARN("server.loading", "Missing name {} in config file {}, add \"{} = {}\" to this file",
-                name, _filename, name, def);
+                name, filename, name, def);
         }
     }
     catch (bpt::ptree_bad_data const&)
     {
         TC_LOG_ERROR("server.loading", "Bad value defined for name {} in config file {}, going to use {} instead",
-            name, _filename, def);
+            name, filename, def);
     }
 
     return def;
@@ -280,29 +331,33 @@ R ConfigMgr::GetValueDefault(std::string_view const& name, T def, bool quiet) co
 template<>
 std::string ConfigMgr::GetValueDefault<std::string_view>(std::string_view const& name, std::string_view def, bool quiet) const
 {
+    bool const botConfig = IsBotConfigKey(name);
+    bpt::ptree const& config = botConfig ? _botConfig : _config;
+    std::string const& filename = GetFilenameForKey(name);
+
     try
     {
-        return _config.get<std::string>(bpt::ptree::path_type(std::string(name), '/'));
+        return config.get<std::string>(bpt::ptree::path_type(std::string(name), '/'));
     }
     catch (bpt::ptree_bad_path const&)
     {
         if (Optional<std::string> envVar = EnvVarForIniKey(name))
         {
             if (!quiet)
-                TC_LOG_WARN("server.loading", "Missing name {} in config file {}, recovered with environment '{}' value.", name, _filename, *envVar);
+                TC_LOG_WARN("server.loading", "Missing name {} in config file {}, recovered with environment '{}' value.", name, filename, *envVar);
 
             return *envVar;
         }
         else if (!quiet)
         {
             TC_LOG_WARN("server.loading", "Missing name {} in config file {}, add \"{} = {}\" to this file",
-                name, _filename, name, def);
+                name, filename, name, def);
         }
     }
     catch (bpt::ptree_bad_data const&)
     {
         TC_LOG_ERROR("server.loading", "Bad value defined for name {} in config file {}, going to use {} instead",
-            name, _filename, def);
+            name, filename, def);
     }
 
     return std::string(def);
@@ -324,7 +379,7 @@ bool ConfigMgr::GetBoolDefault(std::string_view name, bool def, bool quiet) cons
     else
     {
         TC_LOG_ERROR("server.loading", "Bad value defined for name {} in config file {}, going to use '{}' instead",
-            name, _filename, def ? "true" : "false");
+            name, GetFilenameForKey(name), def ? "true" : "false");
         return def;
     }
 }

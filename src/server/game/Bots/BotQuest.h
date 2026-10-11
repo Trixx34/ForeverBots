@@ -30,6 +30,7 @@
 
 class BotAI;
 class Player;
+class Quest;
 struct ItemTemplate;
 
 namespace BotQuest
@@ -38,6 +39,8 @@ namespace BotQuest
     // tables, everything else comes from the ObjectMgr caches.
     TC_GAME_API void EnsureIndex();
     TC_GAME_API bool IsReady();
+    // Returns a missing faction ID used by a quest's reputation prerequisite, or 0 when both IDs are valid.
+    TC_GAME_API uint32 GetUnknownReputationFaction(Quest const* quest);
     // One-line summary of the bot's current quest task (console / diagnostics). Map thread or a quiet world thread.
     TC_GAME_API std::string DescribeTask(BotAI* ai);
     // BotAI::OnLogout: gives back the resource claims the bot's quest task holds. Map thread.

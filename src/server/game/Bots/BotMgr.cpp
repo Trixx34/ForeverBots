@@ -24,6 +24,8 @@
 #include "BotSocial.h"
 #include "AccountMgr.h"
 #include "BotAI.h"
+#include "BotConfigReload.h"
+#include "BotBattleground.h"
 #include "BotDungeonRun.h"
 #include "BotLfg.h"
 #include "BotParty.h"
@@ -114,10 +116,10 @@ T const& RandomOf(T const (&values)[N])
     return values[urand(0, N - 1)];
 }
 
-// "Bot" + random syllables: letters only (a valid player name), clearly a bot
+// Random syllables form a valid player name without exposing the internal bot account prefix.
 std::string GenerateBotName()
 {
-    std::string name = "Bot" + std::string(RandomOf(NameStart)) + (urand(0, 1) ? RandomOf(NameMiddle) : "") + RandomOf(NameEnd);
+    std::string name = std::string(RandomOf(NameStart)) + (urand(0, 1) ? RandomOf(NameMiddle) : "") + RandomOf(NameEnd);
     if (name.size() > 12)
         name.resize(12);
     normalizePlayerName(name); // first letter upper case, rest lower case, like a name typed in character creation
@@ -341,6 +343,7 @@ void BotMgr::LogTickStats(uint32 diff, uint64 updateUs)
 
 void BotMgr::Update(uint32 diff)
 {
+    BotCfg::ApplyPending();   // ".reload config": refill the Bot.* option structs here, outside the map updates
     ++_ticks;
     _uptimeMs += diff;
 
@@ -365,6 +368,7 @@ void BotMgr::Update(uint32 diff)
     ProcessLogins();
     ProcessBotTeleports();
     BotDungeonRun::Update(diff);
+    BotBattleground::Update(diff);
     BotParty::Update(diff);
     BotQuestAssist::Update(diff);
     BotPlayerLed::Update(diff);

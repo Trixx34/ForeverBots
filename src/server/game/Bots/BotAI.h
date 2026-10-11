@@ -19,10 +19,12 @@
 #define TRINITY_BOT_AI_H
 
 #include "BotBehavior.h"
+#include "BotControl.h"
 #include "BotEngine.h"
 #include "BotMgr.h"
 #include <array>
 #include <atomic>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -115,8 +117,17 @@ public:
     std::optional<BotState> GetForcedState() const { return _forced; }
     uint64 GetGuid() const { return _guid; }
     // Bot.Chat.Orders.*: `passive` (BotChat, world thread) makes the Combat engine fight only mobs that attack this bot; `aggressive` clears it.
-    void SetPassive(bool on) { _passive.store(on, std::memory_order_relaxed); }
-    bool IsPassive() const { return _passive.load(std::memory_order_relaxed); }
+    void SetPassive(bool on) { SetStance(on ? BotControl::Stance::Passive : BotControl::Stance::Aggressive); }
+    bool IsPassive() const { return GetStance() == BotControl::Stance::Passive; }
+    // Bot.Chat.Control.*: stance, role override and focus target set by the group leader (BotChat, world thread; read on the map thread).
+    void SetStance(BotControl::Stance s) { _stance.store(uint8(s), std::memory_order_relaxed); }
+    BotControl::Stance GetStance() const { return BotControl::Stance(_stance.load(std::memory_order_relaxed)); }
+    void SetRole(BotControl::Role r) { _role.store(uint8(r), std::memory_order_relaxed); }
+    BotControl::Role GetRole() const { return BotControl::Role(_role.load(std::memory_order_relaxed)); }
+    void SetFocus(ObjectGuid guid) { std::lock_guard<std::mutex> lock(_focusLock); _focus = guid; }
+    ObjectGuid GetFocus() const { std::lock_guard<std::mutex> lock(_focusLock); return _focus; }
+    // true when any engine has the strategy active
+    bool HasStrategy(std::string const& name) const;
 
     // Phase 3 per-bot behavior state (map thread during ticks; the goal/follow setters from console commands on the world thread)
     BotMotion& Motion() { return _motion; }
@@ -273,7 +284,10 @@ private:
     bool _started = false;
     bool _trace;
     bool _forcedChanged = false;
-    std::atomic<bool> _passive{false};
+    std::atomic<uint8> _stance{uint8(BotControl::Stance::Aggressive)};
+    std::atomic<uint8> _role{uint8(BotControl::Role::Auto)};
+    mutable std::mutex _focusLock;
+    ObjectGuid _focus;
     std::optional<BotState> _forced;
 
     std::array<std::unique_ptr<BotEngine>, BOT_STATE_COUNT> _engines;

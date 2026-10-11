@@ -1,6 +1,6 @@
 # Bots forming their own parties (2026-10-08)
 
-Branch `claude/project-thread-nqkq6g`, started from `forever`. Until now a bot only grouped when a player invited it or when the dungeon run (`BotDungeonRun`) built a five-man group. With `Bot.AI.Party.Enabled = 1` free bots out in the world team up on their own. Default **off**, options documented in `worldserver.conf.dist`.
+Branch `claude/project-thread-nqkq6g`, started from `forever`. Until now a bot only grouped when a player invited it or when the dungeon run (`BotDungeonRun`) built a five-man group. With `Bot.AI.Party.Enabled = 1` free bots out in the world team up on their own. Default **off**, options documented in `botserver.conf.dist`.
 
 ## Rules (`BotPartyPlan.h/.cpp`, pure, tag `[BotParty]`)
 
@@ -27,3 +27,8 @@ Branch `claude/project-thread-nqkq6g`, started from `forever`. Until now a bot o
 ## Tests
 
 `bin/tests "[BotParty]"`: shared counts, forming (off, leader choice, filters, size cap, one party per bot, level spread of the whole party, chance, determinism), lifetime, break-up reasons.
+
+## Group after repeated deaths on a quest (`Bot.Quest.GroupAfterDeaths`)
+
+Default `0` (off). A bot that died N times on the same quest (counted per bot and quest, using the quest of its current quest task at the moment of death, `BotQuest::NoteDeath` -> `BotParty::NoteQuestDeath`) becomes a "seeker". At the next `TryForm` pass (`FormEverySec`) it seeds a party regardless of `FormChancePct`, and only bots that hold that same unfinished quest can join (normal radius, level spread, size, `MinLevel` rules; the highest level leads). Works with `Bot.AI.Party.Enabled = 0` too: then only seekers seed parties. The counter is cleared on quest complete, turn-in, abandon, fail (`BotQuestLog` hooks), on logout, and when the seeker got grouped. A seeker stays a seeker until a partner is found or the quest ends.
+Log rows (type `decision`, reason `quest_group_after_deaths`, quest id set): `step":"seek"` when the threshold is reached, `"step":"grouped"` when it lands in a party (followed by the usual `PARTY_FORMED`). Not built or run yet. Limit: deaths while no quest task is active (grinding, travel) are not counted.

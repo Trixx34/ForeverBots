@@ -17,6 +17,7 @@
 
 // Bot group loot rolls, see BotLootRoll.h.
 
+#include "BotConfigReload.h"
 #include "BotLootRoll.h"
 #include "BotLootRollPlan.h"
 #include "BotQuest.h"
@@ -36,11 +37,11 @@ struct Settings
     Config Plan;
 };
 Settings s_cfg;
-std::once_flag s_cfgOnce;
+BotCfg::Flag s_cfgOnce;
 
 Settings const& Cfg()
 {
-    std::call_once(s_cfgOnce, []()
+    BotCfg::Load(s_cfgOnce, []()
     {
         s_cfg.Enabled = sConfigMgr->GetBoolDefault("Bot.Loot.Roll.Enabled", false);
         s_cfg.Plan.GreedOnOther = sConfigMgr->GetBoolDefault("Bot.Loot.Roll.GreedOnOther", true);

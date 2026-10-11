@@ -3,5 +3,7 @@
 -- everyone could use the portals. Official sniffs: the Stormwind portal was not usable for a Horde character (dynamic flag NO_INTERACT,
 -- sniff 70170) and usable for an Alliance one (sniff 70291). Server only (no hotfix_data): CurrentPvpFaction 2 = Alliance.
 DELETE FROM `player_condition` WHERE `ID` = 152835;
-INSERT INTO `player_condition` (`ID`,`FailureDescription`,`CurrentPvpFaction`,`VerifiedBuild`) VALUES
-(152835,'',2,70291);
+-- Unused fields are -1 like in the client data: the server reads 0 there as a requirement (Gender 0 = male only,
+-- ChrSpecializationIndex 0, MaxExpansionLevel 0 = no account above expansion 0).
+INSERT INTO `player_condition` (`ID`,`FailureDescription`,`CurrentPvpFaction`,`Gender`,`NativeGender`,`MinExpansionLevel`,`MaxExpansionLevel`,`MinExpansionTier`,`MaxExpansionTier`,`ChrSpecializationIndex`,`ChrSpecializationRole`,`PowerType`,`VerifiedBuild`) VALUES
+(152835,'',2,-1,-1,-1,-1,-1,-1,-1,-1,-1,70291);

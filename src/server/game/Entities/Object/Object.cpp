@@ -1786,6 +1786,36 @@ int32 WorldObject::ModSpellDuration(SpellInfo const* spellInfo, WorldObject cons
                     duration *= 2;
             }
         }
+
+        // Classic 1.60 Legacy perks
+        if (Player const* targetPlayer = unitTarget->ToPlayer())
+        {
+            // Gourmand 1225499: beneficial effects from eating food last longer (Well Fed buffs: food icon 136000, Well Fed XP Boost)
+            if (spellInfo->IconFileDataId == 136000 || spellInfo->Id == 1243969)
+                if (int32 pct = targetPlayer->GetClassicLegacyPerkAmount(1225499, EFFECT_0))
+                    AddPct(duration, pct);
+
+            // Permanence 1225502 EFFECT_1: the benefits gained from resting at a camp last longer
+            static constexpr uint32 CampBenefitSpells[] = { 1229451, 1229513, 1229519, 1229718, 1229741, 1230098, 1230124, 1230164, 1230172,
+                1230552, 1230587, 1283701, 1294877 };
+            if (std::ranges::find(CampBenefitSpells, spellInfo->Id) != std::end(CampBenefitSpells))
+                if (int32 pct = targetPlayer->GetClassicLegacyPerkAmount(1225502, EFFECT_1))
+                    AddPct(duration, pct);
+        }
+
+        // Permanence 1225502 EFFECT_0: class abilities granting long-duration stat or attribute benefits to party / raid members
+        if (Player const* casterPlayer = ToPlayer(); casterPlayer && spellInfo->SpellFamilyName != SPELLFAMILY_GENERIC
+            && duration >= int32(10 * MINUTE * IN_MILLISECONDS))
+        {
+            bool grantsAttributes = std::ranges::any_of(spellInfo->GetEffects(), [](SpellEffectInfo const& effect)
+            {
+                return effect.IsAura(SPELL_AURA_MOD_STAT) || effect.IsAura(SPELL_AURA_MOD_TOTAL_STAT_PERCENTAGE) || effect.IsAura(SPELL_AURA_MOD_RESISTANCE)
+                    || effect.IsAura(SPELL_AURA_MOD_ATTACK_POWER) || effect.IsAura(SPELL_AURA_MOD_DAMAGE_DONE) || effect.IsAura(SPELL_AURA_MOD_HEALING_DONE);
+            });
+            if (grantsAttributes)
+                if (int32 pct = casterPlayer->GetClassicLegacyPerkAmount(1225502, EFFECT_0))
+                    AddPct(duration, pct);
+        }
     }
 
     return std::max(duration, 0);
