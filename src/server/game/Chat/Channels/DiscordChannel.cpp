@@ -24,22 +24,22 @@
 #include "Player.h"
 #include "Util.h"
 
+// the channel as it must stay: no join/leave announcements, no owner (nobody can kick, ban or set a password)
+Channel* DiscordChannel::GetOrCreate(ChannelMgr* mgr)
+{
+    Channel* channel = mgr->GetCustomChannel(GetName());
+    if (!channel)
+        channel = mgr->CreateCustomChannel(GetName());
+    if (channel)
+    {
+        channel->SetAnnounce(false);
+        channel->SetOwnership(false);
+    }
+    return channel;
+}
+
 namespace
 {
-    // the channel as it must stay: no join/leave announcements, no owner (nobody can kick, ban or set a password)
-    Channel* GetOrCreate(ChannelMgr* mgr)
-    {
-        Channel* channel = mgr->GetCustomChannel(DiscordChannel::GetName());
-        if (!channel)
-            channel = mgr->CreateCustomChannel(DiscordChannel::GetName());
-        if (channel)
-        {
-            channel->SetAnnounce(false);
-            channel->SetOwnership(false);
-        }
-        return channel;
-    }
-
     // WoW chat escapes (|c colours, |H links, |T textures) would let Discord users fake item links or textures: no '|' at all
     std::string Clean(std::string text, size_t maxLength)
     {
@@ -73,18 +73,26 @@ bool DiscordChannel::IsDiscordChannel(std::string const& channelName)
     return IsEnabled() && StringEqualI(channelName, GetName());
 }
 
-void DiscordChannel::OnLogin(Player* player)
+void DiscordChannel::OnLoadingScreenDone(Player* player)
 {
     if (!IsEnabled())
         return;
 
-    if (CharacterDatabase.PQuery("SELECT 1 FROM character_discord_optout WHERE guid = {}", player->GetGUID().GetCounter()))
-        return;
+    // after the client's own channel joins (General, Trade, ... about 1.6 s after its loading screen, official sniff), so the
+    // channel numbers stay as the player knows them
+    player->m_Events.AddEventAtOffset([player]()
+    {
+        if (!player->IsInWorld())
+            return;
 
-    if (ChannelMgr* mgr = ChannelMgr::ForTeam(player->GetTeam()))
-        if (Channel* channel = GetOrCreate(mgr))
-            if (!channel->HasMember(player->GetGUID()))
-                channel->JoinChannel(player);
+        if (CharacterDatabase.PQuery("SELECT 1 FROM character_discord_optout WHERE guid = {}", player->GetGUID().GetCounter()))
+            return;
+
+        if (ChannelMgr* mgr = ChannelMgr::ForTeam(player->GetTeam()))
+            if (Channel* channel = GetOrCreate(mgr))
+                if (!channel->HasMember(player->GetGUID()))
+                    channel->JoinChannel(player);
+    }, 2s);
 }
 
 void DiscordChannel::OnJoined(Player* player)

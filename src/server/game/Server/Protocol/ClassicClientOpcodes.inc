@@ -65,6 +65,8 @@
     { 0x2F0023, 0x2E0023 }, // CMSG_GUILD_REQUEST_RENAME (0.0)
     { 0x2F0024, 0x2E0024 }, // CMSG_GUILD_REQUEST_RENAME_REFUND (0.0)
     { 0x2F0026, 0x2E0026 }, // CMSG_GUILD_GET_OTHERS_OWNED_HOUSES (0.0)
+    { 0x3E0011, 0x3D0310 }, // CMSG_BUY_STABLE_SLOT (official sniff 70291: stable master guid only, answered by stable result 14)
+    { 0x3E0012, 0x3D0011 }, // CMSG_SET_PET_SLOT (official sniff 70291: pet number, slot, stable master guid)
     { 0x3E0014, 0x3D0012 }, // CMSG_SET_PET_FAVORITE (0.0)
     { 0x3E0016, 0x3D0015 }, // CMSG_SET_CURRENCY_FLAGS (0.0)
     { 0x3E0020, 0x3D001F }, // CMSG_BATTLEFIELD_LEAVE (0.0)

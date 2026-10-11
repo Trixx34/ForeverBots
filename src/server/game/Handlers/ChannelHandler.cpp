@@ -88,7 +88,9 @@ void WorldSession::HandleJoinChannel(WorldPackets::Channel::JoinChannel& packet)
         if (DiscordChannel::IsDiscordChannel(packet.ChannelName))
         {
             DiscordChannel::OnJoined(GetPlayer());
-            if (Channel* channel = cMgr->GetCustomChannel(packet.ChannelName))
+            // created here as DiscordChannel creates it (no owner, no announcements): created by the plain join below, the first player
+            // in got owner and moderator rights
+            if (Channel* channel = DiscordChannel::GetOrCreate(cMgr))
                 if (channel->HasMember(GetPlayer()->GetGUID()))
                     return;
         }
