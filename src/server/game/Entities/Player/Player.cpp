@@ -2386,12 +2386,109 @@ void Player::UpdateClassicLegacyUnlock()
     if (earnedLegacyPoints > renown)
         ModifyCurrency(LegacyRenownCurrencyID, earnedLegacyPoints - renown);
 
+    // Legacy reward track (RenownRewards group 48): reaching a reward's level puts its "Legacy Reward" quest in the log, complete;
+    // it is turned in at Innkeeper Wiley in Ratchet (official 70338: the quest was ready at Wiley, the reward says "Visit Innkeeper
+    // Wiley in Ratchet to claim your reward"). Wiley also offers it again if it was abandoned (world 2026_10_10_05).
+    static constexpr std::pair<int32, uint32> LegacyRewardQuests[] =
+    {
+        { 15, 96339 },  // Replica Ironforge Air Rifle
+        { 25, 96340 },  // Spectral Bear Cub
+        { 40, 96341 },  // Spectral Bear Tabard
+        { 55, 96342 },  // Reins of the Spectral Bear
+    };
+    for (auto const& [points, questId] : LegacyRewardQuests)
+    {
+        if (earnedLegacyPoints < points || GetQuestStatus(questId) != QUEST_STATUS_NONE)
+            continue;
+
+        if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+            if (CanAddQuest(quest, false))
+                AddQuestAndCheckCompletion(quest, nullptr);
+    }
+
     if (!earnedLegacyPoints && GetLevel() < LegacyUnlockLevel)
         return;
 
     // the reward track shows the progress towards the next renown level from the faction's reputation, so the client must know it
     if (FactionEntry const* legacyFaction = sFactionStore.LookupEntry(LegacyRewardTrackFactionID))
         GetReputationMgr().SetVisible(legacyFaction);
+}
+
+// Classic 1.60: the profession certifications of the trade company vendors (1000 Merchant Favor, spells 1289195-1289200) unlock the
+// profession title for every character of the account (table account_classic_certification, spell script
+// classic_spell_profession_certification); a character shows it once it has 300 skill in that profession.
+namespace
+{
+struct ClassicCertification { uint32 SkillId; uint32 TitleId; };
+constexpr ClassicCertification ClassicCertifications[] =
+{
+    { SKILL_ALCHEMY,        1224 },     // the Alchemist
+    { SKILL_BLACKSMITHING,  1225 },     // the Blacksmith
+    { SKILL_ENCHANTING,     1227 },     // the Enchanter
+    { SKILL_ENGINEERING,    1228 },     // the Engineer
+    { SKILL_LEATHERWORKING, 1229 },     // the Leatherworker
+    { SKILL_TAILORING,      1230 },     // the Tailor
+};
+constexpr uint16 ClassicCertificationSkill = 300;
+}
+
+bool Player::IsClassicCertificationSkill(uint32 skillId)
+{
+    return std::ranges::any_of(ClassicCertifications, [skillId](ClassicCertification const& c) { return c.SkillId == skillId; });
+}
+
+void Player::UpdateClassicProfessionTitles()
+{
+    QueryResult result = CharacterDatabase.PQuery("SELECT skill FROM account_classic_certification WHERE account = {}", GetSession()->GetAccountId());
+    if (!result)
+        return;
+
+    do
+    {
+        uint32 skillId = (*result)[0].GetUInt32();
+        for (ClassicCertification const& certification : ClassicCertifications)
+        {
+            if (certification.SkillId != skillId || GetPureSkillValue(skillId) < ClassicCertificationSkill)
+                continue;
+
+            if (CharTitlesEntry const* title = sCharTitlesStore.LookupEntry(certification.TitleId))
+                if (!HasTitle(title))
+                    SetTitle(title);
+        }
+    } while (result->NextRow());
+}
+
+// Classic 1.60 Legacy perks: most are dummy auras whose amount (scaled by rank through TraitDefinitionEffectPoints) the server applies.
+int32 Player::GetClassicLegacyPerkAmount(uint32 spellId, SpellEffIndex effIndex) const
+{
+    AuraEffect const* perk = GetAuraEffect(spellId, effIndex);
+    return perk ? perk->GetAmount() : 0;
+}
+
+// Aura 620 (not named in this core): percent change of a gold price, misc value = price type. Bartering 1225459: 0 = vendor items,
+// Frequent Flier 1225490: 4 = flight paths.
+uint64 Player::ApplyClassicLegacyPriceMod(uint64 price, int32 priceType) const
+{
+    int32 pct = GetTotalAuraModifierByMiscValue(SPELL_AURA_620, priceType);
+    if (!pct || !price)
+        return price;
+
+    int64 changed = int64(price) + int64(price) * pct / 100;
+    return uint64(std::max<int64>(1, changed));
+}
+
+// The Quick and the Dead 1225500: helpful spells cost nothing for 2 min after being resurrected or until entering combat.
+bool Player::HasClassicFreeHelpfulSpells() const
+{
+    if (_classicFreeHelpfulSpellsUntil == TimePoint())
+        return false;
+
+    if (IsInCombat() || GameTime::Now() >= _classicFreeHelpfulSpellsUntil)
+    {
+        _classicFreeHelpfulSpellsUntil = TimePoint();
+        return false;
+    }
+    return true;
 }
 
 bool Player::IsMaxLevel() const
@@ -4469,6 +4566,10 @@ void Player::ResurrectPlayer(float restore_percent, bool applySickness)
 
     setDeathState(ALIVE);
 
+    // Classic 1.60 Legacy perk The Quick and the Dead 1225500: helpful spells cost no resources for a while (EFFECT_1, ms)
+    if (int32 freeSpellsMs = GetClassicLegacyPerkAmount(1225500, EFFECT_1); freeSpellsMs > 0)
+        SetClassicFreeHelpfulSpellsUntil(GameTime::Now() + Milliseconds(freeSpellsMs));
+
     // add the flag to make sure opcode is always sent
     AddUnitMovementFlag(MOVEMENTFLAG_WATERWALKING);
     SetWaterWalking(false);
@@ -4669,7 +4770,8 @@ void Player::DurabilityLoss(Item* item, double percent)
     if (!pMaxDurability)
         return;
 
-    percent /= GetTotalAuraMultiplier(SPELL_AURA_MOD_DURABILITY_LOSS);
+    // amounts are percent changes of the loss (Classic Legacy talent Reinforce 1225497: -20 per rank = less loss)
+    percent *= GetTotalAuraMultiplier(SPELL_AURA_MOD_DURABILITY_LOSS);
 
     uint32 pDurabilityLoss = uint32(pMaxDurability*percent);
 
@@ -5771,6 +5873,19 @@ bool Player::UpdateSkillPro(uint16 skillId, int32 chance, uint32 step)
     if (!skillId)
         return false;
 
+    // Classic 1.60 Legacy perk Working Overtime 1225451: higher chance of a skill increase from any primary, secondary or class-based
+    // tradeskill (aura 657, percent of the chance)
+    if (chance > 0 && chance < 1000)
+    {
+        if (int32 bonusPct = GetTotalAuraModifier(SPELL_AURA_657))
+        {
+            SkillLineEntry const* skillLine = sSkillLineStore.LookupEntry(skillId);
+            if (skillLine && (skillLine->CategoryID == SKILL_CATEGORY_PROFESSION || skillLine->CategoryID == SKILL_CATEGORY_SECONDARY
+                || skillId == 40 /* Poisons */ || skillId == 633 /* Lockpicking */))
+                chance = std::min(1000, chance + chance * bonusPct / 100);
+        }
+    }
+
     if (chance <= 0)                                         // speedup in 0 chance case
     {
         TC_LOG_DEBUG("entities.player.skills", "Player::UpdateSkillPro: Player '{}' ({}), SkillID: {}, Chance: {:3.1f}% missed",
@@ -5804,6 +5919,10 @@ bool Player::UpdateSkillPro(uint16 skillId, int32 chance, uint32 step)
         itr->second.uState = SKILL_CHANGED;
 
     SyncClassicProfessionChildSkills(skillId);
+
+    // Classic 1.60: a certified profession shows its title from 300 skill on
+    if (value < 300 && new_value >= 300 && IsClassicCertificationSkill(skillId))
+        UpdateClassicProfessionTitles();
 
     for (uint32 bsl : bonusSkillLevels)
     {
@@ -5921,6 +6040,10 @@ void Player::SetSkill(uint32 id, uint16 step, uint16 newVal, uint16 maxVal)
     {
         if (!classicProfessionChild)
             player->SyncClassicProfessionChildSkills(id);
+
+        // Classic 1.60: a certified profession shows its title from 300 skill on (.setskill, learning a higher rank)
+        if (IsClassicCertificationSkill(id) && player->GetPureSkillValue(id) >= 300 && !player->GetSession()->PlayerLoading())
+            player->UpdateClassicProfessionTitles();
     });
 
     uint16 currVal;
@@ -7066,6 +7189,8 @@ bool Player::RewardHonor(Unit* victim, uint32 groupsize, int32 honor, HonorGainS
         // apply honor multiplier from aura (not stacking-get highest)
         AddPct(honor_f, GetMaxPositiveAuraModifierByMiscMask(SPELL_AURA_MOD_HONOR_GAIN_PCT_FROM_SOURCE, 1 << AsUnderlyingType(source)));
         AddPct(honor_f, GetMaxPositiveAuraModifier(SPELL_AURA_MOD_HONOR_GAIN_PCT));
+        // Classic 1.60 Legacy perk For Great Honor 1225501: currency gain aura on Honor (1792); honor is not credited as that currency here
+        AddPct(honor_f, GetTotalAuraModifierByMiscValue(SPELL_AURA_MOD_CURRENCY_GAIN, 1792));
         honor_f += _restMgr->GetRestBonusFor(REST_TYPE_HONOR, honor_f);
     }
 
@@ -15731,8 +15856,19 @@ void Player::RewardQuest(Quest const* quest, LootItemType rewardType, uint32 rew
     }
 
     for (uint8 i = 0; i < QUEST_REWARD_CURRENCY_COUNT; ++i)
-        if (quest->RewardCurrencyId[i])
-            AddCurrency(quest->RewardCurrencyId[i], quest->RewardCurrencyCount[i], currencyGainSource);
+    {
+        if (!quest->RewardCurrencyId[i])
+            continue;
+
+        int32 count = quest->RewardCurrencyCount[i];
+        // Classic 1.60 Legacy perk Performance Bonus 1225456: a chance of 100% more Merchant's Favor (3402) for a crate turn-in
+        static constexpr uint32 CurrencyMerchantsFavor = 3402;
+        if (quest->RewardCurrencyId[i] == CurrencyMerchantsFavor)
+            if (int32 chance = GetClassicLegacyPerkAmount(1225456, EFFECT_0); chance > 0 && roll_chance(chance))
+                count *= 2;
+
+        AddCurrency(quest->RewardCurrencyId[i], count, currencyGainSource);
+    }
 
     if (uint32 skill = quest->GetRewardSkillId())
         UpdateSkillPro(skill, 1000, quest->GetRewardSkillPoints());
@@ -23855,8 +23991,13 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
         firstcost = uint32(ceil(firstcost * discount));
         m_taxi.SetFlightMasterFactionTemplateId(npc->GetFaction());
     }
+
     else
         m_taxi.SetFlightMasterFactionTemplateId(0);
+
+    // Legacy perk Frequent Flier: discount on flight paths
+    totalcost = uint32(ApplyClassicLegacyPriceMod(totalcost, 4));
+    firstcost = uint32(ApplyClassicLegacyPriceMod(firstcost, 4));
 
     if (money < totalcost)
     {
@@ -24450,6 +24591,8 @@ bool Player::BuyItemFromVendorSlot(ObjectGuid vendorguid, uint32 vendorslot, uin
 
         if (float priceMod = GetTotalAuraModifier(SPELL_AURA_MOD_VENDOR_ITEMS_PRICES))
             price -= CalculatePct(price, priceMod);
+
+        price = ApplyClassicLegacyPriceMod(price, 0);   // Legacy perk Bartering
 
         if (!HasEnoughMoney(price))
         {
@@ -26829,6 +26972,24 @@ bool Player::CanNoReagentCast(SpellInfo const* spellInfo) const
         HasUnitFlag(UNIT_FLAG_PREPARATION))
         return true;
 
+    // Classic 1.60 Legacy perk Reagent Economy 1225503 (aura 215, its arena preparation effect is prevented by
+    // classic_spell_legacy_reagent_economy): class abilities no longer require reagents purchasable from vendors
+    if (spellInfo->SpellFamilyName != SPELLFAMILY_GENERIC && HasAura(1225503))
+    {
+        bool anyReagent = false;
+        bool allFromVendors = true;
+        for (uint32 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+        {
+            if (spellInfo->Reagent[i] <= 0)
+                continue;
+            anyReagent = true;
+            if (!sObjectMgr->IsItemSoldByVendorForGold(spellInfo->Reagent[i]))
+                allFromVendors = false;
+        }
+        if (anyReagent && allFromVendors)
+            return true;
+    }
+
     // Check no reagent use mask
     flag128 noReagentMask;
     noReagentMask[0] = m_activePlayerData->NoReagentCostMask[0];
@@ -27102,6 +27263,26 @@ void Player::UpdateAreaDependentAuras(uint32 newArea)
             RemoveOwnedAura(iter, AURA_REMOVE_BY_INTERRUPT);
         else
             ++iter;
+    }
+
+    // Classic 1.60: equip spells limited to some zones (Forsaken Weapons 1309369 of the Ruins of Lordaeron rewards: +2% speed in
+    // Silverpine Forest and Hillsbrad Foothills) are removed above when leaving them; put them back when entering them
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = m_items[slot];
+        if (!item || item->IsBroken())
+            continue;
+
+        for (ItemEffectEntry const* effect : item->GetEffects())
+        {
+            if (effect->TriggerType != ITEM_SPELLTRIGGER_ON_EQUIP)
+                continue;
+
+            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(effect->SpellID, DIFFICULTY_NONE);
+            if (spellInfo && spellInfo->RequiredAreasID > 0 && !HasAura(spellInfo->Id)
+                && spellInfo->CheckLocation(GetMapId(), m_zoneUpdateId, newArea, this) == SPELL_CAST_OK)
+                ApplyEquipSpell(spellInfo, item, true);
+        }
     }
 
     // some auras applied at subzone enter
@@ -32190,6 +32371,12 @@ int32 TraitMgr::PlayerDataAccessor::GetCurrencyQuantity(int32 currencyId) const
 int32 TraitMgr::PlayerDataAccessor::GetLevel() const
 {
     return _player->GetLevel();
+}
+
+int32 TraitMgr::PlayerDataAccessor::GetClassicTalentedStartLevel() const
+{
+    // Classic 1.60 Legacy perk Talented 1225474: talent points every level starting at this level instead of 10
+    return _player->GetClassicLegacyPerkAmount(1225474, EFFECT_0);
 }
 
 bool TraitMgr::PlayerDataAccessor::IsQuestRewarded(int32 questId) const

@@ -4113,6 +4113,10 @@ Optional<SpellPowerCost> SpellInfo::CalcPowerCost(SpellPowerEntry const* power, 
     if (power->RequiredAuraSpellID && !unitCaster->HasAura(power->RequiredAuraSpellID))
         return {};
 
+    // Classic 1.60 Legacy perk The Quick and the Dead 1225500: helpful spells and abilities cost no resources after being resurrected
+    if (Player const* player = unitCaster->ToPlayer(); player && IsPositive() && player->HasClassicFreeHelpfulSpells())
+        return {};
+
     // Spell drain all exist power on cast (Only paladin lay of Hands)
     if (HasAttribute(SPELL_ATTR1_USE_ALL_MANA))
     {

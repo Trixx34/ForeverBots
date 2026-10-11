@@ -21,17 +21,24 @@
 #include "AreaTrigger.h"
 #include "CellImpl.h"
 #include "Creature.h"
+#include "Containers.h"
+#include "DatabaseEnv.h"
+#include "DB2Stores.h"
+#include "Formulas.h"
 #include "GameObject.h"
 #include "GridNotifiersImpl.h"
 #include "Item.h"
 #include "ItemTemplate.h"
+#include "Map.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "QuestDef.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "SpellScript.h"
 #include "Unit.h"
+#include "WorldSession.h"
 
 /*######
 ## classic_spell_ground_area_damage
@@ -496,35 +503,43 @@ class classic_spell_warl_immolate : public SpellScript
     }
 };
 
-// 1259705 - Read Ley Line (Skyborne racial): the spell only triggers the 15 sec Energized (1270842). At a ley line (gameobjects
-// Ley Line 602735 / 613248, spell focus 2246) the official server also gives the 15 min Energized (1259691); sniff of the
-// Alliance Skyborne hunter: the cast away from a ley line got only 1270842, every cast at one got both. The 15 min buff also
-// completes "Reading the Ley Lines" (92597).
-class classic_spell_skyborne_read_ley_line : public SpellScript
+// 1259705 - Read Ley Line, 1259686 - Skysight (Skyborne racials): the spell only triggers a 30 sec buff (Energized 1270842 /
+// Elemental Blessing 1259688). Next to its spell focus object (Ley Line 602735 / 613248, focus 2246 / Elemental Convergence
+// 616992, focus 2271) the official server casts the 15 min version first (Energized 1259691 / Elemental Blessing 1270893); the
+// 30 sec trigger still shows a SPELL_GO there but adds no aura (sniffs: Alliance Skyborne hunter at ley lines, Windshaper at
+// convergences, every cast away from one got only the 30 sec aura). Energized 1259691 also completes "Reading the Ley Lines" (92597).
+class classic_spell_skyborne_racial_focus : public SpellScript
 {
-    static constexpr uint32 SPELL_FOCUS_LEY_LINE = 2246;
-    static constexpr uint32 SPELL_ENERGIZED_LEY_LINE = 1259691;
+public:
+    explicit classic_spell_skyborne_racial_focus(uint32 spellFocus, uint32 longBuffSpell) : _spellFocus(spellFocus), _longBuffSpell(longBuffSpell) { }
 
-    bool Validate(SpellInfo const* /*spellInfo*/) override
+private:
+    bool Validate(SpellInfo const* spellInfo) override
     {
-        return ValidateSpellInfo({ SPELL_ENERGIZED_LEY_LINE });
+        return ValidateSpellInfo({ _longBuffSpell }) && ValidateSpellEffect({ { spellInfo->Id, EFFECT_0 } });
     }
 
-    void HandleAfterCast()
+    void HandleTrigger(SpellEffIndex effIndex)
     {
         Unit* caster = GetCaster();
-        GameObject* leyLine = nullptr;
-        Trinity::GameObjectFocusCheck check(caster, SPELL_FOCUS_LEY_LINE);
-        Trinity::GameObjectSearcher searcher(caster, leyLine, check);
-        Cell::VisitGridObjects(caster, searcher, 50.0f); // focus radius of the ley lines is 25
-        if (leyLine)
-            caster->CastSpell(caster, SPELL_ENERGIZED_LEY_LINE, CastSpellExtraArgs(TRIGGERED_FULL_MASK).SetTriggeringSpell(GetSpell()));
+        GameObject* focus = nullptr;
+        Trinity::GameObjectFocusCheck check(caster, _spellFocus);
+        Trinity::GameObjectSearcher searcher(caster, focus, check);
+        Cell::VisitGridObjects(caster, searcher, 50.0f); // focus radius of both objects is 25
+        if (!focus)
+            return;
+
+        PreventHitDefaultEffect(effIndex);
+        caster->CastSpell(caster, _longBuffSpell, CastSpellExtraArgs(TRIGGERED_FULL_MASK).SetTriggeringSpell(GetSpell()));
     }
 
     void Register() override
     {
-        AfterCast += SpellCastFn(classic_spell_skyborne_read_ley_line::HandleAfterCast);
+        OnEffectLaunchTarget += SpellEffectFn(classic_spell_skyborne_racial_focus::HandleTrigger, EFFECT_0, SPELL_EFFECT_TRIGGER_SPELL);
     }
+
+    uint32 _spellFocus;
+    uint32 _longBuffSpell;
 };
 
 // 1319421 - Motivated (Executor's Motivator, undead quest Discipline 99134): a dummy aura on a Tirisfal Deathguard. The official
@@ -564,10 +579,218 @@ class classic_spell_executors_motivator : public AuraScript
     }
 };
 
+// 1289195-1289200 - Alchemy / Blacksmithing / Enchanting / Engineering / Leatherworking / Tailoring Certification (items 271621-271627,
+// 1000 Merchant Favor at the trade company vendors): "unlocks the <profession> title for all characters on your account; to display
+// it they must have 300 skill". The spell completes a hidden quest (95944-95949, not in our data); the account unlock is kept in
+// account_classic_certification and Player::UpdateClassicProfessionTitles gives the title to characters with 300 skill.
+class classic_spell_profession_certification : public SpellScript
+{
+    static uint32 SkillOf(uint32 spellId)
+    {
+        switch (spellId)
+        {
+            case 1289195: return SKILL_ALCHEMY;
+            case 1289196: return SKILL_BLACKSMITHING;
+            case 1289197: return SKILL_ENCHANTING;
+            case 1289198: return SKILL_ENGINEERING;
+            case 1289199: return SKILL_LEATHERWORKING;
+            case 1289200: return SKILL_TAILORING;
+            default: return 0;
+        }
+    }
+
+    void HandleAfterCast()
+    {
+        Player* player = GetCaster()->ToPlayer();
+        uint32 skillId = SkillOf(GetSpellInfo()->Id);
+        if (!player || !skillId)
+            return;
+
+        // written directly: UpdateClassicProfessionTitles reads it right away
+        CharacterDatabase.DirectPExecute("REPLACE INTO account_classic_certification (account, skill) VALUES ({}, {})",
+            player->GetSession()->GetAccountId(), skillId);
+        player->UpdateClassicProfessionTitles();
+    }
+
+    void Register() override
+    {
+        AfterCast += SpellCastFn(classic_spell_profession_certification::HandleAfterCast);
+    }
+};
+
+// 1225472 - Thrill of Adventure (Legacy, Adventure tree 1188): after a kill that gives experience the official server casts 1261483
+// on the killer, 10 sec of health (aura 8) and mana (aura 24) every 2 sec. Sniff of a level 1-10 dwarf shaman (5/5, aura amount 5):
+// applied after 72 of 73 kills (the other one was before the talent), ticks of 1% of max health / mana (0.84 health, 0.96 mana per
+// tick at 84 / 96), so the talent amount is the total percent restored over the 5 ticks.
+class classic_player_thrill_of_adventure : public PlayerScript
+{
+public:
+    classic_player_thrill_of_adventure() : PlayerScript("classic_player_thrill_of_adventure") { }
+
+    static constexpr uint32 SPELL_THRILL_OF_ADVENTURE = 1225472;
+    static constexpr uint32 SPELL_THRILL_OF_ADVENTURE_REGEN = 1261483;
+
+    void OnCreatureKill(Player* killer, Creature* killed) override
+    {
+        AuraEffect const* talent = killer->GetAuraEffect(SPELL_THRILL_OF_ADVENTURE, EFFECT_0);
+        // tooltip: "each time you deliver the killing blow to a non-trivial enemy. Ineffective in dungeons, raids, and battlegrounds."
+        if (!talent || !talent->GetAmount() || !Trinity::XP::Gain(killer, killed) || killer->GetMap()->Instanceable())
+            return;
+
+        SpellInfo const* regen = sSpellMgr->GetSpellInfo(SPELL_THRILL_OF_ADVENTURE_REGEN, DIFFICULTY_NONE);
+        if (!regen || regen->GetEffects().size() < 2 || !regen->GetEffect(EFFECT_0).ApplyAuraPeriod)
+            return;
+
+        int32 ticks = std::max(1, regen->GetMaxDuration() / int32(regen->GetEffect(EFFECT_0).ApplyAuraPeriod));
+        float pctPerTick = float(talent->GetAmount()) / ticks;
+        int32 health = std::max(1, int32(CalculatePct(float(killer->GetMaxHealth()), pctPerTick) + 0.5f));
+        int32 mana = killer->GetMaxPower(POWER_MANA) ? std::max(1, int32(CalculatePct(float(killer->GetMaxPower(POWER_MANA)), pctPerTick) + 0.5f)) : 0;
+
+        CastSpellExtraArgs args(TRIGGERED_FULL_MASK);
+        args.AddSpellMod(SPELLVALUE_BASE_POINT0, health);
+        args.AddSpellMod(SPELLVALUE_BASE_POINT1, mana);
+        killer->CastSpell(killer, SPELL_THRILL_OF_ADVENTURE_REGEN, args);
+    }
+};
+
+// 1225503 - Reagent Economy (Legacy, Adventure tree 1188): its effect is aura 215, which this core handles as arena preparation
+// (unit flag PREPARATION + aura state). The perk must not put the player in that state; the reagent effect itself is not known yet.
+class classic_spell_legacy_reagent_economy : public AuraScript
+{
+    void PreventArenaPreparation(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        PreventDefaultAction();
+    }
+
+    void Register() override
+    {
+        OnEffectApply += AuraEffectApplyFn(classic_spell_legacy_reagent_economy::PreventArenaPreparation, EFFECT_0, SPELL_AURA_ARENA_PREPARATION, AURA_EFFECT_HANDLE_REAL);
+        OnEffectRemove += AuraEffectRemoveFn(classic_spell_legacy_reagent_economy::PreventArenaPreparation, EFFECT_0, SPELL_AURA_ARENA_PREPARATION, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// 1225469 - Dedicated Study (Legacy, Professions tree 1187), a castable spell: "Increases your skill by 1 in your lowest tradeskill among
+// your Primary and Secondary tradeskills. If you have already reached 300 skill in your two current Primary Tradeskills and all three
+// Secondary Tradeskills, you will gain $s1 of a random Elemental Essence."
+class classic_spell_legacy_dedicated_study : public SpellScript
+{
+    static constexpr uint16 MaxTradeskill = 300;
+    static constexpr uint32 ElementalEssences[] = { 7076, 7078, 7080, 7082 };   // Earth, Fire, Water, Air
+
+    void HandleDummy(SpellEffIndex /*effIndex*/)
+    {
+        Player* player = GetCaster()->ToPlayer();
+        if (!player)
+            return;
+
+        uint32 lowestSkill = 0;
+        uint16 lowestValue = std::numeric_limits<uint16>::max();
+        uint32 primaries = 0;
+        bool allMaxed = true;
+        for (SkillLineEntry const* skillLine : sSkillLineStore)
+        {
+            if (skillLine->ParentSkillLineID || (skillLine->CategoryID != SKILL_CATEGORY_PROFESSION && skillLine->CategoryID != SKILL_CATEGORY_SECONDARY))
+                continue;
+            if (!player->HasSkill(skillLine->ID))
+                continue;
+
+            uint16 value = player->GetPureSkillValue(skillLine->ID);
+            if (skillLine->CategoryID == SKILL_CATEGORY_PROFESSION)
+                ++primaries;
+            if (value < MaxTradeskill)
+                allMaxed = false;
+            if (value < player->GetPureMaxSkillValue(skillLine->ID) && value < lowestValue)
+            {
+                lowestValue = value;
+                lowestSkill = skillLine->ID;
+            }
+        }
+
+        bool secondariesMaxed = player->GetPureSkillValue(SKILL_COOKING) >= MaxTradeskill && player->GetPureSkillValue(129 /* First Aid */) >= MaxTradeskill
+            && player->GetPureSkillValue(SKILL_FISHING) >= MaxTradeskill;
+        if (allMaxed && primaries >= 2 && secondariesMaxed)
+        {
+            player->AddItem(Trinity::Containers::SelectRandomContainerElement(ElementalEssences), std::max(1, GetEffectValueAsInt()));
+            return;
+        }
+
+        if (lowestSkill)
+            player->SetSkill(lowestSkill, player->GetSkillStep(lowestSkill), lowestValue + 1, player->GetPureMaxSkillValue(lowestSkill));
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(classic_spell_legacy_dedicated_study::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+    }
+};
+
+// 11196 - Recently Bandaged: Legacy perk Field Medicine 1225475 (Adventure tree) shortens it by its amount in ms (negative) when the
+// bandage user has the perk. "Ineffective in dungeons, raids, and battlegrounds."
+class classic_spell_recently_bandaged_field_medicine : public AuraScript
+{
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Player const* bandager = Object::ToPlayer(GetCaster());
+        if (!bandager || bandager->GetMap()->Instanceable())
+            return;
+
+        int32 reduction = bandager->GetClassicLegacyPerkAmount(1225475, EFFECT_0);
+        if (reduction >= 0)
+            return;
+
+        Aura* aura = GetAura();
+        int32 duration = std::max(1000, aura->GetMaxDuration() + reduction);
+        aura->SetMaxDuration(duration);
+        aura->SetDuration(duration);
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(classic_spell_recently_bandaged_field_medicine::HandleApply, EFFECT_0, SPELL_AURA_ANY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// 1225477 - High Alert (Legacy, Adventure tree 1188): stealth detection as if your level were higher. "Ineffective in Battlegrounds."
+class classic_spell_legacy_high_alert : public AuraScript
+{
+    void CalculateAmount(AuraEffect const* /*aurEff*/, SpellEffectValue& amount, bool& canBeRecalculated)
+    {
+        canBeRecalculated = true;
+        if (GetUnitOwner()->GetMap()->IsBattlegroundOrArena())
+            amount = 0;
+    }
+
+    void Register() override
+    {
+        DoEffectCalcAmount += AuraEffectCalcAmountFn(classic_spell_legacy_high_alert::CalculateAmount, EFFECT_0, SPELL_AURA_MOD_STEALTH_DETECT);
+    }
+};
+
+// High Alert follows the map: recalculated when entering or leaving a battleground
+class classic_player_high_alert_map : public PlayerScript
+{
+public:
+    classic_player_high_alert_map() : PlayerScript("classic_player_high_alert_map") { }
+
+    void OnMapChanged(Player* player) override
+    {
+        if (AuraEffect* highAlert = player->GetAuraEffect(1225477, EFFECT_0))
+            highAlert->RecalculateAmount();
+    }
+};
+
 void AddSC_classic_spell_scripts()
 {
+    RegisterSpellScript(classic_spell_legacy_high_alert);
+    new classic_player_high_alert_map();
+    RegisterSpellScript(classic_spell_legacy_dedicated_study);
+    RegisterSpellScript(classic_spell_recently_bandaged_field_medicine);
+    new classic_player_thrill_of_adventure();
+    RegisterSpellScript(classic_spell_legacy_reagent_economy);
+    RegisterSpellScript(classic_spell_profession_certification);
     RegisterSpellScript(classic_spell_executors_motivator);
-    RegisterSpellScript(classic_spell_skyborne_read_ley_line);
+    RegisterSpellScriptWithArgs(classic_spell_skyborne_racial_focus, "classic_spell_skyborne_read_ley_line", 2246, 1259691);
+    RegisterSpellScriptWithArgs(classic_spell_skyborne_racial_focus, "classic_spell_skyborne_skysight", 2271, 1270893);
     RegisterSpellScript(classic_spell_warl_immolate);
     RegisterSpellScript(classic_spell_hun_taming_rod);
     RegisterSpellScript(classic_spell_hun_tame_beast_channel);

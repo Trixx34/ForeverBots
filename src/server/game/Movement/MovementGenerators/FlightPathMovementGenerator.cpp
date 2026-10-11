@@ -99,7 +99,11 @@ bool FlightPathMovementGenerator::DoReset(Player* owner)
     init.SetSmooth();
     init.SetUncompressed();
     init.SetWalk(true);
-    init.SetVelocity(_speed.value_or(PLAYER_FLIGHT_SPEED));
+    float velocity = _speed.value_or(PLAYER_FLIGHT_SPEED);
+    // Classic 1.60 Legacy perk Frequent Flier 1225490: the flight path mount flies faster (aura 388, percent)
+    if (int32 flightSpeedPct = owner->GetTotalAuraModifier(SPELL_AURA_MOD_TAXI_FLIGHT_SPEED))
+        AddPct(velocity, flightSpeedPct);
+    init.SetVelocity(velocity);
     init.Launch();
     return true;
 }

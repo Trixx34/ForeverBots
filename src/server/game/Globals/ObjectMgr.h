@@ -1566,6 +1566,8 @@ class TC_GAME_API ObjectMgr
         }
         uint32 GetCreatureTrainerForGossipOption(uint32 creatureId, uint32 gossipMenuId, uint32 gossipOptionId) const;
 
+        bool IsItemSoldByVendorForGold(uint32 itemId) const { return _goldVendorItems.contains(itemId); }
+
         VendorItemData const* GetNpcVendorItemList(uint32 entry) const
         {
             CacheVendorItemContainer::const_iterator iter = _cacheVendorItemStore.find(entry);
@@ -1867,6 +1869,7 @@ class TC_GAME_API ObjectMgr
         TrinityStringContainer _trinityStringStore;
 
         CacheVendorItemContainer _cacheVendorItemStore;
+        std::unordered_set<uint32> _goldVendorItems;
         std::unordered_map<uint32, Trainer::Trainer> _trainers;
         std::map<std::tuple<uint32, uint32, uint32>, uint32> _creatureDefaultTrainers;
 

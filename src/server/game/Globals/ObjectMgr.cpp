@@ -9609,6 +9609,13 @@ void ObjectMgr::LoadVendors()
     }
     while (result->NextRow());
 
+    // Classic 1.60 Legacy perk Reagent Economy: items any vendor sells for gold
+    _goldVendorItems.clear();
+    for (auto const& [vendorEntry, vendorItems] : _cacheVendorItemStore)
+        for (VendorItem const& vendorItem : vendorItems.m_items)
+            if (vendorItem.Type == ITEM_VENDOR_TYPE_ITEM && !vendorItem.ExtendedCost)
+                _goldVendorItems.insert(vendorItem.item);
+
     TC_LOG_INFO("server.loading", ">> Loaded {} Vendors in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
 }
 

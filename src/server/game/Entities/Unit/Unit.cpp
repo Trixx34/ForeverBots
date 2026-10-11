@@ -8965,6 +8965,11 @@ void Unit::UpdateSpeed(UnitMoveType mtype)
                 main_speed_mod  = GetMaxPositiveAuraModifier(SPELL_AURA_MOD_INCREASE_SPEED);
                 stack_bonus     = GetTotalAuraMultiplier(SPELL_AURA_MOD_SPEED_ALWAYS);
                 non_stack_bonus += GetMaxPositiveAuraModifier(SPELL_AURA_MOD_SPEED_NOT_STACK) / 100.0f;
+
+                // Classic 1.60 Legacy perk The Quick and the Dead 1225500: movement speed while dead (ghost)
+                if (Player const* player = ToPlayer(); player && HasAuraType(SPELL_AURA_GHOST))
+                    if (int32 ghostSpeed = player->GetClassicLegacyPerkAmount(1225500, EFFECT_0))
+                        stack_bonus *= 1.0f + ghostSpeed / 100.0f;
             }
             break;
         }

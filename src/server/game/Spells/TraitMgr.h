@@ -67,6 +67,7 @@ struct PlayerDataAccessor
     uint64 GetMoney() const;
     int32 GetCurrencyQuantity(int32 currencyId) const;
     int32 GetLevel() const;
+    int32 GetClassicTalentedStartLevel() const;
     bool IsQuestRewarded(int32 questId) const;
     bool HasAchieved(int32 achievementId) const;
     uint32 GetPrimarySpecialization() const;

@@ -1543,6 +1543,9 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
     // Classic 1.60: characters that were already level 25+ get the Legacy unlock on login
     pCurrChar->UpdateClassicLegacyUnlock();
 
+    // Classic 1.60: titles of the profession certifications bought on this account (300 skill shows them)
+    pCurrChar->UpdateClassicProfessionTitles();
+
     // Classic 1.60: characters start without bank tabs, the first one (BankTab.db2 character tab 0) is bought for 0 at the banker like
     // on the official beta (sniff 70170: "Tab 1" created by the purchase). Granting it at login is not needed.
     // pCurrChar->GrantClassicFreeBankTab();

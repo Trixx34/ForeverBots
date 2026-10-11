@@ -110,6 +110,7 @@
 #include "WorldSession.h"
 #include "WorldStateMgr.h"
 #include <zlib.h>
+#include <filesystem>
 
 TC_GAME_API std::atomic<bool> World::m_stopEvent(false);
 TC_GAME_API uint8 World::m_ExitCode = SHUTDOWN_EXIT_CODE;
@@ -1186,6 +1187,26 @@ void World::LoadConfigSettings(bool reload)
 
     TC_LOG_INFO("server.loading", "WORLD: MMap data directory is: {}mmaps", m_dataPath);
 
+    ///- DBC.Locale has to match the data extracted from the client (a French client gives only dbc/frFR): when the configured
+    ///  locale was not extracted, use one that was, so nobody has to edit the config for their client language
+    {
+        std::filesystem::path dbcPath = std::filesystem::path(m_dataPath) / "dbc";
+        std::error_code error;
+        if (std::filesystem::is_directory(dbcPath, error) && !std::filesystem::is_directory(dbcPath / localeNames[m_defaultDbcLocale], error))
+        {
+            for (uint8 locale = 0; locale < TOTAL_LOCALES; ++locale)
+            {
+                if (locale == LOCALE_none || !std::filesystem::is_directory(dbcPath / localeNames[locale], error))
+                    continue;
+
+                TC_LOG_WARN("server.loading", "DBC.Locale {} was not extracted ({} has no {} folder): using the extracted {} data instead.",
+                    localeNames[m_defaultDbcLocale], dbcPath.generic_string(), localeNames[m_defaultDbcLocale], localeNames[locale]);
+                m_defaultDbcLocale = LocaleConstant(locale);
+                break;
+            }
+        }
+    }
+
     bool enableLOS = sConfigMgr->GetBoolDefault("vmap.enableLOS"sv, true);
     bool enableHeight = sConfigMgr->GetBoolDefault("vmap.enableHeight"sv, true);
 
@@ -1214,7 +1235,10 @@ void World::LoadConfigSettings(bool reload)
         { 157, 1 }, { 190, 0 }, { 162, 1 }, { 209, 1 }, { 89, 1 }, { 177, 1 }, { 197, 1 }, { 199, -5 }, { 63, 1 }, { 90, 1 },
         { 244, 1 }, { 33, 20 }, { 129, 0 }, { 228, 1 }, { 241, 1 }, { 243, 1 }, { 101, 1 }, { 237, 0 },
         // official 70205 and 70235 sniffs also send these (not in 70124); 242 / 247 are suspected to switch on the new Social window tabs
-        { 70, 1 }, { 242, 1 }, { 247, 1 } })
+        { 70, 1 }, { 242, 1 }, { 247, 1 },
+        // new in the official 70338 sniffs; without them the 70338 client fails ASSERTSAFE(isRuleActive) in
+        // PremadeGroupFinderStyleUtils.cpp (group finder) and crashed later in the same session
+        { 251, 1 }, { 252, 1 }, { 253, 0 } })
         _gameRules.push_back({ .Rule = ::GameRule(rule), .Value = value });
     _gameRules.push_back({ .Rule = ::GameRule(200), .Value = 0.5f });
 

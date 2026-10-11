@@ -56,6 +56,10 @@ void RestMgr::SetRestBonus(RestTypes restType, float restBonus)
     }
 
     float rest_bonus_max = float(next_level_xp) * 1.5f / 2;
+    // Classic 1.60 Legacy perk Well Rested 1225478: the rested experience cap is increased (aura 656, percent)
+    if (restType == REST_TYPE_XP)
+        if (int32 capPct = _player->GetTotalAuraModifier(SPELL_AURA_656))
+            AddPct(rest_bonus_max, capPct);
 
     if (restBonus < 0)
         restBonus = 0;
@@ -162,7 +166,13 @@ float RestMgr::CalcExtraPerSec(RestTypes restType, float bubble) const
         case REST_TYPE_HONOR:
             return float(_player->m_activePlayerData->HonorNextLevel) / 72000.0f * bubble;
         case REST_TYPE_XP:
-            return float(_player->m_activePlayerData->NextLevelXP) / 72000.0f * bubble;
+        {
+            float extra = float(_player->m_activePlayerData->NextLevelXP) / 72000.0f * bubble;
+            // Classic 1.60 Legacy perk Well Rested 1225478: rested experience accumulates faster (aura 386, percent)
+            if (int32 ratePct = _player->GetTotalAuraModifier(SPELL_AURA_386))
+                AddPct(extra, ratePct);
+            return extra;
+        }
         default:
             return 0.0f;
     }
