@@ -140,10 +140,11 @@ Bot.Log.RepeatCap = 3
 
 #
 #    Bot.Log.AiTickStatsSec
-#        Description: Interval of the AI_TICK_STATS row (engine tick cost per state).
-#        Default:     60
+#        Description: Interval of the AI_TICK_STATS row (engine tick cost per state). 300 since the log
+#                     diet (N-09); the row was 16% of all log rows at 60.
+#        Default:     300
 #        Values:      whole number 0 to 3600 (seconds, 0 = off)
-Bot.Log.AiTickStatsSec = 60
+Bot.Log.AiTickStatsSec = 300
 
 #
 #    Bot.Log.ServerStatsSec
@@ -699,6 +700,65 @@ Bot.AI.Combat.FreeRepair = 1
 Bot.AI.Combat.ApproachTimeoutSec = 15
 
 #
+#    Bot.AI.Combat.ApproachEscalate.Enabled
+#        Description: A bot that hits APPROACH_TIMEOUT more than Bot.AI.Combat.ApproachEscalate.Count times inside
+#                     Bot.AI.Combat.ApproachEscalate.WindowSec stops retrying. It looks for the cause (a profession
+#                     tool in the main hand, or a ranged weapon without ammo), fixes it where it can (wields the
+#                     combat weapon, plans an ammo trip when Bot.AI.Ammo.Enabled is on) and does not pick the target
+#                     that timed out last for Bot.AI.Combat.ApproachEscalate.IgnoreSec. Logged as APPROACH_ESCALATED
+#                     with the cause and the action taken.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Combat.ApproachEscalate.Enabled = 1
+
+#
+#    Bot.AI.Combat.ApproachEscalate.Count
+#        Description: More approach timeouts than this inside the window escalate.
+#        Default:     5
+#        Values:      whole number 1 to 15
+Bot.AI.Combat.ApproachEscalate.Count = 5
+
+#
+#    Bot.AI.Combat.ApproachEscalate.WindowSec
+#        Description: Length of the window in which the approach timeouts of one bot are counted.
+#        Default:     600
+#        Values:      whole number 30 to 3600 (seconds)
+Bot.AI.Combat.ApproachEscalate.WindowSec = 600
+
+#
+#    Bot.AI.Combat.ApproachEscalate.IgnoreSec
+#        Description: After an escalation the target that timed out last is not picked again for this long.
+#        Default:     600
+#        Values:      whole number 20 to 7200 (seconds)
+Bot.AI.Combat.ApproachEscalate.IgnoreSec = 600
+
+#
+#    Bot.AI.Weapon.Restore
+#        Description: A bot whose main hand holds a profession tool (a fishing pole after fishing, a skinning knife
+#                     or mining pick) wields the best usable combat weapon from its bags again (WEAPON_RESTORED). The
+#                     tools listed in Bot.AI.Weapon.ToolEntries are also never worn as gear. With a tool worn and no
+#                     weapon in the bags it logs WEAPON_RESTORE_NONE at most every 10 minutes.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.AI.Weapon.Restore = 1
+
+#
+#    Bot.AI.Weapon.CheckSec
+#        Description: Minimum time between two main hand checks of one bot.
+#        Default:     20
+#        Values:      whole number 5 to 600 (seconds)
+Bot.AI.Weapon.CheckSec = 20
+
+#
+#    Bot.AI.Weapon.ToolEntries
+#        Description: Item entries of profession tools that count as a tool, not as a combat weapon, besides the
+#                     fishing poles (found by item subclass). The default is the Skinning Knife and the Mining Pick
+#                     seen in the main hand in the sim run; check the entries against the item table.
+#        Default:     "7005,2901"
+#        Values:      list of item entries separated by comma, semicolon or space
+Bot.AI.Weapon.ToolEntries = "7005,2901"
+
+#
 #    Bot.AI.Combat.HealBelowPct
 #        Description: Health percent below which a bot with a heal spell casts it on itself in combat.
 #        Default:     45
@@ -920,6 +980,70 @@ Bot.Quest.LootSpawnByCost = 0
 Bot.Quest.DeathLoopBreaker = 0
 
 #
+#    Bot.Quest.TripGuard.Enabled
+#        Description: Guard against profession trainer and workshop trip loops. A profession skill or workshop
+#                     skill whose trips keep failing is not tried again at once: a minimum time between trips, a cap
+#                     of failed trips, then a long pause (TRIP_GIVEN_UP). Profession trainer trips also stay inside
+#                     Bot.Quest.TripGuard.ProfMaxYd and, with ProfSameZone, inside the zone of the bot. Every trip
+#                     ends in a TRIP_ARRIVED or TRIP_FAILED row.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.TripGuard.Enabled = 1
+
+#
+#    Bot.Quest.TripGuard.ProfCooldownSec
+#        Description: Minimum time between two profession trainer trips for the same skill, until one succeeds.
+#        Default:     1800
+#        Values:      whole number 0 to 86400 (seconds)
+Bot.Quest.TripGuard.ProfCooldownSec = 1800
+
+#
+#    Bot.Quest.TripGuard.ProfMaxAttempts
+#        Description: Profession trainer trips for one skill without a success before the skill is given up for
+#                     Bot.Quest.TripGuard.GiveUpSec. 0 means no cap.
+#        Default:     5
+#        Values:      whole number 0 to 100
+Bot.Quest.TripGuard.ProfMaxAttempts = 5
+
+#
+#    Bot.Quest.TripGuard.WorkshopCooldownSec
+#        Description: Minimum time between two forge, anvil or fire trips for the same crafting skill, until a craft
+#                     after the trip succeeds.
+#        Default:     600
+#        Values:      whole number 0 to 86400 (seconds)
+Bot.Quest.TripGuard.WorkshopCooldownSec = 600
+
+#
+#    Bot.Quest.TripGuard.WorkshopMaxAttempts
+#        Description: Workshop trips for one skill without a successful craft before the skill is given up for
+#                     Bot.Quest.TripGuard.GiveUpSec. 0 means no cap.
+#        Default:     3
+#        Values:      whole number 0 to 100
+Bot.Quest.TripGuard.WorkshopMaxAttempts = 3
+
+#
+#    Bot.Quest.TripGuard.GiveUpSec
+#        Description: How long a skill stays blocked after its trips were given up.
+#        Default:     21600
+#        Values:      whole number 60 to 604800 (seconds)
+Bot.Quest.TripGuard.GiveUpSec = 21600
+
+#
+#    Bot.Quest.TripGuard.ProfMaxYd
+#        Description: Longest walk to a profession trainer (was a fixed 3000 yd). The sim run showed trips of 1000
+#                     to 3000 yd that ended in path failures or in zones with mobs far above the bot.
+#        Default:     500
+#        Values:      whole number 50 to 5000 (yards)
+Bot.Quest.TripGuard.ProfMaxYd = 500
+
+#
+#    Bot.Quest.TripGuard.ProfSameZone
+#        Description: A profession trainer in another zone than the bot is not walked to.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.TripGuard.ProfSameZone = 1
+
+#
 #    Bot.Quest.DeferQuest8
 #        Description: Quest 8 is not taken before level 4.
 #        Default:     0
@@ -965,6 +1089,25 @@ Bot.Quest.Reputation.LossPenaltyPct = 40
 #        Default:     250
 #        Values:      whole number 1 to 10000 (reputation points)
 Bot.Quest.Reputation.FullPoints = 250
+
+
+###################################################################################################
+# SPELL LEARNING
+#
+# How bots get their class spells.
+###################################################################################################
+
+#
+#    Bot.AI.AutoLearnSpells
+#        Description: Bots learn every class spell they qualify for (level, skill and prerequisite rank)
+#                     when they level up and once after login to catch up, without visiting a class trainer
+#                     and without paying. Logs SPELLS_LEARNED. The money reserve for trainer spells is no longer
+#                     held back for the quest strategy, and the class trainer trips (TRAIN_TRIP, TRAINED,
+#                     TRAIN_NO_MONEY, TRAIN_NO_TRAINER) stop. Profession trainer visits are not affected.
+#                     Spells missing from the client data are skipped. Read once at startup.
+#        Default:     1
+#        Values:      0 (bots walk to the class trainer and pay for spells) or 1 (bots learn spells on their own)
+Bot.AI.AutoLearnSpells = 1
 
 
 ###################################################################################################
@@ -3623,3 +3766,301 @@ Bot.Duel.BotVsBot.WatchYards = 60
 #        Default:     240
 #        Values:      whole number 30 to 1800 (seconds)
 Bot.Duel.BotVsBot.TimeoutSec = 240
+
+###################################################################################################
+# ADDITIONAL PROGRESS RULES (N-01 to N-09)
+#
+#    Rules from the second analysis of the 800 bot sim run (docs/playerbots/sim-run-800-analysis-20261011.md,
+#    docs/playerbots/additional-rules-20261011.md). Every rule has its own switch. Bot.Rules.ArmPct splits the bots
+#    into a rule arm and a control arm for the A/B run (docs/playerbots/sim-run-protocol-20261011.md).
+###################################################################################################
+
+#
+#    Bot.Rules.ArmPct
+#        Description: A/B switch for all rules in this section (N-01 to N-08). 0 applies them to every bot. A
+#                     number N from 1 to 100 applies them only to bots whose guid counter modulo 100 is below N;
+#                     the others are the control arm. Stable for the life of the bot.
+#        Default:     0
+#        Values:      whole number 0 to 100 (percent of bots)
+Bot.Rules.ArmPct = 0
+
+#
+#    Bot.Rules.XpStall.Enabled
+#        Description: N-01. Second watchdog clock that resets only on experience, a level, a rewarded quest or a
+#                     changed quest objective counter (kill, loot, use). A bot that walks trips in circles never
+#                     trips the movement watchdog but trips this one. Steps: ClearSec: drop the task, the quest
+#                     blacklists and the trip guards; RelogSec: relog the bot; HubSec: walk to the nearest quest
+#                     hub for its level. Each step is logged as STALL_XP with the last ten quest decisions. Bots
+#                     at the level cap, dead, flying, in an instance, a battleground, a group or a duel hold the
+#                     clock.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.XpStall.Enabled = 1
+
+#
+#    Bot.Rules.XpStall.Relog
+#        Description: Allows the relog step. With 0 the relog step only clears the task again.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.XpStall.Relog = 1
+
+#
+#    Bot.Rules.XpStall.ClearSec
+#        Description: Seconds without progress before the task and blacklists are cleared.
+#        Default:     1200
+#        Values:      whole number 60 to 86400 (seconds)
+Bot.Rules.XpStall.ClearSec = 1200
+
+#
+#    Bot.Rules.XpStall.RelogSec
+#        Description: Seconds without progress before the relog. Not lower than ClearSec.
+#        Default:     2400
+#        Values:      whole number 60 to 172800 (seconds)
+Bot.Rules.XpStall.RelogSec = 2400
+
+#
+#    Bot.Rules.XpStall.HubSec
+#        Description: Seconds without progress before the walk to the nearest quest hub. Not lower than RelogSec.
+#                     The clock starts over after this step.
+#        Default:     5400
+#        Values:      whole number 60 to 259200 (seconds)
+Bot.Rules.XpStall.HubSec = 5400
+
+#
+#    Bot.Rules.XpStall.MaxPerHour
+#        Description: Recoveries (all steps) per bot and hour. Beyond it only STALL_XP_EXHAUSTED is written.
+#        Default:     6
+#        Values:      whole number 0 to 120
+Bot.Rules.XpStall.MaxPerHour = 6
+
+#
+#    Bot.Rules.ZoneFence.Enabled
+#        Description: N-02. A walk (quest, trainer, vendor and profession legs, and flee goals) is refused when
+#                     its end or a point every Bot.Rules.ZoneFence.StepYards on the way lies in a leveling zone
+#                     whose lowest level is more than Bot.Rules.ZoneFence.Margin above the bot. The quest or
+#                     service is dropped and blacklisted for the bot (ZONE_FENCE). A bot that already stands in
+#                     such a zone may stay in it.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.ZoneFence.Enabled = 1
+
+#
+#    Bot.Rules.ZoneFence.Margin
+#        Description: Levels the zone minimum may be above the bot before the zone is fenced.
+#        Default:     4
+#        Values:      whole number 0 to 20 (levels)
+Bot.Rules.ZoneFence.Margin = 4
+
+#
+#    Bot.Rules.ZoneFence.StepYards
+#        Description: Spacing of the zone checks along a leg (at most 12 points are checked).
+#        Default:     150
+#        Values:      whole number 30 to 1000 (yards)
+Bot.Rules.ZoneFence.StepYards = 150
+
+#
+#    Bot.Rules.PullGate.Enabled
+#        Description: N-03. A bot does not pick a mob while its main hand holds a profession tool or nothing, or a
+#                     ranged weapon has no ammo (it fixes what it can: wields the combat weapon, plans an ammo
+#                     trip), and rests first when health or power is low. Logged as PULL_BLOCKED once a minute.
+#                     Raises the eat and drink thresholds of the rest module to the values below.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.PullGate.Enabled = 1
+
+#
+#    Bot.Rules.PullGate.HealthPct
+#        Description: The bot eats or rests before the next pull below this health.
+#        Default:     80
+#        Values:      whole number 0 to 100 (percent)
+Bot.Rules.PullGate.HealthPct = 80
+
+#
+#    Bot.Rules.PullGate.PowerPct
+#        Description: Mana users drink or rest before the next pull below this mana.
+#        Default:     50
+#        Values:      whole number 0 to 100 (percent)
+Bot.Rules.PullGate.PowerPct = 50
+
+#
+#    Bot.Rules.PullGate.MaxWaitSec
+#        Description: A health or power block that lasts this long is let go (rest could not fix it). A weapon or
+#                     ammo block is never let go.
+#        Default:     120
+#        Values:      whole number 10 to 3600 (seconds)
+Bot.Rules.PullGate.MaxWaitSec = 120
+
+#
+#    Bot.Rules.NoDamage.Enabled
+#        Description: N-04. A fight in which the bot has taken less than MinPct of the mob's health off it after
+#                     WindowSec seconds is logged as FIGHT_NO_DAMAGE with the cause (weapon, ammo, power, line of
+#                     sight, range). Casters fall back to melee, a missing weapon is wielded again, an ammo trip
+#                     is planned, and a mob that outlevels the bot goes back to the target choice (flee run)
+#                     instead of a blow-for-blow fight at melee range.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.NoDamage.Enabled = 1
+
+#
+#    Bot.Rules.NoDamage.WindowSec
+#        Description: Seconds on one target before the breaker looks at the damage.
+#        Default:     10
+#        Values:      whole number 3 to 120 (seconds)
+Bot.Rules.NoDamage.WindowSec = 10
+
+#
+#    Bot.Rules.NoDamage.MinPct
+#        Description: Damage in percent of the mob's maximum health that counts as progress inside the window.
+#        Default:     5
+#        Values:      whole number 1 to 50 (percent)
+Bot.Rules.NoDamage.MinPct = 5
+
+#
+#    Bot.Rules.BagPressure.Enabled
+#        Description: N-05. Plans the vendor trip when TripFreeSlots bag slots or fewer are free and a vendor is
+#                     within VendorYards (BAG_PRESSURE once per level), at most once per 15 minutes, and leaves
+#                     grey items on the corpse below GreyFreeSlots free slots. Quest items and better quality are
+#                     always taken. The classic trip at one free slot stays.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.BagPressure.Enabled = 1
+
+#
+#    Bot.Rules.BagPressure.TripFreeSlots
+#        Description: Free slots at or below which the early vendor trip is planned.
+#        Default:     4
+#        Values:      whole number 1 to 20
+Bot.Rules.BagPressure.TripFreeSlots = 4
+
+#
+#    Bot.Rules.BagPressure.VendorYards
+#        Description: The early trip is planned only for a vendor closer than this.
+#        Default:     400
+#        Values:      whole number 50 to 3000 (yards)
+Bot.Rules.BagPressure.VendorYards = 400
+
+#
+#    Bot.Rules.BagPressure.GreyFreeSlots
+#        Description: Grey items are not looted below this many free slots. 0 loots greys always.
+#        Default:     4
+#        Values:      whole number 0 to 20
+Bot.Rules.BagPressure.GreyFreeSlots = 4
+
+#
+#    Bot.Rules.Crowd.Enabled
+#        Description: N-06. Soft cap of bots per quest, quest hub and grind area: a quest or hub that Cap or more
+#                     other bots already work on within RadiusYards scores CrowdedPct percent of its normal score,
+#                     and a crowded grind area is moved to the nearest free grind spawn point (CROWD_SPREAD).
+#                     Nothing is ever refused, a crowded choice still wins when it is the only one.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.Crowd.Enabled = 1
+
+#
+#    Bot.Rules.Crowd.Cap
+#        Description: Other bots on the same objective within the radius at which it counts as crowded.
+#        Default:     8
+#        Values:      whole number 1 to 200
+Bot.Rules.Crowd.Cap = 8
+
+#
+#    Bot.Rules.Crowd.RadiusYards
+#        Description: Radius around the quest giver, hub or grind anchor in which bots are counted.
+#        Default:     150
+#        Values:      whole number 20 to 1000 (yards)
+Bot.Rules.Crowd.RadiusYards = 150
+
+#
+#    Bot.Rules.Crowd.CrowdedPct
+#        Description: Score of a crowded quest or hub in percent of the normal score.
+#        Default:     35
+#        Values:      whole number 0 to 100 (percent)
+Bot.Rules.Crowd.CrowdedPct = 35
+
+#
+#    Bot.Rules.ZoneLeave.Enabled
+#        Description: N-07. A bot leaves a zone with nothing to gain: after HubNoneRows hub scans without a hub
+#                     for the same map and level, or after GrindMinutes minutes of grind kills that all give less
+#                     than MinXpPerKill experience, it asks the travel module for the next band zone (ZONE_LEAVE).
+#                     Needs Bot.AI.Travel.Enabled, otherwise only the row is written.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.ZoneLeave.Enabled = 1
+
+#
+#    Bot.Rules.ZoneLeave.HubNoneRows
+#        Description: Hub scans without a hub (QUEST_HUB_NONE) for the same map and level before the bot leaves.
+#        Default:     2
+#        Values:      whole number 1 to 20
+Bot.Rules.ZoneLeave.HubNoneRows = 2
+
+#
+#    Bot.Rules.ZoneLeave.GrindMinutes
+#        Description: Minutes of grind kills below MinXpPerKill before the bot leaves.
+#        Default:     10
+#        Values:      whole number 1 to 240 (minutes)
+Bot.Rules.ZoneLeave.GrindMinutes = 10
+
+#
+#    Bot.Rules.ZoneLeave.MinXpPerKill
+#        Description: A grind kill that gives at least this much experience ends the low-xp streak.
+#        Default:     40
+#        Values:      whole number 1 to 100000 (experience)
+Bot.Rules.ZoneLeave.MinXpPerKill = 40
+
+#
+#    Bot.Rules.ClassMargin.Enabled
+#        Description: N-08. Class aware pull margin for the quest layer's kill and grind targets while the bot is
+#                     at or below UntilLevel: warriors, hunters, rogues and warlocks pick mobs at most WeakClasses
+#                     levels above them, paladins, priests and druids at most SturdyClasses. Never raises
+#                     Bot.Quest.MaxMobLevelDiff. Off until an A/B run (Bot.Rules.ArmPct) has sized it.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.ClassMargin.Enabled = 0
+
+#
+#    Bot.Rules.ClassMargin.UntilLevel
+#        Description: Highest bot level the class margin applies to.
+#        Default:     10
+#        Values:      whole number 1 to 60
+Bot.Rules.ClassMargin.UntilLevel = 10
+
+#
+#    Bot.Rules.ClassMargin.WeakClasses
+#        Description: Highest mob level above the bot for warriors, hunters, rogues and warlocks.
+#        Default:     0
+#        Values:      whole number 0 to 10 (levels)
+Bot.Rules.ClassMargin.WeakClasses = 0
+
+#
+#    Bot.Rules.ClassMargin.SturdyClasses
+#        Description: Highest mob level above the bot for paladins, priests and druids.
+#        Default:     1
+#        Values:      whole number 0 to 10 (levels)
+Bot.Rules.ClassMargin.SturdyClasses = 1
+
+#
+#    Bot.Log.Diet.Enabled
+#        Description: N-09. Master switch for the two log diet rules below (HourlyCaps and AuraDeathOnly).
+#                     Together with Bot.Log.AiTickStatsSec (now 300) they cut about a third of the log rows. The
+#                     full level stays available through Bot.Log.Categories.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Log.Diet.Enabled = 1
+
+#
+#    Bot.Log.Diet.HourlyCaps
+#        Description: Per bot and hour caps for noisy decision rows, as a comma separated list of REASON:count.
+#                     The rows over the cap are counted into the bot's LOG_SUPPRESSED row. Empty list = no caps.
+#        Default:     TARGET_PICKED:60,AGGRO_AVOID:30
+#        Values:      list of REASON:whole number
+Bot.Log.Diet.HourlyCaps = TARGET_PICKED:60,AGGRO_AVOID:30
+
+#
+#    Bot.Log.Diet.AuraDeathOnly
+#        Description: Aura rows (AURA_APPLIED, AURA_REMOVED) are written only for a fight that ends in a death;
+#                     they are held for the running fight and dropped when it ends otherwise. Aura changes outside
+#                     a fight are not logged.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Log.Diet.AuraDeathOnly = 1

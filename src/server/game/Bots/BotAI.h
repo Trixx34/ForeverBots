@@ -26,6 +26,7 @@
 #include <atomic>
 #include <mutex>
 #include <optional>
+#include <deque>
 #include <string>
 
 struct BotAIConfig
@@ -267,6 +268,7 @@ private:
     uint32 _auraWinMs = 0;
     uint32 _auraWinCount = 0;
     uint32 _auraSuppressed = 0;
+    std::deque<BotEvent> _auraHold;   // N-09: aura rows of the running fight (Bot.Log.Diet.AuraDeathOnly)
 
     uint64 _guid;
     Player* _tickBot = nullptr;

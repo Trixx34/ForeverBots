@@ -5513,8 +5513,8 @@ void SpellMgr::LoadSpellInfoTargetCaps()
         spellInfo->_LoadSqrtTargetLimit(8, 0, {}, EFFECT_1, {}, {});
     });
 
-    // Flamestrike
-    ApplySpellFix({ 2120, 1254851 }, [](SpellInfo* spellInfo)
+    // Flamestrike (retail target cap; not on Classic rank 1 2120, vanilla Flamestrike hits every target)
+    ApplySpellFix({ 1254851 }, [](SpellInfo* spellInfo)
     {
         spellInfo->_LoadSqrtTargetLimit(8, 0, {}, EFFECT_1, {}, {});
     });

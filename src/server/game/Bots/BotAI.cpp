@@ -29,6 +29,7 @@
 #include "BotMount.h"
 #include "BotWatchdog.h"
 #include "BotQuest.h"
+#include "BotRules.h"
 #include "CellImpl.h"
 #include "Config.h"
 #include "Creature.h"
@@ -199,7 +200,7 @@ BotAIConfig const& BotAI::Config()
         _config.AggroElites = sConfigMgr->GetBoolDefault("Bot.AI.AggroAvoid.Elites", true);
         _config.AggroLogSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.AggroAvoid.LogIntervalSec", 15), 1, 3600));
         _config.AggroMaxSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.AggroAvoid.MaxSec", 45), 5, 600));
-        _config.TickStatsSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.AiTickStatsSec", 60), 0, 3600));
+        _config.TickStatsSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Log.AiTickStatsSec", 300), 0, 3600));
         _config.PullDetail = sConfigMgr->GetBoolDefault("Bot.Log.PullDetail", true);
         _config.IdleReasons = sConfigMgr->GetBoolDefault("Bot.Log.IdleReasons", true);
         _enabled.store(_config.Enabled, std::memory_order_relaxed);
@@ -469,6 +470,15 @@ void BotAI::ChangeState(Player* bot, BotState to, char const* cause)
             if (_deathKillerEntry)
                 death.TargetEntry = _deathKillerEntry;
             std::string d = std::move(details);
+            {
+                // what the bot was doing: the quest it worked on and the kind of task (quest, grind, trip, idle)
+                uint32 questId = 0;
+                std::string task;
+                BotQuest::ActiveTask(this, questId, task);
+                if (questId)
+                    death.QuestId = questId;
+                d += Trinity::StringFormat(R"(,"task":"{}","quest_id":{})", task, questId);
+            }
             {
                 // death loop: consecutive deaths of this login within 5 min and 150 yd of the previous one (same map)
                 float const px = bot->GetPositionX(), py = bot->GetPositionY();
@@ -980,6 +990,7 @@ void BotAI::OnLogout(Player* bot, char const* reason)
     if (_fight.Active && _fight.StartLogged)
         EmitFightEnd(bot, reason && !strcmp(reason, "LOGOUT_COMMAND") ? "despawned" : "logout", _nowMs);
     _fight = Fight();
+    _auraHold.clear();
     BotPet::OnLogout(this, bot); // dismisses the pet, drops a taming run
     BotTravel::OnLogout(this, bot); // drops a running trip
     BotDummy::OnLogout(this, bot); // despawns the training dummy
@@ -1175,6 +1186,15 @@ void BotAI::EmitFightStart(Player* bot)
     BotEvent event = MakeEvent(bot, "combat", BOTLOG_INFO, "COMBAT_START", Trinity::StringFormat("combat start vs {} L{}", name, level));
     if (entry)
         event.TargetEntry = entry;
+    {
+        uint32 questId = 0;
+        std::string task;
+        BotQuest::ActiveTask(this, questId, task);
+        if (questId)
+            event.QuestId = questId;
+        d.pop_back();
+        d += Trinity::StringFormat(R"(,"task":"{}","quest_id":{}}})", task, questId);
+    }
     event.Details = std::move(d);
     Emit(std::move(event));
     _stats.LogNs.fetch_add(NowNs() - logStart, std::memory_order_relaxed);
@@ -1182,6 +1202,13 @@ void BotAI::EmitFightStart(Player* bot)
 
 void BotAI::EmitFightEnd(Player* bot, char const* outcome, uint32 endMs)
 {
+    if (!_auraHold.empty())
+    {
+        if (outcome && !strcmp(outcome, "died"))
+            for (BotEvent& held : _auraHold)
+                Emit(std::move(held));
+        _auraHold.clear();
+    }
     uint64 const logStart = NowNs();
     uint32 const duration = endMs > _fight.StartMs ? endMs - _fight.StartMs : 0;
     bool const alive = bot && bot->IsAlive();
@@ -1666,6 +1693,17 @@ void BotAI::OnAuraChange(Player* bot, AuraApplication const* app, bool applied)
     if (!caster.IsEmpty() && !caster.IsPlayer())
         event.TargetEntry = caster.GetEntry();
     event.Details = std::move(d);
+    if (BotRules::Cfg().LogDiet && BotRules::Cfg().AuraDeathOnly)
+    {
+        // N-09: aura rows are only worth their space in a fight that ends in a death; they wait here and are written (or dropped) with the fight
+        if (_fight.Active)
+        {
+            if (_auraHold.size() >= 40)
+                _auraHold.pop_front();
+            _auraHold.push_back(std::move(event));
+        }
+        return;
+    }
     Emit(std::move(event));
 }
 
@@ -1676,7 +1714,10 @@ void BotAI::OnXpGain(Player* bot, uint32 amount, uint32 bonus, Unit* victim)
     _xpSource = nullptr;
     _xpQuest = 0;
     if (victim)
+    {
         _killXpTotal += amount;
+        BotQuest::NoteKillXp(this, bot, amount);   // N-07
+    }
 
     std::string d = Trinity::StringFormat(R"({{"source":"{}","amount":{},"bonus":{},"xp_now":{},"xp_max":{},"level":{},"elapsed_s":{})",
         source, amount, bonus, bot->GetXP(), bot->GetXPForNextLevel(), uint32(bot->GetLevel()), _nowMs / 1000);

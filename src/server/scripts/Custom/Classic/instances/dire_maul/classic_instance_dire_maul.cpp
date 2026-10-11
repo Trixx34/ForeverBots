@@ -45,6 +45,7 @@
 #include "StringFormat.h"
 #include "TemporarySummon.h"
 #include "classic_dire_maul.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_script_text.h"
 #include <array>
 #include <list>
@@ -80,6 +81,58 @@ char const* const ClassicDMSaveKeys[INSTANCE_DIRE_MAUL_MAX_ENCOUNTER] =
 ## instance_dire_maul
 ######*/
 
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Dire Maul (map 429), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+enum ClassicDireMaulEncounterBosses : uint32
+{
+    CDMAUL_ENC_ZEVRIM = 0,
+    CDMAUL_ENC_HYDROSPAWN = 1,
+    CDMAUL_ENC_LETHTENDRIS = 2,
+    CDMAUL_ENC_PUSILLIN = 3,
+    CDMAUL_ENC_ALZZIN = 4,
+    CDMAUL_ENC_TENDRIS = 5,
+    CDMAUL_ENC_ILLYANNA = 6,
+    CDMAUL_ENC_KALENDRIS = 7,
+    CDMAUL_ENC_IMMOLTHAR = 8,
+    CDMAUL_ENC_TORTHELDRIN = 9,
+    CDMAUL_ENC_MOLDAR = 10,
+    CDMAUL_ENC_KREEG = 11,
+    CDMAUL_ENC_FENGUS = 12,
+    CDMAUL_ENC_SLIPKIK = 13,
+    CDMAUL_ENC_KROMCRUSH = 14,
+    CDMAUL_ENC_CHORUSH = 15,
+    CDMAUL_ENC_GORDOK = 16,
+    CDMAUL_ENC_HELNURATH = 17,
+    CDMAUL_ENC_TSUZEE = 18,
+    CDMAUL_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicDireMaulEncounterBossEntries[] =
+{
+    { CDMAUL_ENC_ZEVRIM, 11490 }, // Zevrim Thornhoof
+    { CDMAUL_ENC_HYDROSPAWN, 13280 }, // Hydrospawn
+    { CDMAUL_ENC_LETHTENDRIS, 14327 }, // Lethtendris
+    { CDMAUL_ENC_PUSILLIN, 14354 }, // Pusillin
+    { CDMAUL_ENC_ALZZIN, 11492 }, // Alzzin the Wildshaper
+    { CDMAUL_ENC_TENDRIS, 11489 }, // Tendris Warpwood
+    { CDMAUL_ENC_ILLYANNA, 11488 }, // Illyanna Ravenoak
+    { CDMAUL_ENC_KALENDRIS, 11487 }, // Magister Kalendris
+    { CDMAUL_ENC_IMMOLTHAR, 11496 }, // Immol'thar
+    { CDMAUL_ENC_TORTHELDRIN, 11486 }, // Prince Tortheldrin
+    { CDMAUL_ENC_MOLDAR, 14326 }, // Guard Mol'dar
+    { CDMAUL_ENC_KREEG, 14322 }, // Stomper Kreeg
+    { CDMAUL_ENC_FENGUS, 14321 }, // Guard Fengus
+    { CDMAUL_ENC_SLIPKIK, 14323 }, // Guard Slip'kik
+    { CDMAUL_ENC_KROMCRUSH, 14325 }, // Captain Kromcrush
+    { CDMAUL_ENC_CHORUSH, 14324 }, // Cho'Rush the Observer
+    { CDMAUL_ENC_GORDOK, 11501 }, // King Gordok
+    { CDMAUL_ENC_HELNURATH, 14506 }, // Lord Hel'nurath
+    { CDMAUL_ENC_TSUZEE, 11467 } // Tsu'zee
+};
+}
+
 class classic_instance_dire_maul : public InstanceMapScript
 {
 public:
@@ -90,11 +143,48 @@ public:
         classic_instance_dire_maul_InstanceScript(InstanceMap* map) : InstanceScript(map)
         {
             SetHeaders(ClassicDireMaulDataHeader);
+            SetBossNumber(CDMAUL_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CDMAUL_ENC_ZEVRIM, {{ 343 }} },
+                { CDMAUL_ENC_HYDROSPAWN, {{ 344 }} },
+                { CDMAUL_ENC_LETHTENDRIS, {{ 345 }} },
+                { CDMAUL_ENC_PUSILLIN, {{ 2792 }} },
+                { CDMAUL_ENC_ALZZIN, {{ 346 }} },
+                { CDMAUL_ENC_TENDRIS, {{ 350 }} },
+                { CDMAUL_ENC_ILLYANNA, {{ 347 }} },
+                { CDMAUL_ENC_KALENDRIS, {{ 348 }} },
+                { CDMAUL_ENC_IMMOLTHAR, {{ 349 }} },
+                { CDMAUL_ENC_TORTHELDRIN, {{ 361 }} },
+                { CDMAUL_ENC_MOLDAR, {{ 362 }} },
+                { CDMAUL_ENC_KREEG, {{ 363 }} },
+                { CDMAUL_ENC_FENGUS, {{ 364 }} },
+                { CDMAUL_ENC_SLIPKIK, {{ 365 }} },
+                { CDMAUL_ENC_KROMCRUSH, {{ 366 }} },
+                { CDMAUL_ENC_CHORUSH, {{ 367 }} },
+                { CDMAUL_ENC_GORDOK, {{ 368 }} },
+                { CDMAUL_ENC_HELNURATH, {{ 2793 }} },
+                { CDMAUL_ENC_TSUZEE, {{ 2794 }} }
+            };
+            LoadDungeonEncounterData(encounters);
             m_auiEncounter.fill(0);
 
             for (uint32 i = 0; i < INSTANCE_DIRE_MAUL_MAX_ENCOUNTER; ++i)
                 if (ClassicDMSaveKeys[i])
                     m_savedEncounter[i] = std::make_unique<PersistentInstanceScriptValue<uint32>>(*this, ClassicDMSaveKeys[i], 0u);
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicDireMaulEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
+        }
+
+        void Update(uint32 diff) override
+        {
+            _encounterTracker.Update(diff);
         }
 
         // VMaNGOS Load(): IN_PROGRESS -> NOT_STARTED
@@ -217,6 +307,7 @@ public:
         void OnUnitDeath(Unit* unit) override
         {
             InstanceScript::OnUnitDeath(unit);
+            _encounterTracker.OnUnitDeath(unit);
 
             Creature* creature = unit->ToCreature();
             if (!creature)
@@ -267,6 +358,7 @@ public:
         void OnCreatureCreate(Creature* creature) override
         {
             InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
 
             switch (creature->GetEntry())
             {

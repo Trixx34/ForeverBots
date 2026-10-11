@@ -25,11 +25,38 @@
 #include "MotionMaster.h"
 #include "Random.h"
 #include "TemporarySummon.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_razorfen_downs.h"
 
 namespace
 {
 uint32 const CLASSIC_RFD_MAX_ENCOUNTER = 1;
+}
+
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Razorfen Downs (map 129), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+enum ClassicRazorfenDownsEncounterBosses : uint32
+{
+    CLASSIC_RFD_ENC_TUTENKASH = 0,
+    CLASSIC_RFD_ENC_PLAGUEMAW = 1,
+    CLASSIC_RFD_ENC_MORDRESH = 2,
+    CLASSIC_RFD_ENC_RAGGLESNOUT = 3,
+    CLASSIC_RFD_ENC_GLUTTON = 4,
+    CLASSIC_RFD_ENC_AMNENNAR = 5,
+    CLASSIC_RFD_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicRazorfenDownsEncounterBossEntries[] =
+{
+    { CLASSIC_RFD_ENC_TUTENKASH, 7355 }, // Tuten'kash
+    { CLASSIC_RFD_ENC_PLAGUEMAW, 7356 }, // Plaguemaw the Rotting
+    { CLASSIC_RFD_ENC_MORDRESH, 7357 }, // Mordresh Fire Eye
+    { CLASSIC_RFD_ENC_RAGGLESNOUT, 7354 }, // Ragglesnout
+    { CLASSIC_RFD_ENC_GLUTTON, 8567 }, // Glutton
+    { CLASSIC_RFD_ENC_AMNENNAR, 7358 } // Amnennar the Coldbringer
+};
 }
 
 class classic_instance_razorfen_downs : public InstanceMapScript
@@ -43,8 +70,43 @@ public:
             _gongWaves(0), _savedTutenKash(*this, "TutenKash", NOT_STARTED)
         {
             SetHeaders(ClassicRFDDataHeader);
+            SetBossNumber(CLASSIC_RFD_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CLASSIC_RFD_ENC_TUTENKASH, {{ 2780 }} },
+                { CLASSIC_RFD_ENC_PLAGUEMAW, {{ 2781 }} },
+                { CLASSIC_RFD_ENC_MORDRESH, {{ 2782 }} },
+                { CLASSIC_RFD_ENC_RAGGLESNOUT, {{ 2783 }} },
+                { CLASSIC_RFD_ENC_GLUTTON, {{ 2784 }} },
+                { CLASSIC_RFD_ENC_AMNENNAR, {{ 2785 }} }
+            };
+            LoadDungeonEncounterData(encounters);
             for (uint32& encounter : _encounter)
                 encounter = NOT_STARTED;
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicRazorfenDownsEncounterBossEntries };
+
+        void OnCreatureCreate(Creature* creature) override
+        {
+            InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
+        }
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
+        }
+
+        void OnUnitDeath(Unit* unit) override
+        {
+            _encounterTracker.OnUnitDeath(unit);
+        }
+
+        void Update(uint32 diff) override
+        {
+            _encounterTracker.Update(diff);
         }
 
         // VMaNGOS Load(): saved states, IN_PROGRESS -> NOT_STARTED

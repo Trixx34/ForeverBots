@@ -580,6 +580,27 @@ struct TC_GAME_API CreatureBaseStats
     static CreatureBaseStats const* GetBaseStats(uint8 level, uint8 unitClass);
 };
 
+// Classic 1.60: vanilla creature base stats per class and level (VMaNGOS creature_classlevelstats, creature_classic_classlevelstats)
+struct ClassicCreatureClassLevelStats
+{
+    uint32 Health = 0;
+    uint32 Mana = 0;
+    uint32 Armor = 0;
+    float MeleeDamage = 0.0f;
+    float RangedDamage = 0.0f;
+};
+
+// Classic 1.60: vanilla per creature multipliers (VMaNGOS creature_template, creature_classic_stats); a creature with these uses
+// the vanilla stat formulas
+struct ClassicCreatureStats
+{
+    float HealthMultiplier = 1.0f;
+    float ManaMultiplier = 1.0f;
+    float ArmorMultiplier = 1.0f;
+    float DamageMultiplier = 1.0f;
+    float DamageVariance = 0.14f;
+};
+
 struct CreatureLocale
 {
     std::vector<std::string> Name;

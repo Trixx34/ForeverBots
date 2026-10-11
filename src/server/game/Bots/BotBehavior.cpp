@@ -27,6 +27,7 @@
 #include "BotAI.h"
 #include "BotCombat.h"
 #include "BotRevive.h"
+#include "BotRules.h"
 #include "Config.h"
 #include "Corpse.h"
 #include "BotTownIdlePlan.h"
@@ -358,16 +359,33 @@ float PowerPct(Player* bot)
 
 bool UsesMana(Player* bot) { return bot->GetPowerType() == POWER_MANA && bot->GetMaxPower(POWER_MANA) > 0; }
 
+// N-03: with the pull gate on, a bot rests below the gate's health (and, for casters, power) before it pulls again.
+float EatBelow(Player* bot)
+{
+    float below = float(BotAI::Config().EatBelowPct);
+    if (BotRules::Cfg().PullGate && BotRules::Applies(bot))
+        below = std::max(below, BotRules::Cfg().Pull.HealthPct);
+    return below;
+}
+
+float DrinkBelow(Player* bot)
+{
+    float below = float(std::max(BotAI::Config().DrinkBelowPct, BotCombatPrePullManaPct()));
+    if (BotRules::Cfg().PullGate && BotRules::Applies(bot))
+        below = std::max(below, BotRules::Cfg().Pull.PowerPct);
+    return below;
+}
+
 bool NeedEat(BotAI* ai, Player* bot)
 {
-    return !(ai->Rest().Bits & BotRest::EAT) && bot->IsAlive() && !bot->IsInCombat() && bot->GetHealthPct() < float(BotAI::Config().EatBelowPct) &&
+    return !(ai->Rest().Bits & BotRest::EAT) && bot->IsAlive() && !bot->IsInCombat() && bot->GetHealthPct() < EatBelow(bot) &&
         !AggroBlocksRest(ai, bot, "rest_refused");
 }
 
 bool NeedDrink(BotAI* ai, Player* bot)
 {
     return !(ai->Rest().Bits & BotRest::DRINK) && bot->IsAlive() && !bot->IsInCombat() && UsesMana(bot) &&
-        PowerPct(bot) < float(std::max(BotAI::Config().DrinkBelowPct, BotCombatPrePullManaPct())) && !AggroBlocksRest(ai, bot, "rest_refused");
+        PowerPct(bot) < DrinkBelow(bot) && !AggroBlocksRest(ai, bot, "rest_refused");
 }
 
 bool RestingNow(BotAI* ai, Player*) { return ai->Rest().Resting(); }

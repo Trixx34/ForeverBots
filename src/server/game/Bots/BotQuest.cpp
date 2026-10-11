@@ -25,6 +25,9 @@
 #include "BotConfigReload.h"
 #include "Bag.h"
 #include "BotQuest.h"
+#include "BotAvoid.h"
+#include "BotLoopGuard.h"
+#include "BotRules.h"
 #include "BotQuestClassifier.h"
 #include "BotAI.h"
 #include "BotAuction.h"
@@ -70,6 +73,7 @@
 #include "QuestDef.h"
 #include "StringFormat.h"
 #include "Trainer.h"
+#include "BotSpellLearn.h"
 #include "Util.h"
 #include "WorldSession.h"
 #include <algorithm>
@@ -326,6 +330,13 @@ struct BagOffer
     int32 ReqLevel = 0;
 };
 
+// Bot.AI.AutoLearnSpells: bots learn the class spells they qualify for on level up (and on login) without visiting a trainer.
+bool AutoLearnSpells()
+{
+    static bool value = sConfigMgr->GetBoolDefault("Bot.AI.AutoLearnSpells", true);
+    return value;
+}
+
 // Bot.AI.Ammo.*: ranged bots (a bow, crossbow or gun equipped) keep ammo stocked: low ammo plans a vendor trip and buys arrows or bullets. Off by default.
 struct AmmoConfig
 {
@@ -345,6 +356,42 @@ AmmoConfig const& AmmoCfg()
         cfg.LowCount = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Ammo.LowCount", 60), 1, 2000));
         cfg.BuyTarget = std::max<uint32>(cfg.LowCount + 1, uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Ammo.BuyTarget", 400), 1, 4000)));
         cfg.CooldownSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Ammo.CooldownSec", 300), 30, 7200));
+    });
+    return cfg;
+}
+
+// Bot.AI.Weapon.* and Bot.Quest.TripGuard.*: the decision-loop fixes of docs/playerbots/sim-run-800-analysis-20261011.md (R-V2-01, R-V2-03).
+struct LoopConfig
+{
+    bool WeaponRestore = true;                  // Bot.AI.Weapon.Restore: a profession tool in the main hand is swapped for the best combat weapon
+    uint32 WeaponCheckSec = 20;                 // Bot.AI.Weapon.CheckSec: minimum time between two checks of one bot
+    std::vector<uint32> ToolEntries;            // Bot.AI.Weapon.ToolEntries: profession tools that are never worn as gear (fishing poles are found by their item subclass)
+    bool TripGuard = true;                      // Bot.Quest.TripGuard.Enabled
+    BotLoop::TripConfig Prof;                   // profession trainer trips, per skill
+    BotLoop::TripConfig Workshop;               // forge / fire trips, per skill
+    float ProfMaxYd = 500.0f;                   // Bot.Quest.TripGuard.ProfMaxYd
+    bool ProfSameZone = true;                   // Bot.Quest.TripGuard.ProfSameZone
+};
+
+LoopConfig const& LoopCfg()
+{
+    static LoopConfig cfg;
+    static BotCfg::Flag once;
+    BotCfg::Load(once, []()
+    {
+        cfg.WeaponRestore = sConfigMgr->GetBoolDefault("Bot.AI.Weapon.Restore", true);
+        cfg.WeaponCheckSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Weapon.CheckSec", 20), 5, 600));
+        cfg.ToolEntries = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.AI.Weapon.ToolEntries", "7005,2901"));
+        cfg.TripGuard = sConfigMgr->GetBoolDefault("Bot.Quest.TripGuard.Enabled", true);
+        uint32 const giveUp = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Quest.TripGuard.GiveUpSec", 21600), 60, 604800)) * 1000;
+        cfg.Prof.CooldownMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Quest.TripGuard.ProfCooldownSec", 1800), 0, 86400)) * 1000;
+        cfg.Prof.MaxAttempts = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Quest.TripGuard.ProfMaxAttempts", 5), 0, 100));
+        cfg.Prof.GiveUpMs = giveUp;
+        cfg.Workshop.CooldownMs = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Quest.TripGuard.WorkshopCooldownSec", 600), 0, 86400)) * 1000;
+        cfg.Workshop.MaxAttempts = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Quest.TripGuard.WorkshopMaxAttempts", 3), 0, 100));
+        cfg.Workshop.GiveUpMs = giveUp;
+        cfg.ProfMaxYd = float(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.Quest.TripGuard.ProfMaxYd", 500), 50, 5000));
+        cfg.ProfSameZone = sConfigMgr->GetBoolDefault("Bot.Quest.TripGuard.ProfSameZone", true);
     });
     return cfg;
 }
@@ -1417,6 +1464,7 @@ public:
     // E1/E4 service state
     uint32 NextSvcMs = 0;                           // next service-due evaluation
     uint8 TrainLevel = 0;                           // level at which spells were last evaluated/trained
+    uint8 LearnLevel = 0;                           // level at which the auto-learn pass last ran (Bot.AI.AutoLearnSpells)
     uint32 TrainWant = 0;                           // copper needed for the cheapest available but unaffordable spell (0 = none)
     uint32 TrainRetryMs = 0;
     uint32 TrainedTotal = 0, VendorTrips = 0;
@@ -1446,8 +1494,23 @@ public:
     std::unordered_set<uint32> ProfWarned; // skills already reported as PROF_NO_TRAINER / PROF_NO_MONEY at this level (cleared per level)
     uint8 ProfWarnLevel = 0;
     uint32 NextGearMs = 0;   // next bag sweep for gear upgrades
+    uint32 WeaponCheckMs = 0;                       // next main hand check (Bot.AI.Weapon.Restore)
+    uint32 WeaponNoneMs = 0;                        // earliest next WEAPON_RESTORE_NONE row
+    std::unordered_map<uint32, BotLoop::TripState> Trips;   // (kind << 24 | skill) -> trip guard state (Bot.Quest.TripGuard.*)
+    uint32 ProfTripSkill = 0;                       // skill of the profession trainer trip under way, 0 = none
     uint8 NoTrainerLevel = 0, NoMoneyLevel = 0, BagNoMoneyLevel = 0, NoVendorLevel = 0, AmmoNoMoneyLevel = 0;
     std::string LastNote;
+    // additional rules (BotRules.h)
+    BotRule::DecisionRing Recent;                   // N-01: the latest quest layer rows, written into the STALL_XP row
+    BotRule::PullWait PullWait;                     // N-03: how long the pull has waited for rest
+    BotRule::PullBlock PullLast = BotRule::PullBlock::None;
+    uint32 PullGateMs = 0;                          // next evaluation of the pull gate
+    uint32 PullLogMs = 0;                           // earliest next PULL_BLOCKED row
+    BotRule::ZoneLeave Leave;                       // N-07: quest-less zone counters
+    uint32 LeaveCooldownMs = 0;                     // earliest next ZONE_LEAVE
+    uint8 BagPressureLevel = 0;                     // N-05: BAG_PRESSURE is logged once per level
+    uint32 NextPressureMs = 0;                      // N-05: earliest next early vendor trip (a bag full of unsellable items must not loop)
+    uint32 CrowdLogMs = 0;                          // earliest next CROWD_SPREAD row
 
     bool Blacklisted(uint32 quest, uint32 now) const
     {
@@ -1505,6 +1568,7 @@ std::string QuestTitle(uint32 questId);
 // quest_blocked event, once per (quest, code) per bot unless `once` is false; the quest title is added to the details
 void Blocked(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 questId, char const* code, std::string summary, std::string details = std::string(), uint32 entry = 0, bool once = true, uint8 severity = BOTLOG_WARN)
 {
+    c.Recent.Add(code, summary);
     if (once && !c.Logged.insert(LogKey(questId, code)).second)
         return;
     BotEvent ev = ai->MakeEvent(bot, "quest_blocked", severity, code, std::move(summary));
@@ -1678,6 +1742,14 @@ public:
         uint32 const now = ai->GetNowMs();
         ++c.ExecCalls;
 
+        // R-V2-01: a profession tool left in the main hand (fishing pole after a fishing stint) is swapped for the combat weapon
+        if (LoopCfg().WeaponRestore && BotLoop::Reached(now, c.WeaponCheckMs))
+        {
+            c.WeaponCheckMs = now + LoopCfg().WeaponCheckSec * 1000;
+            if (bot->IsAlive() && !bot->IsInCombat() && !bot->IsNonMeleeSpellCast(false) && !(c.T.K == Kind::Service && c.T.Svc == 4))
+                StepWeapon(ai, bot, c, now, "periodic");
+        }
+
         if (BotPet::Busy(ai)) // a taming run holds the bot
         {
             c.Why = "taming";
@@ -1784,7 +1856,147 @@ public:
         return BestGearSlot(bot, proto, gc);
     }
 
+    // True when the equipped ranged weapon fires ammo and the bags hold none.
+    static bool RangedNeedsAmmo(Player* bot)
+    {
+        uint32 const sub = AmmoSubClassOf(bot);
+        return sub && AmmoCount(bot, sub) == 0;
+    }
+
+    // ----- R-V2-01: a profession tool is never the combat weapon -----
+    static bool IsToolTemplate(ItemTemplate const* proto)
+    {
+        if (!proto)
+            return false;
+        return (proto->IsWeapon() && proto->GetSubClass() == ITEM_SUBCLASS_WEAPON_FISHING_POLE) || BotLoop::IsToolEntry(LoopCfg().ToolEntries, proto->GetId());
+    }
+
+    struct WeaponSwap
+    {
+        bool Swapped = false;
+        bool ToolWorn = false;   // the main hand holds a profession tool
+        uint32 Old = 0, New = 0, Cands = 0;
+    };
+
+    // Swaps the best usable combat weapon of the bags into the main hand when the main hand holds a profession tool (or nothing).
+    static WeaponSwap RestoreWeaponNow(Player* bot)
+    {
+        WeaponSwap r;
+        if (bot->GetShapeshiftForm() != FORM_NONE)
+            return r;
+        Item* mh = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+        r.Old = mh ? mh->GetEntry() : 0;
+        r.ToolWorn = mh && IsToolTemplate(mh->GetTemplate());
+        if (!BotLoop::MainHandNeedsWeapon(r.Old, r.ToolWorn))
+            return r;
+        std::vector<BotLoop::WeaponCand> cands;
+        std::vector<Item*> items;
+        bot->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
+        {
+            ItemTemplate const* proto = item->GetTemplate();
+            if (!proto || !proto->IsWeapon())
+                return ItemSearchCallbackResult::Continue;
+            BotLoop::WeaponCand wc;
+            wc.Entry = proto->GetId();
+            wc.Tool = IsToolTemplate(proto);
+            if (!wc.Tool)
+            {
+                uint16 dest = 0;
+                wc.Usable = !item->IsBroken() && bot->CanUseItem(item) == EQUIP_ERR_OK && bot->CanEquipItem(EQUIPMENT_SLOT_MAINHAND, dest, item, true) == EQUIP_ERR_OK;
+                wc.Score = GearScore(bot, proto);
+            }
+            cands.push_back(wc);
+            items.push_back(item);
+            return ItemSearchCallbackResult::Continue;
+        });
+        r.Cands = uint32(cands.size());
+        int const pick = BotLoop::PickCombatWeapon(cands);
+        if (pick < 0)
+            return r;
+        uint16 dest = 0;
+        Item* it = items[size_t(pick)];
+        if (bot->CanEquipItem(EQUIPMENT_SLOT_MAINHAND, dest, it, true) != EQUIP_ERR_OK)
+            return r;
+        bot->SwapItem(it->GetPos(), dest);
+        Item* now = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+        r.New = now ? now->GetEntry() : 0;
+        r.Swapped = r.New == cands[size_t(pick)].Entry;
+        return r;
+    }
+
+    // One restore attempt with its log rows (WEAPON_RESTORED, and WEAPON_RESTORE_NONE at most every 10 min when a tool is worn and no weapon is at hand).
+    // for the exported functions below (the choosing code is private)
+    bool SendToHubNow(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now) { return PickHub(ai, bot, c, now); }
+    static void LeaveZoneNow(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, BotRule::LeaveReason why) { LeaveZone(ai, bot, c, now, why); }
+
+    static bool StepWeapon(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, char const* why)
+    {
+        WeaponSwap const r = RestoreWeaponNow(bot);
+        if (r.Swapped)
+            Decision(ai, bot, "WEAPON_RESTORED", StringFormat("wielded weapon {} instead of {} ({})", r.New, r.Old, why), 0, r.New,
+                StringFormat(R"({{"old":{},"new":{},"tool_worn":{},"candidates":{},"why":"{}"}})", r.Old, r.New, r.ToolWorn, r.Cands, why));
+        else if (r.ToolWorn && BotLoop::Reached(now, c.WeaponNoneMs))
+        {
+            c.WeaponNoneMs = now + 600000;
+            Decision(ai, bot, "WEAPON_RESTORE_NONE", StringFormat("main hand holds tool {} and no usable combat weapon is in the bags", r.Old), 0, r.Old,
+                StringFormat(R"({{"old":{},"candidates":{},"why":"{}"}})", r.Old, r.Cands, why));
+        }
+        return r.Swapped;
+    }
+
 private:
+    // ----- trip guard (R-V2-03) and trip events -----
+    static constexpr uint32 kTripProf = 1u << 24, kTripWorkshop = 2u << 24;
+
+    static char const* TripName(BotQuestCtx const& c, uint8 svc)
+    {
+        switch (svc)
+        {
+            case 1: return c.ProfTripSkill ? "profession_trainer" : "class_trainer";
+            case 2: return "vendor";
+            case 3: return "gather";
+            case 4: return "fish";
+            case 5: return "workshop";
+            case 6: case 7: return "auction";
+            case 8: return "bank";
+            case 9: return "mail";
+            default: return "service";
+        }
+    }
+
+    // True when a trip of this kind and skill may be planned now.
+    static bool TripOk(BotQuestCtx& c, uint32 key, BotLoop::TripConfig const& cfg, uint32 now)
+    {
+        if (!LoopCfg().TripGuard)
+            return true;
+        auto it = c.Trips.find(key);
+        return it == c.Trips.end() || BotLoop::TripAllowed(it->second, now, cfg);
+    }
+
+    // Records a planned trip; the attempt that reaches the cap gives the key up and says so.
+    static void TripPlanned(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 key, BotLoop::TripConfig const& cfg, uint32 now, char const* kind, uint32 skill)
+    {
+        if (!LoopCfg().TripGuard)
+            return;
+        if (BotLoop::NoteTripPlanned(c.Trips[key], now, cfg))
+            Decision(ai, bot, "TRIP_GIVEN_UP", StringFormat("{} trips for skill {} did not succeed {} times, no more for {} s", kind, skill, cfg.MaxAttempts, cfg.GiveUpMs / 1000), 0, 0,
+                StringFormat(R"({{"kind":"{}","skill":{},"attempts":{},"give_up_s":{}}})", kind, skill, cfg.MaxAttempts, cfg.GiveUpMs / 1000));
+    }
+
+    static void TripSucceeded(BotQuestCtx& c, uint32 key)
+    {
+        auto it = c.Trips.find(key);
+        if (it != c.Trips.end())
+            BotLoop::NoteTripSuccess(it->second);
+    }
+
+    // The bot stands at the end of a trip: one row so a trip always ends with an arrival or a TRIP_FAILED row.
+    static void TripArrived(BotAI* ai, Player* bot, BotQuestCtx const& c, uint32 now)
+    {
+        Decision(ai, bot, "TRIP_ARRIVED", StringFormat("arrived at the {} after {} s", TripName(c, c.T.Svc), (now - c.T.SinceMs) / 1000), 0, c.T.NpcEntry,
+            StringFormat(R"({{"kind":"{}","svc":{},"elapsed_s":{},"skill":{},"entry":{}}})", TripName(c, c.T.Svc), c.T.Svc, (now - c.T.SinceMs) / 1000, c.ProfTripSkill, c.T.NpcEntry));
+    }
+
     // ----- task bookkeeping -----
     void Finish(BotQuestCtx& c, uint32 now, bool immediate = true)
     {
@@ -1800,6 +2012,10 @@ private:
     {
         if (c.T.K == Kind::Service)
         {
+            Decision(ai, bot, "TRIP_FAILED", StringFormat("{} trip dropped after {} s: {}", TripName(c, c.T.Svc), (now - c.T.SinceMs) / 1000, code), 0, c.T.NpcEntry,
+                StringFormat(R"({{"kind":"{}","svc":{},"reason":"{}","elapsed_s":{},"skill":{},"entry":{},"dist":{:.0f}}})", TripName(c, c.T.Svc), c.T.Svc, code, (now - c.T.SinceMs) / 1000, c.ProfTripSkill, c.T.NpcEntry,
+                    Dist2D(c.T.SvcX, c.T.SvcY, bot->GetPositionX(), bot->GetPositionY())));
+            c.ProfTripSkill = 0;
             // E1/E4: the failure is reported under the service code, the movement code goes into the summary
             c.SvcBlack[(c.T.Svc == 3 || c.T.Svc == 5 || c.T.Svc == 7 || c.T.Svc == 9) ? (0x80000000u | uint32(c.T.NodeSpawn)) : c.T.NpcEntry] = now + 600 * 1000;
             if (c.T.Svc == 1)
@@ -1938,6 +2154,17 @@ private:
         if (motion.HasGoal() && std::strcmp(motion.GetTag(), "quest") == 0 &&
             Dist2D(motion.GoalX(), motion.GoalY(), x, y) < 4.0f)
             return true; // already walking there
+        // N-02: no leg into (or across) a zone whose level band starts well above the bot; the quest, trainer or vendor is taken elsewhere
+        {
+            uint32 fenceZone = 0, fenceMin = 0;
+            if (BotRules::LegFenced(bot, x, y, z, fenceZone, fenceMin))
+            {
+                Drop(ai, bot, c, now, t.Quest, "ZONE_FENCE", StringFormat("the way to the {} target enters zone {} (levels from {}) and the bot is level {}", KindName(t.K), fenceZone, fenceMin, bot->GetLevel()),
+                    StringFormat(R"({{"task":"{}","dest":[{:.0f},{:.0f},{:.0f}],"zone":{},"zone_min":{},"level":{},"margin":{}}})", KindName(t.K), x, y, z, fenceZone, fenceMin, bot->GetLevel(), BotRules::Cfg().FenceMargin),
+                    entry, 3600);
+                return false;
+            }
+        }
         auto const pathT0 = std::chrono::steady_clock::now();
         BotPathInfo info = BotMotion::QueryPath(bot, x, y, z);
         uint32 const pathUs = uint32(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - pathT0).count());
@@ -2135,8 +2362,10 @@ private:
         return PickNew(ai, bot, c, now, log);
     }
 
-    void Decision(BotAI* ai, Player* bot, char const* reason, std::string summary, uint32 questId, uint32 entry, std::string details = std::string())
+    static void Decision(BotAI* ai, Player* bot, char const* reason, std::string summary, uint32 questId, uint32 entry, std::string details = std::string())
     {
+        if (BotQuestCtx* rc = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx")))
+            rc->Recent.Add(reason, summary);
         BotEvent ev = ai->MakeEvent(bot, "decision", BOTLOG_INFO, reason, std::move(summary));
         if (questId)
             ev.QuestId = questId;
@@ -2248,7 +2477,7 @@ private:
         float xp = float(q->XPValue(bot)) + 20.0f;
         float work = 40.0f * float(q->GetObjectives().size());
         float const chain = q->GetPrevQuestId() > 0 ? 1.4f : 1.0f;   // chain successors first
-        return chain * fit * ReputationWeight(bot, q) * xp / (dist + 150.0f + work);
+        return chain * fit * ReputationWeight(bot, q) * xp / (dist + 150.0f + work) * CrowdMul(bot, BotRule::ObjectiveKey(1, ref.Quest), ref.P.X, ref.P.Y);
     }
 
     bool PickNew(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, std::vector<LogEntry> const& log)
@@ -2301,6 +2530,7 @@ private:
             std::string altJson;
             for (Alt const& a : alts)
                 altJson += StringFormat(R"({}{{"quest":{},"score":{:.3f}}})", altJson.empty() ? "" : ",", a.Quest, a.Score);
+            CrowdClaim(bot, BotRule::ObjectiveKey(1, best->Quest), best->P.X, best->P.Y);
             Decision(ai, bot, pass == 0 ? "QUEST_PICK" : "QUEST_PICK_FAR", StringFormat("picked '{}' from giver {} {:.0f} yd away", QuestTitle(best->Quest), best->Entry, bestDist), best->Quest, best->Entry,
                 StringFormat(R"({{"score":{:.3f},"dist":{:.0f},"radius":{:.0f},"alternatives":[{}]}})", bestScore, bestDist, radius, altJson));
             c.IdleLoggedLevel = 0;
@@ -2319,6 +2549,8 @@ private:
             c.NextHubMs = now + Cfg().HubScanSec * 1000;
             if (PickHub(ai, bot, c, now))
                 return true;
+            if (BotRules::Cfg().ZoneLeave && BotRules::Applies(bot) && c.Leave.NoteHubNone(bot->GetMapId(), bot->GetLevel(), BotRules::Cfg().Leave))
+                LeaveZone(ai, bot, c, now, BotRule::LeaveReason::NoHub);
             if (c.HubNoneLevel != bot->GetLevel())
             {
                 c.HubNoneLevel = bot->GetLevel();
@@ -2380,6 +2612,7 @@ private:
             }
             if (!hs.N)
                 continue;
+            hs.Score *= CrowdMul(bot, BotRule::ObjectiveKey(3, idx), h.X, h.Y);
             top.push_back(hs);
         }
         std::copy(skipped, skipped + 3, c.HubSkip);
@@ -2400,6 +2633,7 @@ private:
         std::string alt;
         for (size_t i = 1; i < top.size() && i < 4; ++i)
             alt += StringFormat(R"({}{{"hub":{},"score":{:.3f},"quests":{},"dist":{:.0f}}})", alt.empty() ? "" : ",", top[i].Idx, top[i].Score, top[i].N, top[i].Dist);
+        CrowdClaim(bot, BotRule::ObjectiveKey(3, w.Idx), h.X, h.Y);
         uint32 zone = bot->GetMap()->GetZoneId(bot->GetPhaseShift(), h.X, h.Y, h.Z);
         Decision(ai, bot, "QUEST_HUB_TRAVEL", StringFormat("travelling to quest hub {} ({} takeable quests, {:.0f} yd, zone {})", w.Idx, w.N, w.Dist, zone), w.Best->Quest, w.Best->Entry,
             StringFormat(R"({{"hub":{},"x":{:.0f},"y":{:.0f},"z":{:.0f},"zone":{},"dist":{:.0f},"takeable":{},"givers":{},"min_q":{},"max_q":{},"hubs_scanned":{},"select_us":{},"alternatives":[{}]}})",
@@ -2410,6 +2644,51 @@ private:
     }
 
     // ----- grind fallback -----
+    // N-06: more than Bot.Rules.Crowd.Cap bots already grind around this anchor: move it to the nearest uncrowded grind spawn point.
+    static void SpreadGrindAnchor(BotAI* ai, Player* bot, BotQuestCtx& c)
+    {
+        BotRules::Settings const& r = BotRules::Cfg();
+        if (!r.Crowd || !BotRules::Applies(bot))
+            return;
+        uint64 const key = BotRule::ObjectiveKey(2, bot->GetMapId());
+        uint32 const guid = uint32(bot->GetGUID().GetCounter());
+        uint32 const wall = GameTime::GetGameTimeMS();
+        uint32 const here = BotRules::Crowds().Count(key, guid, c.GrindAnchorX, c.GrindAnchorY, r.CrowdRadius, wall);
+        if (BotRule::Crowded(here, r.CrowdCap))
+        {
+            int32 const cx0 = int32(std::floor(c.GrindAnchorX / GRID_CELL));
+            int32 const cy0 = int32(std::floor(c.GrindAnchorY / GRID_CELL));
+            GrindPt const* best = nullptr;
+            float bd = 1e9f;
+            for (int32 dx = -3; dx <= 3; ++dx)
+                for (int32 dy = -3; dy <= 3; ++dy)
+                {
+                    auto it = g.GrindGrid.find(CellKey(bot->GetMapId(), (cx0 + dx) * GRID_CELL + 1.0f, (cy0 + dy) * GRID_CELL + 1.0f));
+                    if (it == g.GrindGrid.end())
+                        continue;
+                    for (GrindPt const& p : it->second)
+                    {
+                        float const d = Dist2D(p.X, p.Y, c.GrindAnchorX, c.GrindAnchorY);
+                        if (d < r.CrowdRadius * 1.2f || d >= bd)
+                            continue;
+                        if (BotRule::Crowded(BotRules::Crowds().Count(key, guid, p.X, p.Y, r.CrowdRadius, wall), r.CrowdCap))
+                            continue;
+                        bd = d;
+                        best = &p;
+                    }
+                }
+            if (best)
+            {
+                Decision(ai, bot, "CROWD_SPREAD", StringFormat("{} other bots grind near ({:.0f}, {:.0f}), moving the grind area {:.0f} yd", here, c.GrindAnchorX, c.GrindAnchorY, bd), 0, 0,
+                    StringFormat(R"({{"others":{},"cap":{},"from":[{:.0f},{:.0f}],"to":[{:.0f},{:.0f}],"dist":{:.0f}}})", here, r.CrowdCap, c.GrindAnchorX, c.GrindAnchorY, best->X, best->Y, bd));
+                c.GrindAnchorX = best->X;
+                c.GrindAnchorY = best->Y;
+                c.Seen.clear();
+            }
+        }
+        BotRules::Crowds().Claim(key, guid, c.GrindAnchorX, c.GrindAnchorY, wall, 600 * 1000);
+    }
+
     bool StartGrind(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now)
     {
         c.T = Task();
@@ -2424,6 +2703,7 @@ private:
             c.GrindAnchorMap = bot->GetMapId();
             c.GrindAnchorX = bot->GetPositionX();
             c.GrindAnchorY = bot->GetPositionY();
+            SpreadGrindAnchor(ai, bot, c);
             Decision(ai, bot, "QUEST_GRIND", StringFormat("no quest to do, grinding mobs of level {}", bot->GetLevel()), 0, 0,
                 StringFormat(R"({{"map":{},"x":{:.0f},"y":{:.0f},"level":{}}})", bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetLevel()));
         }
@@ -2743,6 +3023,8 @@ private:
     // copper the bot still wants to spend on spells at the nearest class trainer (bags come second)
     uint64 TrainReserve(Player* bot, BotQuestCtx& c, uint32 now)
     {
+        if (AutoLearnSpells())
+            return 0;   // spells are learned for free, nothing to save up for
         auto it = g.Trainers.find(bot->GetClass());
         if (it == g.Trainers.end())
             return 0;
@@ -2843,6 +3125,7 @@ private:
         c.T.SinceMs = c.T.ProgressMs = now;
         c.GoalFails = 0;
         c.LastWasGrind = false;
+        c.ProfTripSkill = 0;
     }
 
     // Equips at most one upgrade from the bags per call (the bag walk must not run while items move).
@@ -3035,6 +3318,7 @@ private:
                     StringFormat(R"({{"casts":{},"catches":{},"skill_value":{}}})", c.FishCasts, c.FishCatches, bot->GetSkillValue(BotProfession::SKILL_FISHING)));
             bot->InterruptNonMeleeSpells(false);
             c.FishNextMs = now + 120000;
+            c.WeaponCheckMs = 0;   // wield the combat weapon again on the next think
             Finish(c, now);
             return true;
         }
@@ -3176,6 +3460,8 @@ private:
             SpellCastResult const res = bot->CastSpell(bot, spellId, CastSpellExtraArgs(TRIGGERED_NONE));
             if (res == SPELL_CAST_OK)
             {
+                if (c.FocusArrivedSkill == info.Skill)
+                    TripSucceeded(c, kTripWorkshop | info.Skill);
                 if (forStock)
                     c.CraftNextMs = now + 4000;   // a stock is many casts: keep going once the cast is over
                 Decision(ai, bot, forStock ? "FOOD_COOK" : "PROF_CRAFT", StringFormat("crafting spell {} for {} (skill {}{})", spellId, info.Name, skill, forStock ? ", for the food stock" : ""), 0, 0,
@@ -3198,6 +3484,8 @@ private:
         auto fit = g.Focus.find(focusId);
         if (fit == g.Focus.end())
             return false;
+        if (!TripOk(c, kTripWorkshop | info.Skill, LoopCfg().Workshop, now))
+            return false;
         NodePt const* best = nullptr;
         float bd = 400.0f;
         for (NodePt const& n : fit->second)
@@ -3217,8 +3505,10 @@ private:
         SvcPt pt;
         pt.Map = best->Map; pt.X = best->X; pt.Y = best->Y; pt.Z = best->Z; pt.Entry = best->Entry;
         StartService(bot, c, now, 5, pt, false, false);
+        c.ProfTripSkill = 0;
         c.T.NodeSpawn = best->SpawnId;
         c.FocusArrivedSkill = info.Skill;
+        TripPlanned(ai, bot, c, kTripWorkshop | info.Skill, LoopCfg().Workshop, now, "workshop", info.Skill);
         Decision(ai, bot, "WORKSHOP_TRIP", StringFormat("walking to a spell focus {} ({:.0f} yd) to craft {}", focusId, bd, info.Name), 0, best->Entry,
             StringFormat(R"({{"skill":{},"focus":{},"dist":{:.0f}}})", info.Skill, focusId, bd));
         return true;
@@ -3235,6 +3525,7 @@ private:
         if (Dist2D(t.SvcX, t.SvcY, bot->GetPositionX(), bot->GetPositionY()) <= 3.5f)
         {
             StopMoving(ai, bot, c);
+            TripArrived(ai, bot, c, now);
             c.FocusArrivedMs = now;
             c.CraftNextMs = now + 1000;   // craft right away, standing still
             Finish(c, now);
@@ -3468,18 +3759,25 @@ private:
             order.push_back(next);
         order.insert(order.end(), known.begin(), known.end());
 
+        bool const guard = LoopCfg().TripGuard;
+        float const maxYd = guard ? LoopCfg().ProfMaxYd : 3000.0f;
         for (uint32 skill : order)
         {
             char const* name = BotProfession::Find(skill)->Name;
             bool const have = bot->HasSkill(skill);
+            if (!TripOk(c, kTripProf | skill, LoopCfg().Prof, now))
+                continue;   // R-V2-03: this skill's last trips did not succeed, wait
             auto tl = g.Trainers.find(0x100 | skill);
             float d = 0.0f;
-            SvcPt const* tp = tl == g.Trainers.end() ? nullptr : NearestSvc(bot, c, now, tl->second, false, false, 3000.0f, d);
+            SvcPt const* tp = tl == g.Trainers.end() ? nullptr : NearestSvc(bot, c, now, tl->second, false, false, maxYd, d);
+            if (tp && guard && LoopCfg().ProfSameZone &&
+                bot->GetMap()->GetZoneId(bot->GetPhaseShift(), tp->X, tp->Y, tp->Z) != bot->GetZoneId())
+                tp = nullptr;   // R-V2-03: a trainer in another zone is a walk through mobs of other levels
             Trainer::Trainer const* tr = tp ? sObjectMgr->GetTrainer(tp->TrainerId) : nullptr;
             if (!tr)
             {
                 if (!have && c.ProfWarned.insert(skill).second)
-                    Blocked(ai, bot, c, 0, "PROF_NO_TRAINER", StringFormat("no reachable {} trainer on map {} within 3000 yd", name, bot->GetMapId()),
+                    Blocked(ai, bot, c, 0, "PROF_NO_TRAINER", StringFormat("no reachable {} trainer on map {} within {:.0f} yd{}", name, bot->GetMapId(), maxYd, guard && LoopCfg().ProfSameZone ? " in this zone" : ""),
                         StringFormat(R"({{"skill":{},"map":{},"level":{},"x":{:.0f},"y":{:.0f}}})", skill, bot->GetMapId(), level, bot->GetPositionX(), bot->GetPositionY()), 0, false);
                 continue;
             }
@@ -3487,6 +3785,8 @@ private:
             if (ev.Affordable)
             {
                 StartService(bot, c, now, 1, *tp, false, false);
+                c.ProfTripSkill = skill;
+                TripPlanned(ai, bot, c, kTripProf | skill, LoopCfg().Prof, now, "profession", skill);
                 Decision(ai, bot, "PROF_TRIP", StringFormat("walking to {} trainer {} ({:.0f} yd), {} spells", name, tp->Entry, d, ev.Affordable), 0, tp->Entry,
                     StringFormat(R"({{"skill":{},"have":{},"trainer_id":{},"dist":{:.0f},"affordable":{},"money":{},"skill_value":{}}})", skill, have, tp->TrainerId, d, ev.Affordable, bot->GetMoney(), bot->GetSkillValue(skill)));
                 return true;
@@ -3496,6 +3796,66 @@ private:
                     StringFormat(R"({{"skill":{},"cheapest":{},"money":{},"level":{}}})", skill, ev.Want, bot->GetMoney(), level), tp->Entry, false);
         }
         return false;
+    }
+
+    // Bot.AI.AutoLearnSpells: teaches the bot every class trainer spell it qualifies for, free of charge. A few passes because a higher
+    // rank can need the lower one (ReqAbility). Spells missing from the client data are skipped.
+    void AutoLearn(BotAI* ai, Player* bot, BotQuestCtx& c)
+    {
+        uint8 const level = bot->GetLevel();
+        c.LearnLevel = level;
+        c.TrainLevel = level;
+        auto tl = g.Trainers.find(bot->GetClass());
+        if (tl == g.Trainers.end())
+            return;
+        std::vector<Trainer::Trainer const*> trainers;
+        std::unordered_set<uint32> seen;
+        for (SvcPt const& pt : tl->second)
+            if (seen.insert(pt.TrainerId).second)
+                if (Trainer::Trainer const* tr = sObjectMgr->GetTrainer(pt.TrainerId))
+                    trainers.push_back(tr);
+        uint32 learned = 0;
+        std::string ids;
+        for (int pass = 0; pass < 4; ++pass)
+        {
+            std::vector<BotSpellLearn::Candidate> cands;
+            std::unordered_map<uint32, Trainer::Spell const*> bySpell;
+            for (Trainer::Trainer const* tr : trainers)
+                for (Trainer::Spell const& sp : tr->GetSpells())
+                {
+                    BotSpellLearn::Candidate cand;
+                    cand.SpellId = sp.SpellId;
+                    cand.ReqLevel = sp.ReqLevel;
+                    cand.InfoValid = sSpellMgr->GetSpellInfo(sp.SpellId, DIFFICULTY_NONE) != nullptr;
+                    cand.Available = cand.InfoValid && tr->GetSpellState(bot, &sp) == Trainer::SpellState::Available && tr->CanTeachSpell(bot, &sp);
+                    cands.push_back(cand);
+                    bySpell.emplace(sp.SpellId, &sp);
+                }
+            uint32 passLearned = 0;
+            for (uint32 spellId : BotSpellLearn::Select(cands, level))
+            {
+                if (bot->HasSpell(spellId))
+                    continue;
+                Trainer::Spell const* sp = bySpell[spellId];
+                if (sp->IsCastable())
+                    bot->CastSpell(bot, spellId, true);
+                else
+                    bot->LearnSpell(spellId, false);
+                if (bot->HasSpell(spellId))
+                {
+                    ++passLearned;
+                    if (ids.size() < 200)
+                        ids += StringFormat("{}{}", ids.empty() ? "" : ",", spellId);
+                }
+            }
+            learned += passLearned;
+            if (!passLearned)
+                break;
+        }
+        c.TrainedTotal += learned;
+        if (learned)
+            Decision(ai, bot, "SPELLS_LEARNED", StringFormat("learned {} class spells at level {} without a trainer", learned, level), 0, 0,
+                StringFormat(R"({{"learned":{},"level":{},"spells":[{}]}})", learned, level, ids));
     }
 
     // Decides whether a trainer or vendor trip is due and starts it. Throttled, cheap in the common case.
@@ -3528,8 +3888,12 @@ private:
             CraftForSkill(ai, bot, c, now);
         }
 
+        // 1a. free spell learning on level up and login (replaces the class trainer trip)
+        if (BotSpellLearn::Due(AutoLearnSpells(), level, c.LearnLevel))
+            AutoLearn(ai, bot, c);
+
         // 1. trainer: new level, or enough money for the cheapest spell we could not afford before. Spells have money priority.
-        if (level >= 2 && now >= c.TrainRetryMs && (c.TrainLevel != level || (c.TrainWant && bot->GetMoney() >= c.TrainWant)))
+        if (!AutoLearnSpells() && level >= 2 && now >= c.TrainRetryMs && (c.TrainLevel != level || (c.TrainWant && bot->GetMoney() >= c.TrainWant)))
         {
             auto tl = g.Trainers.find(bot->GetClass());
             float d = 0.0f;
@@ -3597,6 +3961,9 @@ private:
         uint32 const freeSlots = bot->GetFreeInventorySlotCount();
         bool const forced = c.VendorNow;
         bool const full = freeSlots <= 1;
+        // N-05: plan the vendor trip before the bags are full (a vendor within Bot.Rules.BagPressure.VendorYards only)
+        BotRules::Settings const& rules = BotRules::Cfg();
+        bool const pressure = rules.BagPressure && !full && BotLoop::Reached(now, c.NextPressureMs) && BotRule::BagPressure(freeSlots, rules.Bag) && BotRules::Applies(bot);
         uint64 const repairCost = RepairCost(bot);
         bool const needRepair = repairCost >= 150 && bot->GetMoney() >= repairCost * 2;
         uint32 replaceSize = 0;
@@ -3612,11 +3979,12 @@ private:
                 needAmmo = ammoHave < AmmoCfg().LowCount && bot->GetMoney() >= 10;
             }
         }
-        if (!forced && !(now >= c.NextVendorMs && (full || needRepair || needBags || needAmmo)))
+        if (!forced && !(now >= c.NextVendorMs && (full || pressure || needRepair || needBags || needAmmo)))
             return false;
 
         float d = 0.0f;
-        float const maxD = (full || forced) ? 3000.0f : 800.0f;
+        bool const pressureOnly = pressure && !forced && !needRepair && !needBags && !needAmmo;
+        float const maxD = (full || forced) ? 3000.0f : pressureOnly ? std::min(800.0f, rules.Bag.VendorYd) : 800.0f;
         SvcPt const* vp = nullptr;
         if (needBags && !full && !needRepair)
             vp = NearestSvc(bot, c, now, g.Vendors, false, true, maxD, d);
@@ -3647,6 +4015,11 @@ private:
         if (!vp)
         {
             c.NextVendorMs = now + 120 * 1000;
+            if (pressureOnly)
+            {
+                c.NextPressureMs = now + 300 * 1000;   // no vendor close by: ask again later, no VENDOR_NONE row for an optional trip
+                return false;
+            }
             if (c.NoVendorLevel != level)
             {
                 c.NoVendorLevel = level;
@@ -3654,6 +4027,16 @@ private:
                     StringFormat(R"({{"map":{},"free_slots":{},"repair_cost":{},"x":{:.0f},"y":{:.0f}}})", bot->GetMapId(), freeSlots, repairCost, bot->GetPositionX(), bot->GetPositionY()), 0, false);
             }
             return false;
+        }
+        if (pressure)
+        {
+            c.NextPressureMs = now + 900 * 1000;
+            if (c.BagPressureLevel != level)
+            {
+                c.BagPressureLevel = uint8(level);
+                Decision(ai, bot, "BAG_PRESSURE", StringFormat("{} free bag slots left, planning the vendor trip early", freeSlots), 0, vp->Entry,
+                    StringFormat(R"({{"free_slots":{},"threshold":{},"dist":{:.0f},"max_dist":{:.0f}}})", freeSlots, rules.Bag.TripFreeSlots, d, maxD));
+            }
         }
         StartService(bot, c, now, 2, *vp, needRepair && vp->Repair, needBags);
         ++c.VendorTrips;
@@ -3684,10 +4067,12 @@ private:
         if (npc && npc->IsAlive() && bot->IsWithinDistInMap(npc, 4.5f))
         {
             StopMoving(ai, bot, c);
+            TripArrived(ai, bot, c, now);
             if (t.Svc == 1)
                 DoTrain(ai, bot, c, now, npc);
             else
                 DoVendor(ai, bot, c, now, npc);
+            c.ProfTripSkill = 0;
             Finish(c, now);
             return true;
         }
@@ -3769,6 +4154,8 @@ private:
         if (classTrainer)
             c.TrainWant = left.Want;
         c.TrainedTotal += learned;
+        if (learned && c.ProfTripSkill)
+            TripSucceeded(c, kTripProf | c.ProfTripSkill);
         if (learned)
             Decision(ai, bot, "TRAINED", StringFormat("learned {} spells from trainer {} for {} copper", learned, npc->GetEntry(), moneyBefore - bot->GetMoney()), 0, npc->GetEntry(),
                 StringFormat(R"({{"learned":{},"attempted":{},"spent":{},"money_left":{},"level":{},"unaffordable_left":{},"spells":[{}]}})", learned, attempted, moneyBefore - bot->GetMoney(), bot->GetMoney(), level, left.Avail, ids));
@@ -3792,20 +4179,46 @@ private:
             return ItemSearchCallbackResult::Continue;
         });
         std::stable_sort(sells.begin(), sells.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
-        uint32 nGrey = 0, nUnusable = 0, nStacks = 0;
+        uint32 nGrey = 0, nUnusable = 0, nStacks = 0, nRefused = 0;
+        int firstRefusal = -1;
         std::string sold;
         for (auto const& [kind, item] : sells)
         {
             uint32 const cnt = item->GetCount();
             uint32 const entry = item->GetEntry();
-            if (bot->CanSellItemToVendor(item, cnt) || bot->SellItemToVendor(item, cnt))
-                continue;   // Optional<SellResult>: a value means refused
+            auto refusal = bot->CanSellItemToVendor(item, cnt);
+            if (!refusal)
+                refusal = bot->SellItemToVendor(item, cnt);
+            if (refusal)   // Optional<SellResult>: a value means refused
+            {
+                ++nRefused;
+                if (firstRefusal < 0)
+                    firstRefusal = int(*refusal);
+                continue;
+            }
             (kind == 1 ? nGrey : nUnusable) += 1;
             ++nStacks;
             if (sold.size() < 120)
                 sold += StringFormat("{}{}", sold.empty() ? "" : ",", entry);
         }
         uint32 const freeAfter = bot->GetFreeInventorySlotCount();
+        {
+            // Always logged (R-V2-04 evidence): what was sold, what the vendor refused, and what is still in the bags after the visit
+            uint32 bagItems = 0, questItems = 0, whiteItems = 0;
+            bot->ForEachItem(ItemSearchLocation::Inventory, [&](Item* item)
+            {
+                ItemTemplate const* proto = item->GetTemplate();
+                ++bagItems;
+                if (proto && proto->GetStartQuest())
+                    ++questItems;
+                if (proto && proto->GetQuality() >= ITEM_QUALITY_NORMAL)
+                    ++whiteItems;
+                return ItemSearchCallbackResult::Continue;
+            });
+            Decision(ai, bot, "VENDOR_RESULT", StringFormat("vendor {}: {} of {} junk stacks sold, free slots {} -> {}", npc->GetEntry(), nStacks, sells.size(), freeBefore, freeAfter), 0, npc->GetEntry(),
+                StringFormat(R"({{"candidates":{},"sold":{},"refused":{},"first_refusal":{},"free_before":{},"free_after":{},"bag_items":{},"white_or_better":{},"starts_quest":{},"copper":{}}})",
+                    sells.size(), nStacks, nRefused, firstRefusal, freeBefore, freeAfter, bagItems, whiteItems, questItems, bot->GetMoney() - money0));
+        }
         if (nStacks)
             Decision(ai, bot, "SOLD_ITEMS", StringFormat("sold {} stacks ({} grey, {} unusable) for {} copper", nStacks, nGrey, nUnusable, bot->GetMoney() - money0), 0, npc->GetEntry(),
                 StringFormat(R"({{"grey":{},"unusable":{},"copper":{},"free_before":{},"free_after":{},"items":[{}]}})", nGrey, nUnusable, bot->GetMoney() - money0, freeBefore, freeAfter, sold));
@@ -4184,6 +4597,8 @@ private:
     {
         if (!(proto->IsArmor() || proto->IsWeapon()))
             return false;
+        if (IsToolTemplate(proto))
+            return false;   // R-V2-01: a skinning knife or mining pick in the empty main hand made weapon spells fail (CAST_SKIPPED_WEAPON)
         std::vector<uint8> const slots = BotGear::SlotsForInvType(uint32(proto->GetInventoryType()));
         if (slots.empty())
             return false;
@@ -5039,10 +5454,87 @@ private:
         return took;
     }
 
+    // N-06: how many other bots work on the same objective near the same place. The world clock is shared by all bots (the AI clock is per bot).
+    static float CrowdMul(Player* bot, uint64 key, float x, float y)
+    {
+        BotRules::Settings const& r = BotRules::Cfg();
+        if (!r.Crowd || !BotRules::Applies(bot))
+            return 1.0f;
+        uint32 const others = BotRules::Crowds().Count(key, bot->GetGUID().GetCounter(), x, y, r.CrowdRadius, GameTime::GetGameTimeMS());
+        return BotRule::CrowdFactor(others, r.CrowdCap, r.CrowdFactor);
+    }
+
+    static void CrowdClaim(Player* bot, uint64 key, float x, float y)
+    {
+        if (BotRules::Cfg().Crowd && BotRules::Applies(bot))
+            BotRules::Crowds().Claim(key, bot->GetGUID().GetCounter(), x, y, GameTime::GetGameTimeMS(), 600 * 1000);
+    }
+
+    // N-07: asks the travel module for the next band zone; one row says why.
+    static void LeaveZone(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 now, BotRule::LeaveReason why)
+    {
+        if (!BotLoop::Reached(now, c.LeaveCooldownMs))
+            return;
+        c.LeaveCooldownMs = now + 600 * 1000;
+        bool const asked = BotTravel::RequestLeave(ai);
+        Decision(ai, bot, "ZONE_LEAVE", StringFormat("nothing to gain in zone {} at level {}: {}", bot->GetZoneId(), bot->GetLevel(), BotRule::LeaveReasonName(why)), 0, 0,
+            StringFormat(R"({{"reason":"{}","travel_asked":{},"zone":{},"map":{},"level":{}}})", BotRule::LeaveReasonName(why), asked ? "true" : "false", bot->GetZoneId(), bot->GetMapId(), bot->GetLevel()));
+        c.Leave.Reset();
+    }
+
+    // N-03: no pull with a dead rotation (no weapon, no ammo) or while the bot should rest first. Evaluated every 2 s; a health or power
+    // block that rest could not fix is let go after Bot.Rules.PullGate.MaxWaitSec.
+    static bool PullBlocked(Player* bot, BotQuestCtx& c, uint32 now)
+    {
+        BotRules::Settings const& r = BotRules::Cfg();
+        if (!r.PullGate)
+            return false;
+        if (BotLoop::Reached(now, c.PullGateMs))
+        {
+            c.PullGateMs = now + 2000;
+            if (!BotRules::Applies(bot))
+            {
+                c.PullLast = BotRule::PullBlock::None;
+                return false;
+            }
+            GearInspect const gear = InspectCombatGear(bot);
+            BotRule::PullState ps;
+            ps.MainNeedsWeapon = gear.MainNeedsWeapon;
+            ps.RangedNeedsAmmo = gear.RangedNeedsAmmo;
+            uint32 const maxPower = bot->GetMaxPower(POWER_MANA);
+            ps.UsesMana = bot->GetPowerType() == POWER_MANA && maxPower > 0;
+            ps.PowerPct = maxPower ? 100.0f * float(bot->GetPower(POWER_MANA)) / float(maxPower) : 100.0f;
+            ps.HealthPct = bot->GetHealthPct();
+            BotRule::PullBlock const b = BotRule::PullGate(ps, r.Pull);
+            bool const blocked = c.PullWait.Blocked(now, b, r.Pull);
+            c.PullLast = blocked ? b : BotRule::PullBlock::None;
+            if (blocked)
+            {
+                BotAI* ai = bot->GetSession() ? bot->GetSession()->GetBotAI() : nullptr;
+                if (ai && b == BotRule::PullBlock::Weapon)
+                    StepWeapon(ai, bot, c, now, "pull_gate");
+                else if (b == BotRule::PullBlock::Ammo && AmmoCfg().Enabled)
+                {
+                    c.NextAmmoMs = 0;
+                    c.NextVendorMs = 0;
+                }
+                if (ai && BotLoop::Reached(now, c.PullLogMs))
+                {
+                    c.PullLogMs = now + 60000;
+                    Decision(ai, bot, "PULL_BLOCKED", StringFormat("pull waits: {}", BotRule::PullBlockName(b)), 0, 0,
+                        StringFormat(R"({{"block":"{}","hp_pct":{:.0f},"power_pct":{:.0f},"main_hand":{},"ranged_needs_ammo":{}}})", BotRule::PullBlockName(b), ps.HealthPct, ps.PowerPct, gear.MainEntry, gear.RangedNeedsAmmo ? "true" : "false"));
+                }
+            }
+        }
+        return c.PullLast != BotRule::PullBlock::None;
+    }
+
     // ----- kill / loot -----
     bool CandidateMob(Player* bot, BotQuestCtx& c, Task& t, Creature* m, uint32 now)
     {
         if (!m->IsAlive() || m->IsInCombat() || m->IsPet() || m->IsTotem())
+            return false;
+        if (PullBlocked(bot, c, now))
             return false;
         if (m->hasLootRecipient() && !m->isTappedBy(bot))
             return false;
@@ -5057,7 +5549,14 @@ private:
             ++t.TooStrongSeen;   // Bot.AI.Avoid.*: listed killers are skipped unless within the allowed level gap
             return false;
         }
-        if (m->isWorldBoss() || EffectiveDiff(bot, m) > (BotCombatFleeMode(bot) >= 1 ? std::min<int32>(Cfg().MaxMobLevelDiff, 1) : Cfg().MaxMobLevelDiff))
+        int32 diffCap = BotCombatFleeMode(bot) >= 1 ? std::min<int32>(Cfg().MaxMobLevelDiff, 1) : Cfg().MaxMobLevelDiff;
+        if (BotRules::Cfg().ClassMargin && BotRules::Applies(bot))
+        {
+            // N-08: the weak classes pick lower mobs while they are low level
+            BotRules::Settings const& r = BotRules::Cfg();
+            diffCap = BotRule::EffectivePullCap(diffCap, BotRule::ClassPullMargin(bot->GetClass(), bot->GetLevel(), r.ClassMarginUntil, r.ClassMarginWeak, r.ClassMarginSturdy));
+        }
+        if (m->isWorldBoss() || EffectiveDiff(bot, m) > diffCap)
         {
             if (m->IsElite() || m->isWorldBoss())
                 ++t.EliteSeen;
@@ -5455,10 +5954,29 @@ private:
     void TakeLoot(BotAI* ai, Player* bot, Creature* m, Loot* loot)
     {
         bot->SendLoot(*loot);
+        BotRules::Settings const& rules = BotRules::Cfg();
+        bool const skipGrey = rules.BagPressure && rules.Bag.GreyFreeSlots && BotRules::Applies(bot);
+        uint32 const freeNow = skipGrey ? bot->GetFreeInventorySlotCount() : 0;
         for (uint32 i = 0; i < loot->items.size(); ++i)
             if (LootItem* li = loot->LootItemInSlot(i, bot))
                 if (!li->is_looted)
+                {
+                    if (skipGrey && freeNow < rules.Bag.GreyFreeSlots)
+                    {
+                        // N-05: grey items stay on the corpse when the bags are nearly full (quest items and better are always taken)
+                        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(li->itemid);
+                        if (proto && !li->freeforall && BotRule::SkipLoot(freeNow, proto->GetQuality() == ITEM_QUALITY_POOR, li->needs_quest || proto->GetClass() == ITEM_CLASS_QUEST || bot->HasQuestForItem(li->itemid), rules.Bag))
+                        {
+                            // left behind for good, otherwise the corpse would count as not looted and the bot would return to it
+                            li->is_looted = true;
+                            if (loot->unlootedCount)
+                                --loot->unlootedCount;
+                            loot->NotifyItemRemoved(uint8(i), m->GetMap());
+                            continue;
+                        }
+                    }
                     bot->StoreLootItem(m->GetGUID(), uint8(i), loot);
+                }
         if (loot->gold)
         {
             bot->ModifyMoney(int64(loot->gold));
@@ -5588,6 +6106,105 @@ bool IsGearUpgrade(Player* bot, ItemTemplate const* item)
     return bot && item && QuestThinkAction::IsUpgradeFor(bot, item);
 }
 
+GearInspect InspectCombatGear(Player* bot)
+{
+    GearInspect r;
+    Item* mh = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+    r.MainEntry = mh ? mh->GetEntry() : 0;
+    r.MainNeedsWeapon = BotLoop::MainHandNeedsWeapon(r.MainEntry, mh && QuestThinkAction::IsToolTemplate(mh->GetTemplate()));
+    r.RangedNeedsAmmo = QuestThinkAction::RangedNeedsAmmo(bot);
+    return r;
+}
+
+bool RestoreCombatWeapon(BotAI* ai, Player* bot, char const* why)
+{
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    return cp && LoopCfg().WeaponRestore && QuestThinkAction::StepWeapon(ai, bot, *cp, ai->GetNowMs(), why);
+}
+
+bool RequestAmmoTrip(BotAI* ai)
+{
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    if (!cp || !AmmoCfg().Enabled)
+        return false;
+    cp->NextAmmoMs = 0;
+    cp->NextVendorMs = 0;
+    return true;
+}
+
+void NoteKillXp(BotAI* ai, Player* bot, uint32 xp)
+{
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    if (!cp)
+        return;
+    BotRules::Settings const& r = BotRules::Cfg();
+    if (!r.ZoneLeave || !cp->LastWasGrind || !BotRules::Applies(bot))
+    {
+        cp->Leave.LowActive = false;
+        return;
+    }
+    if (cp->Leave.NoteGrindXp(ai->GetNowMs(), xp, r.Leave))
+        QuestThinkAction::LeaveZoneNow(ai, bot, *cp, ai->GetNowMs(), BotRule::LeaveReason::LowXp);
+}
+
+std::string RecentDecisions(BotAI* ai)
+{
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    return cp ? cp->Recent.Json() : std::string("[]");
+}
+
+void ClearForStall(BotAI* ai, Player* bot)
+{
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    if (!cp)
+        return;
+    BotQuestCtx& c = *cp;
+    c.ReleaseLoot();
+    c.T = Task();
+    c.GoalFails = 0;
+    c.ExpectGoal = false;
+    c.NextChooseMs = 0;
+    c.NextHubMs = 0;
+    c.Blacklist.clear();
+    c.Ignore.clear();
+    c.Seen.clear();
+    c.HubBlack.clear();
+    c.SvcBlack.clear();
+    c.GoIgnore.clear();
+    c.Repeats.clear();
+    c.Trips.clear();
+    c.NextVendorMs = 0;
+    c.LastWasGrind = false;
+    c.Leave.Reset();
+    if (bot)
+        bot->AttackStop();
+}
+
+bool SendToHub(BotAI* ai, Player* bot)
+{
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    QuestThinkAction* think = static_cast<QuestThinkAction*>(ai->GetAction("quest_think"));
+    return cp && think && g.Ready.load(std::memory_order_acquire) && think->SendToHubNow(ai, bot, *cp, ai->GetNowMs());
+}
+
+void ActiveTask(BotAI* ai, uint32& questId, std::string& task)
+{
+    questId = 0;
+    task = "idle";
+    BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
+    if (!cp)
+        return;
+    Task const& t = cp->T;
+    questId = t.Quest;
+    switch (t.K)
+    {
+        case Kind::Grind: task = "grind"; break;
+        case Kind::Service: task = "trip"; break;
+        case Kind::None: break;
+        default: task = "quest"; break;
+    }
+}
+
 bool IsGrinding(BotAI* ai)
 {
     BotQuestCtx* cp = static_cast<BotQuestCtx*>(ai->GetValueRaw("quest_ctx"));
@@ -5636,6 +6253,7 @@ void OnLogout(BotAI* ai)
         cp->ReleaseLoot();
         cp->T = Task();
     }
+    BotRules::Crowds().Release(ai->GetGuid());
 }
 } // namespace BotQuest
 

@@ -24,9 +24,42 @@
 #include "InstanceScript.h"
 #include "Map.h"
 #include "QuaternionData.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_uldaman.h"
 #include <algorithm>
 #include <vector>
+
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Uldaman (map 70), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+enum ClassicUldamanEncounterBosses : uint32
+{
+    CLASSIC_ULD_ENC_REVELOSH = 0,
+    CLASSIC_ULD_ENC_LOST_DWARVES = 1,
+    CLASSIC_ULD_ENC_IRONAYA = 2,
+    CLASSIC_ULD_ENC_OBSIDIAN_SENTINEL = 3,
+    CLASSIC_ULD_ENC_STONE_KEEPER = 4,
+    CLASSIC_ULD_ENC_GALGANN = 5,
+    CLASSIC_ULD_ENC_GRIMLOK = 6,
+    CLASSIC_ULD_ENC_ARCHAEDAS = 7,
+    CLASSIC_ULD_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicUldamanEncounterBossEntries[] =
+{
+    { CLASSIC_ULD_ENC_REVELOSH, 6910 }, // Revelosh
+    { CLASSIC_ULD_ENC_LOST_DWARVES, 6906 }, // Baelog
+    { CLASSIC_ULD_ENC_LOST_DWARVES, 6907 }, // Eric The Swift
+    { CLASSIC_ULD_ENC_LOST_DWARVES, 6908 }, // Olaf
+    { CLASSIC_ULD_ENC_IRONAYA, 7228 }, // Ironaya
+    { CLASSIC_ULD_ENC_OBSIDIAN_SENTINEL, 7023 }, // Obsidian Sentinel
+    { CLASSIC_ULD_ENC_STONE_KEEPER, 7206 }, // Ancient Stone Keeper
+    { CLASSIC_ULD_ENC_GALGANN, 7291 }, // Galgann Firehammer
+    { CLASSIC_ULD_ENC_GRIMLOK, 4854 }, // Grimlok
+    { CLASSIC_ULD_ENC_ARCHAEDAS, 2748 } // Archaedas
+};
+}
 
 class classic_instance_uldaman : public InstanceMapScript
 {
@@ -43,11 +76,37 @@ public:
             _savedArchaedas(*this, "Archaedas", NOT_STARTED)
         {
             SetHeaders(ClassicUldamanDataHeader);
+            SetBossNumber(CLASSIC_ULD_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CLASSIC_ULD_ENC_REVELOSH, {{ 547 }} },
+                { CLASSIC_ULD_ENC_LOST_DWARVES, {{ 548 }} },
+                { CLASSIC_ULD_ENC_IRONAYA, {{ 549 }} },
+                { CLASSIC_ULD_ENC_OBSIDIAN_SENTINEL, {{ 1887 }} },
+                { CLASSIC_ULD_ENC_STONE_KEEPER, {{ 551 }} },
+                { CLASSIC_ULD_ENC_GALGANN, {{ 552 }} },
+                { CLASSIC_ULD_ENC_GRIMLOK, {{ 553 }} },
+                { CLASSIC_ULD_ENC_ARCHAEDAS, {{ 554 }} }
+            };
+            LoadDungeonEncounterData(encounters);
             for (uint32& encounter : _encounter)
                 encounter = NOT_STARTED;
             _vaultWarder.reserve(2);
             _vaultWarderFurniture.reserve(2);
             _earthenGuardian.reserve(6);
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicUldamanEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
+        }
+
+        void OnUnitDeath(Unit* unit) override
+        {
+            _encounterTracker.OnUnitDeath(unit);
         }
 
         // VMaNGOS Load(): everything that is not DONE -> NOT_STARTED
@@ -96,6 +155,7 @@ public:
         void OnCreatureCreate(Creature* creature) override
         {
             InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
 
             switch (creature->GetEntry())
             {
@@ -563,6 +623,8 @@ public:
 
         void Update(uint32 diff) override
         {
+            _encounterTracker.Update(diff);
+
             // deferred part of SetFrozenState() for creatures frozen in OnCreatureCreate
             if (!_pendingFreeze.empty())
             {

@@ -25,14 +25,23 @@
 #include "BotMgr.h"
 #include "BotLfg.h"
 #include "BotParty.h"
+#include "BotPlayerLed.h"
+#include "BotDuel.h"
+#include "BotDungeonRun.h"
+#include "BotBattleground.h"
+#include "BotQuest.h"
 #include "BotQuestAssist.h"
+#include "BotRules.h"
 #include "BotWatchdogPlan.h"
 #include "Config.h"
+#include "GameTime.h"
 #include "Item.h"
 #include "Map.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "QuestDef.h"
 #include "SpellHistory.h"
+#include "World.h"
 #include "WorldSession.h"
 #include "StringFormat.h"
 #include <algorithm>
@@ -168,6 +177,99 @@ public:
     }
 };
 
+// N-01: second clock that only the XP / quest progress resets. Walking in circles does not move it.
+uint64 ProgressKey(Player* bot)
+{
+    uint64 key = BotRule::FoldKey(0, (uint64(bot->GetLevel()) << 40) | bot->GetXP());
+    key = BotRule::FoldKey(key, bot->GetRewardedQuestCount());
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    {
+        uint32 const id = bot->GetQuestSlotQuestId(slot);
+        if (!id)
+            continue;
+        key = BotRule::FoldKey(key, id);
+        // kill, loot and use counters: a quest item looted or a mob killed for a quest is progress
+        if (Quest const* q = sObjectMgr->GetQuestTemplate(id))
+            for (QuestObjective const& o : q->GetObjectives())
+                key = BotRule::FoldKey(key, uint64(uint32(bot->GetQuestSlotObjectiveData(slot, o))));
+    }
+    return key;
+}
+
+// Same cases as Read().Busy but a fight is no reason to hold the clock: a bot that fights for 20 minutes without xp is stalled too.
+bool XpBusy(Player* bot)
+{
+    Map const* map = bot->GetMap();
+    BotAI* ai = bot->GetSession() ? bot->GetSession()->GetBotAI() : nullptr;
+    return !bot->IsAlive() || bot->IsInFlight() || bot->IsBeingTeleported() || (map && (map->IsDungeon() || map->IsBattlegroundOrArena()))
+        || BotParty::Busy(ai) || BotLfg::Busy(ai) || BotQuestAssist::Busy(ai) || BotPlayerLed::Busy(ai) || BotDuel::Busy(ai) || BotDungeonRun::Busy(ai)
+        || BotBattleground::Busy(ai) || bot->GetLevel() >= sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);   // a bot at the level cap earns no xp
+}
+
+class XpStallTickAction : public Action
+{
+public:
+    explicit XpStallTickAction(BotAI* ai) : Action(ai, "xpstall_tick", ACTION_FLAG_QUIET_LOG) { }
+    bool IsPossible() override { return BotRules::Cfg().XpStall; }
+    bool Execute() override
+    {
+        BotAI* ai = GetAI();
+        Player* bot = GetBot();
+        BotRules::Settings const& rc = BotRules::Cfg();
+        uint64 const guid = bot->GetGUID().GetCounter();
+        if (!BotRules::Applies(guid))
+            return false;
+        BotRule::StallVerdict const v = BotRules::Stalls().Update(guid, GameTime::GetGameTimeMS(), ProgressKey(bot), XpBusy(bot), rc.Stall);
+        if (v.Exhausted)
+        {
+            ai->EmitEvent(bot, "decision", BOTLOG_WARN, "STALL_XP_EXHAUSTED", StringFormat("no xp progress for {} s, hourly recovery cap used up", v.StalledSec),
+                StringFormat(R"({{"stalled_sec":{},"max_per_hour":{}}})", v.StalledSec, rc.Stall.MaxPerHour));
+            return false;
+        }
+        if (v.Act == BotRule::StallStep::None)
+            return false;
+        BotRule::StallStep act = v.Act;
+        if (act == BotRule::StallStep::Relog && !rc.XpStallRelog)
+            act = BotRule::StallStep::Clear;
+        std::string const recent = BotQuest::RecentDecisions(ai);
+        uint32 questId = 0;
+        std::string kind;
+        BotQuest::ActiveTask(ai, questId, kind);
+        char const* result = "";
+        switch (act)
+        {
+            case BotRule::StallStep::Clear:
+                BotQuest::ClearForStall(ai, bot);
+                ai->Motion().ClearGoal();
+                BotMotion::Halt(bot);
+                result = "task_and_blacklists_cleared";
+                break;
+            case BotRule::StallStep::Relog:
+                sBotMgr->RequestRelog(guid);
+                result = "relog_requested";
+                break;
+            case BotRule::StallStep::Hub:
+                BotQuest::ClearForStall(ai, bot);
+                ai->Motion().ClearGoal();
+                BotMotion::Halt(bot);
+                result = BotQuest::SendToHub(ai, bot) ? "sent_to_hub" : "no_hub_found";
+                break;
+            default:
+                break;
+        }
+        ai->EmitEvent(bot, "decision", BOTLOG_WARN, "STALL_XP", StringFormat("no xp or quest progress for {} s, step {}: {}", v.StalledSec, BotRule::StepName(act), result),
+            StringFormat(R"({{"stalled_sec":{},"step":"{}","result":"{}","task":"{}","quest_id":{},"recent":{}}})", v.StalledSec, BotRule::StepName(act), result, kind, questId, recent));
+        return act != BotRule::StallStep::Relog;
+    }
+};
+
+class XpStallDueTrigger : public Trigger
+{
+public:
+    explicit XpStallDueTrigger(BotAI* ai) : Trigger(ai, "xpstall_due", 10000) { }
+    bool IsActive() override { return BotRules::Cfg().XpStall; }
+};
+
 class WatchdogDueTrigger : public Trigger
 {
 public:
@@ -183,13 +285,14 @@ public:
     {
         // just above the quest layer; the action returns false unless a recovery is carried out, so other actions still run this tick
         t.push_back({ "watchdog_due", { { "watchdog_tick", BotRelevance::Move + 4.0f } } });
+        t.push_back({ "xpstall_due", { { "xpstall_tick", BotRelevance::Move + 4.0f } } });
     }
 };
 } // namespace
 
 bool Enabled()
 {
-    return Cfg().Enabled;
+    return Cfg().Enabled || BotRules::Cfg().XpStall;
 }
 } // namespace BotWatchdog
 
@@ -198,6 +301,8 @@ void RegisterWatchdogBotObjects(BotRegistry& r)
     BotWatchdog::Enabled();
     r.AddValue("watchdog_ctx", [](BotAI* ai) -> std::unique_ptr<UntypedValue> { return std::make_unique<BotWatchdog::WatchCtx>(ai); });
     r.AddTrigger("watchdog_due", [](BotAI* ai) -> std::unique_ptr<Trigger> { return std::make_unique<BotWatchdog::WatchdogDueTrigger>(ai); });
+    r.AddTrigger("xpstall_due", [](BotAI* ai) -> std::unique_ptr<Trigger> { return std::make_unique<BotWatchdog::XpStallDueTrigger>(ai); });
+    r.AddAction("xpstall_tick", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<BotWatchdog::XpStallTickAction>(ai); });
     r.AddAction("watchdog_tick", [](BotAI* ai) -> std::unique_ptr<Action> { return std::make_unique<BotWatchdog::WatchdogTickAction>(ai); });
     r.AddStrategy("watchdog", BotStateBit(BotState::NonCombat), []() -> std::unique_ptr<Strategy> { return std::make_unique<BotWatchdog::WatchdogStrategy>(); });
 }

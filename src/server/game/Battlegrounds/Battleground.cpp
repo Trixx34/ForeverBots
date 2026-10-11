@@ -666,6 +666,20 @@ void Battleground::EndBattleground(Team winner)
     //we must set it this way, because end time is sent in packet!
     SetRemainingTime(TIME_AUTOCLOSE_BATTLEGROUND);
 
+    // Classic 1.60: vanilla marks of honor (VMaNGOS battleground_template, patch 1.12) replace the retail random / holiday
+    // battleground completion honor on the classic maps
+    struct ClassicMarkSpells { uint32 MapId; uint32 Win; uint32 Lose; };
+    static constexpr ClassicMarkSpells ClassicMarks[] =
+    {
+        { 30,  24955, 24954 },                              // Alterac Valley Mark of Honor 20560
+        { 489, 24951, 24950 },                              // Warsong Gulch Mark of Honor 20558
+        { 529, 24953, 24952 }                               // Arathi Basin Mark of Honor 20559
+    };
+    ClassicMarkSpells const* classicMarks = nullptr;
+    for (ClassicMarkSpells const& marks : ClassicMarks)
+        if (marks.MapId == GetBgMap()->GetId())
+            classicMarks = &marks;
+
     WorldPackets::Battleground::PVPMatchComplete pvpMatchComplete;
     pvpMatchComplete.Winner = GetWinner();
     pvpMatchComplete.Duration = std::chrono::duration_cast<Seconds>(Milliseconds(std::max<int32>(0, (GetElapsedTime() - BG_START_DELAY_2M))));
@@ -723,10 +737,19 @@ void Battleground::EndBattleground(Team winner)
             CharacterDatabase.Execute(stmt);
         }
 
+        // Classic 1.60: winners get the win mark spell (3 marks), losers the lose spell (1 mark) after a 10 minute battle (1.8.4)
+        if (classicMarks && isBattleground())
+        {
+            if (team == winner)
+                player->CastSpell(player, classicMarks->Win, true);
+            else if (GetInProgressDuration() >= 10min)
+                player->CastSpell(player, classicMarks->Lose, true);
+        }
+
         // Reward winner team
         if (team == winner)
         {
-            if (BattlegroundPlayer const* bgPlayer = GetBattlegroundPlayerData(player->GetGUID()))
+            if (BattlegroundPlayer const* bgPlayer = classicMarks ? nullptr : GetBattlegroundPlayerData(player->GetGUID())) // Classic 1.60: no retail completion honor
             {
                 if (BattlegroundMgr::IsRandomBattleground(bgPlayer->queueTypeId.BattlemasterListId)
                     || BattlegroundMgr::IsBGWeekend(BattlegroundTypeId(bgPlayer->queueTypeId.BattlemasterListId)))
@@ -761,7 +784,7 @@ void Battleground::EndBattleground(Team winner)
         }
         else
         {
-            if (BattlegroundPlayer const* bgPlayer = GetBattlegroundPlayerData(player->GetGUID()))
+            if (BattlegroundPlayer const* bgPlayer = classicMarks ? nullptr : GetBattlegroundPlayerData(player->GetGUID())) // Classic 1.60: no retail completion honor
             {
                 if (BattlegroundMgr::IsRandomBattleground(bgPlayer->queueTypeId.BattlemasterListId)
                     || BattlegroundMgr::IsBGWeekend(BattlegroundTypeId(bgPlayer->queueTypeId.BattlemasterListId)))
@@ -777,9 +800,10 @@ void Battleground::EndBattleground(Team winner)
         player->SendDirectMessage(pvpMatchComplete.GetRawPacket());
 
         player->UpdateCriteria(CriteriaType::ParticipateInBattleground, player->GetMapId());
-
-        GetBgMap()->GetBattlegroundScript()->OnEnd(winner);
     }
+
+    // once per battle, not per player (AV end honor was paid once for every player in the battle)
+    GetBgMap()->GetBattlegroundScript()->OnEnd(winner);
 }
 
 uint32 Battleground::GetScriptId() const

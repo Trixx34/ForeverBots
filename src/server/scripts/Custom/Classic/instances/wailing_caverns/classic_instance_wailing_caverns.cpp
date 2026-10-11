@@ -29,6 +29,7 @@
 #include "ObjectDefines.h"
 #include "Player.h"
 #include "QuestDef.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_script_text.h"
 #include "classic_wailing_caverns.h"
 #include <array>
@@ -53,6 +54,36 @@ void ClassicWailingCavernsSetGoVisible(GameObject* go, bool visible, bool update
 }
 }
 
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Wailing Caverns (map 43), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+enum ClassicWailingCavernsEncounterBosses : uint32
+{
+    CWC_ENC_ANACONDRA = 0,
+    CWC_ENC_COBRAHN = 1,
+    CWC_ENC_KRESH = 2,
+    CWC_ENC_PYTHAS = 3,
+    CWC_ENC_SKUM = 4,
+    CWC_ENC_SERPENTIS = 5,
+    CWC_ENC_VERDAN = 6,
+    CWC_ENC_MUTANUS = 7,
+    CWC_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicWailingCavernsEncounterBossEntries[] =
+{
+    { CWC_ENC_ANACONDRA, 3671 }, // Lady Anacondra
+    { CWC_ENC_COBRAHN, 3669 }, // Lord Cobrahn
+    { CWC_ENC_KRESH, 3653 }, // Kresh
+    { CWC_ENC_PYTHAS, 3670 }, // Lord Pythas
+    { CWC_ENC_SKUM, 3674 }, // Skum
+    { CWC_ENC_SERPENTIS, 3673 }, // Lord Serpentis
+    { CWC_ENC_VERDAN, 5775 }, // Verdan the Everliving
+    { CWC_ENC_MUTANUS, 3654 } // Mutanus the Devourer
+};
+}
+
 class classic_instance_wailing_caverns : public InstanceMapScript
 {
 public:
@@ -63,12 +94,43 @@ public:
         classic_instance_wailing_caverns_InstanceScript(InstanceMap* map) : InstanceScript(map)
         {
             SetHeaders("CWC");
+            SetBossNumber(CWC_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CWC_ENC_ANACONDRA, {{ 585 }} },
+                { CWC_ENC_COBRAHN, {{ 586 }} },
+                { CWC_ENC_KRESH, {{ 587 }} },
+                { CWC_ENC_PYTHAS, {{ 588 }} },
+                { CWC_ENC_SKUM, {{ 589 }} },
+                { CWC_ENC_SERPENTIS, {{ 590 }} },
+                { CWC_ENC_VERDAN, {{ 591 }} },
+                { CWC_ENC_MUTANUS, {{ 592 }} }
+            };
+            LoadDungeonEncounterData(encounters);
 
             // VMaNGOS m_auiEncounter[] + Save()/Load() string -> TC persistent instance values
             for (uint32 i = 0; i < CWC_MAX_ENCOUNTER; ++i)
                 m_auiEncounter[i] = std::make_unique<PersistentInstanceScriptValue<uint32>>(*this, ClassicWcEncounterNames[i], uint32(NOT_STARTED));
 
             Assaulted = false;
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicWailingCavernsEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
+        }
+
+        void OnUnitDeath(Unit* unit) override
+        {
+            _encounterTracker.OnUnitDeath(unit);
+        }
+
+        void Update(uint32 diff) override
+        {
+            _encounterTracker.Update(diff);
         }
 
         std::array<std::unique_ptr<PersistentInstanceScriptValue<uint32>>, CWC_MAX_ENCOUNTER> m_auiEncounter;
@@ -96,6 +158,7 @@ public:
         void OnCreatureCreate(Creature* creature) override
         {
             InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
 
             switch (creature->GetEntry())
             {

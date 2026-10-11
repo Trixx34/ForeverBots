@@ -1792,22 +1792,15 @@ void Unit::HandleEmoteCommand(Emote emoteId, Player* target /*=nullptr*/, Trinit
     }
 
     // Expansion and ContentTuningID necessary? Does Player get a ContentTuningID too ?
+    // Classic 1.60 (vanilla): the client ExpectedStat armor constant is the vanilla 400 + 85 * level; no retail item level
+    // diminishing at max level, and armor reduces damage by at most 75% (retail 85%)
     float armorConstant = sDB2Manager.EvaluateExpectedStat(ExpectedStatType::ArmorConstant, attackerLevel, -2, 0, attackerClass, 0);
-    if (attackerItemLevel)
-    {
-        uint32 maxLevelForExpansion = GetMaxLevelForExpansion(sWorld->getIntConfig(CONFIG_EXPANSION));
-        if (attackerLevel == maxLevelForExpansion)
-        {
-            float itemLevelDelta = *attackerItemLevel - ASSERT_NOTNULL(sItemLevelByLevelTable.GetRow(maxLevelForExpansion))->ItemLevel;
-            if (uint32 curveId = sDB2Manager.GetGlobalCurveId(GlobalCurve::ArmorItemLevelDiminishing))
-                armorConstant *= sDB2Manager.GetCurveValueAt(curveId, itemLevelDelta);
-        }
-    }
+    (void)attackerItemLevel;
 
     if (!(armor + armorConstant))
         return damage;
 
-    float mitigation = std::min(armor / (armor + armorConstant), 0.85f);
+    float mitigation = std::min(armor / (armor + armorConstant), 0.75f);
     // Classic 1.60 (vanilla): rounded, and armor never takes a hit below 1 damage (retail truncated: 1 damage hits became 0)
     if (!damage)
         return 0;
@@ -1822,6 +1815,11 @@ void Unit::HandleEmoteCommand(Emote emoteId, Player* target /*=nullptr*/, Trinit
 
     // Npcs can have holy resistance
     if ((schoolMask & SPELL_SCHOOL_MASK_HOLY) && victim->GetTypeId() != TYPEID_UNIT)
+        return 0;
+
+    // Classic 1.60 (vanilla): binary spells (Frostbolt, Frost Nova, crowd control...) are resisted completely or not at all
+    // (WorldObject::MagicSpellHitResult), never partially
+    if (spellInfo && spellInfo->HasAttribute(SPELL_ATTR0_CU_BINARY_SPELL))
         return 0;
 
     float const averageResist = Unit::CalculateAverageResistReduction(attacker, schoolMask, victim, spellInfo);
@@ -6952,6 +6950,15 @@ void Unit::EnergizeBySpell(Unit* victim, SpellInfo const* spellInfo, int32 damag
     SendEnergizeSpellLog(victim, spellInfo->Id, gain, overEnergize, powerType);
 }
 
+// Classic 1.60 (vanilla, VMaNGOS SpellCaster::CalculateLevelPenalty): spells learned below level 20 get less from spell power,
+// 1 - (20 - spell level) * 3.75% (Fireball rank 1: 0.429 x 0.2875 = 0.123). The 1.60 client coefficients are the unpenalized ones.
+static float ClassicSpellLevelPenalty(SpellInfo const* spellInfo)
+{
+    if (!spellInfo || spellInfo->SpellLevel <= 0 || spellInfo->SpellLevel >= 20)
+        return 1.0f;
+    return 1.0f - (20.0f - float(spellInfo->SpellLevel)) * 0.0375f;
+}
+
 int32 Unit::SpellDamageBonusDone(Unit* victim, SpellInfo const* spellProto, int32 pdamage, DamageEffectType damagetype, SpellEffectInfo const& spellEffectInfo, uint32 stack /*= 1*/, Spell* spell /*= nullptr*/, AuraEffect const* aurEff /*= nullptr*/) const
 {
     if (!spellProto || !victim)
@@ -7024,7 +7031,7 @@ int32 Unit::SpellDamageBonusDone(Unit* victim, SpellInfo const* spellProto, int3
     // Default calculation
     if (DoneAdvertisedBenefit)
     {
-        float coeff = spellEffectInfo.BonusCoefficient;
+        float coeff = spellEffectInfo.BonusCoefficient * ClassicSpellLevelPenalty(spellProto);
         if (Player* modOwner = GetSpellModOwner())
         {
             coeff *= 100.0f;
@@ -7466,7 +7473,8 @@ float Unit::SpellCritChanceTaken(Unit const* caster, Spell* spell, AuraEffect co
 /*static*/ uint32 Unit::SpellCriticalHealingBonus(Unit const* caster, SpellInfo const* spellProto, uint32 damage, Unit* /*victim*/)
 {
     // Calculate critical bonus
-    int32 crit_bonus = damage;
+    // Classic 1.60 (vanilla): heal crits heal for 150% (retail 200%); talents add to the 50% bonus
+    int32 crit_bonus = damage / 2;
 
     // adds additional damage to critBonus (from talents)
     if (caster)
@@ -7552,7 +7560,7 @@ int32 Unit::SpellHealingBonusDone(Unit* victim, SpellInfo const* spellProto, int
     // Default calculation
     if (DoneAdvertisedBenefit)
     {
-        float coeff = spellEffectInfo.BonusCoefficient;
+        float coeff = spellEffectInfo.BonusCoefficient * ClassicSpellLevelPenalty(spellProto);
         if (Player* modOwner = GetSpellModOwner())
         {
             coeff *= 100.0f;
@@ -7823,7 +7831,7 @@ int32 Unit::SpellAbsorbBonusDone(Unit* victim, SpellInfo const* spellProto, int3
 
     if (doneAdvertisedBenefit)
     {
-        float coeff = spellEffectInfo.BonusCoefficient;
+        float coeff = spellEffectInfo.BonusCoefficient * ClassicSpellLevelPenalty(spellProto);
 
         if (Player* modOwner = GetSpellModOwner())
         {
@@ -8440,7 +8448,8 @@ float Unit::GetPPMProcChance(uint32 WeaponSpeed, float PPM, SpellInfo const* spe
         if (Player* modOwner = GetSpellModOwner())
             modOwner->ApplySpellMod(spellProto, SpellModOp::ProcFrequency, PPM);
 
-    return std::floor((WeaponSpeed * PPM) / 600.0f);   // result is chance in percents (probability = Speed_in_sec * (PPM / 60))
+    // Classic 1.60 (vanilla): not rounded down (Crusader on a 1.5 s weapon is 2.5%, not 2%; low rates no longer become 0)
+    return (WeaponSpeed * PPM) / 600.0f;               // result is chance in percents (probability = Speed_in_sec * (PPM / 60))
 }
 
 void Unit::Mount(uint32 mount, uint32 VehicleId, uint32 creatureEntry)
@@ -9505,8 +9514,8 @@ DiminishingLevels Unit::GetDiminishing(DiminishingGroup group) const
     if (!diminish.hitCount)
         return DIMINISHING_LEVEL_1;
 
-    // If last spell was cast more than 18 seconds ago - reset level.
-    if (!diminish.stack && GetMSTimeDiffToNow(diminish.hitTime) > 18 * IN_MILLISECONDS)
+    // If last spell was cast more than 15 seconds ago - reset level (Classic 1.60, vanilla / VMaNGOS: 15, retail 18)
+    if (!diminish.stack && GetMSTimeDiffToNow(diminish.hitTime) > 15 * IN_MILLISECONDS)
         return DIMINISHING_LEVEL_1;
 
     return DiminishingLevels(diminish.hitCount);

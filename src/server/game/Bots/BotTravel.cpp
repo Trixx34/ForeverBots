@@ -252,6 +252,7 @@ public:
     uint32 NextCheckMs = 0;
     uint32 Attempt = 0;
     uint32 ExhaustedChecks = 0;       // consecutive checks with "nothing to quest for here"
+    bool ForceLeave = false;          // N-07: the quest layer found the zone quest-less, leave at the next check
     uint32 TaxiBlockedUntilMs = 0;    // after a flight failed (money, ...): walk only for a while
     uint32 HearthCoolUntilMs = 0;
     uint32 NextDiscoverMs = 0;
@@ -369,14 +370,15 @@ private:
         if (s_cfg.Zones)
         {
             // a bot in a city or a zone outside the table only leaves when it has nothing to quest for
-            if (cur || c.ExhaustedChecks >= 2)
+            if (cur || c.ExhaustedChecks >= 2 || c.ForceLeave)
             {
                 Query q;
                 q.Level = bot->GetLevel();
                 q.BotTeam = TeamOf(bot);
                 q.CurrentArea = cur;
                 q.CurrentMap = bot->GetMapId();
-                q.LocalExhausted = c.ExhaustedChecks >= 2;
+                q.LocalExhausted = c.ExhaustedChecks >= 2 || c.ForceLeave;
+                c.ForceLeave = false;
                 q.BotKey = bot->GetGUID().GetCounter();
                 q.Attempt = c.Attempt;
                 q.Modes = Modes(c, now);
@@ -885,6 +887,16 @@ void OnLogout(BotAI* ai, Player* bot)
     (void)bot;
     if (TravelCtx* c = Ctx(ai))
         c->Reset();
+}
+
+bool RequestLeave(BotAI* ai)
+{
+    TravelCtx* c = Ctx(ai);
+    if (!s_cfg.Enabled || !s_cfg.Zones || !c || c->T.Active)
+        return false;
+    c->ForceLeave = true;
+    c->NextCheckMs = 0;
+    return true;
 }
 
 bool Busy(BotAI* ai)

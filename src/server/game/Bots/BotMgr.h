@@ -18,6 +18,7 @@
 #ifndef TRINITY_BOT_MGR_H
 #define TRINITY_BOT_MGR_H
 
+#include "BotProgressRules.h"
 #include "Define.h"
 #include <atomic>
 #include <deque>
@@ -177,6 +178,9 @@ public:
     // Logs bots out and saves them. name empty = all. Returns how many were (or will be) logged out.
     uint32 DespawnBots(std::string const& name);
 
+    // Logs a pool bot out and queues it for login again (N-01 stall relog). Thread safe: the work runs on the world thread at the start
+    // of the next BotMgr::Update. Alts, bots that are not online and unknown guids are left alone.
+    void RequestRelog(uint64 guid, char const* reason = "LOGOUT_STALL");
     // Immediately saves and logs out every bot (worldserver shutdown).
     void LogoutAll(char const* reason = "LOGOUT_SHUTDOWN");
 
@@ -251,6 +255,7 @@ private:
     void LogoutBot(BotInfo& bot, char const* reason);
     void BeginLogSession(BotInfo& bot);                       // new session id + repeat counters reset (world thread)
     bool ApplyRepeatCap(BotEvent const& event, std::vector<BotEvent>& extra); // _logMutex held; true = drop the event
+    bool ApplyHourlyCap(BotEvent const& event);                               // _logMutex held; true = drop the event (N-09, Bot.Log.Diet.HourlyCaps)
     void LogLifecycle(BotInfo const& bot, char const* type, char const* reason, char const* summary, uint8 severity, std::string details);
     static bool IsValidCombo(uint8 raceId, uint8 classId);
     static uint8 PickRace(uint8 classId, int8 faction);
@@ -334,6 +339,7 @@ private:
         std::unordered_map<std::string, uint32> Counts;            // events let through per key this session
         std::unordered_map<std::string, LogRepeat> Pending;        // suppressed since the last flush row
         uint32 SuppressedLogin = 0;                                // suppressed rows this session, reported as login_total
+        std::unordered_map<std::string, BotRule::HourlyCounter> Hourly;   // rows per reason in the current hour (Bot.Log.Diet.HourlyCaps)
     };
     std::unordered_map<uint64, BotLogState> _botLogState;
     uint32 _repeatCap = 3;                                          // Bot.Log.RepeatCap, 0 = no cap

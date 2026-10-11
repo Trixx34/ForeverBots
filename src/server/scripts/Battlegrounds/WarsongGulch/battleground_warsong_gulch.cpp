@@ -20,12 +20,14 @@
 #include "Battleground.h"
 #include "BattlegroundMgr.h"
 #include "GameObject.h"
+#include "GameObjectAI.h"
 #include "GameTime.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "SpellAuras.h"
+#include "SpellScript.h"
 #include "Timer.h"
 
 struct battleground_warsong_gulch : BattlegroundScript
@@ -603,7 +605,527 @@ private:
     uint32 _reputationCapture;
 };
 
+// Classic 1.60: vanilla Warsong Gulch on the original map 489 (port of VMaNGOS BattleGroundWS). The retail script above
+// needs the 2106 remake objects (type 36 flags, capture area triggers 30 / 31). Map 489 has the vanilla flag stands
+// (type 24) and dropped flags (type 26), and the 1.60 client has no capture area trigger (3646 / 3647), so captures are
+// checked by distance to the vanilla trigger positions. Flag stands / ghost gates are spawn groups (world SQL 2026_10_11_41).
+namespace ClassicWarsongGulch
+{
+    static constexpr uint32 MapId = 489;
+    static constexpr uint32 MaxTeamScore = 3;
+    static constexpr Milliseconds FlagRespawnTime = 23s;    // after a capture
+    static constexpr Milliseconds FlagDropTime = 10s;       // dropped flag returns to its base
+    static constexpr float CaptureRadius = 6.0f;            // areatrigger radius 5 + tolerance
+    static constexpr std::array<Position, PVP_TEAMS_COUNT> CapturePoints =
+    { {
+        { 1539.89f, 1481.36f, 352.659f },                   // 3646 Silverwing Hold, Alliance capture point
+        { 918.496f, 1434.04f, 346.054f }                    // 3647 Warsong Lumber Mill, Horde capture point
+    } };
+
+    enum Actions : uint32
+    {
+        ACTION_FLAG_CLICKED         = 1,                    // source = player, target = flag gameobject
+        ACTION_FLAG_AURA_REMOVED    = 2                     // source = flag carrier
+    };
+
+    enum GameObjects : uint32
+    {
+        GO_SILVERWING_FLAG          = 179830,               // Alliance flag in the Alliance base, taken by the Horde
+        GO_WARSONG_FLAG             = 179831,
+        GO_SILVERWING_FLAG_DROPPED  = 179785,
+        GO_WARSONG_FLAG_DROPPED     = 179786,
+        GO_DOOR_FIRST               = 179916,               // 179916 - 179921 Razorfen doors / portcullis
+        GO_DOOR_LAST                = 179921
+    };
+
+    enum Spells : uint32
+    {
+        SPELL_WARSONG_FLAG          = 23333,                // Horde flag carried by an Alliance player
+        SPELL_SILVERWING_FLAG       = 23335
+    };
+
+    enum SpawnGroups : uint32
+    {
+        SPAWN_GROUP_ALLIANCE_FLAG   = 489001,
+        SPAWN_GROUP_HORDE_FLAG      = 489002,
+        SPAWN_GROUP_GHOST_GATES     = 489003
+    };
+
+    enum WorldStates : int32
+    {
+        WS_FLAG_TAKEN_ALLIANCE      = 1545,                 // 0 in base, 1 carried, -1 on the ground
+        WS_FLAG_TAKEN_HORDE         = 1546,
+        WS_CAPTURES_ALLIANCE        = 1581,
+        WS_CAPTURES_HORDE           = 1582,
+        WS_CAPTURES_MAX             = 1601,
+        WS_CAPTURES_MAX_NEW         = 17303,
+        WS_FLAG_STATE_HORDE         = 2338,                 // 2 = the Horde carries the Alliance flag
+        WS_FLAG_STATE_ALLIANCE      = 2339,
+        WS_BATTLE_IN_PROGRESS       = 489000                // server only, used by the flag room graveyard conditions
+    };
+
+    enum Texts : uint32
+    {
+        TEXT_CAPTURED_HORDE_FLAG    = 9801,
+        TEXT_CAPTURED_ALLIANCE_FLAG = 9802,
+        TEXT_FLAGS_PLACED           = 9803,
+        TEXT_ALLIANCE_FLAG_PICKED   = 9804,
+        TEXT_ALLIANCE_FLAG_DROPPED  = 9805,
+        TEXT_HORDE_FLAG_DROPPED     = 9806,
+        TEXT_HORDE_FLAG_PICKED      = 9807,
+        TEXT_ALLIANCE_FLAG_RETURNED = 9808,
+        TEXT_HORDE_FLAG_RETURNED    = 9809,
+        TEXT_ALLIANCE_FLAG_RESPAWN  = 10022,
+        TEXT_HORDE_FLAG_RESPAWN     = 10023
+    };
+
+    enum Sounds : uint32
+    {
+        SOUND_FLAG_CAPTURED_ALLIANCE    = 8173,
+        SOUND_FLAG_CAPTURED_HORDE       = 8213,
+        SOUND_FLAG_RETURNED             = 8192,
+        SOUND_HORDE_FLAG_PICKED_UP      = 8212,
+        SOUND_ALLIANCE_FLAG_PICKED_UP   = 8174,
+        SOUND_FLAGS_RESPAWNED           = 8232
+    };
+
+    enum class WsgFlagState : uint8
+    {
+        OnBase,
+        WaitRespawn,
+        OnPlayer,
+        OnGround
+    };
+
+    // indexed by the team owning the flag
+    static constexpr uint32 CarrierSpell(TeamId flagTeam) { return flagTeam == TEAM_ALLIANCE ? SPELL_SILVERWING_FLAG : SPELL_WARSONG_FLAG; }
+    static constexpr uint32 FlagSpawnGroup(TeamId flagTeam) { return flagTeam == TEAM_ALLIANCE ? SPAWN_GROUP_ALLIANCE_FLAG : SPAWN_GROUP_HORDE_FLAG; }
+    static constexpr uint32 DroppedFlagEntry(TeamId flagTeam) { return flagTeam == TEAM_ALLIANCE ? GO_SILVERWING_FLAG_DROPPED : GO_WARSONG_FLAG_DROPPED; }
+    static constexpr Team TeamOf(TeamId teamId) { return teamId == TEAM_ALLIANCE ? ALLIANCE : HORDE; }
+    static constexpr TeamId OtherTeam(TeamId teamId) { return teamId == TEAM_ALLIANCE ? TEAM_HORDE : TEAM_ALLIANCE; }
+}
+
+struct battleground_classic_warsong_gulch : BattlegroundScript
+{
+    explicit battleground_classic_warsong_gulch(BattlegroundMap* map) : BattlegroundScript(map)
+    {
+        _isWeekend = sBattlegroundMgr->IsBGWeekend(battleground->GetTypeID());
+        _reputationCapture = _isWeekend ? 45 : 35;
+    }
+
+    void OnInit() override
+    {
+        using namespace ClassicWarsongGulch;
+        UpdateWorldState(WS_CAPTURES_MAX, MaxTeamScore);
+        UpdateWorldState(WS_CAPTURES_MAX_NEW, MaxTeamScore);
+        UpdateWorldState(WS_CAPTURES_ALLIANCE, 0);
+        UpdateWorldState(WS_CAPTURES_HORDE, 0);
+        UpdateWorldState(WS_FLAG_TAKEN_ALLIANCE, 0);
+        UpdateWorldState(WS_FLAG_TAKEN_HORDE, 0);
+        UpdateWorldState(WS_FLAG_STATE_ALLIANCE, 1);
+        UpdateWorldState(WS_FLAG_STATE_HORDE, 1);
+        UpdateWorldState(WS_BATTLE_IN_PROGRESS, 0, true);
+    }
+
+    void OnStart() override
+    {
+        using namespace ClassicWarsongGulch;
+        for (ObjectGuid const& guid : _doors)
+            if (GameObject* door = battlegroundMap->GetGameObject(guid))
+                door->UseDoorOrButton();
+
+        battlegroundMap->SpawnGroupDespawn(SPAWN_GROUP_GHOST_GATES);
+        UpdateWorldState(WS_BATTLE_IN_PROGRESS, 1, true);
+    }
+
+    void OnGameObjectCreate(GameObject* gameObject) override
+    {
+        if (gameObject->GetEntry() >= ClassicWarsongGulch::GO_DOOR_FIRST && gameObject->GetEntry() <= ClassicWarsongGulch::GO_DOOR_LAST)
+            _doors.insert(gameObject->GetGUID());
+    }
+
+    void OnUpdate(uint32 diff) override
+    {
+        using namespace ClassicWarsongGulch;
+        if (battleground->GetStatus() != STATUS_IN_PROGRESS)
+            return;
+
+        Milliseconds const elapsed(diff);
+
+        if (_respawnTimer > 0ms)
+        {
+            _respawnTimer -= elapsed;
+            if (_respawnTimer <= 0ms)
+                RespawnFlagsAfterCapture();
+        }
+
+        for (TeamId flagTeam : { TEAM_ALLIANCE, TEAM_HORDE })
+        {
+            switch (_flagStates[flagTeam])
+            {
+                case WsgFlagState::OnGround:
+                    _dropTimers[flagTeam] -= elapsed;
+                    if (_dropTimers[flagTeam] <= 0ms)
+                        RespawnFlagAfterDrop(flagTeam);
+                    break;
+                case WsgFlagState::OnPlayer:
+                {
+                    Player* carrier = ObjectAccessor::GetPlayer(battlegroundMap, _flagKeepers[flagTeam]);
+                    // carrier left the battleground / lost the aura without the drop handler: back to base (VMaNGOS RemovePlayer)
+                    if (!carrier || !carrier->HasAura(CarrierSpell(flagTeam)))
+                    {
+                        _flagKeepers[flagTeam].Clear();
+                        PlaceFlagInBase(flagTeam);
+                        UpdateFlagState(OtherTeam(flagTeam), 1);
+                        break;
+                    }
+
+                    // capture: carrier at his own flag stand while his own flag is in base
+                    TeamId const carrierTeam = OtherTeam(flagTeam);
+                    if (_flagStates[carrierTeam] == WsgFlagState::OnBase && carrier->IsAlive()
+                        && carrier->GetExactDist2d(CapturePoints[carrierTeam]) <= CaptureRadius
+                        && std::abs(carrier->GetPositionZ() - CapturePoints[carrierTeam].GetPositionZ()) <= CaptureRadius)
+                        CaptureFlag(carrier, carrierTeam);
+                    break;
+                }
+                default:
+                    break;
+            }
+
+            if (battleground->GetStatus() != STATUS_IN_PROGRESS)
+                return;
+        }
+    }
+
+    void DoAction(uint32 actionId, WorldObject* source, WorldObject* target) override
+    {
+        using namespace ClassicWarsongGulch;
+        Player* player = Object::ToPlayer(source);
+        if (!player)
+            return;
+
+        switch (actionId)
+        {
+            case ACTION_FLAG_CLICKED:
+                if (GameObject* flag = Object::ToGameObject(target))
+                    HandleFlagClick(player, flag);
+                break;
+            case ACTION_FLAG_AURA_REMOVED:
+                HandleFlagDrop(player);
+                break;
+            default:
+                break;
+        }
+    }
+
+    Team GetPrematureWinner() override
+    {
+        if (battleground->GetTeamScore(TEAM_ALLIANCE) > battleground->GetTeamScore(TEAM_HORDE))
+            return ALLIANCE;
+        if (battleground->GetTeamScore(TEAM_HORDE) > battleground->GetTeamScore(TEAM_ALLIANCE))
+            return HORDE;
+
+        return BattlegroundScript::GetPrematureWinner();
+    }
+
+private:
+    void HandleFlagClick(Player* player, GameObject* flag)
+    {
+        using namespace ClassicWarsongGulch;
+        if (battleground->GetStatus() != STATUS_IN_PROGRESS || !player->CanUseBattlegroundObject(nullptr))
+            return;
+
+        Team const team = battleground->GetPlayerTeam(player->GetGUID());
+        if (team != ALLIANCE && team != HORDE)
+            return;
+
+        TeamId const playerTeam = Battleground::GetTeamIndexByTeamId(team);
+        switch (flag->GetEntry())
+        {
+            case GO_SILVERWING_FLAG:
+                if (playerTeam == TEAM_HORDE && _flagStates[TEAM_ALLIANCE] == WsgFlagState::OnBase)
+                    PickUpFlag(TEAM_ALLIANCE, player, true);
+                break;
+            case GO_WARSONG_FLAG:
+                if (playerTeam == TEAM_ALLIANCE && _flagStates[TEAM_HORDE] == WsgFlagState::OnBase)
+                    PickUpFlag(TEAM_HORDE, player, true);
+                break;
+            case GO_SILVERWING_FLAG_DROPPED:
+            case GO_WARSONG_FLAG_DROPPED:
+            {
+                TeamId const flagTeam = flag->GetEntry() == GO_SILVERWING_FLAG_DROPPED ? TEAM_ALLIANCE : TEAM_HORDE;
+                if (_flagStates[flagTeam] != WsgFlagState::OnGround || flag->GetGUID() != _droppedFlags[flagTeam] || !player->IsWithinDistInMap(flag, 10.0f))
+                    break;
+
+                if (playerTeam == flagTeam)
+                    ReturnFlag(flagTeam, player);
+                else
+                    PickUpFlag(flagTeam, player, false);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    void PickUpFlag(TeamId flagTeam, Player* player, bool fromBase)
+    {
+        using namespace ClassicWarsongGulch;
+        if (fromBase)
+            battlegroundMap->SpawnGroupDespawn(FlagSpawnGroup(flagTeam));
+        else
+            RemoveDroppedFlag(flagTeam);
+
+        _flagKeepers[flagTeam] = player->GetGUID();
+        _flagStates[flagTeam] = WsgFlagState::OnPlayer;
+
+        player->RemoveAurasByType(SPELL_AURA_MOD_STEALTH);
+        player->RemoveAurasByType(SPELL_AURA_MOD_INVISIBILITY);
+        player->CastSpell(player, CarrierSpell(flagTeam), true);
+
+        if (flagTeam == TEAM_ALLIANCE)
+        {
+            battleground->SendBroadcastText(TEXT_ALLIANCE_FLAG_PICKED, CHAT_MSG_BG_SYSTEM_HORDE, player);
+            battleground->PlaySoundToAll(SOUND_ALLIANCE_FLAG_PICKED_UP);
+            UpdateWorldState(WS_FLAG_TAKEN_ALLIANCE, 1);
+        }
+        else
+        {
+            battleground->SendBroadcastText(TEXT_HORDE_FLAG_PICKED, CHAT_MSG_BG_SYSTEM_ALLIANCE, player);
+            battleground->PlaySoundToAll(SOUND_HORDE_FLAG_PICKED_UP);
+            UpdateWorldState(WS_FLAG_TAKEN_HORDE, 1);
+        }
+
+        UpdateFlagState(OtherTeam(flagTeam), 2);
+    }
+
+    void HandleFlagDrop(Player* player)
+    {
+        using namespace ClassicWarsongGulch;
+        TeamId flagTeam = TEAM_NEUTRAL;
+        for (TeamId team : { TEAM_ALLIANCE, TEAM_HORDE })
+            if (_flagStates[team] == WsgFlagState::OnPlayer && _flagKeepers[team] == player->GetGUID())
+                flagTeam = team;
+
+        if (flagTeam == TEAM_NEUTRAL)                       // not a carrier (capture clears the keeper before removing the aura)
+            return;
+
+        _flagKeepers[flagTeam].Clear();
+        UpdateFlagState(OtherTeam(flagTeam), 1);
+
+        if (battleground->GetStatus() != STATUS_IN_PROGRESS || player->GetMap() != battlegroundMap)
+        {
+            PlaceFlagInBase(flagTeam);
+            return;
+        }
+
+        if (GameObject* dropped = GameObject::CreateGameObject(DroppedFlagEntry(flagTeam), battlegroundMap, player->GetPosition(),
+            QuaternionData::fromEulerAnglesZYX(player->GetOrientation(), 0.f, 0.f), 255, GO_STATE_READY))
+        {
+            dropped->SetSpawnedByDefault(false);
+            dropped->SetRespawnTime(int32(std::chrono::duration_cast<Seconds>(FlagDropTime).count()) + 5);
+            if (battlegroundMap->AddToMap(dropped))
+                _droppedFlags[flagTeam] = dropped->GetGUID();
+            else
+                delete dropped;
+        }
+
+        if (_droppedFlags[flagTeam].IsEmpty())              // could not place it, return it to base instead
+        {
+            PlaceFlagInBase(flagTeam);
+            return;
+        }
+
+        _flagStates[flagTeam] = WsgFlagState::OnGround;
+        _dropTimers[flagTeam] = FlagDropTime;
+
+        if (flagTeam == TEAM_ALLIANCE)
+        {
+            battleground->SendBroadcastText(TEXT_ALLIANCE_FLAG_DROPPED, CHAT_MSG_BG_SYSTEM_ALLIANCE, player);
+            UpdateWorldState(WS_FLAG_TAKEN_ALLIANCE, -1);
+        }
+        else
+        {
+            battleground->SendBroadcastText(TEXT_HORDE_FLAG_DROPPED, CHAT_MSG_BG_SYSTEM_HORDE, player);
+            UpdateWorldState(WS_FLAG_TAKEN_HORDE, -1);
+        }
+    }
+
+    void ReturnFlag(TeamId flagTeam, Player* player)
+    {
+        using namespace ClassicWarsongGulch;
+        PlaceFlagInBase(flagTeam);
+        battleground->SendBroadcastText(flagTeam == TEAM_ALLIANCE ? TEXT_ALLIANCE_FLAG_RETURNED : TEXT_HORDE_FLAG_RETURNED,
+            flagTeam == TEAM_ALLIANCE ? CHAT_MSG_BG_SYSTEM_ALLIANCE : CHAT_MSG_BG_SYSTEM_HORDE, player);
+        battleground->PlaySoundToAll(SOUND_FLAG_RETURNED);
+        battleground->UpdatePvpStat(player, PVP_STAT_FLAG_RETURNS, 1);
+    }
+
+    void RespawnFlagAfterDrop(TeamId flagTeam)
+    {
+        using namespace ClassicWarsongGulch;
+        PlaceFlagInBase(flagTeam);
+        battleground->SendBroadcastText(flagTeam == TEAM_ALLIANCE ? TEXT_ALLIANCE_FLAG_RESPAWN : TEXT_HORDE_FLAG_RESPAWN, CHAT_MSG_BG_SYSTEM_NEUTRAL);
+        battleground->PlaySoundToAll(SOUND_FLAGS_RESPAWNED);
+    }
+
+    void PlaceFlagInBase(TeamId flagTeam)
+    {
+        using namespace ClassicWarsongGulch;
+        RemoveDroppedFlag(flagTeam);
+        _flagStates[flagTeam] = WsgFlagState::OnBase;
+        battlegroundMap->SpawnGroupSpawn(FlagSpawnGroup(flagTeam), true);
+        UpdateWorldState(flagTeam == TEAM_ALLIANCE ? WS_FLAG_TAKEN_ALLIANCE : WS_FLAG_TAKEN_HORDE, 0);
+    }
+
+    void RemoveDroppedFlag(TeamId flagTeam)
+    {
+        if (GameObject* dropped = battlegroundMap->GetGameObject(_droppedFlags[flagTeam]))
+            dropped->Delete();
+        _droppedFlags[flagTeam].Clear();
+    }
+
+    void CaptureFlag(Player* player, TeamId carrierTeam)
+    {
+        using namespace ClassicWarsongGulch;
+        TeamId const flagTeam = OtherTeam(carrierTeam);
+        Team const team = TeamOf(carrierTeam);
+
+        // keeper cleared before the aura goes, so the aura removal is not handled as a drop
+        _flagKeepers[flagTeam].Clear();
+        player->RemoveAurasDueToSpell(CarrierSpell(flagTeam));
+
+        // both flags leave the field until they are placed again
+        _flagStates[flagTeam] = WsgFlagState::WaitRespawn;
+        _flagStates[carrierTeam] = WsgFlagState::WaitRespawn;
+        battlegroundMap->SpawnGroupDespawn(FlagSpawnGroup(carrierTeam));
+        UpdateWorldState(flagTeam == TEAM_ALLIANCE ? WS_FLAG_TAKEN_ALLIANCE : WS_FLAG_TAKEN_HORDE, 0);
+
+        if (battleground->GetTeamScore(carrierTeam) < MaxTeamScore)
+            battleground->AddPoint(team, 1);
+
+        if (team == ALLIANCE)
+        {
+            battleground->SendBroadcastText(TEXT_CAPTURED_HORDE_FLAG, CHAT_MSG_BG_SYSTEM_ALLIANCE, player);
+            battleground->PlaySoundToAll(SOUND_FLAG_CAPTURED_ALLIANCE);
+            battleground->RewardReputationToTeam(890, _reputationCapture, ALLIANCE);
+        }
+        else
+        {
+            battleground->SendBroadcastText(TEXT_CAPTURED_ALLIANCE_FLAG, CHAT_MSG_BG_SYSTEM_HORDE, player);
+            battleground->PlaySoundToAll(SOUND_FLAG_CAPTURED_HORDE);
+            battleground->RewardReputationToTeam(889, _reputationCapture, HORDE);
+        }
+
+        // vanilla: flag capture bonus honor = 2 honorable kills for the whole team
+        battleground->RewardHonorToTeam(battleground->GetBonusHonorFromKill(2), team);
+
+        UpdateFlagState(carrierTeam, 1);
+        UpdateWorldState(carrierTeam == TEAM_ALLIANCE ? WS_CAPTURES_ALLIANCE : WS_CAPTURES_HORDE, battleground->GetTeamScore(carrierTeam));
+        battleground->UpdatePvpStat(player, PVP_STAT_FLAG_CAPTURES, 1);
+
+        if (battleground->GetTeamScore(carrierTeam) >= MaxTeamScore)
+        {
+            UpdateWorldState(WS_FLAG_STATE_ALLIANCE, 1);
+            UpdateWorldState(WS_FLAG_STATE_HORDE, 1);
+            EndBattle(team);
+            return;
+        }
+
+        _respawnTimer = FlagRespawnTime;
+    }
+
+    void RespawnFlagsAfterCapture()
+    {
+        using namespace ClassicWarsongGulch;
+        for (TeamId flagTeam : { TEAM_ALLIANCE, TEAM_HORDE })
+            if (_flagStates[flagTeam] == WsgFlagState::WaitRespawn)
+                PlaceFlagInBase(flagTeam);
+
+        battleground->SendBroadcastText(TEXT_FLAGS_PLACED, CHAT_MSG_BG_SYSTEM_NEUTRAL);
+        battleground->PlaySoundToAll(SOUND_FLAGS_RESPAWNED);
+    }
+
+    // carrierTeam: the team holding the enemy flag; value 2 = carried, 1 = not carried
+    void UpdateFlagState(TeamId carrierTeam, int32 value)
+    {
+        using namespace ClassicWarsongGulch;
+        UpdateWorldState(carrierTeam == TEAM_ALLIANCE ? WS_FLAG_STATE_ALLIANCE : WS_FLAG_STATE_HORDE, value);
+    }
+
+    void EndBattle(Team winner)
+    {
+        if (battleground->GetStatus() != STATUS_IN_PROGRESS)
+            return;
+
+        // vanilla (VMaNGOS BattleGroundWS::EndBattleGround): winner 1 honorable kill (+2 on the holiday weekend),
+        // weekend completion bonus 3 honorable kills for both teams
+        if (_isWeekend)
+        {
+            battleground->RewardHonorToTeam(battleground->GetBonusHonorFromKill(3), ALLIANCE);
+            battleground->RewardHonorToTeam(battleground->GetBonusHonorFromKill(3), HORDE);
+        }
+        if (winner == ALLIANCE || winner == HORDE)
+            battleground->RewardHonorToTeam(battleground->GetBonusHonorFromKill(_isWeekend ? 3 : 1), winner);
+
+        battleground->EndBattleground(winner);
+    }
+
+    static constexpr uint32 PVP_STAT_FLAG_CAPTURES = 928;
+    static constexpr uint32 PVP_STAT_FLAG_RETURNS = 929;
+
+    std::array<ClassicWarsongGulch::WsgFlagState, PVP_TEAMS_COUNT> _flagStates = { { ClassicWarsongGulch::WsgFlagState::OnBase, ClassicWarsongGulch::WsgFlagState::OnBase } };
+    std::array<ObjectGuid, PVP_TEAMS_COUNT> _flagKeepers;
+    std::array<ObjectGuid, PVP_TEAMS_COUNT> _droppedFlags;
+    std::array<Milliseconds, PVP_TEAMS_COUNT> _dropTimers = { { 0ms, 0ms } };
+    Milliseconds _respawnTimer = 0ms;
+    GuidSet _doors;
+    bool _isWeekend = false;
+    uint32 _reputationCapture = 35;
+};
+
+// Classic 1.60: 179830 / 179831 flag stands, 179785 / 179786 dropped flags on map 489
+struct go_classic_wsg_flag : GameObjectAI
+{
+    explicit go_classic_wsg_flag(GameObject* go) : GameObjectAI(go) { }
+
+    bool OnGossipHello(Player* player) override
+    {
+        if (me->GetMapId() != ClassicWarsongGulch::MapId)
+            return false;
+
+        if (ZoneScript* zoneScript = me->GetZoneScript())
+            zoneScript->DoAction(ClassicWarsongGulch::ACTION_FLAG_CLICKED, player, me);
+
+        return true;
+    }
+};
+
+// Classic 1.60: 23333 - Warsong Flag, 23335 - Silverwing Flag (flag carried on map 489)
+class spell_classic_wsg_flag_carrier : public AuraScript
+{
+    void AfterRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/) const
+    {
+        Unit* target = GetTarget();
+        if (!target->IsPlayer() || target->GetMapId() != ClassicWarsongGulch::MapId)
+            return;
+
+        if (ZoneScript* zoneScript = target->FindZoneScript())
+            zoneScript->DoAction(ClassicWarsongGulch::ACTION_FLAG_AURA_REMOVED, target, target);
+    }
+
+    void Register() override
+    {
+        AfterEffectRemove += AuraEffectRemoveFn(spell_classic_wsg_flag_carrier::AfterRemove, EFFECT_0, SPELL_AURA_ANY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
 void AddSC_battleground_warsong_gulch()
 {
     RegisterBattlegroundMapScript(battleground_warsong_gulch, 2106);
+
+    // Classic 1.60
+    RegisterBattlegroundMapScript(battleground_classic_warsong_gulch, ClassicWarsongGulch::MapId);
+    RegisterGameObjectAI(go_classic_wsg_flag);
+    RegisterSpellScript(spell_classic_wsg_flag_carrier);
 }

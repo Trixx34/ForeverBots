@@ -17,6 +17,7 @@
 
 #include "BotCraftOrder.h"
 #include "BotMgr.h"
+#include "BotRules.h"
 #include "BotPopulation.h"
 #include "BotConversation.h"
 
@@ -682,6 +683,33 @@ bool BotMgr::ApplyRepeatCap(BotEvent const& event, std::vector<BotEvent>& extra)
     return false;
 }
 
+// N-09: some rows (TARGET_PICKED, AGGRO_AVOID) are written at most N times per bot and hour; the rest is counted into the LOG_SUPPRESSED row.
+bool BotMgr::ApplyHourlyCap(BotEvent const& event)
+{
+    BotRules::Settings const& rules = BotRules::Cfg();
+    if (!rules.LogDiet || rules.HourlyCaps.empty())
+        return false;
+    for (auto const& [reason, cap] : rules.HourlyCaps)
+    {
+        if (event.Reason != reason)
+            continue;
+        BotLogState& st = _botLogState[event.BotGuid];
+        if (!st.Hourly[reason].Hit(event.Timestamp, cap))
+            return false;
+        std::string key = event.Type + '|' + event.Reason + "|0|0";
+        LogRepeat& p = st.Pending[key];
+        if (!p.Suppressed)
+        {
+            p.Type = event.Type;
+            p.Reason = event.Reason;
+        }
+        ++p.Suppressed;
+        p.LastTs = event.Timestamp;
+        return true;
+    }
+    return false;
+}
+
 void BotMgr::FlushSuppressed(uint64 botGuid)
 {
     if (!IsLogDatabaseAvailable())
@@ -750,6 +778,8 @@ void BotMgr::LogEvent(BotEvent&& event)
             if (_summary.Add(_summaryPolicy, in, _summaryMaxKeys))
                 return; // counted; written by DrainSummary when its window is over
         }
+        if (ApplyHourlyCap(event))
+            return;
         std::vector<BotEvent> extra;
         if (ApplyRepeatCap(event, extra))
             return;
@@ -1491,6 +1521,20 @@ uint32 BotMgr::DespawnBots(std::string const& name)
     }
 
     return count;
+}
+
+void BotMgr::RequestRelog(uint64 guid, char const* reason)
+{
+    PostWorldTask([this, guid, reason]()
+    {
+        auto it = _bots.find(guid);
+        if (it == _bots.end() || it->second.Alt || it->second.State != BOT_ONLINE || !it->second.Session)
+            return;
+        BotInfo& bot = it->second;
+        LogoutBot(bot, reason);
+        bot.State = BOT_QUEUED;
+        _loginQueue.push_back(guid);
+    });
 }
 
 void BotMgr::LogoutAll(char const* reason)

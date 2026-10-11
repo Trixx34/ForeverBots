@@ -9328,23 +9328,7 @@ void Spell::TriggerGlobalCooldown()
             gcd = Milliseconds(intGcd);
         }
 
-        bool isMeleeOrRangedSpell = m_spellInfo->DmgClass == SPELL_DAMAGE_CLASS_MELEE ||
-            m_spellInfo->DmgClass == SPELL_DAMAGE_CLASS_RANGED ||
-            m_spellInfo->HasAttribute(SPELL_ATTR0_USES_RANGED_SLOT) ||
-            m_spellInfo->HasAttribute(SPELL_ATTR0_IS_ABILITY);
-
-        // Apply haste rating
-        if (gcd > MinGCD && ((m_spellInfo->StartRecoveryCategory == 133 && !isMeleeOrRangedSpell)))
-        {
-            gcd = Milliseconds(int64(gcd.count() * m_caster->ToUnit()->m_unitData->ModSpellHaste));
-            RoundToInterval(gcd, MinGCD, MaxGCD);
-        }
-
-        if (gcd > MinGCD && m_caster->ToUnit()->HasAuraTypeWithAffectMask(SPELL_AURA_MOD_GLOBAL_COOLDOWN_BY_HASTE_REGEN, m_spellInfo))
-        {
-            gcd = Milliseconds(int64(gcd.count() * m_caster->ToUnit()->m_unitData->ModHasteRegen));
-            RoundToInterval(gcd, MinGCD, MaxGCD);
-        }
+        // Classic 1.60 (vanilla): the global cooldown is not shortened by spell haste or haste regen (retail scaled it down to 0.75 s)
     }
 
     m_caster->ToUnit()->GetSpellHistory()->AddGlobalCooldown(m_spellInfo, gcd);

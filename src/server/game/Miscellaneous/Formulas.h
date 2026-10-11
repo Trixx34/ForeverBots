@@ -67,22 +67,18 @@ namespace Trinity
 
     namespace XP
     {
+        // Classic 1.60 (vanilla, VMaNGOS Formulas.h): gray at level 5 and below, L - 5 - L / 10 up to 39, then L - 1 - L / 5
+        // (level 60: 47 and below is gray)
         inline uint8 GetGrayLevel(uint8 pl_level)
         {
             uint8 level;
 
-            if (pl_level < 7)
+            if (pl_level <= 5)
                 level = 0;
-            else if (pl_level < 35)
-            {
-                uint8 count = 0;
-                for (int i = 15; i <= pl_level; ++i)
-                    if (i % 5 == 0) ++count;
-
-                level = (pl_level - 7) - (count - 1);
-            }
+            else if (pl_level <= 39)
+                level = pl_level - 5 - pl_level / 10;
             else
-                level = pl_level - 10;
+                level = pl_level - 1 - pl_level / 5;
 
             sScriptMgr->OnGrayLevelCalculation(level, pl_level);
             return level;
@@ -111,7 +107,7 @@ namespace Trinity
         {
             uint8 diff;
 
-            if (pl_level < 4)
+            if (pl_level < 8)                               // Classic 1.60 (vanilla): 5 below level 8 (retail: below 4)
                 diff = 5;
             else if (pl_level < 10)
                 diff = 6;
@@ -144,16 +140,16 @@ namespace Trinity
         {
             uint32 baseGain;
 
-            GtXpEntry const* xpPlayer = sXpGameTable.GetRow(pl_level);
-            GtXpEntry const* xpMob = sXpGameTable.GetRow(mob_level);
-
+            // Classic 1.60 (vanilla, VMaNGOS Formulas.h): the player's base (5 * level + 45) for every mob level; lower mobs give
+            // (ZD + mob - player) / ZD of it (retail used the lower mob's own base, about 18% less)
+            float const playerBase = pl_level * 5.0f + 45.0f;
             if (mob_level >= pl_level)
             {
                 uint8 nLevelDiff = mob_level - pl_level;
                 if (nLevelDiff > 4)
                     nLevelDiff = 4;
 
-                baseGain = uint32(round(xpPlayer->PerKill * (1 + 0.05f * nLevelDiff)));
+                baseGain = uint32(round(playerBase * (1 + 0.05f * nLevelDiff)));
             }
             else
             {
@@ -161,7 +157,7 @@ namespace Trinity
                 if (mob_level > gray_level)
                 {
                     uint8 ZD = GetZeroDifference(pl_level);
-                    baseGain = uint32(round(xpMob->PerKill * ((1 - ((pl_level - mob_level) / float(ZD))) * (xpMob->Divisor / xpPlayer->Divisor))));
+                    baseGain = uint32(round(playerBase * (ZD + mob_level - pl_level) / float(ZD)));
                 }
                 else
                     baseGain = 0;
@@ -191,18 +187,21 @@ namespace Trinity
 
                 if (gain && creature)
                 {
-                    // Players get only 10% xp for killing creatures of lower expansion levels than himself
-                    if ((uint32(creature->GetCreatureDifficulty()->GetHealthScalingExpansion()) < GetExpansionForLevel(player->GetLevel())))
-                        gain = uint32(round(gain / 10.0f));
+                    // Classic 1.60: no retail "lower expansion creature" 10% xp rule: every vanilla creature is expansion 0,
+                    // so it cut all kill xp from level 30 on
 
                     if (creature->IsElite())
                     {
-                        // Elites in instances have a 2.75x XP bonus instead of the regular 2x world bonus.
-                        if (u->GetMap()->IsDungeon())
-                            xpMod *= 2.75f;
+                        // Classic 1.60 (vanilla, VMaNGOS): elites give 2.5x in 5 player dungeons, 2x elsewhere (raids included)
+                        if (u->GetMap()->IsNonRaidDungeon())
+                            xpMod *= 2.5f;
                         else
                             xpMod *= 2.0f;
                     }
+
+                    // Classic 1.60 (Forever beta notes, October 8 2026): experience from killing creatures in dungeons +20%
+                    if (u->GetMap()->IsNonRaidDungeon())
+                        xpMod *= 1.2f;
 
                     xpMod *= creature->GetCreatureTemplate()->ModExperience;
                 }

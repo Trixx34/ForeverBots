@@ -21,6 +21,7 @@
 #include "AreaTrigger.h"
 #include "CellImpl.h"
 #include "Creature.h"
+#include "CreatureAI.h"
 #include "Containers.h"
 #include "DatabaseEnv.h"
 #include "DB2Stores.h"
@@ -37,6 +38,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "SpellScript.h"
+#include "ThreatManager.h"
 #include "Unit.h"
 #include "WorldSession.h"
 
@@ -766,6 +768,202 @@ class classic_spell_legacy_high_alert : public AuraScript
     }
 };
 
+// Seal of Fury (Forever, 1311649 1311656 20163 20419 20421 20422 20423): "Fills the Paladin with divine fury for 30 sec, causing melee
+// attacks to deal an additional N Holy damage. While a shield is equipped, each attack also grants an absorb shield equal to 50% of the
+// Holy damage dealt." Its judgement (Judgement of Fury) is in the seal table of SpellInfo.cpp.
+static uint32 ClassicSealOfFuryDamageSpell(uint32 sealId)
+{
+    switch (sealId)
+    {
+        case 1311649: return 1311647;
+        case 1311656: return 1311654;
+        case 20163:   return 20231;
+        case 20419:   return 20415;
+        case 20421:   return 20416;
+        case 20422:   return 20417;
+        case 20423:   return 20418;
+        default:      return 0;
+    }
+}
+
+class classic_spell_pal_seal_of_fury : public AuraScript
+{
+    bool Validate(SpellInfo const* spellInfo) override
+    {
+        return ValidateSpellInfo({ ClassicSealOfFuryDamageSpell(spellInfo->Id) });
+    }
+
+    bool CheckProc(ProcEventInfo& eventInfo)
+    {
+        return eventInfo.GetActionTarget() && eventInfo.GetDamageInfo() && eventInfo.GetDamageInfo()->GetAttackType() == BASE_ATTACK
+            && !eventInfo.GetSpellInfo();
+    }
+
+    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
+    {
+        PreventDefaultAction();
+        GetTarget()->CastSpell(eventInfo.GetActionTarget(), ClassicSealOfFuryDamageSpell(GetId()), CastSpellExtraArgs(aurEff));
+    }
+
+    void Register() override
+    {
+        DoCheckProc += AuraCheckProcFn(classic_spell_pal_seal_of_fury::CheckProc);
+        OnEffectProc += AuraEffectProcFn(classic_spell_pal_seal_of_fury::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+    }
+};
+
+// Seal of Fury Holy damage (1311647 1311654 20231 20415-20418): with a shield equipped the paladin gains Light's Fury (1310927), an
+// absorb shield of the seal's effect 1 percent (50) of the damage dealt
+class classic_spell_pal_seal_of_fury_damage : public SpellScript
+{
+    static constexpr uint32 SPELL_LIGHTS_FURY = 1310927;
+
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_LIGHTS_FURY });
+    }
+
+    void HandleAfterHit()
+    {
+        Player* paladin = Object::ToPlayer(GetCaster());
+        if (!paladin || GetHitDamage() <= 0)
+            return;
+
+        Item const* offhand = paladin->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
+        if (!offhand || offhand->GetTemplate()->GetClass() != ITEM_CLASS_ARMOR || offhand->GetTemplate()->GetSubClass() != ITEM_SUBCLASS_ARMOR_SHIELD)
+            return;
+
+        for (uint32 sealId : { 1311649u, 1311656u, 20163u, 20419u, 20421u, 20422u, 20423u })
+        {
+            if (Aura const* seal = paladin->GetAura(sealId))
+            {
+                // effect 1 is a plain value (Effect 0), not an aura effect
+                int32 absorb = CalculatePct(GetHitDamage(), seal->GetSpellInfo()->GetEffect(EFFECT_1).CalcValue(paladin));
+                if (absorb > 0)
+                    paladin->CastSpell(paladin, SPELL_LIGHTS_FURY, CastSpellExtraArgs(TRIGGERED_FULL_MASK).AddSpellBP0(absorb));
+                break;
+            }
+        }
+    }
+
+    void Register() override
+    {
+        AfterHit += SpellHitFn(classic_spell_pal_seal_of_fury_damage::HandleAfterHit);
+    }
+};
+
+// Judgement of Fury (20183 20411-20414 1311650 1311655): "Unleashing this Seal's energy causes Holy damage to an enemy and taunts the
+// target to attack you for 4 sec." Effect 1 (dummy) is the taunt, effect 2 (dummy) the extra threat.
+class classic_spell_pal_judgement_of_fury : public SpellScript
+{
+    void HandleTaunt(SpellEffIndex /*effIndex*/)
+    {
+        Creature* target = Object::ToCreature(GetHitUnit());
+        Unit* paladin = GetCaster()->ToUnit();
+        if (!target || !paladin || !target->CanHaveThreatList())
+            return;
+
+        target->GetThreatManager().MatchUnitThreatToHighestThreat(paladin);
+        if (target->IsAIEnabled())
+            target->AI()->AttackStart(paladin);
+    }
+
+    // effect 2 has no implicit target, so it runs once in hit mode against the judged unit
+    void HandleThreat(SpellEffIndex /*effIndex*/)
+    {
+        Creature* target = Object::ToCreature(GetExplTargetUnit());
+        Unit* paladin = GetCaster()->ToUnit();
+        if (target && paladin && target->CanHaveThreatList())
+            target->GetThreatManager().AddThreat(paladin, float(GetEffectValue()), GetSpellInfo(), true);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(classic_spell_pal_judgement_of_fury::HandleTaunt, EFFECT_1, SPELL_EFFECT_DUMMY);
+        OnEffectHit += SpellEffectFn(classic_spell_pal_judgement_of_fury::HandleThreat, EFFECT_2, SPELL_EFFECT_DUMMY);
+    }
+};
+
+// 26573, 20116, 20922, 20923, 20924 - Consecration (Classic 1.60, official dungeon sniff): the cast puts a 1 sec periodic dummy on the
+// paladin for 8 sec and creates area trigger 41311-41316 at his feet (no data on our server); each tick the official server casts the
+// rank's Consecration damage (1280345-1280349) at the consecrated spot, hitting the enemies standing in it.
+class classic_spell_pal_consecration : public AuraScript
+{
+    static uint32 TickSpell(uint32 spellId)
+    {
+        switch (spellId)
+        {
+            case 26573: return 1280345;
+            case 20116: return 1280346;
+            case 20922: return 1280347;
+            case 20923: return 1280348;
+            case 20924: return 1280349;
+            default:    return 0;
+        }
+    }
+
+    bool Validate(SpellInfo const* spellInfo) override
+    {
+        return TickSpell(spellInfo->Id) && ValidateSpellInfo({ TickSpell(spellInfo->Id) });
+    }
+
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        _center = GetUnitOwner()->GetPosition();
+    }
+
+    void HandleTick(AuraEffect const* aurEff)
+    {
+        PreventDefaultAction();
+        Unit* paladin = GetUnitOwner();
+        paladin->CastSpell(_center, TickSpell(GetId()), CastSpellExtraArgs(aurEff));
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(classic_spell_pal_consecration::HandleApply, EFFECT_2, SPELL_AURA_PERIODIC_DUMMY, AURA_EFFECT_HANDLE_REAL);
+        OnEffectPeriodic += AuraEffectPeriodicFn(classic_spell_pal_consecration::HandleTick, EFFECT_2, SPELL_AURA_PERIODIC_DUMMY);
+    }
+
+    Position _center;
+};
+
+// 15286 - Vampiric Embrace (vanilla, VMaNGOS UnitAuraProcHandler): a debuff on the enemy. Shadow damage the priest deals to it
+// heals the priest's party (15290, the priest included) for 20% of the damage. The retail script treated it as a self buff and
+// made the debuffed enemy cast the heal.
+class classic_spell_pri_vampiric_embrace : public AuraScript
+{
+    static constexpr uint32 SPELL_VAMPIRIC_EMBRACE_HEAL = 15290;
+
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_VAMPIRIC_EMBRACE_HEAL });
+    }
+
+    bool CheckProc(ProcEventInfo& eventInfo)
+    {
+        DamageInfo const* damageInfo = eventInfo.GetDamageInfo();
+        return damageInfo && damageInfo->GetDamage() && eventInfo.GetActor() && eventInfo.GetActor()->GetGUID() == GetCasterGUID();
+    }
+
+    void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
+    {
+        PreventDefaultAction();
+        Unit* priest = eventInfo.GetActor();
+        int32 heal = std::max<int32>(1, CalculatePct(int32(eventInfo.GetDamageInfo()->GetDamage()), aurEff->GetAmount()));
+
+        CastSpellExtraArgs args(aurEff);
+        args.AddSpellMod(SPELLVALUE_BASE_POINT0, heal);
+        priest->CastSpell(priest, SPELL_VAMPIRIC_EMBRACE_HEAL, args);
+    }
+
+    void Register() override
+    {
+        DoCheckProc += AuraCheckProcFn(classic_spell_pri_vampiric_embrace::CheckProc);
+        OnEffectProc += AuraEffectProcFn(classic_spell_pri_vampiric_embrace::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+    }
+};
+
 // High Alert follows the map: recalculated when entering or leaving a battleground
 class classic_player_high_alert_map : public PlayerScript
 {
@@ -779,8 +977,48 @@ public:
     }
 };
 
+// 5217 - Tiger's Fury (Classic 1.60): a dummy aura, effect 0 = 15, "increases physical damage done by 15% for 6 sec". Applied to melee
+// swings and physical abilities; the periodic hook carries no school, so bleeds are left alone.
+class classic_unit_tigers_fury : public UnitScript
+{
+public:
+    classic_unit_tigers_fury() : UnitScript("classic_unit_tigers_fury") { }
+
+    static constexpr uint32 SPELL_TIGERS_FURY = 5217;
+
+    static void Apply(Unit* attacker, uint32& damage)
+    {
+        if (!attacker || !damage || attacker->GetClass() != CLASS_DRUID)
+            return;
+
+        if (AuraEffect const* fury = attacker->GetAuraEffect(SPELL_TIGERS_FURY, EFFECT_0))
+            damage = AddPct(damage, fury->GetAmount());
+    }
+
+    void ModifyMeleeDamage(Unit* /*target*/, Unit* attacker, uint32& damage) override
+    {
+        Apply(attacker, damage);
+    }
+
+    void ModifySpellDamageTaken(Unit* /*target*/, Unit* attacker, int32& damage, SpellInfo const* spellInfo) override
+    {
+        if (!spellInfo || damage <= 0 || !(spellInfo->GetSchoolMask() & SPELL_SCHOOL_MASK_NORMAL))
+            return;
+
+        uint32 value = uint32(damage);
+        Apply(attacker, value);
+        damage = int32(value);
+    }
+};
+
 void AddSC_classic_spell_scripts()
 {
+    new classic_unit_tigers_fury();
+    RegisterSpellScript(classic_spell_pri_vampiric_embrace);
+    RegisterSpellScript(classic_spell_pal_consecration);
+    RegisterSpellScript(classic_spell_pal_seal_of_fury);
+    RegisterSpellScript(classic_spell_pal_seal_of_fury_damage);
+    RegisterSpellScript(classic_spell_pal_judgement_of_fury);
     RegisterSpellScript(classic_spell_legacy_high_alert);
     new classic_player_high_alert_map();
     RegisterSpellScript(classic_spell_legacy_dedicated_study);

@@ -302,6 +302,8 @@ class TC_GAME_API InstanceScript : public ZoneScript
         void SendEncounterUnit(EncounterFrameType type, Unit const* unit, Optional<int32> param1 = {}, Optional<int32> param2 = {});
         void SendEncounterStart(uint32 inCombatResCount = 0, uint32 maxInCombatResCount = 0, uint32 inCombatResChargeRecovery = 0, uint32 nextCombatResChargeTime = 0);
         void SendEncounterEnd();
+        void SendClassicEncounterStart(DungeonEncounterEntry const* dungeonEncounter);
+        void SendClassicEncounterEnd(DungeonEncounterEntry const* dungeonEncounter, bool success);
 
         void SendBossKillCredit(uint32 encounterId);
 
@@ -369,6 +371,7 @@ class TC_GAME_API InstanceScript : public ZoneScript
         uint32 _combatResurrectionTimer;
         uint8 _combatResurrectionCharges; // the counter for available battle resurrections
         bool _combatResurrectionTimerStarted;
+        uint32 _classicEncounterStartTime; // game time ms of the last SMSG_ENCOUNTER_START, for the SMSG_ENCOUNTER_END duration
 
     #ifdef TRINITY_API_USE_DYNAMIC_LINKING
         // Strong reference to the associated script module

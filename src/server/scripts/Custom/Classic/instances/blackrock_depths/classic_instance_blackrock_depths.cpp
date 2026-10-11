@@ -31,6 +31,7 @@
 #include "ScriptedCreature.h"
 #include "TemporarySummon.h"
 #include "classic_blackrock_depths.h"
+#include "classic_dungeon_encounter_tracker.h"
 #include "classic_script_text.h"
 #include <array>
 #include <list>
@@ -73,6 +74,74 @@ char const* const BrdSaveKeys[BRD_SAVED_ENCOUNTERS] =
 };
 }
 
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Blackrock Depths (map 230), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+enum ClassicBlackrockDepthsEncounterBosses : uint32
+{
+    CBRD_ENC_GERSTAHN = 0,
+    CBRD_ENC_ROCCOR = 1,
+    CBRD_ENC_GREBMAR = 2,
+    CBRD_ENC_RING_OF_LAW = 3,
+    CBRD_ENC_LOREGRAIN = 4,
+    CBRD_ENC_INCENDIUS = 5,
+    CBRD_ENC_STILGISS = 6,
+    CBRD_ENC_FINEOUS = 7,
+    CBRD_ENC_BAELGAR = 8,
+    CBRD_ENC_ANGERFORGE = 9,
+    CBRD_ENC_ARGELMACH = 10,
+    CBRD_ENC_HURLEY = 11,
+    CBRD_ENC_PHALANX = 12,
+    CBRD_ENC_RIBBLY = 13,
+    CBRD_ENC_PLUGGER = 14,
+    CBRD_ENC_VAULT = 15,
+    CBRD_ENC_FLAMELASH = 16,
+    CBRD_ENC_SEVEN = 17,
+    CBRD_ENC_MAGMUS = 18,
+    CBRD_ENC_MOIRA = 19,
+    CBRD_ENC_THAURISSAN = 20,
+    CBRD_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicBlackrockDepthsEncounterBossEntries[] =
+{
+    { CBRD_ENC_GERSTAHN, 9018 }, // High Interrogator Gerstahn
+    { CBRD_ENC_ROCCOR, 9025 }, // Lord Roccor
+    { CBRD_ENC_GREBMAR, 9319 }, // Houndmaster Grebmar
+    { CBRD_ENC_RING_OF_LAW, 9027 }, // Gorosh the Dervish
+    { CBRD_ENC_RING_OF_LAW, 9028 }, // Grizzle
+    { CBRD_ENC_RING_OF_LAW, 9029 }, // Eviscerator
+    { CBRD_ENC_RING_OF_LAW, 9030 }, // Ok'thor the Breaker
+    { CBRD_ENC_RING_OF_LAW, 9031 }, // Anub'shiah
+    { CBRD_ENC_RING_OF_LAW, 9032 }, // Hedrum the Creeper
+    { CBRD_ENC_LOREGRAIN, 9024 }, // Pyromancer Loregrain
+    { CBRD_ENC_INCENDIUS, 9017 }, // Lord Incendius
+    { CBRD_ENC_STILGISS, 9041 }, // Warder Stilgiss
+    { CBRD_ENC_STILGISS, 9042, CLASSIC_DUNGEON_BOSS_ENGAGE_ONLY }, // Verek
+    { CBRD_ENC_FINEOUS, 9056 }, // Fineous Darkvire
+    { CBRD_ENC_BAELGAR, 9016 }, // Bael'Gar
+    { CBRD_ENC_ANGERFORGE, 9033 }, // General Angerforge
+    { CBRD_ENC_ARGELMACH, 8983 }, // Golem Lord Argelmach
+    { CBRD_ENC_HURLEY, 9537 }, // Hurley Blackbreath
+    { CBRD_ENC_PHALANX, 9502 }, // Phalanx
+    { CBRD_ENC_RIBBLY, 9543 }, // Ribbly Screwspigot
+    { CBRD_ENC_PLUGGER, 9499 }, // Plugger Spazzring
+    { CBRD_ENC_VAULT, 9476 }, // Watchman Doomgrip (The Vault)
+    { CBRD_ENC_FLAMELASH, 9156 }, // Ambassador Flamelash
+    { CBRD_ENC_SEVEN, 9034 }, // Hate'rel
+    { CBRD_ENC_SEVEN, 9035 }, // Anger'rel
+    { CBRD_ENC_SEVEN, 9036 }, // Vile'rel
+    { CBRD_ENC_SEVEN, 9037 }, // Gloom'rel
+    { CBRD_ENC_SEVEN, 9038 }, // Seeth'rel
+    { CBRD_ENC_SEVEN, 9039 }, // Doom'rel
+    { CBRD_ENC_SEVEN, 9040 }, // Dope'rel
+    { CBRD_ENC_MAGMUS, 9938 }, // Magmus
+    { CBRD_ENC_MOIRA, 8929 }, // Princess Moira Bronzebeard
+    { CBRD_ENC_THAURISSAN, 9019 } // Emperor Dagran Thaurissan
+};
+}
+
 class classic_instance_blackrock_depths : public InstanceMapScript
 {
 public:
@@ -83,12 +152,45 @@ public:
         classic_instance_blackrock_depths_InstanceScript(InstanceMap* map) : InstanceScript(map)
         {
             SetHeaders("BRDC");
-            SetBossNumber(0);
+            SetBossNumber(CBRD_ENC_MAX);
+            static constexpr DungeonEncounterData encounters[] =
+            {
+                { CBRD_ENC_GERSTAHN, {{ 227 }} },
+                { CBRD_ENC_ROCCOR, {{ 228 }} },
+                { CBRD_ENC_GREBMAR, {{ 229 }} },
+                { CBRD_ENC_RING_OF_LAW, {{ 230 }} },
+                { CBRD_ENC_LOREGRAIN, {{ 231 }} },
+                { CBRD_ENC_INCENDIUS, {{ 232 }} },
+                { CBRD_ENC_STILGISS, {{ 233 }} },
+                { CBRD_ENC_FINEOUS, {{ 234 }} },
+                { CBRD_ENC_BAELGAR, {{ 235 }} },
+                { CBRD_ENC_ANGERFORGE, {{ 236 }} },
+                { CBRD_ENC_ARGELMACH, {{ 237 }} },
+                { CBRD_ENC_HURLEY, {{ 238 }} },
+                { CBRD_ENC_PHALANX, {{ 239 }} },
+                { CBRD_ENC_RIBBLY, {{ 240 }} },
+                { CBRD_ENC_PLUGGER, {{ 241 }} },
+                { CBRD_ENC_VAULT, {{ 2791 }} },
+                { CBRD_ENC_FLAMELASH, {{ 242 }} },
+                { CBRD_ENC_SEVEN, {{ 243 }} },
+                { CBRD_ENC_MAGMUS, {{ 244 }} },
+                { CBRD_ENC_MOIRA, {{ 2789 }} },
+                { CBRD_ENC_THAURISSAN, {{ 2790 }} }
+            };
+            LoadDungeonEncounterData(encounters);
 
             for (uint32 i = 0; i < BRD_SAVED_ENCOUNTERS; ++i)
                 _savedEncounter[i] = std::make_unique<PersistentInstanceScriptValue<uint32>>(*this, BrdSaveKeys[i], uint32(NOT_STARTED));
 
             Initialize();
+        }
+
+        ClassicDungeonEncounterTracker _encounterTracker{ *this, ClassicBlackrockDepthsEncounterBossEntries };
+
+        void OnCreatureRemove(Creature* creature) override
+        {
+            InstanceScript::OnCreatureRemove(creature);
+            _encounterTracker.OnCreatureRemove(creature);
         }
 
         uint32 m_auiEncounter[MAX_ENCOUNTER];
@@ -266,6 +368,7 @@ public:
         void OnCreatureCreate(Creature* creature) override
         {
             InstanceScript::OnCreatureCreate(creature);
+            _encounterTracker.OnCreatureCreate(creature);
 
             switch (creature->GetEntry())
             {
@@ -488,6 +591,8 @@ public:
         // VMaNGOS OnCreatureDeath
         void OnUnitDeath(Unit* unit) override
         {
+            _encounterTracker.OnUnitDeath(unit);
+
             if (unit->GetTypeId() != TYPEID_UNIT)
                 return;
 
@@ -1118,6 +1223,8 @@ public:
 
         void Update(uint32 diff) override
         {
+            _encounterTracker.Update(diff);
+
             if (m_uiDagranTimer)
             {
                 if (m_uiDagranTimer <= diff)

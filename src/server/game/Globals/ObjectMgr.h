@@ -1044,6 +1044,8 @@ class TC_GAME_API ObjectMgr
         CreatureModelInfo const* GetCreatureModelRandomGender(CreatureModel* model, CreatureTemplate const* creatureTemplate) const;
         CreatureSummonedData const* GetCreatureSummonedData(uint32 entryId) const;
         std::pair<uint8, uint8> const* GetCreatureClassicLevel(uint32 entry) const;
+        ClassicCreatureStats const* GetCreatureClassicStats(uint32 entry) const;
+        ClassicCreatureClassLevelStats const* GetCreatureClassicClassLevelStats(uint8 level, uint8 unitClass) const;
         void LoadItemClassicBlock();
         uint32 GetItemClassicBlock(uint32 entry) const;
         static CreatureModel const* ChooseDisplayId(CreatureTemplate const* cinfo, CreatureData const* data = nullptr);
@@ -1823,6 +1825,8 @@ class TC_GAME_API ObjectMgr
         CreatureDataContainer _creatureDataStore;
         CreatureTemplateContainer _creatureTemplateStore;
         std::unordered_map<uint32, std::pair<uint8, uint8>> _creatureClassicLevelStore;
+        std::unordered_map<uint32, ClassicCreatureStats> _creatureClassicStatsStore;
+        std::unordered_map<uint16, ClassicCreatureClassLevelStats> _creatureClassicClassLevelStatsStore;
         std::unordered_map<uint32, uint32> _itemClassicBlockStore;
         CreatureModelContainer _creatureModelStore;
         std::unordered_map<uint32, CreatureSummonedData> _creatureSummonedDataStore;

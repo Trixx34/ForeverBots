@@ -26,10 +26,47 @@
 #include "classic_gnomeregan.h"
 #include <list>
 
+namespace
+{
+// Classic 1.60: TC boss states for the DungeonEncounter.db2 encounters of Gnomeregan (map 90), driven by
+// ClassicDungeonEncounterTracker (boss kill credit, encounter start / end, instance lock)
+// TODO(classic): the client only has difficulty 201 (and 198) encounters here and none for
+// difficulty 1 (Normal) that the server runs, so no kill credit is sent until such entries exist
+enum ClassicGnomereganEncounterBosses : uint32
+{
+    CGNOME_ENC_GRUBBIS = 0,
+    CGNOME_ENC_VISCOUS_FALLOUT = 1,
+    CGNOME_ENC_ELECTROCUTIONER = 2,
+    CGNOME_ENC_PUMMELER = 3,
+    CGNOME_ENC_THERMAPLUGG = 4,
+    CGNOME_ENC_MAX
+};
+
+constexpr ClassicDungeonBossEntry ClassicGnomereganEncounterBossEntries[] =
+{
+    { CGNOME_ENC_GRUBBIS, 7361 }, // Grubbis
+    { CGNOME_ENC_VISCOUS_FALLOUT, 7079 }, // Viscous Fallout
+    { CGNOME_ENC_ELECTROCUTIONER, 6235 }, // Electrocutioner 6000
+    { CGNOME_ENC_PUMMELER, 6229 }, // Crowd Pummeler 9-60
+    { CGNOME_ENC_THERMAPLUGG, 7800 } // Mekgineer Thermaplugg
+};
+}
+
 classic_instance_gnomeregan_InstanceScript::classic_instance_gnomeregan_InstanceScript(InstanceMap* map) : InstanceScript(map),
-    _savedGrubbis(*this, "Grubbis", NOT_STARTED), _savedThermaplugg(*this, "Thermaplugg", NOT_STARTED)
+    _savedGrubbis(*this, "Grubbis", NOT_STARTED), _savedThermaplugg(*this, "Thermaplugg", NOT_STARTED),
+    _encounterTracker(*this, ClassicGnomereganEncounterBossEntries)
 {
     SetHeaders(ClassicGnomereganDataHeader);
+    SetBossNumber(CGNOME_ENC_MAX);
+    static constexpr DungeonEncounterData encounters[] =
+    {
+        { CGNOME_ENC_GRUBBIS, {{ 2768 }} },
+        { CGNOME_ENC_VISCOUS_FALLOUT, {{ 2769 }} },
+        { CGNOME_ENC_ELECTROCUTIONER, {{ 2770 }} },
+        { CGNOME_ENC_PUMMELER, {{ 2771 }} },
+        { CGNOME_ENC_THERMAPLUGG, {{ 2772 }} }
+    };
+    LoadDungeonEncounterData(encounters);
     for (uint32& encounter : _encounter)
         encounter = NOT_STARTED;
 }
@@ -48,6 +85,7 @@ void classic_instance_gnomeregan_InstanceScript::AfterDataLoad()
 void classic_instance_gnomeregan_InstanceScript::OnCreatureCreate(Creature* creature)
 {
     InstanceScript::OnCreatureCreate(creature);
+    _encounterTracker.OnCreatureCreate(creature);
 
     switch (creature->GetEntry())
     {
@@ -60,6 +98,22 @@ void classic_instance_gnomeregan_InstanceScript::OnCreatureCreate(Creature* crea
         default:
             break;
     }
+}
+
+void classic_instance_gnomeregan_InstanceScript::OnCreatureRemove(Creature* creature)
+{
+    InstanceScript::OnCreatureRemove(creature);
+    _encounterTracker.OnCreatureRemove(creature);
+}
+
+void classic_instance_gnomeregan_InstanceScript::OnUnitDeath(Unit* unit)
+{
+    _encounterTracker.OnUnitDeath(unit);
+}
+
+void classic_instance_gnomeregan_InstanceScript::Update(uint32 diff)
+{
+    _encounterTracker.Update(diff);
 }
 
 void classic_instance_gnomeregan_InstanceScript::OnGameObjectCreate(GameObject* go)
