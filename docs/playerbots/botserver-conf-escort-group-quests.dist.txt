@@ -1,0 +1,148 @@
+# Entries for botserver.conf.dist (append to src/server/worldserver/botserver.conf.dist once the file exists, PR #50).
+# Also map the log tag prefix: QUEST_ASSIST_ and QUEST_ESCORT_ and QUEST_USE_ITEM go to the quest category in BotLogCategory.h
+# (already the case when the QUEST_ prefix maps to quest).
+
+###################################################################################################
+# ESCORT AND GROUP QUESTS
+#
+# Bots help players with escort and group quests, and use quest items on creatures.
+# See docs/playerbots/feature-bot-escort-group-quests-20261008.md.
+#
+###################################################################################################
+
+#
+#    Bot.Quest.UseItems
+#        Description: Quests that ask the player to use a quest item on a creature (the item spell needs a target;
+#                      start item, quest-dropped item or quest item objective): the bot walks to the creature, casts
+#                      the item on it and counts the credit. A hostile creature gets one opening cast and is then
+#                      fought as usual; a friendly one is cast on up to MaxCasts times. Logged as QUEST_USE_ITEM /
+#                      QUEST_USE_ITEM_FAILED / QUEST_USE_ITEM_GIVEUP.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.UseItems = 0
+
+#
+#    Bot.Quest.UseItems.MaxCasts
+#        Description: Casts of the item on one creature without credit before the bot gives that creature up for two
+#                      minutes.
+#        Default:     4
+#        Values:      whole number 1 to 10
+Bot.Quest.UseItems.MaxCasts = 4
+
+#
+#    Bot.Quest.UseItems.TimeoutSec
+#        Description: Longest time spent on one creature (walking and casting) before it is given up.
+#        Default:     60
+#        Values:      whole number 10 to 600 (seconds)
+Bot.Quest.UseItems.TimeoutSec = 60
+
+#
+#    Bot.Quest.Assist.Enabled
+#        Description: Bots help players with group and escort quests. Idle bots near a player who carries such a quest
+#                      join the player's party, take the quest, follow the player, and on an escort fight what attacks
+#                      the escorted NPC. The player sends them away by removing them from the group (they are not asked
+#                      again for that quest). Logged as QUEST_ASSIST_STARTED / QUEST_ASSIST_JOINED /
+#                      QUEST_ASSIST_RELEASED / QUEST_ASSIST_ENDED / QUEST_ESCORT_GUARD. Dungeon, raid, PvP and world
+#                      event quests are left to their own features. Bots that belong to a player (alts) are never
+#                      asked.
+#        Default:     0
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.Assist.Enabled = 0
+
+#
+#    Bot.Quest.Assist.MaxHelpers
+#        Description: Most bots that join one player.
+#        Default:     2
+#        Values:      whole number 1 to 4
+Bot.Quest.Assist.MaxHelpers = 2
+
+#
+#    Bot.Quest.Assist.RecruitRadius
+#        Description: A bot farther than this from the player is not asked.
+#        Default:     60
+#        Values:      whole number 10 to 300 (yards)
+Bot.Quest.Assist.RecruitRadius = 60
+
+#
+#    Bot.Quest.Assist.MaxLevelGap
+#        Description: Levels a helper may differ from the player, up or down.
+#        Default:     4
+#        Values:      whole number 0 to 20
+Bot.Quest.Assist.MaxLevelGap = 4
+
+#
+#    Bot.Quest.Assist.MinLevel
+#        Description: Lowest level of a helper bot.
+#        Default:     5
+#        Values:      whole number 1 to 80
+Bot.Quest.Assist.MinLevel = 5
+
+#
+#    Bot.Quest.Assist.LifetimeMin
+#        Description: Longest help for one quest. The player may be offered help again afterwards.
+#        Default:     30
+#        Values:      whole number 2 to 240 (minutes)
+Bot.Quest.Assist.LifetimeMin = 30
+
+#
+#    Bot.Quest.Assist.LeashYards
+#        Description: A helper farther than this from the player counts as lost.
+#        Default:     80
+#        Values:      whole number 20 to 500 (yards)
+Bot.Quest.Assist.LeashYards = 80
+
+#
+#    Bot.Quest.Assist.LeashSec
+#        Description: A helper lost this long is let go.
+#        Default:     45
+#        Values:      whole number 5 to 600 (seconds)
+Bot.Quest.Assist.LeashSec = 45
+
+#
+#    Bot.Quest.Assist.DoneGraceSec
+#        Description: The helpers stay this long after the quest is done or abandoned (the walk to the turn-in).
+#        Default:     30
+#        Values:      whole number 0 to 600 (seconds)
+Bot.Quest.Assist.DoneGraceSec = 30
+
+#
+#    Bot.Quest.Assist.EscortGuard
+#        Description: Helpers attack creatures that attack the escorted NPC of an escort quest.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.Assist.EscortGuard = 1
+
+#
+#    Bot.Quest.Assist.GuardRadius
+#        Description: A helper only takes an attacker of the escorted NPC that is closer than this.
+#        Default:     45
+#        Values:      whole number 10 to 100 (yards)
+Bot.Quest.Assist.GuardRadius = 45
+
+#
+#    Bot.Quest.Assist.Notify
+#        Description: Tell the player with a system message when bots join or leave.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Quest.Assist.Notify = 1
+
+#
+#    Bot.Quest.Assist.IntervalSec
+#        Description: Time between two checks of the running helper sessions.
+#        Default:     2
+#        Values:      whole number 1 to 30 (seconds)
+Bot.Quest.Assist.IntervalSec = 2
+
+#
+#    Bot.Quest.Assist.ScanEverySec
+#        Description: Time between two looks for players who could use help.
+#        Default:     10
+#        Values:      whole number 2 to 600 (seconds)
+Bot.Quest.Assist.ScanEverySec = 10
+
+#
+#    Bot.Quest.Assist.MaxSessions
+#        Description: Most players helped at the same time.
+#        Default:     20
+#        Values:      whole number 1 to 500
+Bot.Quest.Assist.MaxSessions = 20

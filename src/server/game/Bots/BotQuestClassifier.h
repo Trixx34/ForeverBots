@@ -40,6 +40,7 @@ namespace BotQuest
         uint32 QuestId = 0;
         bool Repeatable = false;   // daily, weekly, monthly or repeatable
         uint32 SuggestedPlayers = 0;
+        bool Escort = false;       // quest info "escort" (QUEST_INFO_ESCORT): an NPC walks a route and the player keeps it alive
         int32 LimitTime = 0;
         uint32 RequiredSkill = 0;
         uint32 RequiredMinRepFaction = 0;
@@ -72,6 +73,8 @@ namespace BotQuest
         virtual bool GameObjectHasSpawn(uint32 /*goEntry*/) const { return false; }
         virtual bool HasEnderRow(uint32 questId) const = 0;
         virtual bool HasEnderSpawn(uint32 questId) const = 0;
+        // an escort quest a bot can finish on its own. Default: none (a bot escort needs a player to walk with; see BotQuestAssist).
+        virtual bool EscortQuestSupported(uint32 /*questId*/) const { return false; }
         // a completion-event quest the bots can finish anyway (hunter taming). Default: none.
         virtual bool EventQuestSupported(uint32 /*questId*/) const { return false; }
     };

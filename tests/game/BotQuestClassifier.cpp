@@ -67,6 +67,8 @@ struct FakeWorld final : QuestWorldLookup
     bool UseObjects = true;                              // Bot.Quest.UseObjects
     bool UseObjectObjectives() const override { return UseObjects; }
     bool GameObjectHasSpawn(uint32 goEntry) const override { return UseGoSpawned.count(goEntry) != 0; }
+    std::set<uint32> EscortOk;                           // escort quests the bots can finish
+    bool EscortQuestSupported(uint32 questId) const override { return EscortOk.count(questId) != 0; }
     bool HasEnderRow(uint32 questId) const override { return EnderRows.count(questId) != 0; }
     bool HasEnderSpawn(uint32 questId) const override { return EnderSpawned.count(questId) != 0; }
 };
@@ -203,6 +205,46 @@ TEST_CASE("BotQuest classifier: NEEDS_GROUP", "[BotQuest]")
         CHECK(IsCode(r, "NEEDS_GROUP"));
         CHECK_FALSE(r.Silent);
         CHECK(r.Info == "suggested players 3");
+    }
+}
+
+TEST_CASE("BotQuest classifier: NEEDS_ESCORT", "[BotQuest]")
+{
+    FakeWorld world;
+    QuestFacts q = MakeQuest(world);
+    q.Escort = true;
+
+    SECTION("an escort quest is blocked")
+    {
+        ClassifierResult r = ClassifyQuest(q, world);
+        CHECK(IsCode(r, "NEEDS_ESCORT"));
+        CHECK_FALSE(r.Silent);
+    }
+
+    SECTION("a supported escort quest is plannable")
+    {
+        world.EscortOk.insert(QUEST);
+        CHECK(ClassifyQuest(q, world).Code == nullptr);
+    }
+
+    SECTION("a repeatable escort quest stays silent")
+    {
+        q.Repeatable = true;
+        ClassifierResult r = ClassifyQuest(q, world);
+        CHECK(IsCode(r, "REPEATABLE"));
+        CHECK(r.Silent);
+    }
+
+    SECTION("a group escort reports the group first")
+    {
+        q.SuggestedPlayers = 3;
+        CHECK(IsCode(ClassifyQuest(q, world), "NEEDS_GROUP"));
+    }
+
+    SECTION("the escort block wins over the completion event block")
+    {
+        q.CompletionEvent = true;
+        CHECK(IsCode(ClassifyQuest(q, world), "NEEDS_ESCORT"));
     }
 }
 
