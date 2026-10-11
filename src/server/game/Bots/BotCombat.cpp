@@ -301,6 +301,7 @@ constexpr SpellDef SPELLS[] =
     { CLASS_DRUID,   1079,  "Rip",                  Kind::Finisher, 0, 3, { RC::TargetHpAbove, 50 }, FORM_CAT_FORM },
     { CLASS_DRUID,   22568, "Ferocious Bite",       Kind::Finisher, 0, 4, {}, FORM_CAT_FORM },
     { CLASS_DRUID,   1822,  "Rake",                 Kind::Dot, 0, 0, { RC::TargetHpAbove, 40 }, FORM_CAT_FORM },
+    { CLASS_DRUID,   9005,  "Pounce",               Kind::Direct, 5215, 0, {}, FORM_CAT_FORM },   // the cat's opener, only from Prowl (ReqAura)
     { CLASS_DRUID,   5221,  "Shred",                Kind::Direct, 0, 0, {}, FORM_CAT_FORM },   // needs a position behind the target: fails with NOT_BEHIND otherwise and the next row runs
     { CLASS_DRUID,   1082,  "Claw",                 Kind::Direct, 0, 0, {}, FORM_CAT_FORM },
     { CLASS_DRUID,   467,   "Thorns",               Kind::SelfBuff, 0, 0, { RC::Opener, 10 }, FORM_NONE },
@@ -418,6 +419,7 @@ struct FightData
     bool Chasing = false;
     ObjectGuid ChaseGuid;
     bool ChaseRanged = false;
+    bool ChaseBehind = false;   // the current chase aims at the back of the target (stealthed melee bot)
     float ChaseRange = 0.0f;
     bool MeleeFallback = false;      // a caster/hunter that cannot cast any more fights in melee
     bool FallbackClearable = false;  // the fallback came from mana or wand failures: cleared when the mana is back
@@ -1149,14 +1151,21 @@ public:
         }
 
         bool const chaseOk = bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE;
-        if (!ctx->Chasing || !chaseOk || ctx->ChaseGuid != target->GetGUID() || ctx->ChaseRanged != wantRanged || (wantRanged && std::fabs(ctx->ChaseRange - range) > 0.5f))
+        // Bot.AI.Rotation.Enabled: a stealthed melee bot (rogue, prowling cat) closes in from behind, where Ambush and Pounce work; the chase
+        // is redone when the stealth ends so the bot does not keep circling a target that already fights it
+        bool const wantBehind = Cfg().Rotation && !wantRanged && bot->HasAuraType(SPELL_AURA_MOD_STEALTH) && target->GetVictim() != bot;
+        if (!ctx->Chasing || !chaseOk || ctx->ChaseGuid != target->GetGUID() || ctx->ChaseRanged != wantRanged || ctx->ChaseBehind != wantBehind ||
+            (wantRanged && std::fabs(ctx->ChaseRange - range) > 0.5f))
         {
             if (chaseOk)
                 bot->GetMotionMaster()->Remove(CHASE_MOTION_TYPE);
             if (wantRanged)
                 bot->GetMotionMaster()->MoveChase(target, ChaseRange(range));
+            else if (wantBehind)
+                bot->GetMotionMaster()->MoveChase(target, {}, ChaseAngle(float(M_PI), float(M_PI_4) / 2.0f));
             else
                 bot->GetMotionMaster()->MoveChase(target);
+            ctx->ChaseBehind = wantBehind;
             ctx->Chasing = true;
             ctx->ChaseGuid = target->GetGUID();
             ctx->ChaseRanged = wantRanged;
@@ -1412,6 +1421,10 @@ bool HasRequiredAura(Player* bot, BotCombatCtx* ctx, uint32 root)
     for (Resolved const& s : ctx->Spells)
         if (s.Def->Root == root)
             return bot->HasAura(s.Id);
+    // an aura without a row of its own (Stealth, Prowl): any rank of its spell chain counts
+    for (uint32 id = sSpellMgr->GetNextSpellInChain(root), guard = 0; id && guard < 16; id = sSpellMgr->GetNextSpellInChain(id), ++guard)
+        if (bot->HasAura(id))
+            return true;
     return false;
 }
 
@@ -1830,6 +1843,7 @@ struct PreBuffDef
     bool Party = false;    // also cast on group members that lack it
     bool Pet = false;      // a pet summon: only without a pet
     bool Stealth = false;  // only with an unaware hostile creature close by (stealthed travel is slow)
+    ShapeshiftForm Form = FORM_NONE;   // the form the bot must be in to cast it (Prowl needs Cat Form)
 };
 
 constexpr PreBuffDef PREBUFFS[] =
@@ -1844,6 +1858,8 @@ constexpr PreBuffDef PREBUFFS[] =
     { CLASS_WARLOCK, 697,   "Summon Voidwalker", false, true },   // needs a Soul Shard: without one the cast fails and the Imp row below runs
     { CLASS_WARLOCK, 688,   "Summon Imp", false, true },
     { CLASS_ROGUE,   1784,  "Stealth", false, false, true },
+    { CLASS_DRUID,   768,   "Cat Form", false, false, true },                       // level 20: a druid that sees an unaware mob shifts to the cat, then prowls
+    { CLASS_DRUID,   5215,  "Prowl", false, false, true, FORM_CAT_FORM },
     { CLASS_HUNTER,  13165, "Aspect of the Hawk" },
     { CLASS_SHAMAN,  324,   "Lightning Shield" },
 };
@@ -1868,7 +1884,7 @@ public:
     {
         Player* bot = GetBot();
         return Cfg().Rotation && bot->IsAlive() && !bot->IsInCombat() && !bot->IsMounted() && !CastingNow(bot) && bot->GetStandState() == UNIT_STAND_STATE_STAND &&
-            bot->GetShapeshiftForm() == FORM_NONE && !bot->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_CONFUSED | UNIT_STATE_FLEEING);
+            (bot->GetShapeshiftForm() == FORM_NONE || bot->GetShapeshiftForm() == FORM_CAT_FORM) && !bot->HasUnitState(UNIT_STATE_STUNNED | UNIT_STATE_CONFUSED | UNIT_STATE_FLEEING);
     }
     bool Execute() override
     {
@@ -1882,8 +1898,10 @@ public:
         for (size_t i = 0; i < std::size(PREBUFFS); ++i)
         {
             PreBuffDef const& def = PREBUFFS[i];
-            if (def.Class != bot->GetClass() || !bot->HasSpell(def.Root))
+            if (def.Class != bot->GetClass() || !bot->HasSpell(def.Root) || bot->GetShapeshiftForm() != def.Form)
                 continue;
+            if (def.Class == CLASS_DRUID && (!Cfg().DruidForms || Cfg().DruidBear))
+                continue;   // the cat sneak-up belongs to the cat build (Bot.AI.Rotation.DruidForms, not DruidBear)
             if (def.Pet && (bot->GetPet() || !bot->GetPetGUID().IsEmpty()))
                 continue;
             uint32 id = def.Root;
