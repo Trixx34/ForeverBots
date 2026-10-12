@@ -40,6 +40,13 @@ std::vector<std::string> const SupportedTier1Hooks = {
 // How long a module gets to exit after Shutdown before it is terminated.
 constexpr std::chrono::milliseconds ShutdownGrace{2000};
 
+// A module's executable is <Modules.Dir>/<name>/<name>, with the platform's executable suffix.
+#ifdef _WIN32
+constexpr char const* ModuleExecutableSuffix = ".exe";
+#else
+constexpr char const* ModuleExecutableSuffix = "";
+#endif
+
 // Module actions waiting for the world thread, and how many one world tick runs.
 constexpr size_t MaxPendingActions = 256;
 constexpr size_t MaxActionsPerTick = 32;
@@ -159,7 +166,7 @@ void ModuleMgr::ProcessModuleDirectory(std::string const& root, std::string cons
         d.Version = info.Version;
         d.ProtocolVersion = info.ProtocolVersion;
         d.Capabilities = CapabilitiesOf(info);
-        d.Executable = (dir / name).string();
+        d.Executable = (dir / (name + ModuleExecutableSuffix)).string();
         d.Endpoint = (fs::path(root) / (name + ".sock")).string();
     }
 

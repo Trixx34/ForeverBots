@@ -10,14 +10,14 @@
  * stops reading fills its queue, and further notifications are dropped; the world thread is not held up.
  *
  * No TrinityCore dependencies, so it can be unit-tested with the stubs in tests/.
- * POSIX only for now; on Windows Listen() fails with a clear error until the named-pipe transport
- * is written.
+ * Platform socket calls live in ModuleSocket (Unix domain sockets on POSIX, AF_UNIX through Winsock on Windows).
  */
 
 #ifndef TRINITYCORE_MODULE_SESSION_H
 #define TRINITYCORE_MODULE_SESSION_H
 
 #include "Define.h"
+#include "ModuleSocket.h"
 #include "ModuleWire.h"
 
 #include <atomic>
@@ -129,10 +129,10 @@ class ModuleSession
         Listener _listener;
         ActionHandler _actionHandler;
 
-        int _listenFd = -1;
-        int _connFd = -1;
-        int _wakeRead = -1;
-        int _wakeWrite = -1;
+        ModuleSocket::Handle _listenFd = ModuleSocket::kInvalid;
+        ModuleSocket::Handle _connFd = ModuleSocket::kInvalid;
+        ModuleSocket::Handle _wakeRead = ModuleSocket::kInvalid;
+        ModuleSocket::Handle _wakeWrite = ModuleSocket::kInvalid;
         std::thread _thread;
         std::atomic<bool> _stop{false};
         std::atomic<bool> _accepted{false};

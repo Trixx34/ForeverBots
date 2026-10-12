@@ -1,54 +1,14 @@
 /*
  * Tier 1 session: see ModuleSession.h. Frames are a 4-byte little-endian length plus an Envelope
  * (ModuleWire.h). Socket I/O happens only on the session thread; other threads queue frames and wake it.
+ * Platform socket calls are in ModuleSocket.h, so this file is the same on POSIX and Windows.
  */
 
 #include "ModuleSession.h"
 
+#include "ModuleSocket.h"
+
 #include <algorithm>
-#include <cerrno>
-#include <cstring>
-
-#if defined(_WIN32)
-
-ModuleSession::ModuleSession(Settings settings, uint64 moduleId, Listener listener)
-    : _settings(std::move(settings)), _moduleId(moduleId), _listener(std::move(listener)) { }
-ModuleSession::~ModuleSession() = default;
-bool ModuleSession::Listen(std::string& error)
-{
-    error = "module transport is not implemented on Windows yet";
-    return false;
-}
-void ModuleSession::Start() { }
-void ModuleSession::Stop() { }
-void ModuleSession::Run() { }
-bool ModuleSession::Subscribes(std::string_view) const { return false; }
-bool ModuleSession::NotifyEvent(std::string_view, ModuleWire::NotifyKind, uint64) { return false; }
-bool ModuleSession::NotifyItemLooted(std::string_view, ModuleWire::ItemLootedEvent const&) { return false; }
-bool ModuleSession::SendActionReply(ModuleWire::ActionReplyMsg const&) { return false; }
-void ModuleSession::SetActionHandler(ActionHandler) { }
-std::optional<ModuleWire::EventReplyMsg> ModuleSession::RequestCommand(std::string_view, std::string_view, uint64,
-                                                                       std::chrono::milliseconds)
-{
-    return std::nullopt;
-}
-bool ModuleSession::Enqueue(std::string) { return false; }
-bool ModuleSession::FlushOutgoing() { return false; }
-bool ModuleSession::HasPendingOutgoing() const { return false; }
-bool ModuleSession::SendBlocking(std::string, Clock::time_point) { return false; }
-void ModuleSession::Wake() { }
-void ModuleSession::DrainWake() { }
-void ModuleSession::CompleteRequest(ModuleWire::EventReplyMsg) { }
-void ModuleSession::FailPendingRequests() { }
-
-#else
-
-#include <fcntl.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <sys/un.h>
-#include <unistd.h>
 
 namespace
 {
@@ -62,56 +22,47 @@ constexpr std::chrono::milliseconds FrameReadTimeout{2000};
 // How long a Shutdown gets to be written before the connection is closed anyway.
 constexpr std::chrono::milliseconds ShutdownWriteTimeout{1000};
 
-void SetCloexec(int fd)
+using Clock = std::chrono::steady_clock;
+
+bool WaitFor(ModuleSocket::Handle fd, short events, std::chrono::milliseconds timeout)
 {
-    int flags = ::fcntl(fd, F_GETFD);
-    if (flags != -1)
-        ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+    ModuleSocket::Watch watch;
+    watch.Fd = fd;
+    watch.Events = events;
+    return ModuleSocket::Poll(&watch, 1, timeout) > 0;
 }
 
-void SetNonBlocking(int fd)
-{
-    int flags = ::fcntl(fd, F_GETFL);
-    if (flags != -1)
-        ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-
-// Waits until `fd` is ready for `events` or the timeout expires. POLLHUP/POLLERR count as ready, so the
-// next read or write reports the failure.
-bool WaitFor(int fd, short events, std::chrono::milliseconds timeout)
-{
-    pollfd pfd{};
-    pfd.fd = fd;
-    pfd.events = events;
-    int const ms = static_cast<int>(std::max<long long>(0, timeout.count()));
-    int rc = 0;
-    do
-    {
-        rc = ::poll(&pfd, 1, ms);
-    } while (rc < 0 && errno == EINTR);
-    return rc > 0;
-}
-
-bool ReadExact(int fd, void* buffer, size_t length)
+// Reads exactly `length` bytes, waiting for the socket until the deadline.
+bool ReadExact(ModuleSocket::Handle fd, void* buffer, size_t length, Clock::time_point deadline)
 {
     auto* out = static_cast<uint8*>(buffer);
     while (length > 0)
     {
-        ssize_t const n = ::recv(fd, out, length, 0);
-        if (n < 0 && errno == EINTR)
+        std::ptrdiff_t const n = ModuleSocket::Recv(fd, out, length);
+        if (n > 0)
+        {
+            out += n;
+            length -= static_cast<size_t>(n);
             continue;
-        if (n <= 0)
+        }
+        if (n == 0)
+            return false; // peer closed
+        if (ModuleSocket::Interrupted())
+            continue;
+        if (!ModuleSocket::WouldBlock())
             return false;
-        out += n;
-        length -= static_cast<size_t>(n);
+
+        auto const remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now());
+        if (remaining.count() <= 0 || !WaitFor(fd, ModuleSocket::kReadable, remaining))
+            return false;
     }
     return true;
 }
 
-bool ReadFrame(int fd, std::string& body)
+bool ReadFrame(ModuleSocket::Handle fd, std::string& body, Clock::time_point deadline)
 {
     uint8 header[4];
-    if (!ReadExact(fd, header, sizeof(header)))
+    if (!ReadExact(fd, header, sizeof(header), deadline))
         return false;
     uint32 const length = static_cast<uint32>(header[0]) |
                           (static_cast<uint32>(header[1]) << 8) |
@@ -120,15 +71,7 @@ bool ReadFrame(int fd, std::string& body)
     if (length == 0 || length > ModuleWire::MaxFrameBytes)
         return false;
     body.assign(length, '\0');
-    return ReadExact(fd, body.data(), body.size());
-}
-
-void SetReceiveTimeout(int fd, std::chrono::milliseconds timeout)
-{
-    timeval tv{};
-    tv.tv_sec = static_cast<time_t>(timeout.count() / 1000);
-    tv.tv_usec = static_cast<suseconds_t>((timeout.count() % 1000) * 1000);
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    return ReadExact(fd, body.data(), body.size(), deadline);
 }
 
 } // namespace
@@ -141,57 +84,34 @@ ModuleSession::ModuleSession(Settings settings, uint64 moduleId, Listener listen
 ModuleSession::~ModuleSession()
 {
     Stop();
-    if (_wakeRead >= 0)
-        ::close(_wakeRead);
-    if (_wakeWrite >= 0)
-        ::close(_wakeWrite);
+    if (_wakeRead != ModuleSocket::kInvalid)
+        ModuleSocket::Close(_wakeRead);
+    if (_wakeWrite != ModuleSocket::kInvalid)
+        ModuleSocket::Close(_wakeWrite);
 }
 
 bool ModuleSession::Listen(std::string& error)
 {
-    sockaddr_un addr{};
-    addr.sun_family = AF_UNIX;
-    if (_settings.Endpoint.size() >= sizeof(addr.sun_path))
+    if (!ModuleSocket::Startup(error))
+        return false;
+
+    _listenFd = ModuleSocket::CreateUnixSocket(error);
+    if (_listenFd == ModuleSocket::kInvalid)
+        return false;
+
+    if (!ModuleSocket::BindAndListen(_listenFd, _settings.Endpoint, error))
     {
-        error = "socket path too long (max " + std::to_string(sizeof(addr.sun_path) - 1) + " bytes): " + _settings.Endpoint;
+        ModuleSocket::Close(_listenFd);
+        _listenFd = ModuleSocket::kInvalid;
         return false;
     }
-    std::strncpy(addr.sun_path, _settings.Endpoint.c_str(), sizeof(addr.sun_path) - 1);
+    ModuleSocket::SetNonBlocking(_listenFd);
 
-    // Remove a stale socket file from a previous run; bind fails with EADDRINUSE otherwise.
-    ::unlink(_settings.Endpoint.c_str());
-
-    _listenFd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (_listenFd < 0)
+    if (!ModuleSocket::CreateWakePair(_wakeRead, _wakeWrite, error))
     {
-        error = std::string("socket() failed: ") + std::strerror(errno);
+        ModuleSocket::Close(_listenFd);
+        _listenFd = ModuleSocket::kInvalid;
         return false;
-    }
-    SetCloexec(_listenFd);
-
-    if (::bind(_listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || ::listen(_listenFd, 1) != 0)
-    {
-        error = std::string("bind/listen on ") + _settings.Endpoint + " failed: " + std::strerror(errno);
-        ::close(_listenFd);
-        _listenFd = -1;
-        return false;
-    }
-
-    // Self-pipe: other threads write a byte here to wake the session thread from poll().
-    int fds[2];
-    if (::pipe(fds) != 0)
-    {
-        error = std::string("pipe() failed: ") + std::strerror(errno);
-        ::close(_listenFd);
-        _listenFd = -1;
-        return false;
-    }
-    _wakeRead = fds[0];
-    _wakeWrite = fds[1];
-    for (int fd : fds)
-    {
-        SetCloexec(fd);
-        SetNonBlocking(fd);
     }
     return true;
 }
@@ -210,16 +130,16 @@ void ModuleSession::Stop()
         _thread.join();
 
     // Run() closes its own sockets; this covers a session that was listened on but never started.
-    if (_connFd >= 0)
+    if (_connFd != ModuleSocket::kInvalid)
     {
-        ::close(_connFd);
-        _connFd = -1;
+        ModuleSocket::Close(_connFd);
+        _connFd = ModuleSocket::kInvalid;
     }
-    if (_listenFd >= 0)
+    if (_listenFd != ModuleSocket::kInvalid)
     {
-        ::close(_listenFd);
-        _listenFd = -1;
-        ::unlink(_settings.Endpoint.c_str());
+        ModuleSocket::Close(_listenFd);
+        _listenFd = ModuleSocket::kInvalid;
+        ModuleSocket::RemovePath(_settings.Endpoint);
     }
 }
 
@@ -327,14 +247,13 @@ bool ModuleSession::FlushOutgoing()
     std::lock_guard<std::mutex> lock(_outMutex);
     while (_outOffset < _outBuffer.size())
     {
-        ssize_t const n = ::send(_connFd, _outBuffer.data() + _outOffset, _outBuffer.size() - _outOffset,
-                                 MSG_NOSIGNAL | MSG_DONTWAIT);
+        std::ptrdiff_t const n = ModuleSocket::Send(_connFd, _outBuffer.data() + _outOffset, _outBuffer.size() - _outOffset);
         if (n < 0)
         {
-            if (errno == EINTR)
+            if (ModuleSocket::Interrupted())
                 continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-                return true; // socket full; poll for POLLOUT and retry later
+            if (ModuleSocket::WouldBlock())
+                return true; // socket full; wait for writability and retry later
             return false;
         }
         if (n == 0)
@@ -366,23 +285,25 @@ bool ModuleSession::SendBlocking(std::string frame, Clock::time_point deadline)
             return true;
         if (_stop || Clock::now() >= deadline)
             return false;
-        WaitFor(_connFd, POLLOUT, std::min(PollSlice, std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now())));
+        WaitFor(_connFd, ModuleSocket::kWritable,
+                std::min(PollSlice, std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now())));
     }
 }
 
 void ModuleSession::Wake()
 {
-    if (_wakeWrite >= 0)
+    if (_wakeWrite != ModuleSocket::kInvalid)
     {
         char const byte = 1;
-        [[maybe_unused]] ssize_t const ignored = ::write(_wakeWrite, &byte, 1); // full pipe means a wake is already pending
+        // A full buffer means a wake is already pending, so the result does not matter.
+        [[maybe_unused]] std::ptrdiff_t const ignored = ModuleSocket::Send(_wakeWrite, &byte, 1);
     }
 }
 
 void ModuleSession::DrainWake()
 {
     char buffer[64];
-    while (::read(_wakeRead, buffer, sizeof(buffer)) > 0)
+    while (ModuleSocket::Recv(_wakeRead, buffer, sizeof(buffer)) > 0)
     {
     }
 }
@@ -415,12 +336,12 @@ void ModuleSession::Run()
             _listener(Event::HandshakeTimeout, "module did not connect within the handshake timeout");
             goto done;
         }
-        if (WaitFor(_listenFd, POLLIN, std::min(remaining, PollSlice)))
+        if (WaitFor(_listenFd, ModuleSocket::kReadable, std::min(remaining, PollSlice)))
         {
-            int const fd = ::accept(_listenFd, nullptr, nullptr);
-            if (fd >= 0)
+            ModuleSocket::Handle const fd = ModuleSocket::Accept(_listenFd);
+            if (fd != ModuleSocket::kInvalid)
             {
-                SetCloexec(fd);
+                ModuleSocket::SetNonBlocking(fd);
                 _connFd = fd;
                 break;
             }
@@ -428,8 +349,6 @@ void ModuleSession::Run()
     }
     if (_stop)
         goto done;
-
-    SetReceiveTimeout(_connFd, FrameReadTimeout);
 
     // Phase 2: handshake. The request must arrive within the same deadline.
     {
@@ -443,12 +362,12 @@ void ModuleSession::Run()
             }
             if (_stop)
                 goto done;
-            if (WaitFor(_connFd, POLLIN, std::min(remaining, PollSlice)))
+            if (WaitFor(_connFd, ModuleSocket::kReadable, std::min(remaining, PollSlice)))
                 break;
         }
 
         std::string body;
-        if (!ReadFrame(_connFd, body))
+        if (!ReadFrame(_connFd, body, Clock::now() + FrameReadTimeout))
         {
             _listener(Event::Disconnected, "module closed the connection before handshaking");
             goto done;
@@ -533,27 +452,25 @@ void ModuleSession::Run()
                 goto done;
             }
 
-            pollfd fds[2]{};
-            fds[0].fd = _connFd;
-            fds[0].events = POLLIN | (HasPendingOutgoing() ? POLLOUT : 0);
-            fds[1].fd = _wakeRead;
-            fds[1].events = POLLIN;
-            int const rc = ::poll(fds, 2, static_cast<int>(std::min(remaining, PollSlice).count()));
+            ModuleSocket::Watch watches[2];
+            watches[0].Fd = _connFd;
+            watches[0].Events = ModuleSocket::kReadable | (HasPendingOutgoing() ? ModuleSocket::kWritable : 0);
+            watches[1].Fd = _wakeRead;
+            watches[1].Events = ModuleSocket::kReadable;
+            int const rc = ModuleSocket::Poll(watches, 2, std::min(remaining, PollSlice));
             if (rc < 0)
             {
-                if (errno == EINTR)
-                    continue;
-                _listener(Event::Disconnected, "poll failed");
+                _listener(Event::Disconnected, "poll failed: " + ModuleSocket::LastError());
                 goto done;
             }
 
-            if (fds[1].revents & POLLIN)
+            if (watches[1].Revents & ModuleSocket::kReadable)
                 DrainWake();
 
-            if (fds[0].revents & (POLLIN | POLLHUP | POLLERR))
+            if (watches[0].Revents & (ModuleSocket::kReadable | ModuleSocket::kError))
             {
                 std::string body;
-                if (!ReadFrame(_connFd, body))
+                if (!ReadFrame(_connFd, body, Clock::now() + FrameReadTimeout))
                 {
                     _listener(Event::Disconnected, "connection closed");
                     goto done;
@@ -594,7 +511,7 @@ void ModuleSession::Run()
         }
 
         // Stop() requested: tell the module to exit cleanly. Best effort; the peer may be gone.
-        if (_connFd >= 0)
+        if (_connFd != ModuleSocket::kInvalid)
         {
             ModuleWire::Shutdown shutdown{"server stopping"};
             SendBlocking(ModuleWire::Frame(ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::Shutdown, ModuleWire::Encode(shutdown))),
@@ -613,18 +530,16 @@ done:
     _accepted = false;
     FailPendingRequests();
 
-    if (_connFd >= 0)
+    if (_connFd != ModuleSocket::kInvalid)
     {
-        ::shutdown(_connFd, SHUT_RDWR);
-        ::close(_connFd);
-        _connFd = -1;
+        ModuleSocket::Shutdown(_connFd);
+        ModuleSocket::Close(_connFd);
+        _connFd = ModuleSocket::kInvalid;
     }
-    if (_listenFd >= 0)
+    if (_listenFd != ModuleSocket::kInvalid)
     {
-        ::close(_listenFd);
-        _listenFd = -1;
+        ModuleSocket::Close(_listenFd);
+        _listenFd = ModuleSocket::kInvalid;
     }
-    ::unlink(_settings.Endpoint.c_str());
+    ModuleSocket::RemovePath(_settings.Endpoint);
 }
-
-#endif // !_WIN32
