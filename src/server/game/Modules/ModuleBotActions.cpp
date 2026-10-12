@@ -1,12 +1,23 @@
 #include "ModuleBotActions.h"
+#include "Cell.h"
+#include "CellImpl.h"
 #include "Creature.h"
 #include "DB2Structure.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
+#include "Item.h"
+#include "ItemTemplate.h"
 #include "Map.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "Trainer.h"
+
+#include <algorithm>
+#include <list>
 
 using forever_module::ActionType;
 using forever_module::BotAction;
@@ -102,6 +113,156 @@ uint32 HighestKnownRank(Player& bot, uint32 spellId)
     return best;
 }
 
+// Services at NPCs (M3, M4). The NPC must be within interaction range, the distance the core's own NPC checks use, so the
+// bot only looks at NPCs the core would serve. Walking to a service is travel (M6), not done here.
+constexpr uint32 kServiceSellBit = 1;   // spell_id bit: sell grey items to a vendor
+constexpr uint32 kServiceRepairBit = 2; // spell_id bit: repair at a repairman
+constexpr uint32 kServiceEquipBit = 4;  // spell_id bit: equip the best gear in the bags
+constexpr uint32 kQualityPoor = 0;      // grey
+constexpr uint32 kQualityCommon = 1;    // white: the lowest quality the bot equips
+
+// The closest NPC in interaction range that has one of `flags` and that the bot can interact with, or nullptr.
+Creature* NearestServiceNpc(Player& bot, NPCFlags flags)
+{
+    std::list<Unit*> inRange;
+    Trinity::AnyUnitInObjectRangeCheck check(&bot, INTERACTION_DISTANCE);
+    Trinity::UnitListSearcher<Trinity::AnyUnitInObjectRangeCheck> searcher(&bot, inRange, check);
+    Cell::VisitAllObjects(&bot, searcher, INTERACTION_DISTANCE);
+
+    Creature* best = nullptr;
+    float bestDist = INTERACTION_DISTANCE;
+    for (Unit* unit : inRange)
+    {
+        Creature* npc = unit->ToCreature();
+        if (!npc || !npc->HasNpcFlag(flags))
+            continue;
+        float const dist = bot.GetDistance(npc);
+        if (dist >= bestDist || !bot.GetNPCIfCanInteractWith(npc->GetGUID(), flags, UNIT_NPC_FLAG_2_NONE))
+            continue;
+        best = npc;
+        bestDist = dist;
+    }
+    return best;
+}
+
+// Sells every grey item in the bags to the vendor. Returns how many stacks were sold.
+uint32 SellGreyItems(Player& bot)
+{
+    // Collected first: selling moves the items out of the bags, which the search must not be walking while it does.
+    std::vector<Item*> grey;
+    bot.ForEachItem(ItemSearchLocation::Inventory, [&grey](Item* item)
+    {
+        ItemTemplate const* proto = item->GetTemplate();
+        if (proto && proto->GetQuality() == kQualityPoor && proto->GetSellPrice() > 0)
+            grey.push_back(item);
+        return ItemSearchCallbackResult::Continue;
+    });
+
+    uint32 sold = 0;
+    for (Item* item : grey)
+        if (!bot.SellItemToVendor(item, item->GetCount())) // no value means it was sold
+            ++sold;
+    return sold;
+}
+
+// The equipment slot an item of this inventory type goes in (the first of a pair, for rings and trinkets), or NULL_SLOT.
+uint8 EquipSlotFor(InventoryType type)
+{
+    switch (type)
+    {
+        case INVTYPE_HEAD: return EQUIPMENT_SLOT_HEAD;
+        case INVTYPE_NECK: return EQUIPMENT_SLOT_NECK;
+        case INVTYPE_SHOULDERS: return EQUIPMENT_SLOT_SHOULDERS;
+        case INVTYPE_BODY: return EQUIPMENT_SLOT_BODY;
+        case INVTYPE_CHEST:
+        case INVTYPE_ROBE: return EQUIPMENT_SLOT_CHEST;
+        case INVTYPE_WAIST: return EQUIPMENT_SLOT_WAIST;
+        case INVTYPE_LEGS: return EQUIPMENT_SLOT_LEGS;
+        case INVTYPE_FEET: return EQUIPMENT_SLOT_FEET;
+        case INVTYPE_WRISTS: return EQUIPMENT_SLOT_WRISTS;
+        case INVTYPE_HANDS: return EQUIPMENT_SLOT_HANDS;
+        case INVTYPE_FINGER: return EQUIPMENT_SLOT_FINGER1;
+        case INVTYPE_TRINKET: return EQUIPMENT_SLOT_TRINKET1;
+        case INVTYPE_CLOAK: return EQUIPMENT_SLOT_BACK;
+        case INVTYPE_WEAPON:
+        case INVTYPE_2HWEAPON:
+        case INVTYPE_WEAPONMAINHAND: return EQUIPMENT_SLOT_MAINHAND;
+        case INVTYPE_SHIELD:
+        case INVTYPE_WEAPONOFFHAND:
+        case INVTYPE_HOLDABLE: return EQUIPMENT_SLOT_OFFHAND;
+        case INVTYPE_RANGED:
+        case INVTYPE_RANGEDRIGHT:
+        case INVTYPE_THROWN: return EQUIPMENT_SLOT_RANGED;
+        default: return NULL_SLOT;
+    }
+}
+
+// Equips each bag item that is a weapon or armour piece better than what the slot holds now. Returns how many were equipped.
+uint32 EquipBestGear(Player& bot)
+{
+    std::vector<Item*> candidates;
+    bot.ForEachItem(ItemSearchLocation::Inventory, [&candidates](Item* item)
+    {
+        ItemTemplate const* proto = item->GetTemplate();
+        if (proto && proto->GetQuality() >= kQualityCommon &&
+            (proto->GetClass() == ITEM_CLASS_WEAPON || proto->GetClass() == ITEM_CLASS_ARMOR) &&
+            EquipSlotFor(proto->GetInventoryType()) != NULL_SLOT)
+            candidates.push_back(item);
+        return ItemSearchCallbackResult::Continue;
+    });
+
+    uint32 equipped = 0;
+    for (Item* item : candidates)
+    {
+        // Checked against the slot as it is now: an earlier swap in this pass may have changed it.
+        uint8 const slot = EquipSlotFor(item->GetTemplate()->GetInventoryType());
+        Item* current = bot.GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (current && current->GetTemplate()->GetBaseItemLevel() >= item->GetTemplate()->GetBaseItemLevel())
+            continue;
+
+        uint16 const source = uint16(item->GetBagSlot()) << 8 | item->GetSlot();
+        uint16 const target = uint16(INVENTORY_SLOT_BAG_0) << 8 | slot;
+        uint16 destination = target;
+        if (bot.CanEquipItem(slot, destination, item, true) != EQUIP_ERR_OK)
+            continue;
+
+        bot.SwapItem(source, target);
+        if (bot.GetItemByPos(INVENTORY_SLOT_BAG_0, slot) == item)
+            ++equipped;
+    }
+    return equipped;
+}
+
+// Learns every spell the trainer in range teaches this bot now: lowest level first, so each rank comes before the next. The
+// core's own teach checks decide money, class and prerequisites, so nothing here is granted that the trainer would refuse.
+BotActionStatus LearnFromTrainer(Player& bot, std::string& reason)
+{
+    Creature* trainer = NearestServiceNpc(bot, UNIT_NPC_FLAG_TRAINER);
+    if (!trainer)
+    {
+        reason = "no trainer within interaction range";
+        return BotActionStatus::kRefused;
+    }
+
+    Trainer::Trainer const* teaches = sObjectMgr->GetTrainer(trainer->GetTrainerId());
+    if (!teaches)
+    {
+        reason = "trainer teaches nothing";
+        return BotActionStatus::kRefused;
+    }
+
+    std::vector<Trainer::Spell> spells = teaches->Spells();
+    std::stable_sort(spells.begin(), spells.end(), [](Trainer::Spell const& a, Trainer::Spell const& b)
+    {
+        return a.ReqLevel != b.ReqLevel ? a.ReqLevel < b.ReqLevel : a.SpellId < b.SpellId;
+    });
+
+    for (Trainer::Spell const& spell : spells)
+        if (spell.ReqLevel <= bot.GetLevel() && !bot.HasSpell(spell.SpellId))
+            teaches->TeachSpell(trainer, &bot, spell.SpellId);
+    return BotActionStatus::kApplied;
+}
+
 BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
 {
     switch (action.type)
@@ -141,6 +302,43 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
                 return BotActionStatus::kRefused;
             }
             return BotActionStatus::kApplied;
+        }
+
+        case ActionType::kVendor:
+        {
+            if (bot.IsInCombat())
+            {
+                reason = "bot is in combat";
+                return BotActionStatus::kRefused;
+            }
+
+            uint32 const services = action.spell_id;
+            if (services & (kServiceSellBit | kServiceRepairBit))
+            {
+                Creature* npc = NearestServiceNpc(bot, UNIT_NPC_FLAG_VENDOR_MASK | UNIT_NPC_FLAG_REPAIR);
+                if (!npc)
+                {
+                    reason = "no vendor or repairman within interaction range";
+                    return BotActionStatus::kRefused;
+                }
+                if ((services & kServiceSellBit) && npc->HasNpcFlag(UNIT_NPC_FLAG_VENDOR_MASK))
+                    SellGreyItems(bot);
+                if ((services & kServiceRepairBit) && npc->HasNpcFlag(UNIT_NPC_FLAG_REPAIR))
+                    bot.DurabilityRepairAll(true, 0.0f, false);
+            }
+            if (services & kServiceEquipBit)
+                EquipBestGear(bot);
+            return BotActionStatus::kApplied;
+        }
+
+        case ActionType::kTrain:
+        {
+            if (bot.IsInCombat())
+            {
+                reason = "bot is in combat";
+                return BotActionStatus::kRefused;
+            }
+            return LearnFromTrainer(bot, reason);
         }
 
         case ActionType::kRest:
