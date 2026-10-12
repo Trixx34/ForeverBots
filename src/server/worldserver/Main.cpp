@@ -467,7 +467,7 @@ int main(int argc, char** argv)
     sScriptMgr->OnShutdown();
 
     // Bots are saved and logged out while the modules can still hear about it; each controlled bot is revoked.
-    sBotMgr->LogoutAll("LOGOUT_SHUTDOWN");
+    sBotMgr->Shutdown("LOGOUT_SHUTDOWN");
 
     // Module system: send Shutdown to every connected module.
     sModuleMgr->Unload();

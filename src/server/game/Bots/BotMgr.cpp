@@ -27,9 +27,11 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <set>
+#include <thread>
 
 namespace
 {
@@ -355,7 +357,13 @@ void BotMgr::LogoutAll(char const* reason)
 void BotMgr::Update(uint32 diff)
 {
     _uptimeMs += diff;
+    PollLogins();
+    ProcessLogins();
+}
 
+// Advances the logins in flight: a bot that is in the world is finished, one that timed out fails.
+void BotMgr::PollLogins()
+{
     for (size_t i = 0; i < _loggingIn.size();)
     {
         uint64 const guid = _loggingIn[i];
@@ -384,8 +392,30 @@ void BotMgr::Update(uint32 diff)
         }
         ++i;
     }
+}
 
-    ProcessLogins();
+void BotMgr::Shutdown(char const* reason)
+{
+    // The world loop has stopped by now, so Update() does not run again. Finish the logins in flight, waiting at most
+    // the login timeout, so each bot is either in the world (and logged out below) or failed. Then log everything out.
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(_loginTimeoutMs);
+    while (!_loggingIn.empty() && std::chrono::steady_clock::now() < deadline)
+    {
+        PollLogins();
+        if (!_loggingIn.empty())
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    std::vector<uint64> const stillLoggingIn = _loggingIn;
+    for (uint64 guid : stillLoggingIn)
+    {
+        auto it = _bots.find(guid);
+        if (it != _bots.end() && it->second.Session)
+            FailLogin(it->second, "server shut down before the login finished");
+    }
+    _loggingIn.clear();
+
+    LogoutAll(reason);
 }
 
 void BotMgr::ProcessLogins()

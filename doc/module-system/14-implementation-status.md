@@ -18,7 +18,7 @@ the code is the reference and the difference is listed.
 | Tier 2 actions | `stop`, `move`, `follow` (players and creatures), `attack` (hostile units), `cast` (spells the bot knows) | `ModuleBotActions.*`, `ModuleTier2::ReadNewActions` |
 | Unit references | Type, entry and 32-bit counter in one 64-bit value | SDK `tier2_layout.h` (`MakeUnitRef`) |
 | Bot control | `RequestControl`, `ReleaseControl`, `ControlRevoked`; one owner per bot; `max_bots` | `ModuleBotOwnership.*`, `ModuleMgr::ExecuteControlRequest` |
-| Bot lifecycle | Create, log in and out through a queue, relogin delay, logout at shutdown | `src/server/game/Bots/BotMgr.*` |
+| Bot lifecycle | Create, log in and out through a queue, relogin delay; at shutdown, logins in flight are finished (bounded by the login timeout) before logout | `src/server/game/Bots/BotMgr.*` |
 | Spawn level | `SpawnParams.level` honoured; 0 is the starting level; above max level refused | `BotModuleBackend::Spawn`, `BotMgr::CreateBot` |
 | Restart reclaim | The module keeps its bot guids in a state file and takes them back on start | module repo `src/bot_state_file.*`; core needs no change |
 
@@ -39,8 +39,6 @@ the code is the reference and the difference is listed.
 
 - Spell cooldowns are not in snapshots (`spell_cooldowns` reads zero).
 - Config is sent once, after accept. A reload does not re-send it (design 03 says it should).
-- Shutdown during a login: `LogoutAll` marks bots that are still logging in, but the world loop has stopped by then,
-  so those characters are not saved cleanly.
 - Resource limits (`Modules.ResourceLimits.*`) are declared but not enforced.
 - Team in `SpawnParams` is ignored; a request for a team that disagrees with the race is not refused.
 - The auto-vendor module (`mod-auto-vendor-trash`) still uses its defaults and does not read its config.

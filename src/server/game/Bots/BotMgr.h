@@ -66,6 +66,10 @@ class TC_GAME_API BotMgr
         // Called once per world update tick. Advances creation, login and logout work.
         void Update(uint32 diff);
 
+        // Called once the world loop has stopped. Finishes the logins in flight (bounded by the login timeout), then logs
+        // every bot out with `reason`. Update() does not run after the loop, so LogoutAll alone would leave logins hanging.
+        void Shutdown(char const* reason);
+
         // Creates a bot character with this race and class (Player::Create decides whether the combination is valid).
         // level is the character's level (1 is the race's starting level). Returns its guid, or 0 with the reason in error. The character is saved in the background; login is
         // requested with RequestLogin once it exists.
@@ -91,6 +95,7 @@ class TC_GAME_API BotMgr
 
         void StartLogin(BotInfo& bot);
         void ProcessLogins();
+        void PollLogins(); // advances the logins in flight: finishes or fails them
         void FinishCreate(uint64 guid, bool success);
         void FinishLogin(BotInfo& bot);
         void FailLogin(BotInfo& bot, char const* reason);
