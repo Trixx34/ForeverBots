@@ -104,8 +104,12 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby)
     entry.orientation = bot.GetOrientation();
     entry.health = ClampToUint32(bot.GetHealth());
     entry.max_health = ClampToUint32(bot.GetMaxHealth());
-    entry.mana = ClampToUint32(int64(bot.GetPower(POWER_MANA)));
-    entry.max_mana = ClampToUint32(int64(bot.GetMaxPower(POWER_MANA)));
+    // The main resource of the bot's class: mana, rage or energy (layout 4).
+    Powers const powerType = bot.GetPowerType();
+    entry.power_type = uint8(powerType);
+    entry.power = ClampToUint32(int64(bot.GetPower(powerType)));
+    entry.max_power = ClampToUint32(int64(bot.GetMaxPower(powerType)));
+    entry.level = bot.GetLevel();
 
     FillCooldowns(bot, entry.spell_cooldowns);
 
@@ -149,6 +153,9 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby)
         near.health = ClampToUint32(unit->GetHealth());
         near.max_health = ClampToUint32(unit->GetMaxHealth());
         near.is_hostile = bot.IsHostileTo(unit);
+        near.level = unit->GetLevel();
+        near.elite = unit->IsCreature() && unit->ToCreature()->IsElite() ? 1 : 0;
+        near.casting = unit->IsNonMeleeSpellCast(false) ? 1 : 0;
         result.Nearby.push_back(near);
     }
     return result;

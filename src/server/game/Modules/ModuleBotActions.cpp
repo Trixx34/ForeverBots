@@ -84,6 +84,24 @@ BotActionStatus StatusForCast(SpellCastResult result)
 
 } // namespace
 
+// The highest rank of a spell the bot knows, walking the rank chain from the id the module sent (its rank 1). 0 if the bot
+// knows no rank of it. A lower rank that was replaced by a higher one is still in the chain, so this finds the higher one.
+uint32 HighestKnownRank(Player& bot, uint32 spellId)
+{
+    uint32 best = bot.HasSpell(spellId) ? spellId : 0;
+    uint32 id = spellId;
+    for (uint32 guard = 0; guard < 16; ++guard)
+    {
+        uint32 const next = sSpellMgr->GetNextSpellInChain(id);
+        if (!next)
+            break;
+        if (bot.HasSpell(next))
+            best = next;
+        id = next;
+    }
+    return best;
+}
+
 BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
 {
     switch (action.type)
@@ -132,7 +150,9 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
                 reason = "unknown spell " + std::to_string(action.spell_id);
                 return BotActionStatus::kUnknownSpell;
             }
-            if (!bot.HasSpell(action.spell_id))
+            // The module names a rank 1 spell; the bot casts the highest rank it knows.
+            uint32 const castId = HighestKnownRank(bot, action.spell_id);
+            if (!castId)
             {
                 reason = "bot does not know spell " + std::to_string(action.spell_id);
                 return BotActionStatus::kNotKnown;
@@ -144,9 +164,9 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
                 reason = "cast target is not a unit on this bot's map";
                 return BotActionStatus::kInvalidTarget;
             }
-            SpellCastResult const result = bot.CastSpell(target, action.spell_id, false);
+            SpellCastResult const result = bot.CastSpell(target, castId, false);
             if (result != SPELL_CAST_OK)
-                reason = "cast of spell " + std::to_string(action.spell_id) + " returned result " + std::to_string(int32(result));
+                reason = "cast of spell " + std::to_string(castId) + " returned result " + std::to_string(int32(result));
             return StatusForCast(result);
         }
     }
