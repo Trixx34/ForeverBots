@@ -15,6 +15,7 @@
 #include "ModuleWire.h"
 
 #include "envelope.pb.h"
+#include "events.pb.h"
 #include "handshake.pb.h"
 
 #include <cstdio>
@@ -175,6 +176,96 @@ int main()
         ModuleWire::Envelope env;
         CHECK(!ModuleWire::DecodeEnvelope(std::string("\x0A\x10", 2), env)); // length 16, no bytes
         CHECK(!ModuleWire::DecodeEnvelope(std::string("\xFF\xFF\xFF", 3), env)); // truncated varint
+    }
+
+    // core -> SDK: EventNotify for every hook payload kind the core sends.
+    {
+        struct Case { ModuleWire::NotifyKind kind; uint64 value; };
+        Case const cases[] = {
+            {ModuleWire::NotifyKind::PlayerLogin, 42},
+            {ModuleWire::NotifyKind::PlayerLogout, 43},
+            {ModuleWire::NotifyKind::AccountLogin, 7},
+            {ModuleWire::NotifyKind::WorldStartup, 0},
+            {ModuleWire::NotifyKind::WorldShutdown, 0},
+        };
+        for (Case const& c : cases)
+        {
+            std::string bytes = ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::EventNotify,
+                                                           ModuleWire::EncodeEventNotify("Hook.Name", c.kind, c.value));
+            forever_module::Envelope sdk;
+            CHECK(sdk.ParseFromString(bytes));
+            CHECK(sdk.payload_case() == forever_module::Envelope::kEventNotify);
+            CHECK(sdk.event_notify().hook_name() == "Hook.Name");
+            switch (c.kind)
+            {
+                case ModuleWire::NotifyKind::PlayerLogin:
+                    CHECK(sdk.event_notify().event_payload_case() == forever_module::EventNotify::kPlayerLogin);
+                    CHECK(sdk.event_notify().player_login().player_guid() == c.value);
+                    break;
+                case ModuleWire::NotifyKind::PlayerLogout:
+                    CHECK(sdk.event_notify().event_payload_case() == forever_module::EventNotify::kPlayerLogout);
+                    CHECK(sdk.event_notify().player_logout().player_guid() == c.value);
+                    break;
+                case ModuleWire::NotifyKind::AccountLogin:
+                    CHECK(sdk.event_notify().event_payload_case() == forever_module::EventNotify::kAccountLogin);
+                    CHECK(sdk.event_notify().account_login().account_id() == c.value);
+                    break;
+                case ModuleWire::NotifyKind::WorldStartup:
+                    CHECK(sdk.event_notify().event_payload_case() == forever_module::EventNotify::kWorldStartup);
+                    break;
+                case ModuleWire::NotifyKind::WorldShutdown:
+                    CHECK(sdk.event_notify().event_payload_case() == forever_module::EventNotify::kWorldShutdown);
+                    break;
+            }
+        }
+    }
+
+    // core -> SDK: EventRequest carrying a command, with the envelope message id set.
+    {
+        std::string bytes = ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::EventRequest,
+                                                       ModuleWire::EncodeEventRequestCommand(77, "CommandScript", "ping", 1234), 77);
+        forever_module::Envelope sdk;
+        CHECK(sdk.ParseFromString(bytes));
+        CHECK(sdk.message_id() == 77);
+        CHECK(sdk.payload_case() == forever_module::Envelope::kEventRequest);
+        CHECK(sdk.event_request().message_id() == 77);
+        CHECK(sdk.event_request().hook_name() == "CommandScript");
+        CHECK(sdk.event_request().command().command_text() == "ping");
+        CHECK(sdk.event_request().command().issuer_guid() == 1234);
+    }
+
+    // SDK -> core: EventReply with and without a command payload.
+    {
+        forever_module::EventReply reply;
+        reply.set_message_id(77);
+        reply.mutable_command()->set_success(true);
+        reply.mutable_command()->set_result_text("pong");
+        std::string bytes;
+        CHECK(reply.SerializeToString(&bytes));
+
+        ModuleWire::EventReplyMsg core;
+        CHECK(ModuleWire::Decode(bytes, core));
+        CHECK(core.MessageId == 77);
+        CHECK(core.HasCommand);
+        CHECK(core.Success);
+        CHECK(core.ResultText == "pong");
+
+        forever_module::EventReply failed;
+        failed.set_message_id(78);
+        failed.mutable_command()->set_success(false);
+        std::string failedBytes;
+        CHECK(failed.SerializeToString(&failedBytes));
+        ModuleWire::EventReplyMsg core2;
+        CHECK(ModuleWire::Decode(failedBytes, core2));
+        CHECK(core2.MessageId == 78 && core2.HasCommand && !core2.Success && core2.ResultText.empty());
+
+        forever_module::EventReply empty;
+        empty.set_message_id(79);
+        std::string emptyBytes;
+        CHECK(empty.SerializeToString(&emptyBytes));
+        ModuleWire::EventReplyMsg core3;
+        CHECK(ModuleWire::Decode(emptyBytes, core3));
+        CHECK(core3.MessageId == 79 && !core3.HasCommand);
     }
 
     if (g_failures == 0)

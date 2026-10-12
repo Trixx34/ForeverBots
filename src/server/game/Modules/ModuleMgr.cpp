@@ -7,6 +7,8 @@
 #include "Log.h"
 #include "ModuleManifestInfo.h"
 
+#include <optional>
+
 #include <boost/process.hpp>
 
 #include <algorithm>
@@ -80,6 +82,7 @@ void ModuleMgr::LoadModules()
     _config.MaxHandshakeAttempts = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.MaxHandshakeAttempts", 3));
     _config.MaxRestartAttempts = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.MaxRestartAttempts", 5));
     _config.RestartBackoffMs = static_cast<uint64>(sConfigMgr->GetIntDefault("Modules.RestartBackoffMs", 1000));
+    _config.CommandRequestTimeoutMs = static_cast<uint64>(sConfigMgr->GetIntDefault("Modules.CommandRequestTimeoutMs", 200));
     _config.AutoApprove = sConfigMgr->GetBoolDefault("Modules.AutoApproveLocal", false);
 
     std::string const root = sConfigMgr->GetStringDefault("Modules.Dir", "modules_runtime");
@@ -245,7 +248,7 @@ bool ModuleMgr::SpawnModule(ModuleId id)
     settings.SupportedHooks = SupportedTier1Hooks;
     // Module config from modules.d/<name>.conf is not wired up yet; the module gets an empty config.
 
-    auto session = std::make_unique<ModuleSession>(settings, id, [this, id](ModuleSession::Event event, std::string const& detail)
+    auto session = std::make_shared<ModuleSession>(settings, id, [this, id](ModuleSession::Event event, std::string const& detail)
     {
         OnSessionEvent(id, event, detail);
     });
@@ -464,7 +467,7 @@ void ModuleMgr::RestartDueModules()
 
         // The previous session has already reported its failure and its thread is exiting; join it
         // and drop the process handle before starting the next attempt.
-        std::unique_ptr<ModuleSession> oldSession;
+        std::shared_ptr<ModuleSession> oldSession;
         {
             std::lock_guard<std::mutex> lock(_mutex);
             ModuleDescriptor& d = _modules.at(id);
@@ -495,7 +498,7 @@ void ModuleMgr::Unload()
 
     // Move sessions and processes out under the lock, then stop them without holding it: a session
     // thread may be waiting on the lock to report an event while it shuts down.
-    std::vector<std::unique_ptr<ModuleSession>> sessions;
+    std::vector<std::shared_ptr<ModuleSession>> sessions;
     std::vector<std::shared_ptr<bp::child>> processes;
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -547,6 +550,7 @@ std::vector<ModuleSnapshot> ModuleMgr::GetSnapshots()
         s.StatusReason = d.StatusReason;
         s.LastFailure = d.LastFailure;
         s.RestartAttempts = d.RestartAttempts;
+        s.DroppedEvents = d.DroppedEvents;
         s.HeartbeatCount = d.Session ? d.Session->HeartbeatCount() : 0;
         s.ProcessId = d.Process ? static_cast<uint64>(d.Process->id()) : 0;
         s.ProcessRunning = d.Process && d.Process->running();
@@ -676,4 +680,85 @@ char const* ModuleStatusName(ModuleStatus status)
         case ModuleStatus::PermanentFailure: return "failed";
     }
     return "unknown";
+}
+
+void ModuleMgr::DispatchNotify(std::string_view hook, ModuleWire::NotifyKind kind, uint64 value)
+{
+    // Collect targets under the lock and deliver outside it. Delivery only queues the frame, so a slow
+    // module cannot hold up the world thread here.
+    std::vector<std::pair<ModuleId, std::shared_ptr<ModuleSession>>> targets;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (auto const& [id, d] : _modules)
+            if (d.Session && d.Session->Subscribes(hook))
+                targets.emplace_back(id, d.Session);
+    }
+
+    for (auto const& [id, session] : targets)
+    {
+        if (session->NotifyEvent(hook, kind, value))
+            continue;
+
+        std::lock_guard<std::mutex> lock(_mutex);
+        auto it = _modules.find(id);
+        if (it != _modules.end() && ++it->second.DroppedEvents == 1)
+            TC_LOG_WARN("modules", "'{}' is not keeping up with its events; notifications are being dropped (first: {}).",
+                        it->second.Name, hook);
+    }
+}
+
+ModuleMgr::CommandRouteResult ModuleMgr::RouteCommand(std::string_view commandText, uint64 issuerGuid, std::string& resultText)
+{
+    struct Target
+    {
+        ModuleId Id;
+        std::string Name;
+        std::shared_ptr<ModuleSession> Session;
+    };
+
+    std::vector<Target> targets;
+    std::chrono::milliseconds timeout{0};
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (auto const& [id, d] : _modules)
+            if (d.Session && d.Session->Subscribes("CommandScript"))
+                targets.push_back({id, d.Name, d.Session});
+        timeout = std::chrono::milliseconds(_config.CommandRequestTimeoutMs);
+    }
+    if (targets.empty())
+        return CommandRouteResult::NotRouted;
+
+    std::sort(targets.begin(), targets.end(), [](Target const& a, Target const& b) { return a.Id < b.Id; });
+
+    // Waiting happens without _mutex held: session events for these modules need it to be reported.
+    bool timedOut = false;
+    std::optional<std::string> failureText;
+    for (Target const& target : targets)
+    {
+        std::optional<ModuleWire::EventReplyMsg> reply = target.Session->RequestCommand("CommandScript", commandText, issuerGuid, timeout);
+        if (!reply)
+        {
+            timedOut = true;
+            TC_LOG_WARN("modules", "'{}' did not reply to command '{}' within {} ms.", target.Name, std::string(commandText), timeout.count());
+            continue;
+        }
+        if (!reply->HasCommand)
+            continue;
+        if (reply->Success)
+        {
+            resultText = reply->ResultText;
+            return CommandRouteResult::Succeeded;
+        }
+        if (!failureText && !reply->ResultText.empty())
+            failureText = reply->ResultText;
+    }
+
+    if (failureText)
+    {
+        resultText = *failureText;
+        return CommandRouteResult::Failed;
+    }
+    if (timedOut)
+        return CommandRouteResult::TimedOut;
+    return CommandRouteResult::NotRouted;
 }

@@ -431,11 +431,11 @@ int main(int argc, char** argv)
         TC_LOG_INFO("server.worldserver", "Starting up anti-freeze thread ({} seconds max stuck time)...", coreStuckTime);
     }
 
-    sScriptMgr->OnStartup();
-
-    // Module system (doc/module-system/04-phase2-module-host-design.md). SKELETON: no-op until
-    // Modules.Enabled = 1 and modules exist in Modules.Dir.
+    // Module system (doc/module-system/04-phase2-module-host-design.md). Loaded before the world's
+    // OnStartup, so modules subscribed to WorldScript.OnStartup receive it. No-op until Modules.Enabled = 1.
     sModuleMgr->LoadModules();
+
+    sScriptMgr->OnStartup();
 
     TC_LOG_INFO("server.worldserver", "{} (worldserver-daemon) ready...", GitRevision::GetFullVersion());
 

@@ -9,7 +9,8 @@
  *       src/server/game/Modules/{ModuleMgr,ModuleSession,ModuleWire,ModuleManifestInfo,ModuleApproval}.cpp \
  *       src/server/game/Modules/tests/ModuleHostTest.cpp src/server/game/Modules/tests/stubs/ErrorsStub.cpp \
  *       -lboost_filesystem -lboost_system -lcrypto -lpthread -o module_host_test
- *   ./module_host_test <path-to-minimal_module> /bin/sleep
+ *   ./module_host_test <path-to-minimal_module> /bin/sleep <path-to-event_module>
+ *   (event_module: src/server/game/Modules/tests/EventModule.cpp, built against the SDK library)
  */
 
 #include "ModuleMgr.h"
@@ -22,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <thread>
 
@@ -46,6 +48,7 @@ int g_failures = 0;
 
 std::string g_minimalModule;
 std::string g_sleepBinary;
+std::string g_eventModule;
 fs::path g_work;
 
 // Restart budget and backoff are kept small so the timing-dependent scenarios finish quickly.
@@ -332,17 +335,103 @@ void ScenarioApprovalFlow()
     CHECK(contents == garbage);
 }
 
+std::string ReadAll(fs::path const& path)
+{
+    std::ifstream in(path);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+bool LogContains(fs::path const& path, std::string const& needle)
+{
+    return ReadAll(path).find(needle) != std::string::npos;
+}
+
+// H: Tier 1 event routing against the SDK's ModuleClient. Covers notification filtering by subscription,
+// command routing (claimed, not claimed, timed out, late reply ignored), and the non-blocking guarantee:
+// a module that stops reading must not stall the caller, and excess notifications are dropped and counted.
+void ScenarioEventRouting()
+{
+    std::printf("-- event routing: notify, commands, timeout, non-blocking\n");
+    fs::path const root = g_work / "events";
+    fs::create_directories(root / "event-module");
+    fs::copy_file(g_eventModule, root / "event-module" / "event-module", fs::copy_options::overwrite_existing);
+    {
+        std::ofstream manifest(root / "event-module" / "module.json");
+        manifest << "{\"name\":\"event-module\",\"version\":\"0.1.0\",\"protocol_version\":\"1\","
+                    "\"tier1\":{\"hooks\":[\"PlayerScript.OnLogin\",\"AccountScript.OnAccountLogin\","
+                    "\"WorldScript.OnStartup\",\"CommandScript\"]},\"tier2\":{\"participates\":false}}";
+    }
+    Configure(true, 5000, 8000, root);
+    fs::path const log = root / "event-module.log";
+
+    sModuleMgr->LoadModules();
+    CHECK(WaitFor([] { return Find("event-module").Status == ModuleStatus::Running; }, 5000ms));
+
+    // Notifications reach subscribed hooks only. PlayerScript.OnLogout is not in the module's hook list.
+    sModuleMgr->DispatchNotify("PlayerScript.OnLogin", ModuleWire::NotifyKind::PlayerLogin, 42);
+    sModuleMgr->DispatchNotify("PlayerScript.OnLogout", ModuleWire::NotifyKind::PlayerLogout, 43);
+    sModuleMgr->DispatchNotify("AccountScript.OnAccountLogin", ModuleWire::NotifyKind::AccountLogin, 7);
+    sModuleMgr->DispatchNotify("WorldScript.OnStartup", ModuleWire::NotifyKind::WorldStartup, 0);
+    CHECK(WaitFor([&]
+    {
+        return LogContains(log, "notify PlayerScript.OnLogin 42") &&
+               LogContains(log, "notify AccountScript.OnAccountLogin 7") &&
+               LogContains(log, "notify WorldScript.OnStartup 0");
+    }, 3000ms));
+    CHECK(!LogContains(log, "OnLogout"));
+
+    // Commands: claimed, not claimed (empty reply), and timed out.
+    std::string result;
+    using Route = ModuleMgr::CommandRouteResult;
+    CHECK(sModuleMgr->RouteCommand("ping", 99, result) == Route::Succeeded);
+    CHECK(result == "pong");
+    result.clear();
+    CHECK(sModuleMgr->RouteCommand("nothing-here", 99, result) == Route::NotRouted);
+
+    auto const slowStart = std::chrono::steady_clock::now();
+    CHECK(sModuleMgr->RouteCommand("slow", 99, result) == Route::TimedOut);
+    auto const slowElapsed = std::chrono::steady_clock::now() - slowStart;
+    CHECK(slowElapsed < 600ms); // the request timeout is 200 ms; the module answers after 1 s
+
+    // The module's late reply to "slow" must not be taken as the answer to the next request.
+    std::this_thread::sleep_for(1200ms);
+    result.clear();
+    CHECK(sModuleMgr->RouteCommand("ping", 99, result) == Route::Succeeded);
+    CHECK(result == "pong");
+
+    // Non-blocking: the module stops reading for three seconds. Queueing 200k notifications must not wait
+    // on it: the queue fills at 1 MiB and everything beyond that is dropped and counted.
+    CHECK(sModuleMgr->RouteCommand("stall", 99, result) == Route::TimedOut);
+    auto const floodStart = std::chrono::steady_clock::now();
+    for (uint64 i = 0; i < 200000; ++i)
+        sModuleMgr->DispatchNotify("PlayerScript.OnLogin", ModuleWire::NotifyKind::PlayerLogin, i);
+    auto const floodElapsed = std::chrono::steady_clock::now() - floodStart;
+    CHECK(floodElapsed < 1000ms);
+    ModuleSnapshot s = Find("event-module");
+    CHECK(s.DroppedEvents > 0);
+    CHECK(s.Status == ModuleStatus::Running); // its heartbeats kept it alive while it was not reading
+
+    // Once the module resumes, it is still healthy and was never restarted.
+    std::this_thread::sleep_for(3500ms);
+    s = Find("event-module");
+    CHECK(s.Status == ModuleStatus::Running);
+    CHECK(s.RestartAttempts == 0);
+
+    sModuleMgr->Unload();
+}
+
 } // namespace
 
 int main(int argc, char** argv)
 {
-    if (argc < 3)
+    if (argc < 4)
     {
-        std::fprintf(stderr, "usage: %s <minimal_module> <sleep>\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <minimal_module> <sleep> <event_module>\n", argv[0]);
         return 2;
     }
     g_minimalModule = fs::absolute(argv[1]).string();
     g_sleepBinary = fs::absolute(argv[2]).string();
+    g_eventModule = fs::absolute(argv[3]).string();
     g_work = fs::temp_directory_path() / ("module-host-test-" + std::to_string(::getpid()));
     fs::remove_all(g_work);
     fs::create_directories(g_work);
@@ -354,12 +443,13 @@ int main(int argc, char** argv)
     ScenarioCrashRecovers();
     ScenarioCrashLoop();
     ScenarioApprovalFlow();
+    ScenarioEventRouting();
 
     fs::remove_all(g_work);
     if (g_failures == 0)
     {
         std::printf("PASS  module host: approval flow, handshake, heartbeats, shutdown, handshake retries,\n"
-                    "      crash restart, restart budget (heartbeat and crash loops)\n");
+                    "      crash restart, restart budget, event routing (notify, commands, timeout, non-blocking)\n");
         return 0;
     }
     std::printf("%d check(s) failed\n", g_failures);

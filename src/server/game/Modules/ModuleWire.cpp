@@ -175,6 +175,87 @@ bool DecodeConfigEntry(std::string_view bytes, ConfigEntry& out)
 
 } // namespace
 
+std::string EncodeEventNotify(std::string_view hookName, NotifyKind kind, uint64 value)
+{
+    std::string payload;
+    if (kind != NotifyKind::WorldStartup && kind != NotifyKind::WorldShutdown)
+    {
+        // PlayerLoginEvent/PlayerLogoutEvent use player_guid = 1; AccountLoginEvent uses account_id = 1.
+        AppendVarintField(payload, 1, value);
+    }
+
+    std::string out;
+    AppendBytesField(out, 1, hookName);
+    AppendBytesField(out, static_cast<uint32>(kind), payload);
+    return out;
+}
+
+std::string EncodeEventRequestCommand(uint64 messageId, std::string_view hookName, std::string_view commandText,
+                                      uint64 issuerGuid)
+{
+    std::string command;
+    AppendBytesField(command, 1, commandText);
+    AppendVarintField(command, 2, issuerGuid);
+
+    std::string out;
+    AppendVarintField(out, 1, messageId);
+    AppendBytesField(out, 2, hookName);
+    AppendBytesField(out, 10, command);
+    return out;
+}
+
+bool Decode(std::string_view bytes, EventReplyMsg& out)
+{
+    Reader r(bytes);
+    while (!r.AtEnd())
+    {
+        uint32 field = 0, wire = 0;
+        if (!r.ReadTag(field, wire))
+            return false;
+
+        if (field == 1 && wire == WireVarint)
+        {
+            if (!r.ReadVarint(out.MessageId))
+                return false;
+        }
+        else if (field == 10 && wire == WireLengthDelimited)
+        {
+            // CommandReplyPayload: success = 1 (bool), result_text = 2 (string).
+            std::string_view commandBytes;
+            if (!r.ReadBytes(commandBytes))
+                return false;
+            out.HasCommand = true;
+
+            Reader c(commandBytes);
+            while (!c.AtEnd())
+            {
+                uint32 cf = 0, cw = 0;
+                if (!c.ReadTag(cf, cw))
+                    return false;
+                if (cf == 1 && cw == WireVarint)
+                {
+                    uint64 success = 0;
+                    if (!c.ReadVarint(success))
+                        return false;
+                    out.Success = success != 0;
+                }
+                else if (cf == 2 && cw == WireLengthDelimited)
+                {
+                    std::string_view text;
+                    if (!c.ReadBytes(text))
+                        return false;
+                    out.ResultText.assign(text);
+                }
+                else if (!c.Skip(cw))
+                    return false;
+            }
+        }
+        else if (!r.Skip(wire))
+            return false;
+    }
+    return true;
+}
+
 std::string Frame(std::string_view body)
 {
     std::string out;

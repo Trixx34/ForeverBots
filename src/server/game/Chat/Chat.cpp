@@ -21,6 +21,7 @@
 #include "CharacterCache.h"
 #include "ChatCommand.h"
 #include "ChatPackets.h"
+#include "ModuleMgr.h"
 #include "Common.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
@@ -167,6 +168,34 @@ bool ChatHandler::_ParseCommands(std::string_view text)
 {
     if (Trinity::ChatCommands::TryExecuteCommand(*this, text))
         return true;
+
+    // Commands provided by external modules (doc 03 "CommandScript"). Core commands take precedence.
+    // Players need the module-command permission, the same one that guards `module`; otherwise they
+    // get the usual "command not found" below.
+    if (!m_session || m_session->HasPermission(rbac::RBAC_PERM_COMMAND_MODULE))
+    {
+        uint64 issuerGuid = 0;
+        if (m_session && m_session->GetPlayer())
+            issuerGuid = m_session->GetPlayer()->GetGUID().GetCounter();
+
+        std::string result;
+        switch (sModuleMgr->RouteCommand(text, issuerGuid, result))
+        {
+            case ModuleMgr::CommandRouteResult::Succeeded:
+                SendSysMessage(result);
+                return true;
+            case ModuleMgr::CommandRouteResult::Failed:
+                SendSysMessage(result);
+                SetSentErrorMessage(true);
+                return true;
+            case ModuleMgr::CommandRouteResult::TimedOut:
+                SendSysMessage("The module handling this command did not respond in time.");
+                SetSentErrorMessage(true);
+                return true;
+            case ModuleMgr::CommandRouteResult::NotRouted:
+                break;
+        }
+    }
 
     // Pretend commands don't exist for regular players
     if (m_session && !m_session->HasPermission(rbac::RBAC_PERM_COMMANDS_NOTIFY_COMMAND_NOT_FOUND_ERROR))

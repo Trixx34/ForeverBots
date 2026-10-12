@@ -2,8 +2,12 @@
  * One module's Tier 1 connection, owned by the core-side module host (ModuleMgr).
  *
  * Each session binds its own Unix domain socket, accepts exactly one connection from the module
- * process, runs the handshake under a deadline, then tracks heartbeats until the connection ends.
- * Results are reported through a Listener, called on the session thread.
+ * process, runs the handshake under a deadline, then delivers events and tracks heartbeats until the
+ * connection ends. Lifecycle results are reported through a Listener, called on the session thread.
+ *
+ * Threading: all socket I/O happens on the session thread. Other threads (the world thread, via
+ * ScriptMgr hooks and chat) only queue frames, which never blocks them on the socket. A module that
+ * stops reading fills its queue, and further notifications are dropped; the world thread is not held up.
  *
  * No TrinityCore dependencies, so it can be unit-tested with the stubs in tests/.
  * POSIX only for now; on Windows Listen() fails with a clear error until the named-pipe transport
@@ -19,8 +23,13 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <future>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 class ModuleSession
@@ -47,6 +56,9 @@ class ModuleSession
             std::vector<ModuleWire::ConfigEntry> Config;  // delivered in ModuleConfig right after accept
         };
 
+        // Frames queued for a module that is not reading. Beyond this, new events are dropped.
+        static constexpr size_t MaxQueuedBytes = 1024 * 1024;
+
         ModuleSession(Settings settings, uint64 moduleId, Listener listener);
         ~ModuleSession();
 
@@ -67,8 +79,37 @@ class ModuleSession
         // Heartbeats received since the handshake was accepted.
         uint64 HeartbeatCount() const { return _heartbeats.load(); }
 
+        // True once the handshake has been accepted.
+        bool IsAccepted() const { return _accepted.load(); }
+
+        // True if the module asked for this hook in its handshake. Only meaningful once accepted.
+        bool Subscribes(std::string_view hook) const;
+
+        // Queues an EventNotify for a subscribed hook. Never blocks on the module. Returns false if the
+        // event was not queued (not subscribed, not accepted, or the queue is full).
+        bool NotifyEvent(std::string_view hook, ModuleWire::NotifyKind kind, uint64 value);
+
+        // Queues an EventRequest carrying a chat command and waits up to `timeout` for the reply.
+        // Returns nothing on timeout, disconnect, or a full queue.
+        std::optional<ModuleWire::EventReplyMsg> RequestCommand(std::string_view hook, std::string_view commandText,
+                                                                uint64 issuerGuid, std::chrono::milliseconds timeout);
+
     private:
+        using Clock = std::chrono::steady_clock;
+
         void Run();
+
+        // Thread-safe. Queues an already-framed message and wakes the session thread.
+        bool Enqueue(std::string frame);
+        // Session thread only. Non-blocking: writes as much queued data as the socket accepts.
+        bool FlushOutgoing();
+        bool HasPendingOutgoing() const;
+        // Session thread only. Queues and flushes, waiting for the socket until the deadline or Stop().
+        bool SendBlocking(std::string frame, Clock::time_point deadline);
+        void Wake();
+        void DrainWake();
+        void CompleteRequest(ModuleWire::EventReplyMsg reply);
+        void FailPendingRequests();
 
         Settings _settings;
         uint64 _moduleId;
@@ -76,9 +117,24 @@ class ModuleSession
 
         int _listenFd = -1;
         int _connFd = -1;
+        int _wakeRead = -1;
+        int _wakeWrite = -1;
         std::thread _thread;
         std::atomic<bool> _stop{false};
+        std::atomic<bool> _accepted{false};
         std::atomic<uint64> _heartbeats{0};
+
+        mutable std::mutex _stateMutex;
+        std::vector<std::string> _subscriptions;
+
+        mutable std::mutex _outMutex;
+        std::string _outBuffer;
+        size_t _outOffset = 0;
+        bool _outClosed = false;
+
+        std::mutex _pendingMutex;
+        std::unordered_map<uint64, std::promise<ModuleWire::EventReplyMsg>> _pending;
+        std::atomic<uint64> _nextMessageId{1};
 };
 
 #endif // TRINITYCORE_MODULE_SESSION_H

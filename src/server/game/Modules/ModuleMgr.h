@@ -61,10 +61,11 @@ struct ModuleDescriptor
 
     uint32 HandshakeAttempts = 0;    // consecutive handshake failures; reset when a handshake is accepted
     uint32 RestartAttempts = 0;      // lifetime count of restarts scheduled, for `module info`
+    uint64 DroppedEvents = 0;        // notifications not delivered because the module's queue was full
     std::vector<std::chrono::steady_clock::time_point> RestartTimes; // post-handshake restarts in the rolling window
     std::chrono::steady_clock::time_point RestartAt{};             // when a scheduled restart is due; epoch if none
 
-    std::unique_ptr<ModuleSession> Session;             // owns the Tier 1 socket and session thread
+    std::shared_ptr<ModuleSession> Session;             // Tier 1 socket and session thread; shared so routing can use it without _mutex
     std::shared_ptr<boost::process::child> Process;     // the module executable
 };
 
@@ -79,6 +80,7 @@ struct ModuleSnapshot
     std::string StatusReason;
     std::string LastFailure;
     uint32 RestartAttempts = 0;
+    uint64 DroppedEvents = 0;
     uint64 HeartbeatCount = 0;
     uint64 ProcessId = 0;
     bool ProcessRunning = false;
@@ -129,6 +131,24 @@ class TC_GAME_API ModuleMgr
         // the log (doc 04: mismatch → permanent failure, never spawned, no restart attempts).
         static bool CheckProtocolVersion(std::string const& declared, std::string& reason);
 
+        // Delivers an event to every running module subscribed to `hook`. Never blocks on a module: the
+        // event is queued for the module's session, or dropped if that queue is full.
+        void DispatchNotify(std::string_view hook, ModuleWire::NotifyKind kind, uint64 value);
+
+        // Outcome of offering a chat command to the modules (doc 03 "CommandScript").
+        enum class CommandRouteResult : uint8
+        {
+            NotRouted,  // no module claimed the command
+            Succeeded,  // a module handled it; resultText is for the player
+            Failed,     // a module claimed it and failed; resultText explains why
+            TimedOut    // a module that subscribed to CommandScript did not reply in time
+        };
+
+        // Offers a chat command (without its leading '.') to the modules subscribed to CommandScript,
+        // in module id order. The first success wins. A reply with success=false and no text means
+        // "not mine" and the next module is asked. The caller must not hold locks that session events need.
+        CommandRouteResult RouteCommand(std::string_view commandText, uint64 issuerGuid, std::string& resultText);
+
         // Snapshot of every known module, sorted by name.
         std::vector<ModuleSnapshot> GetSnapshots();
 
@@ -149,6 +169,7 @@ class TC_GAME_API ModuleMgr
             uint32 MaxHandshakeAttempts = 3;
             uint32 MaxRestartAttempts = 5;
             uint64 RestartBackoffMs = 1000;
+            uint64 CommandRequestTimeoutMs = 200;
             bool AutoApprove = false;
         };
 

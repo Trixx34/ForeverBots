@@ -17,6 +17,7 @@
 
 #include "ScriptMgr.h"
 #include "AchievementMgr.h"
+#include "ModuleMgr.h"
 #include "AreaTrigger.h"
 #include "AreaTriggerAI.h"
 #include "ChatCommand.h"
@@ -1966,11 +1967,13 @@ void ScriptMgr::OnRelocate(Transport* transport, uint32 mapId, float x, float y,
 void ScriptMgr::OnStartup()
 {
     FOREACH_SCRIPT(WorldScript)->OnStartup();
+    sModuleMgr->DispatchNotify("WorldScript.OnStartup", ModuleWire::NotifyKind::WorldStartup, 0);
 }
 
 void ScriptMgr::OnShutdown()
 {
     FOREACH_SCRIPT(WorldScript)->OnShutdown();
+    sModuleMgr->DispatchNotify("WorldScript.OnShutdown", ModuleWire::NotifyKind::WorldShutdown, 0);
 }
 
 // Achievement
@@ -2101,11 +2104,13 @@ void ScriptMgr::OnPlayerSpellCast(Player* player, Spell* spell, bool skipCheck)
 void ScriptMgr::OnPlayerLogin(Player* player, bool firstLogin)
 {
     FOREACH_SCRIPT(PlayerScript)->OnLogin(player, firstLogin);
+    sModuleMgr->DispatchNotify("PlayerScript.OnLogin", ModuleWire::NotifyKind::PlayerLogin, player->GetGUID().GetCounter());
 }
 
 void ScriptMgr::OnPlayerLogout(Player* player)
 {
     FOREACH_SCRIPT(PlayerScript)->OnLogout(player);
+    sModuleMgr->DispatchNotify("PlayerScript.OnLogout", ModuleWire::NotifyKind::PlayerLogout, player->GetGUID().GetCounter());
 }
 
 void ScriptMgr::OnPlayerCreate(Player* player)
@@ -2166,6 +2171,7 @@ void ScriptMgr::OnPlayerChoiceResponse(WorldObject* object, Player* player, Play
 void ScriptMgr::OnAccountLogin(uint32 accountId)
 {
     FOREACH_SCRIPT(AccountScript)->OnAccountLogin(accountId);
+    sModuleMgr->DispatchNotify("AccountScript.OnAccountLogin", ModuleWire::NotifyKind::AccountLogin, accountId);
 }
 
 void ScriptMgr::OnFailedAccountLogin(uint32 accountId)

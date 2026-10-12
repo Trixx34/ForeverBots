@@ -108,6 +108,36 @@ bool Decode(std::string_view bytes, HandshakeRequest& out);
 bool Decode(std::string_view bytes, Heartbeat& out);
 bool Decode(std::string_view bytes, std::vector<ConfigEntry>& out); // ModuleConfig body
 
+// EventNotify (core -> module). The oneof member numbers are the EventNotify payload fields in events.proto.
+enum class NotifyKind : uint32
+{
+    PlayerLogin = 10,
+    PlayerLogout = 11,
+    WorldStartup = 12,
+    WorldShutdown = 13,
+    AccountLogin = 14,
+};
+
+// Body of an EventNotify. `value` is the player GUID for player events, the account id for AccountLogin,
+// and ignored for world events.
+std::string EncodeEventNotify(std::string_view hookName, NotifyKind kind, uint64 value);
+
+// Body of an EventRequest carrying a CommandRequestPayload.
+std::string EncodeEventRequestCommand(uint64 messageId, std::string_view hookName, std::string_view commandText,
+                                      uint64 issuerGuid);
+
+// EventReply body. Success is only meaningful when HasCommand is set; see the command routing rules
+// in ModuleMgr::RouteCommand.
+struct EventReplyMsg
+{
+    uint64 MessageId = 0;
+    bool HasCommand = false;
+    bool Success = false;
+    std::string ResultText;
+};
+
+bool Decode(std::string_view bytes, EventReplyMsg& out);
+
 // Frame helpers for a byte stream: prepend the length prefix.
 std::string Frame(std::string_view body);
 
