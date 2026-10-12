@@ -250,7 +250,7 @@ void ModuleMgr::ProcessModuleDirectory(std::string const& root, std::string cons
     SpawnModule(id);
 }
 
-// Keys the operator wrote as Module.<name>.<Key> (in modules.d/<name>.conf, loaded with the other config files).
+// Keys the operator wrote as Module.<name>.<Key> (in a .conf file under the config directory, see worldserver.conf.dist).
 // The prefix is stripped, so the module sees its own key names. See doc/module-system/03, Config delivery.
 static std::vector<ModuleWire::ConfigEntry> LoadModuleConfig(std::string const& moduleName)
 {

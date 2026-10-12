@@ -25,7 +25,8 @@ the run: record the step number and the log lines around it.
 
 1. `worldserver.conf`: `Modules.Enabled = 1`, `Modules.AutoApproveLocal = 1`. Leave the `Modules.Tier2.*` bounds
    at their defaults for the first run.
-2. `modules.d/forever-bots.conf` in the same directory as `worldserver.conf`. Copy the example from the module repo
+2. `worldserver.conf.d/modules.d/forever-bots.conf`, under the config directory (`worldserver.conf.d`, relative to the
+   directory the worldserver starts in). Copy the example from the module repo
    (`config/modules.d/forever-bots.conf.example`) and set `Module.forever-bots.MaxBots = 1`.
 3. Expect no config errors at start-up.
 
