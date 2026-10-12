@@ -36,8 +36,11 @@ trinkets are left alone.
 Candidates come from the loaded item templates, filtered per class and level: armor or weapon, quality at most `MaxQuality`, required level
 at most bot level + `LevelOffset`, no required skill, spell or reputation, no start quest, no duration, no scaling curve, bind on equip or
 none (unless `AllowBindOnPickup`), class allowed, test and placeholder names dropped. Each candidate is scored with `BotGear::Score` for
-the class role; the character must also pass `Player::CanUseItem` and `CanEquipNewItem`, so proficiencies, race and unique rules are the
-core's own. Armor is limited to the best type the bot can wear at its level (cloth, leather, mail, plate). The main hand takes the better
+the class role; every pick is checked with a `CanEquipNewItem` dry run for the target slot, so proficiencies, race, level and unique rules are the
+core's own (`Player::CanUseItem(ItemTemplate)` alone does not test proficiencies and must not be used as the gate). Armor prefers the best
+type the bot can wear at its level (cloth, leather, mail, plate, found by dry-running the first candidate of each type) and falls back to a
+lower type for a slot with no piece of the best type. Cloaks, neck and rings are not tied to an armor type. The off hand is filled even when
+the main hand keeps its starting weapon or the main hand pick fails. The main hand takes the better
 of the best two-hander and the best one-hander plus off hand (shield, holdable, or a second one-hander when the class can dual wield).
 
 Settings: `Enabled` (1), `MaxQuality` (2), `LevelOffset` (0), `MinLevel` (1), `LevelStep` (5), `AllowBindOnPickup` (0), `Armor` (1),
@@ -49,3 +52,7 @@ Limits: a bot that already wears a level 1 starter weapon keeps it (slots are no
 
 - Navigation fixes for quests 400 and 2160 and the root cause for 794, 5441 and 1656 (needs a running server and path data).
 - R-V3-04 does not change trip pathing; only grind target choice and the free-target check.
+
+## Fix: starter gear granted almost nothing (2026-10-12)
+
+Sim run: 446 of 500 logins logged `START_GEAR_NONE` and 54 (shamans) got only a shield. Causes: the usability gate was `CanUseItem(ItemTemplate)`, which skips armor and weapon proficiency, so the 'best armor type' was always the top type present in the data (never wearable at level 1) and every armor candidate of the wrong type was then rejected at equip time; cloaks were tagged with the cloth type and so locked out the same way; the best weapon and shield were the top scored ones regardless of proficiency, and the off hand was only tried after a successful main hand grant. Now all gates are slot-aware `CanEquipNewItem` dry runs (see above).

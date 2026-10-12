@@ -210,7 +210,12 @@ std::vector<Cand> const& Candidates(uint8 classId, uint32 level, Settings const&
         if (p.IsArmor())
         {
             uint32 const sub = p.GetSubClass();
-            if (sub >= ITEM_SUBCLASS_ARMOR_CLOTH && sub <= ITEM_SUBCLASS_ARMOR_PLATE)
+            // Only the body slots have an armor type that matters. A cloak is "cloth" in the data but every class wears it,
+            // so tagging it would lock cloaks out for anyone whose best body armor is leather, mail or plate.
+            bool const bodySlot = c.InvType == INVTYPE_HEAD || c.InvType == INVTYPE_SHOULDERS || c.InvType == INVTYPE_CHEST ||
+                c.InvType == INVTYPE_ROBE || c.InvType == INVTYPE_WAIST || c.InvType == INVTYPE_LEGS || c.InvType == INVTYPE_FEET ||
+                c.InvType == INVTYPE_WRISTS || c.InvType == INVTYPE_HANDS;
+            if (bodySlot && sub >= ITEM_SUBCLASS_ARMOR_CLOTH && sub <= ITEM_SUBCLASS_ARMOR_PLATE)
                 c.ArmorSub = sub;
         }
         out.push_back(c);
@@ -219,9 +224,12 @@ std::vector<Cand> const& Candidates(uint8 classId, uint32 level, Settings const&
     return s_cache.emplace(key, std::move(out)).first->second;
 }
 
-bool UsableByBot(Player* bot, Cand const& c)
+// Dry run of the real equip check for this slot: class, race, level, armor and weapon proficiency, dual wield, unique limits.
+// Player::CanUseItem(ItemTemplate) alone does not look at proficiencies, so it passes items the bot can never wear.
+bool UsableAt(Player* bot, Cand const& c, uint8 slot)
 {
-    return bot->CanUseItem(c.Proto) == EQUIP_ERR_OK;
+    uint16 dest = 0;
+    return bot->CanEquipNewItem(slot, dest, c.Entry, false) == EQUIP_ERR_OK;
 }
 
 bool FitsSlot(Cand const& c, uint8 slot)
@@ -279,12 +287,25 @@ Result Grant(Player* bot)
     std::vector<Cand> const& cands = Candidates(bot->GetClass(), bot->GetLevel(), s);
     res.Candidates = uint32(cands.size());
 
-    // Best armor type: the highest cloth/leather/mail/plate class the bot can actually wear at this level.
+    // Best armor type: the highest cloth/leather/mail/plate class the bot can actually wear (equip dry run), found by testing the
+    // first candidate of each type in the slot it fits.
     uint32 bestArmorSub = 0;
     if (s.Armor)
+    {
+        bool tested[ITEM_SUBCLASS_ARMOR_PLATE + 1] = {};
         for (Cand const& c : cands)
-            if (c.ArmorSub > bestArmorSub && UsableByBot(bot, c))
-                bestArmorSub = c.ArmorSub;
+        {
+            if (!c.ArmorSub || c.ArmorSub <= bestArmorSub || tested[c.ArmorSub])
+                continue;
+            tested[c.ArmorSub] = true;
+            for (uint8 slot : BotGear::SlotsForInvType(c.InvType))
+                if (UsableAt(bot, c, slot))
+                {
+                    bestArmorSub = c.ArmorSub;
+                    break;
+                }
+        }
+    }
 
     if (s.Armor)
     {
@@ -292,16 +313,17 @@ Result Grant(Player* bot)
         {
             if (slot >= EQUIPMENT_SLOT_MAINHAND || !Empty(bot, slot))
                 continue;
-            for (Cand const& c : cands)
-            {
-                if (!c.Proto->IsArmor() || !FitsSlot(c, slot))
-                    continue;
-                if (c.ArmorSub && c.ArmorSub != bestArmorSub)
-                    continue;
-                if (!UsableByBot(bot, c) || !Equip(bot, c, slot, res))
-                    continue;
-                break;
-            }
+            // Pass 0: the best armor type. Pass 1: any wearable piece (a type below the best, when the best type has nothing for this slot).
+            for (int pass = 0; pass < 2 && Empty(bot, slot); ++pass)
+                for (Cand const& c : cands)
+                {
+                    if (!c.Proto->IsArmor() || !FitsSlot(c, slot))
+                        continue;
+                    if (pass == 0 && c.ArmorSub && c.ArmorSub != bestArmorSub)
+                        continue;
+                    if (Equip(bot, c, slot, res))
+                        break;
+                }
         }
     }
 
@@ -319,7 +341,7 @@ Result Grant(Player* bot)
             if (c.Proto->IsArmor())
             {
                 if (c.Proto->GetSubClass() == ITEM_SUBCLASS_ARMOR_SHIELD || c.InvType == INVTYPE_HOLDABLE)
-                    if (!bestOh && ohEmpty && !twoHandWorn && UsableByBot(bot, c))
+                    if (!bestOh && ohEmpty && !twoHandWorn && UsableAt(bot, c, EQUIPMENT_SLOT_OFFHAND))
                         bestOh = &c;
                 continue;
             }
@@ -327,19 +349,19 @@ Result Grant(Player* bot)
                 continue;
             if (c.InvType == INVTYPE_2HWEAPON)
             {
-                if (!best2 && mhEmpty && UsableByBot(bot, c))
+                if (!best2 && mhEmpty && UsableAt(bot, c, EQUIPMENT_SLOT_MAINHAND))
                     best2 = &c;
             }
             else if (c.InvType == INVTYPE_WEAPON || c.InvType == INVTYPE_WEAPONMAINHAND)
             {
-                if (!best1 && mhEmpty && UsableByBot(bot, c))
+                if (!best1 && mhEmpty && UsableAt(bot, c, EQUIPMENT_SLOT_MAINHAND))
                     best1 = &c;
-                if (c.InvType == INVTYPE_WEAPON && !bestOh && ohEmpty && !twoHandWorn && bot->CanDualWield() && UsableByBot(bot, c))
+                if (c.InvType == INVTYPE_WEAPON && !bestOh && ohEmpty && !twoHandWorn && bot->CanDualWield() && UsableAt(bot, c, EQUIPMENT_SLOT_OFFHAND))
                     bestOh = &c;
             }
             else if (c.InvType == INVTYPE_WEAPONOFFHAND)
             {
-                if (!bestOh && ohEmpty && !twoHandWorn && bot->CanDualWield() && UsableByBot(bot, c))
+                if (!bestOh && ohEmpty && !twoHandWorn && bot->CanDualWield() && UsableAt(bot, c, EQUIPMENT_SLOT_OFFHAND))
                     bestOh = &c;
             }
         }
@@ -351,7 +373,10 @@ Result Grant(Player* bot)
             Cand const* mh = two ? best2 : best1;
             if (!mh && ohEmpty)
                 mh = best2;
-            if (mh && Equip(bot, *mh, EQUIPMENT_SLOT_MAINHAND, res) && mh != best2 && ohEmpty && bestOh && bestOh->Entry != mh->Entry)
+            bool const mhDone = mh && Equip(bot, *mh, EQUIPMENT_SLOT_MAINHAND, res);
+            // the off hand does not depend on the main hand pick: a bot that kept its starting weapon still gets its shield
+            bool const twoNow = mhDone && mh->InvType == INVTYPE_2HWEAPON;
+            if (ohEmpty && bestOh && !twoNow && !(mhDone && bestOh->Entry == mh->Entry))
                 Equip(bot, *bestOh, EQUIPMENT_SLOT_OFFHAND, res);
         }
         else if (ohEmpty && bestOh && !twoHandWorn)
@@ -362,7 +387,7 @@ Result Grant(Player* bot)
             {
                 if (!c.Proto->IsWeapon() || !FitsSlot(c, EQUIPMENT_SLOT_RANGED))
                     continue;
-                if (UsableByBot(bot, c) && Equip(bot, c, EQUIPMENT_SLOT_RANGED, res))
+                if (Equip(bot, c, EQUIPMENT_SLOT_RANGED, res))
                     break;
             }
     }
