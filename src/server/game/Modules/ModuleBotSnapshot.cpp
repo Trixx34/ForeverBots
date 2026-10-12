@@ -7,6 +7,9 @@
 #include "ObjectGuid.h"
 #include "Player.h"
 #include "SharedDefines.h"
+#include "SpellHistory.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 
 #include <algorithm>
 #include <limits>
@@ -14,6 +17,7 @@
 
 using forever_module::BotSnapshot;
 using forever_module::NearbyUnit;
+using forever_module::SpellCooldown;
 
 namespace
 {
@@ -29,6 +33,37 @@ uint32 ClampToUint32(uint64 value)
 uint32 ClampToUint32(int64 value)
 {
     return value <= 0 ? 0 : ClampToUint32(static_cast<uint64>(value));
+}
+
+// The bot's active cooldowns, closest to expiring first, up to the slots in the snapshot. Each is a known spell
+// (not removed) with a remaining cooldown above zero.
+void FillCooldowns(Player& bot, SpellCooldown (&slots)[forever_module::kMaxTrackedCooldowns])
+{
+    struct Active
+    {
+        uint32 SpellId;
+        uint32 Remaining;
+    };
+
+    std::vector<Active> active;
+    SpellHistory const* history = bot.GetSpellHistory();
+    for (auto const& [spellId, spell] : bot.GetSpellMap())
+    {
+        if (spell.state == PLAYERSPELL_REMOVED)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE);
+        if (!info)
+            continue;
+
+        auto const remaining = history->GetRemainingCooldown(info).count();
+        if (remaining <= 0)
+            continue;
+        active.push_back({ spellId, uint32(std::min<int64>(remaining, std::numeric_limits<uint32>::max())) });
+    }
+
+    std::sort(active.begin(), active.end(), [](Active const& a, Active const& b) { return a.Remaining < b.Remaining; });
+    for (std::size_t i = 0; i < active.size() && i < forever_module::kMaxTrackedCooldowns; ++i)
+        slots[i] = { active[i].SpellId, active[i].Remaining };
 }
 
 } // namespace
@@ -71,6 +106,8 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby)
     entry.max_health = ClampToUint32(bot.GetMaxHealth());
     entry.mana = ClampToUint32(int64(bot.GetPower(POWER_MANA)));
     entry.max_mana = ClampToUint32(int64(bot.GetMaxPower(POWER_MANA)));
+
+    FillCooldowns(bot, entry.spell_cooldowns);
 
     if (Unit* victim = bot.GetVictim())
         if (!EncodeUnitRef(*victim, entry.threat_target_guid))

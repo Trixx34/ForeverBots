@@ -20,6 +20,8 @@ the code is the reference and the difference is listed.
 | Bot control | `RequestControl`, `ReleaseControl`, `ControlRevoked`; one owner per bot; `max_bots` | `ModuleBotOwnership.*`, `ModuleMgr::ExecuteControlRequest` |
 | Bot lifecycle | Create, log in and out through a queue, relogin delay; at shutdown, logins in flight are finished (bounded by the login timeout) before logout | `src/server/game/Bots/BotMgr.*` |
 | Spawn level | `SpawnParams.level` honoured; 0 is the starting level; above max level refused | `BotModuleBackend::Spawn`, `BotMgr::CreateBot` |
+| Spawn team | 0 from race, 1 Alliance, 2 Horde; a team that disagrees with the race is refused | `BotModuleBackend::Spawn` |
+| Spell cooldowns | Up to 8 active cooldowns per bot in each snapshot, as spell id and remaining ms, closest to expiring first | `ModuleBotSnapshot.cpp` (`FillCooldowns`) |
 | Restart reclaim | The module keeps its bot guids in a state file and takes them back on start | module repo `src/bot_state_file.*`; core needs no change |
 
 ## Differs from the design documents
@@ -29,7 +31,10 @@ the code is the reference and the difference is listed.
   and any unknown action type, and publishes nothing on refusal.
 - **Tier 2 targets.** Units are referenced by a 64-bit unit reference (type, entry, 32-bit counter), not a bare guid.
   Units whose counter does not fit are refused.
-- **Team.** `SpawnParams.team` is not used. Team follows from race.
+- **Team.** `SpawnParams.team`: 0 takes the race's faction; 1 is Alliance; 2 is Horde. Any other value, or a team that
+  disagrees with the race, is refused before any account is created.
+- **Spell cooldowns.** Each cooldown carries its spell id (`SpellCooldown`), so the module knows which spell it is.
+- **Protocol 2.** Layout 2 and protocol 2 are breaking changes; modules built against protocol 1 are refused at handshake.
 - **Revocation and state.** A `ControlRevoked` does not remove a bot from the module's state file, because the core
   revokes all bots at shutdown. Only a `character not found` reply removes a guid.
 - **Action timing.** A module publishes at most one action set per snapshot tick. The core applies the newest set it
@@ -37,10 +42,8 @@ the code is the reference and the difference is listed.
 
 ## Still open
 
-- Spell cooldowns are not in snapshots (`spell_cooldowns` reads zero).
 - Config is sent once, after accept. A reload does not re-send it (design 03 says it should).
 - Resource limits (`Modules.ResourceLimits.*`) are declared but not enforced.
-- Team in `SpawnParams` is ignored; a request for a team that disagrees with the race is not refused.
 - The auto-vendor module (`mod-auto-vendor-trash`) still uses its defaults and does not read its config.
 - Core unit tests for the action and snapshot code need a build; only syntax checks have run for them.
 - Not yet run end to end on a live worldserver. See doc 13.
