@@ -96,6 +96,7 @@ class TC_GAME_API BotMgr
         void StartLogin(BotInfo& bot);
         void ProcessLogins();
         void PollLogins(); // advances the logins in flight: finishes or fails them
+        void PollCreates(); // runs the save callbacks of characters that finished committing
         void FinishCreate(uint64 guid, bool success);
         void FinishLogin(BotInfo& bot);
         void FailLogin(BotInfo& bot, char const* reason);

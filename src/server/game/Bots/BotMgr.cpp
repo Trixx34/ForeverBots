@@ -262,10 +262,22 @@ uint64 BotMgr::CreateBot(uint8 raceId, uint8 classId, uint8 level, std::string& 
     return guid;
 }
 
+// Runs the save callbacks of the characters that finished committing. Nothing else polls them: a bot has no socket
+// session, so the usual WorldSession callback queue never sees these.
+void BotMgr::PollCreates()
+{
+    for (size_t i = 0; i < _creating.size();)
+    {
+        // The callback only records the result; the entry is removed here, after it has returned.
+        if (_creating[i].second.InvokeIfReady())
+            _creating.erase(_creating.begin() + i);
+        else
+            ++i;
+    }
+}
+
 void BotMgr::FinishCreate(uint64 guid, bool success)
 {
-    _creating.erase(std::remove_if(_creating.begin(), _creating.end(), [guid](auto const& entry) { return entry.first == guid; }), _creating.end());
-
     auto it = _bots.find(guid);
     if (it == _bots.end())
         return;
@@ -357,6 +369,7 @@ void BotMgr::LogoutAll(char const* reason)
 void BotMgr::Update(uint32 diff)
 {
     _uptimeMs += diff;
+    PollCreates();
     PollLogins();
     ProcessLogins();
 }
