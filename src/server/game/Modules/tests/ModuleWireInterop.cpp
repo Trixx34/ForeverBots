@@ -48,7 +48,7 @@ int main()
         forever_module::HandshakeRequest* req = sdk.mutable_handshake_request();
         req->set_module_name("minimal-module");
         req->set_module_version("0.1.0");
-        req->set_protocol_version("3");
+        req->set_protocol_version("4");
         req->add_tier1_hooks("WorldScript.OnStartup");
         req->add_tier1_hooks("CommandScript");
         req->set_sdk_package_version("0.1.0");
