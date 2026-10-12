@@ -76,6 +76,7 @@ namespace WorldPackets
         struct CharacterRenameInfo
         {
             std::string NewName;
+            std::string NewSurname; // Classic 1.60
             ObjectGuid Guid;
         };
 
@@ -84,6 +85,7 @@ namespace WorldPackets
             ObjectGuid CharGUID;
             uint8 SexID             = GENDER_NONE;
             std::string CharName;
+            std::string CharSurname;    // Classic 1.60
             Array<ChrCustomizationChoice, 250> Customizations;
         };
 
@@ -95,6 +97,7 @@ namespace WorldPackets
             ObjectGuid Guid;
             bool FactionChange      = false;
             std::string Name;
+            std::string Surname;    // Classic 1.60
             Array<ChrCustomizationChoice, 250> Customizations;
         };
 
@@ -401,6 +404,7 @@ namespace WorldPackets
             WorldPacket const* Write() override;
 
             std::string Name;
+            std::string Surname;    // Classic 1.60
             uint32 Result = 0;
             Optional<ObjectGuid> Guid;
         };
@@ -434,6 +438,7 @@ namespace WorldPackets
 
             ObjectGuid CharGUID;
             std::string CharName;
+            std::string CharSurname;    // Classic 1.60
             uint8 SexID = 0;
             Array<ChrCustomizationChoice, 250> const& Customizations;
         };
@@ -474,6 +479,7 @@ namespace WorldPackets
         struct CharFactionChangeDisplayInfo
         {
             std::string Name;
+            std::string Surname;    // Classic 1.60
             uint8 SexID             = 0;
             uint8 RaceID            = RACE_NONE;
             Array<ChrCustomizationChoice, 250> const* Customizations = nullptr;

@@ -145,7 +145,7 @@ h2 { font-size: 1rem; font-weight: 600; margin: 0; }
 
 .field { display: grid; gap: 6px; margin-bottom: 14px; }
 .field > span { color: var(--muted); font-size: .82rem; }
-input[type=text], input[type=search], select, textarea {
+input[type=text], input[type=search], input[type=number], select, textarea {
   width: 100%; font: inherit; font-size: .93rem; color: var(--text); background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; padding: 8px 10px; }
 input:focus, select:focus, textarea:focus, .btn:focus-visible, .seg label:focus-visible { outline: 2px solid var(--gold-line); outline-offset: 1px; }
 textarea { min-height: 140px; resize: vertical; line-height: 1.5; }
@@ -352,3 +352,16 @@ details.faq .a { padding: 0 16px 14px; color: var(--muted); }
 .steps, .perks { margin: 0 0 14px; padding-left: 20px; }
 .steps li, .perks li { margin: 4px 0; }
 .perks li::marker { color: var(--gold); }
+/* ---------- shop ---------- */
+.btn.sm { padding: 4px 10px; font-size: .82rem; }
+.form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0 14px; }
+.big-num { font-size: 1.9rem; font-weight: 700; color: var(--gold); line-height: 1.1; }
+.calc { padding: 10px 12px; margin: 2px 0 6px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; }
+.calc b { color: var(--gold); }
+.inline { display: inline; }
+.tbl td .actions { margin: 0; }
+.acts { table-layout: fixed; }
+.acts th:nth-child(1) { width: 36%; }
+.acts select, .acts input[type=number] { width: 100%; min-width: 0; }
+.acts .cap { display: block; min-height: 1.1em; margin-bottom: 4px; font-size: .75rem; color: var(--muted); }
+.acts td { vertical-align: bottom; }

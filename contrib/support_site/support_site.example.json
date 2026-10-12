@@ -56,5 +56,8 @@
   ],
   "icon_cdn": "https://wow.zamimg.com/images/wow/icons",
   "armory_search_per_minute": 20,
-  "armory_pages_per_minute": 60
+  "armory_pages_per_minute": 60,
+  "shop_admin_level": 3,
+  "gold_market_max_listings": 10,
+  "shop_points_text": "Points come from supporting the server."
 }

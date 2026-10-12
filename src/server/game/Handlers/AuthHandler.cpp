@@ -149,8 +149,9 @@ void WorldSession::SendFeatureSystemStatusGlueScreen()
         { "raidLockoutExtendEnabled"sv, "1"sv },
         { "sellAllJunkEnabled"sv, "1"sv },
         { "bypassItemLevelScalingCode"sv, "0"sv },
-        // Classic 1.60: custom shop - the client's shop2 REST calls go to classic_re/shop_server.py
-        { "shop2Enabled"sv, "1"sv },
+        // Classic 1.60: 0 = the legacy Store window fed by the BattlePay world packets (TokenHandler.cpp, Classic.Shop.Enabled);
+        // 1 = the shop2 catalog shop over REST (classic_re/shop_server.py stub, never answered)
+        { "shop2Enabled"sv, "0"sv },
         { "shop2HostUrlRequests"sv, "https://trinity.actual.battle.net:8443"sv },
         { "shop2HostUrlAuth"sv, "https://trinity.actual.battle.net:8443"sv },
         { "shop2UseConnectedRealmGameServiceRegionId"sv, "0"sv },   // realm region is the fake 70 of the Classic super realm; use the account region (1)
