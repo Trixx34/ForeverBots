@@ -2,8 +2,8 @@
  * Module System — core-side module host.
  * See doc/module-system/04-phase2-module-host-design.md for the design. Implemented: discovery,
  * spawn (boost::process), the Tier 1 handshake and heartbeat, and the restart policy (§5).
- * Not yet implemented: resource limits, bot data in Tier 2 snapshots. Bot control and Tier 2 bot actions are wired;
- * the bot backend (ModuleBotBackend) is installed by the bot implementation.
+ * Not yet implemented: resource limits. Bot control, Tier 2 snapshots with bot data, and Tier 2 bot actions are
+ * wired; the bot backend (ModuleBotBackend) is installed by the bot implementation.
  */
 
 #ifndef TRINITYCORE_MODULEMGR_H
@@ -121,8 +121,8 @@ class TC_GAME_API ModuleMgr
         // the protocol version, requires approval (see below), then spawns the module and runs its
         // handshake. Starts the supervisor thread that performs restarts. No-op until Modules.Enabled = 1.
         //
-        // Approval: the approval store (doc 06) is not implemented yet, so modules are only spawned
-        // when Modules.AutoApproveLocal = 1 (local development). Otherwise they stay PendingApproval.
+        // Approval: a module is spawned only when approved_modules.json records its current capabilities (doc 06),
+        // or when Modules.AutoApproveLocal = 1 (local development, not for production). Otherwise it stays PendingApproval.
         void LoadModules();
 
         // Called once per server tick from World::Update, the same way sBotMgr->Update(diff) is
@@ -174,9 +174,6 @@ class TC_GAME_API ModuleMgr
         // approved_modules.json. Reads the manifest from Modules.Dir. Takes effect at the next load.
         // Returns false with an explanation in message on any failure.
         bool ApproveModule(std::string const& name, std::string& message);
-
-        // TODO (doc 04 §6): RequestControl/ReleaseControl/bot ownership map — needs Tier 1 event
-        // routing before there's anything meaningful to implement here.
 
     private:
         // Settings read from worldserver.conf in LoadModules().
