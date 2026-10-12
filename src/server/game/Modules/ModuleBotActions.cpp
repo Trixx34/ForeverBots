@@ -143,6 +143,23 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
             return BotActionStatus::kApplied;
         }
 
+        case ActionType::kRest:
+        {
+            // spell_id 1 sits down to rest, 0 stands up. A bot in combat does not sit.
+            if (action.spell_id == 0)
+            {
+                bot.SetStandState(UNIT_STAND_STATE_STAND);
+                return BotActionStatus::kApplied;
+            }
+            if (bot.IsInCombat())
+            {
+                reason = "bot is in combat and cannot sit";
+                return BotActionStatus::kRefused;
+            }
+            bot.SetStandState(UNIT_STAND_STATE_SIT);
+            return BotActionStatus::kApplied;
+        }
+
         case ActionType::kCastSpell:
         {
             if (!sSpellMgr->GetSpellInfo(action.spell_id, DIFFICULTY_NONE))
