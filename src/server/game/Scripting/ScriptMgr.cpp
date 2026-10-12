@@ -2307,6 +2307,11 @@ void ScriptMgr::ModifySpellDamageTaken(Unit* target, Unit* attacker, int32& dama
     FOREACH_SCRIPT(UnitScript)->ModifySpellDamageTaken(target, attacker, damage, spellInfo);
 }
 
+void ScriptMgr::OnAuraChange(Unit* target, AuraApplication* aurApp, bool apply)
+{
+    FOREACH_SCRIPT(UnitScript)->OnAuraChange(target, aurApp, apply);
+}
+
 // Scene
 void ScriptMgr::OnSceneStart(Player* player, uint32 sceneInstanceID, SceneTemplate const* sceneTemplate)
 {
@@ -2664,6 +2669,10 @@ void UnitScript::ModifyMeleeDamage(Unit* /*target*/, Unit* /*attacker*/, uint32&
 }
 
 void UnitScript::ModifySpellDamageTaken(Unit* /*target*/, Unit* /*attacker*/, int32& /*damage*/, SpellInfo const* /*spellInfo*/)
+{
+}
+
+void UnitScript::OnAuraChange(Unit* /*target*/, AuraApplication* /*aurApp*/, bool /*apply*/)
 {
 }
 

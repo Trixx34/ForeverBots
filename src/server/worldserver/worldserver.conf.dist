@@ -1626,6 +1626,101 @@ HotSwap.ReCompilerBuildType = ""
 ###################################################################################################
 
 ###################################################################################################
+# MODULE SYSTEM SETTINGS
+# See docs/module-system/ in the core repo for the full design. SKELETON: ModuleMgr does not yet
+# act on most of these -- declared here so ConfigMgr has something to load once it does
+# (docs/module-system/12-initial-core-changes-scope.md).
+#
+#    Modules.Enabled
+#        Description: Enables the external process-isolated module system.
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+
+Modules.Enabled = 0
+
+#    Modules.Dir
+#        Description: Directory scanned for built module executables + module.json manifests
+#                     (populated by the modules/ build-time discovery step, see
+#                     cmake/modules/BuildModules.cmake).
+#        Default:     "modules_runtime"
+
+Modules.Dir = "modules_runtime"
+
+#    Modules.HandshakeTimeoutMs
+#        Description: How long to wait for a spawned module process to connect and send its
+#                     HandshakeRequest before treating it as a failed launch.
+#        Default:     5000
+
+Modules.HandshakeTimeoutMs = 5000
+
+#    Modules.MaxHandshakeAttempts
+#        Description: Handshake timeouts before a module is marked permanently failed (not
+#                     retried further -- distinct from a post-handshake crash, see
+#                     docs/module-system/04-phase2-module-host-design.md §5).
+#        Default:     3
+
+Modules.MaxHandshakeAttempts = 3
+
+#    Modules.HeartbeatIntervalMs
+#        Description: Expected interval between Heartbeat messages from a connected module.
+#        Default:     5000
+
+Modules.HeartbeatIntervalMs = 5000
+
+#    Modules.HeartbeatTimeoutMs
+#        Description: Heartbeat silence duration before a module is considered unresponsive and
+#                     the restart policy applies.
+#        Default:     15000
+
+Modules.HeartbeatTimeoutMs = 15000
+
+#    Modules.MaxRestartAttempts
+#        Description: Crash/heartbeat-timeout restarts allowed within the rolling window below
+#                     before escalating to permanently failed.
+#        Default:     5
+
+Modules.MaxRestartAttempts = 5
+
+#    Modules.RestartBackoffMs
+#        Description: Delay before each restart attempt.
+#        Default:     1000
+
+Modules.RestartBackoffMs = 1000
+
+#    Modules.CommandRequestTimeoutMs
+#        Description: Bounded wait for a module's reply to a synchronous EventRequest (e.g. a
+#                     chat command routed to a module). On timeout the core reports a generic
+#                     "module did not respond" error to the caller.
+#        Default:     200
+
+Modules.CommandRequestTimeoutMs = 200
+
+#    Modules.ResourceLimits.MemoryMB
+#        Description: Memory cap applied to each spawned module process (Job Object on Windows,
+#                     cgroup on Linux where available).
+#        Default:     256
+
+Modules.ResourceLimits.MemoryMB = 256
+
+#    Modules.ResourceLimits.CpuPercent
+#        Description: CPU quota applied to each spawned module process.
+#        Default:     25
+
+Modules.ResourceLimits.CpuPercent = 25
+
+#    Modules.AutoApproveLocal
+#        Description: Dev-convenience only -- skips the capability-approval gate
+#                     (docs/module-system/06-phase4-approval-audit-design.md) entirely, approving
+#                     every module on every load. NOT FOR PRODUCTION USE.
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+
+Modules.AutoApproveLocal = 0
+
+#
+###################################################################################################
+
+###################################################################################################
 # PLAYER INTERACTION
 #
 #    AllowTwoSide.Interaction.Calendar

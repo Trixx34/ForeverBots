@@ -3680,6 +3680,8 @@ void Unit::_ApplyAura(AuraApplication* aurApp, uint32 effMask)
         player->StartCriteria(CriteriaStartEvent::GainAura, aura->GetId());
         player->UpdateCriteria(CriteriaType::GainAura, aura->GetId(), 0, 0, caster);
     }
+
+    sScriptMgr->OnAuraChange(this, aurApp, true);
 }
 
 // removes aura application from lists and unapplies effects
@@ -3771,6 +3773,8 @@ void Unit::_UnapplyAura(AuraApplicationMap::iterator& i, AuraRemoveMode removeMo
 
         player->FailCriteria(CriteriaFailEvent::LoseAura, aurApp->GetBase()->GetId());
     }
+
+    sScriptMgr->OnAuraChange(this, aurApp, false);
 
     i = m_appliedAuras.begin();
 }

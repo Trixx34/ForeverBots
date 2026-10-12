@@ -37,6 +37,7 @@
 #include "MapManager.h"
 #include "Memory.h"
 #include "Metric.h"
+#include "ModuleMgr.h"
 #include "MySQLThreading.h"
 #include "OpenSSLCrypto.h"
 #include "OutdoorPvP/OutdoorPvPMgr.h"
@@ -432,6 +433,10 @@ int main(int argc, char** argv)
 
     sScriptMgr->OnStartup();
 
+    // Module system (docs/module-system/04-phase2-module-host-design.md). SKELETON: no-op until
+    // Modules.Enabled = 1 and modules exist in Modules.Dir.
+    sModuleMgr->LoadModules();
+
     TC_LOG_INFO("server.worldserver", "{} (worldserver-daemon) ready...", GitRevision::GetFullVersion());
 
     // Launch CliRunnable thread
@@ -454,6 +459,9 @@ int main(int argc, char** argv)
     sLog->SetSynchronous();
 
     sScriptMgr->OnShutdown();
+
+    // Module system: send Shutdown to every connected module (skeleton no-op for now).
+    sModuleMgr->Unload();
 
     // set server offline
     LoginDatabase.DirectPExecute("UPDATE realmlist SET flag = flag | {} WHERE id = '{}'", Trinity::Legacy::REALM_FLAG_OFFLINE, realmId);

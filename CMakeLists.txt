@@ -83,6 +83,23 @@ add_subdirectory(dep)
 # add core sources
 add_subdirectory(src)
 
+# Module system: isolated per-module build discovery (docs/module-system/05-phase3-build-discovery-design.md).
+# A broken module's configure/build failure is logged as a warning and skipped -- never fails this target.
+set(MODULES_SOURCE_DIR "${CMAKE_SOURCE_DIR}/modules")
+set(MODULES_BUILD_DIR "${CMAKE_BINARY_DIR}/modules")
+if(NOT DEFINED MODULES_RUNTIME_DIR)
+  set(MODULES_RUNTIME_DIR "${CMAKE_BINARY_DIR}/modules_runtime")
+endif()
+
+add_custom_target(build_modules ALL
+    COMMAND ${CMAKE_COMMAND}
+        -DMODULES_SOURCE_DIR=${MODULES_SOURCE_DIR}
+        -DMODULES_BUILD_DIR=${MODULES_BUILD_DIR}
+        -DMODULES_RUNTIME_DIR=${MODULES_RUNTIME_DIR}
+        -P ${CMAKE_SOURCE_DIR}/cmake/modules/BuildModules.cmake
+    COMMENT "Module system: discovering and building modules/*"
+)
+
 include(CTest)
 if(BUILD_TESTING)
   list(APPEND CMAKE_MODULE_PATH
