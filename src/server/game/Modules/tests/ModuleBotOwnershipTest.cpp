@@ -4,6 +4,8 @@
 
 #include "ModuleBotOwnership.h"
 
+#include <vector>
+
 #include <cstdio>
 
 namespace
@@ -77,6 +79,16 @@ int main()
     // Zero budget refuses everything.
     CHECK(owners.TryClaim(300, 3, 0, owner) == Claim::LimitReached);
 
+
+
+    // BotsOf lists only this module's bots, in ascending order.
+    ModuleBotOwnership fresh;
+    CHECK(fresh.TryClaim(300, 2, 5, owner) == Claim::Granted);
+    CHECK(fresh.TryClaim(200, 2, 5, owner) == Claim::Granted);
+    CHECK(fresh.TryClaim(250, 1, 5, owner) == Claim::Granted);
+    std::vector<uint64> ofTwo = fresh.BotsOf(2);
+    CHECK(ofTwo.size() == 2 && ofTwo[0] == 200 && ofTwo[1] == 300);
+    CHECK(fresh.BotsOf(9).empty());
     if (g_failures == 0)
     {
         std::printf("PASS  bot ownership rules\n");

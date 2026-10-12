@@ -7,6 +7,7 @@
 #include "Log.h"
 #include "ModuleActions.h"
 #include "ModuleBotActions.h"
+#include "ModuleBotSnapshot.h"
 #include "ModuleTier2.h"
 #include "BotMgr.h"
 #include "ModuleManifestInfo.h"
@@ -827,7 +828,20 @@ void ModuleMgr::OnWorldTick(uint64 tick)
     for (auto const& [id, region] : regions)
     {
         if (region->SnapshotDue(tick))
-            region->PublishSnapshot(tick);
+        {
+            // Only the bots this module controls. The list is copied under the lock; the bots are read without it.
+            std::vector<uint64> owned;
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                owned = _owners.BotsOf(id);
+            }
+
+            std::vector<ModuleSnapshotBot> bots;
+            for (uint64 guid : owned)
+                if (Player* bot = sBotMgr->GetOnlinePlayer(guid))
+                    bots.push_back(BuildSnapshotBot(*bot, region->GetBounds().MaxNearbyUnits));
+            region->PublishSnapshot(tick, bots);
+        }
 
         ModuleActionSet actions;
         if (region->ReadNewActions(actions))

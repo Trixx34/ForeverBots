@@ -4,6 +4,8 @@
 
 #include "ModuleTier2.h"
 
+#include <vector>
+
 #include <boost/interprocess/mapped_region.hpp>
 #include <boost/interprocess/shared_memory_object.hpp>
 
@@ -133,6 +135,39 @@ int main()
     publishActions(9, full, 9);
     CHECK(region->ReadNewActions(actions));
     CHECK(actions.Actions.size() == 8);
+
+    // Snapshot contents: a bot with one nearby unit, then five bots against MaxBots = 4 (the fifth is dropped).
+    forever_module::BotSnapshot botEntry;
+    botEntry.guid = 42;
+    botEntry.health = 500;
+    botEntry.max_health = 1000;
+    forever_module::NearbyUnit nearbyEntry;
+    nearbyEntry.guid = forever_module::MakeUnitRef(8, 1234, 7);
+    nearbyEntry.is_hostile = true;
+    std::vector<ModuleSnapshotBot> withBot(1);
+    withBot[0].Bot = botEntry;
+    withBot[0].Nearby = { nearbyEntry };
+    region->PublishSnapshot(9, withBot);
+
+    uint8_t const contentBuffer = header->published_snapshot_buffer.load();
+    auto const* contentSnap = reinterpret_cast<forever_module::WorldTickSnapshotHeader const*>(
+        base + forever_module::Tier2SnapshotBufferOffset(4, 2, contentBuffer));
+    CHECK(contentSnap->tick_number == 9);
+    CHECK(contentSnap->bot_count == 1);
+    auto const* botSlots = reinterpret_cast<forever_module::BotSnapshot const*>(contentSnap + 1);
+    CHECK(botSlots[0].guid == 42);
+    CHECK(botSlots[0].health == 500);
+    CHECK(botSlots[0].nearby_count == 1);
+    auto const* nearbySlots = reinterpret_cast<forever_module::NearbyUnit const*>(botSlots + 4);
+    CHECK(nearbySlots[0].guid == forever_module::MakeUnitRef(8, 1234, 7));
+    CHECK(nearbySlots[0].is_hostile);
+
+    std::vector<ModuleSnapshotBot> tooMany(5, withBot[0]);
+    region->PublishSnapshot(10, tooMany);
+    uint8_t const clampBuffer = header->published_snapshot_buffer.load();
+    auto const* clampSnap = reinterpret_cast<forever_module::WorldTickSnapshotHeader const*>(
+        base + forever_module::Tier2SnapshotBufferOffset(4, 2, clampBuffer));
+    CHECK(clampSnap->bot_count == 4);
 
     // Removing the region drops the name, so a later module attach fails.
     region.reset();

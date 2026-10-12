@@ -70,14 +70,34 @@ bool ModuleTier2Region::SnapshotDue(uint64 tick) const
     return tick % interval == 0;
 }
 
-void ModuleTier2Region::PublishSnapshot(uint64 tick)
+void ModuleTier2Region::PublishSnapshot(uint64 tick, std::vector<ModuleSnapshotBot> const& bots)
 {
     // Write into the buffer the module is not reading, then publish it: tick first, then the index.
     uint8 const next = static_cast<uint8>(1 - _header->published_snapshot_buffer.load(std::memory_order_relaxed));
     auto* base = static_cast<std::byte*>(_mapping->get_address());
-    auto* snapshot = new (base + _snapshotOffset + next * _snapshotBytes) WorldTickSnapshotHeader();
+    std::byte* buffer = base + _snapshotOffset + next * _snapshotBytes;
+
+    uint32 const maxBots = _bounds.MaxBots;
+    uint32 const maxNearby = _bounds.MaxNearbyUnits;
+    uint32 const count = static_cast<uint32>(std::min<std::size_t>(bots.size(), maxBots));
+
+    auto* snapshot = new (buffer) WorldTickSnapshotHeader();
     snapshot->tick_number = tick;
-    snapshot->bot_count = 0;
+    snapshot->bot_count = count;
+
+    // Bot slots first, then maxNearby nearby slots per bot slot (the layout in ModuleTier2Layout.h).
+    auto* botSlots = reinterpret_cast<BotSnapshot*>(buffer + sizeof(WorldTickSnapshotHeader));
+    auto* nearbySlots = reinterpret_cast<NearbyUnit*>(botSlots + maxBots);
+    for (uint32 i = 0; i < count; ++i)
+    {
+        BotSnapshot entry = bots[i].Bot;
+        uint32 const nearby = static_cast<uint32>(std::min<std::size_t>(bots[i].Nearby.size(), maxNearby));
+        entry.nearby_count = nearby;
+        std::memcpy(static_cast<void*>(botSlots + i), &entry, sizeof(entry));
+        if (nearby > 0)
+            std::memcpy(static_cast<void*>(nearbySlots + std::size_t(i) * maxNearby), bots[i].Nearby.data(),
+                        nearby * sizeof(NearbyUnit));
+    }
 
     _header->published_snapshot_tick.store(tick, std::memory_order_release);
     _header->published_snapshot_buffer.store(next, std::memory_order_release);

@@ -4,6 +4,8 @@
 
 #include "ModuleBotOwnership.h"
 
+#include <algorithm>
+
 ModuleBotOwnership::Claim ModuleBotOwnership::TryClaim(uint64 botGuid, uint32 module, uint32 maxBots, uint32& owner)
 {
     auto it = _owners.find(botGuid);
@@ -62,6 +64,16 @@ std::vector<uint64> ModuleBotOwnership::DropModule(uint32 module)
             ++it;
     }
     return released;
+}
+
+std::vector<uint64> ModuleBotOwnership::BotsOf(uint32 module) const
+{
+    std::vector<uint64> bots;
+    for (auto const& entry : _owners)
+        if (entry.second == module)
+            bots.push_back(entry.first);
+    std::sort(bots.begin(), bots.end());
+    return bots;
 }
 
 uint32 ModuleBotOwnership::OwnedCount(uint32 module) const

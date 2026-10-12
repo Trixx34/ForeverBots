@@ -33,6 +33,13 @@ struct ModuleActionSet
     std::vector<forever_module::BotAction> Actions;
 };
 
+// One bot in a snapshot, as the core fills it in: the bot's entry and the units near it (at most MaxNearbyUnits).
+struct ModuleSnapshotBot
+{
+    forever_module::BotSnapshot Bot;
+    std::vector<forever_module::NearbyUnit> Nearby;
+};
+
 class ModuleTier2Region
 {
     public:
@@ -57,8 +64,9 @@ class ModuleTier2Region
         // True when a snapshot is due at this server tick, given the module's tick_interval.
         bool SnapshotDue(uint64 tick) const;
 
-        // Publishes a snapshot for `tick`. Currently writes the header only (no bots yet).
-        void PublishSnapshot(uint64 tick);
+        // Publishes a snapshot for `tick` with the given bots. Bots beyond MaxBots and nearby units beyond
+        // MaxNearbyUnits are dropped.
+        void PublishSnapshot(uint64 tick, std::vector<ModuleSnapshotBot> const& bots = {});
 
         // Last tick published, and the action tick the module last published (for logging/staleness).
         uint64 PublishedSnapshotTick() const;
