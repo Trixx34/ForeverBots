@@ -6,6 +6,7 @@
 #include "Config.h"
 #include "Log.h"
 #include "ModuleActions.h"
+#include "ModuleTier2.h"
 #include "ModuleManifestInfo.h"
 
 #include <optional>
@@ -97,6 +98,10 @@ void ModuleMgr::LoadModules()
     _config.RestartBackoffMs = static_cast<uint64>(sConfigMgr->GetIntDefault("Modules.RestartBackoffMs", 1000));
     _config.CommandRequestTimeoutMs = static_cast<uint64>(sConfigMgr->GetIntDefault("Modules.CommandRequestTimeoutMs", 200));
     _config.AutoApprove = sConfigMgr->GetBoolDefault("Modules.AutoApproveLocal", false);
+    _config.Tier2MaxBots = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxBots", 64));
+    _config.Tier2MaxNearbyUnits = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxNearbyUnits", 16));
+    _config.Tier2MaxActions = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxActions", 256));
+    _config.Tier2MaxTickInterval = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxTickInterval", 100));
 
     std::string const root = sConfigMgr->GetStringDefault("Modules.Dir", "modules_runtime");
 
@@ -259,6 +264,11 @@ bool ModuleMgr::SpawnModule(ModuleId id)
     settings.HeartbeatTimeout = std::chrono::milliseconds(_config.HeartbeatTimeoutMs);
     settings.ExpectedProtocolVersion = kModuleProtocolVersion;
     settings.SupportedHooks = SupportedTier1Hooks;
+    settings.NegotiateTier2 = [this, id](ModuleWire::HandshakeRequest const& request, ModuleWire::HandshakeResponse& response,
+                                         std::string& reason)
+    {
+        return NegotiateTier2(id, request, response, reason);
+    };
     // Module config from modules.d/<name>.conf is not wired up yet; the module gets an empty config.
 
     auto session = std::make_shared<ModuleSession>(settings, id, [this, id](ModuleSession::Event event, std::string const& detail)
@@ -311,6 +321,47 @@ bool ModuleMgr::SpawnModule(ModuleId id)
         d.Process = process;
         TC_LOG_INFO("modules", "started '{}' (pid {}), waiting for its handshake.", d.Name, process->id());
     }
+    return true;
+}
+
+bool ModuleMgr::NegotiateTier2(ModuleId id, ModuleWire::HandshakeRequest const& request,
+                               ModuleWire::HandshakeResponse& response, std::string& reason)
+{
+    // Core may grant less than the module asked for; the module must size its view from the response.
+    ModuleTier2Region::Bounds bounds;
+    bounds.MaxBots = std::min(request.RequestedMaxBots, _config.Tier2MaxBots);
+    bounds.MaxNearbyUnits = std::min(request.RequestedMaxNearbyUnits, _config.Tier2MaxNearbyUnits);
+    bounds.MaxActions = std::min(request.RequestedMaxActions, _config.Tier2MaxActions);
+    uint32 const requestedInterval = request.RequestedTickInterval == 0 ? 1 : request.RequestedTickInterval;
+    bounds.TickInterval = std::min(requestedInterval, _config.Tier2MaxTickInterval);
+
+    std::string const name = "trinity_module_" + std::to_string(id) + "_tier2";
+
+    {
+        // Release the previous region first: its destructor removes the name, which must not hit the new one.
+        std::lock_guard<std::mutex> lock(_mutex);
+        _modules.at(id).Tier2.reset();
+    }
+
+    std::string error;
+    std::shared_ptr<ModuleTier2Region> region = ModuleTier2Region::Create(name, bounds, error);
+    if (!region)
+    {
+        reason = "Tier 2 region: " + error;
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _modules.at(id).Tier2 = region;
+    }
+
+    response.Tier2RegionName = name;
+    response.NegotiatedMaxBots = bounds.MaxBots;
+    response.NegotiatedMaxNearbyUnits = bounds.MaxNearbyUnits;
+    response.NegotiatedMaxActions = bounds.MaxActions;
+    response.NegotiatedTickInterval = bounds.TickInterval;
+    TC_LOG_INFO("modules", "module {}: Tier 2 region '{}' (bots {}, nearby {}, actions {}, tick interval {}).",
+                id, name, bounds.MaxBots, bounds.MaxNearbyUnits, bounds.MaxActions, bounds.TickInterval);
     return true;
 }
 
@@ -430,6 +481,9 @@ void ModuleMgr::ScheduleRestart(ModuleDescriptor& descriptor, bool handshakeFail
 
 void ModuleMgr::StopProcess(ModuleDescriptor& descriptor)
 {
+    // Every failure path ends here, so the region goes with the connection that used it.
+    descriptor.Tier2.reset();
+
     if (!descriptor.Process)
         return;
     if (descriptor.Process->running())
@@ -562,9 +616,21 @@ void ModuleMgr::RunPendingActions()
     }
 }
 
-void ModuleMgr::OnWorldTick(uint64 /*tick*/)
+void ModuleMgr::OnWorldTick(uint64 tick)
 {
-    // Actions run here, on the world thread (doc 04 §4). Tier 2 is not implemented yet.
+    // Runs on the world thread (doc 04 §4). Copy the regions out under the lock; publishing needs no lock.
+    std::vector<std::shared_ptr<ModuleTier2Region>> regions;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (auto const& entry : _modules)
+            if (entry.second.Tier2 && entry.second.Session && entry.second.Session->IsAccepted())
+                regions.push_back(entry.second.Tier2);
+    }
+
+    for (std::shared_ptr<ModuleTier2Region> const& region : regions)
+        if (region->SnapshotDue(tick))
+            region->PublishSnapshot(tick);
+
     RunPendingActions();
 }
 

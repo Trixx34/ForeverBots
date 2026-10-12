@@ -387,8 +387,8 @@ void ModuleSession::Run()
         if (request.ProtocolVersion != _settings.ExpectedProtocolVersion)
             reason = "protocol_version mismatch: core speaks \"" + _settings.ExpectedProtocolVersion +
                      "\", module declared \"" + request.ProtocolVersion + "\"";
-        else if (request.Tier2Participates)
-            reason = "Tier 2 is not available in this core build yet";
+        else if (request.Tier2Participates && !_settings.NegotiateTier2)
+            reason = "Tier 2 is not available on this core";
         else
         {
             for (std::string const& hook : request.Tier1Hooks)
@@ -401,9 +401,12 @@ void ModuleSession::Run()
             }
         }
 
+        ModuleWire::HandshakeResponse response;
+        if (reason.empty() && request.Tier2Participates && !_settings.NegotiateTier2(request, response, reason))
+            reason = reason.empty() ? "Tier 2 request refused" : reason;
+
         if (!reason.empty())
         {
-            ModuleWire::HandshakeResponse response;
             response.Accepted = false;
             response.Reason = reason;
             SendBlocking(ModuleWire::Frame(ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::HandshakeResponse, ModuleWire::Encode(response))),
@@ -412,7 +415,6 @@ void ModuleSession::Run()
             goto done;
         }
 
-        ModuleWire::HandshakeResponse response;
         response.Accepted = true;
         response.ModuleId = _moduleId;
         if (!SendBlocking(ModuleWire::Frame(ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::HandshakeResponse, ModuleWire::Encode(response))),

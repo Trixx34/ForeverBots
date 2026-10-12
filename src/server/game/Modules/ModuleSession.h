@@ -57,6 +57,12 @@ class ModuleSession
             std::string ExpectedProtocolVersion;          // exact match against HandshakeRequest.protocol_version
             std::vector<std::string> SupportedHooks;      // requested Tier 1 hooks must all be in this list
             std::vector<ModuleWire::ConfigEntry> Config;  // delivered in ModuleConfig right after accept
+
+            // Tier 2 negotiation, called on the session thread when a handshake asks for Tier 2. On success it
+            // fills the Tier 2 fields of `response` (region name and negotiated bounds). On failure it returns
+            // false with the reason. Unset means Tier 2 is refused.
+            std::function<bool(ModuleWire::HandshakeRequest const& request, ModuleWire::HandshakeResponse& response,
+                               std::string& reason)> NegotiateTier2;
         };
 
         // Frames queued for a module that is not reading. Beyond this, new events are dropped.

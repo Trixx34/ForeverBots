@@ -1695,6 +1695,31 @@ Modules.RestartBackoffMs = 1000
 
 Modules.CommandRequestTimeoutMs = 200
 
+#    Modules.Tier2.MaxBots
+#        Default:     64
+#        Upper limit on bots in a module's Tier 2 region. A module's request is capped at this value.
+#        Each bot costs about 88 bytes per snapshot buffer plus its nearby units; the region is allocated per module.
+
+Modules.Tier2.MaxBots = 64
+
+#    Modules.Tier2.MaxNearbyUnits
+#        Default:     16
+#        Upper limit on nearby units per bot in a Tier 2 snapshot.
+
+Modules.Tier2.MaxNearbyUnits = 16
+
+#    Modules.Tier2.MaxActions
+#        Default:     256
+#        Upper limit on bot actions a module may publish per tick.
+
+Modules.Tier2.MaxActions = 256
+
+#    Modules.Tier2.MaxTickInterval
+#        Default:     100
+#        Largest snapshot cadence, in server ticks, that a module may ask for. Requests above this are capped.
+
+Modules.Tier2.MaxTickInterval = 100
+
 #    Modules.ResourceLimits.MemoryMB
 #        Description: Memory cap applied to each spawned module process (Job Object on Windows,
 #                     cgroup on Linux where available).

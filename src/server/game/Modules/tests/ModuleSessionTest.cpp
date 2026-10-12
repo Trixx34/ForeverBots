@@ -13,6 +13,7 @@
 #include "events.pb.h"
 #include "handshake.pb.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -319,6 +320,92 @@ void TimesOutWithoutConnection()
     session.Stop();
 }
 
+// Tier 2 requested: the negotiator's grant comes back in the handshake response; a refusal is a rejection.
+void Tier2Handshake()
+{
+    std::string const path = SocketPath("tier2");
+    std::atomic<int> rejected{0};
+    auto settings = TestSettings(path);
+    settings.NegotiateTier2 = [&](ModuleWire::HandshakeRequest const& request, ModuleWire::HandshakeResponse& response,
+                                  std::string& reason)
+    {
+        if (request.RequestedMaxBots > 64)
+        {
+            reason = "too many bots requested";
+            return false;
+        }
+        response.Tier2RegionName = "trinity_module_test_region";
+        response.NegotiatedMaxBots = std::min<uint32_t>(request.RequestedMaxBots, 16);
+        response.NegotiatedMaxNearbyUnits = 4;
+        response.NegotiatedMaxActions = 32;
+        response.NegotiatedTickInterval = request.RequestedTickInterval;
+        return true;
+    };
+    ModuleSession session(settings, 11, [&](ModuleSession::Event e, std::string const&)
+    {
+        if (e == ModuleSession::Event::Rejected)
+            ++rejected;
+    });
+    std::string error;
+    CHECK(session.Listen(error));
+    session.Start();
+
+    int fd = Connect(path);
+    CHECK(fd >= 0);
+    if (fd >= 0)
+    {
+        forever_module::Envelope env = HandshakeRequest("1", "PlayerScript.OnLootItem");
+        env.mutable_handshake_request()->set_tier2_participates(true);
+        env.mutable_handshake_request()->set_requested_max_bots(40);
+        env.mutable_handshake_request()->set_requested_tick_interval(3);
+        CHECK(SendEnvelope(fd, env));
+        forever_module::Envelope in;
+        CHECK(RecvEnvelope(fd, in));
+        CHECK(in.payload_case() == forever_module::Envelope::kHandshakeResponse);
+        CHECK(in.handshake_response().accepted());
+        CHECK(in.handshake_response().tier2_region_name() == "trinity_module_test_region");
+        CHECK(in.handshake_response().negotiated_max_bots() == 16);
+        CHECK(in.handshake_response().negotiated_max_nearby_units() == 4);
+        CHECK(in.handshake_response().negotiated_max_actions() == 32);
+        CHECK(in.handshake_response().negotiated_tick_interval() == 3);
+        ::close(fd);
+    }
+    session.Stop();
+
+    // Refused negotiation: a rejection that names the reason.
+    std::string const refusedPath = SocketPath("tier2refused");
+    auto refusedSettings = TestSettings(refusedPath);
+    refusedSettings.NegotiateTier2 = [](ModuleWire::HandshakeRequest const&, ModuleWire::HandshakeResponse&, std::string& reason)
+    {
+        reason = "too many bots requested";
+        return false;
+    };
+    ModuleSession refused(refusedSettings, 12, [&](ModuleSession::Event e, std::string const&)
+    {
+        if (e == ModuleSession::Event::Rejected)
+            ++rejected;
+    });
+    CHECK(refused.Listen(error));
+    refused.Start();
+    int fd2 = Connect(refusedPath);
+    CHECK(fd2 >= 0);
+    if (fd2 >= 0)
+    {
+        forever_module::Envelope env = HandshakeRequest("1", "PlayerScript.OnLootItem");
+        env.mutable_handshake_request()->set_tier2_participates(true);
+        CHECK(SendEnvelope(fd2, env));
+        forever_module::Envelope in;
+        CHECK(RecvEnvelope(fd2, in));
+        CHECK(!in.handshake_response().accepted());
+        CHECK(in.handshake_response().reason() == "too many bots requested");
+        ::close(fd2);
+    }
+    refused.Stop();
+    for (int i = 0; i < 200 && rejected < 1; ++i)
+        std::this_thread::sleep_for(5ms);
+    CHECK(rejected == 1);
+}
+
 } // namespace
 
 int main()
@@ -326,6 +413,7 @@ int main()
     AcceptAndActions();
     RejectsProtocolMismatch();
     TimesOutWithoutConnection();
+    Tier2Handshake();
 
     if (g_failures == 0)
     {

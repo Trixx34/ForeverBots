@@ -2,7 +2,7 @@
  * Module System — core-side module host.
  * See doc/module-system/04-phase2-module-host-design.md for the design. Implemented: discovery,
  * spawn (boost::process), the Tier 1 handshake and heartbeat, and the restart policy (§5).
- * Not yet implemented: approval store (doc 06), resource limits, Tier 1 event routing, Tier 2, bot control.
+ * Not yet implemented: resource limits, Tier 2 bot actions and snapshot contents, bot control.
  */
 
 #ifndef TRINITYCORE_MODULEMGR_H
@@ -29,6 +29,8 @@ class child;
 }
 
 using ModuleId = uint32;
+
+class ModuleTier2Region;
 
 // Wire protocol this core speaks (Tier 1 schema + Tier 2 layout). Must equal kProtocolVersion in
 // forever-module-sdk's include/forever_module/protocol_version.h. Exact match only, no compat
@@ -68,6 +70,7 @@ struct ModuleDescriptor
 
     std::shared_ptr<ModuleSession> Session;             // Tier 1 socket and session thread; shared so routing can use it without _mutex
     std::shared_ptr<boost::process::v1::child> Process;    // the module executable
+    std::shared_ptr<ModuleTier2Region> Tier2;              // shared-memory region while the module is connected; see ModuleTier2.h
 };
 
 // Read-only view of a module, for logs and console commands.
@@ -174,6 +177,11 @@ class TC_GAME_API ModuleMgr
             uint32 MaxRestartAttempts = 5;
             uint64 RestartBackoffMs = 1000;
             uint64 CommandRequestTimeoutMs = 200;
+            // Upper bounds for Tier 2 grants. A module's request is capped by these (doc 03, Tier 2).
+            uint32 Tier2MaxBots = 64;
+            uint32 Tier2MaxNearbyUnits = 16;
+            uint32 Tier2MaxActions = 256;
+            uint32 Tier2MaxTickInterval = 100;
             bool AutoApprove = false;
         };
 
@@ -183,6 +191,9 @@ class TC_GAME_API ModuleMgr
         // Starts one attempt: listen, spawn the process, start the session. Callers must not hold _mutex.
         bool SpawnModule(ModuleId id);
         void OnSessionEvent(ModuleId id, ModuleSession::Event event, std::string const& detail);
+        // Handshake hook for Tier 2: creates the module's region and fills the response's grant.
+        bool NegotiateTier2(ModuleId id, ModuleWire::HandshakeRequest const& request,
+                            ModuleWire::HandshakeResponse& response, std::string& reason);
 
         // Module -> core actions. EnqueueAction runs on the session thread and only queues; RunPendingActions
         // runs on the world thread from OnWorldTick and sends the replies.
