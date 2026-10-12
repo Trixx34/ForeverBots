@@ -18,6 +18,11 @@
 
 using ModuleId = uint32;
 
+// Wire protocol this core speaks (Tier 1 schema + Tier 2 layout). Must equal kProtocolVersion in
+// forever-module-sdk's include/forever_module/protocol_version.h. Exact match only, no compat
+// shims in v1 (doc/module-system/02-phase0-decisions.md §3, doc/module-system/11-sdk-scope.md).
+inline constexpr char const* kModuleProtocolVersion = "1";
+
 enum class ModuleStatus : uint8
 {
     PendingApproval,    // doc/module-system/06-phase4-approval-audit-design.md §2
@@ -74,6 +79,11 @@ class TC_GAME_API ModuleMgr
 
         // Clean shutdown: sends Shutdown to every connected module. No-op in this skeleton pass.
         void Unload();
+
+        // Handshake gate: true only when a module's declared protocol_version exactly equals
+        // kModuleProtocolVersion. On mismatch, fills reason with a message naming both versions for
+        // the log (doc 04: mismatch → permanent failure, never spawned, no restart attempts).
+        static bool CheckProtocolVersion(std::string const& declared, std::string& reason);
 
         // TODO (doc 04 §6): RequestControl/ReleaseControl/bot ownership map — needs a real Tier 1
         // connection to a module before there's anything meaningful to implement here.

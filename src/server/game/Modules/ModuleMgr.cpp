@@ -39,3 +39,13 @@ void ModuleMgr::Unload()
     // TODO (doc 04 §3): send Shutdown to every connected module, wait briefly, then terminate.
     _modules.clear();
 }
+
+bool ModuleMgr::CheckProtocolVersion(std::string const& declared, std::string& reason)
+{
+    if (declared == kModuleProtocolVersion)
+        return true;
+
+    reason = "protocol_version mismatch: core speaks \"" + std::string(kModuleProtocolVersion) +
+             "\", module declared \"" + declared + "\"";
+    return false;
+}

@@ -25,7 +25,7 @@ Nothing can be built until the wire contract exists.
 - Define the **Tier 1 message schema** (protobuf): handshake, event dispatch (one message type per `ScriptMgr` category exposed), responses, heartbeat, shutdown.
 - Define the **Tier 2 shared-memory layout**: snapshot struct (per-bot world-state fields needed for decisions) and action-queue struct (commands the module can issue). Version this layout explicitly (it's a binary struct, not protobuf — changes are breaking by nature).
 - Decide and document the **initial Tier 1 hook subset** (start small: `PlayerScript::OnLogin/OnLogout`, `CommandScript`, `WorldScript` are good first candidates — low frequency, easy to test end-to-end).
-- Publish the **SDK package**: protocol headers + generated protobuf code + shared-memory struct headers + a thin client library (handshake, heartbeat, reconnect, typed send/receive helpers). Tag it with a version (e.g. `sdk-v0.1.0`) — this is the version module authors pin against.
+- Publish the **SDK package**: protocol headers + generated protobuf code + shared-memory struct headers + a thin client library (handshake, heartbeat, reconnect, typed send/receive helpers). Tag it with a version (`v0.1.0`, matching the `GIT_TAG` in `05-phase3-build-discovery-design.md`) — this is the version module authors pin against.
 - No actual module process or core-side host yet — this phase is the contract only.
 
 ## Phase 2 — Core-side module host (supervisor)

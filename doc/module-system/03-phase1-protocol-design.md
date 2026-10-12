@@ -27,9 +27,9 @@ message Envelope {
 
 ### Handshake
 
-`HandshakeRequest` (module → core): module name, version, SDK version (exact-match required per Phase 0 §3), declared Tier 1 hook subscriptions, Tier 2 participation flag + `requested_max_bots` / `requested_max_nearby_units` / `requested_max_actions` / `requested_tick_interval` (only meaningful if Tier 2 flag set).
+`HandshakeRequest` (module → core): module name, module version, `protocol_version` (the exact-match gate, per Phase 0 §3 and `11-sdk-scope.md`), `sdk_package_version` (informational only), declared Tier 1 hook subscriptions, Tier 2 participation flag + `requested_max_bots` / `requested_max_nearby_units` / `requested_max_actions` / `requested_tick_interval` (only meaningful if Tier 2 flag set).
 
-`HandshakeResponse` (core → module): accepted (bool) + reason if rejected (version mismatch, hook not available, resource limits exceeded), assigned `module_id`, Tier 2 shared-memory region name (if accepted + Tier 2 requested).
+`HandshakeResponse` (core → module): accepted (bool) + reason if rejected (protocol_version mismatch, hook not available, resource limits exceeded), assigned `module_id`, Tier 2 shared-memory region name (if accepted + Tier 2 requested), and `negotiated_max_bots` / `negotiated_max_nearby_units` / `negotiated_max_actions` / `negotiated_tick_interval`. Core may grant less than requested; the module must size its region view from the negotiated values, or offset math will disagree with core.
 
 ### Config delivery
 
@@ -57,6 +57,7 @@ Transport: `boost::interprocess::managed_shared_memory`, one named region per mo
 
 ```
 struct Tier2RegionHeader {
+  uint32 layout_version;         // kTier2LayoutVersion; checked by the module on attach
   uint32 max_bots;
   uint32 max_nearby_units;
   uint32 max_actions;
