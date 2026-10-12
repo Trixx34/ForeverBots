@@ -9,14 +9,14 @@
 
 #include <optional>
 
-#include <boost/process.hpp>
+#include <boost/process/v1.hpp>
 
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 
-namespace bp = boost::process;
+namespace bp = boost::process::v1;
 namespace fs = std::filesystem;
 
 using Clock = std::chrono::steady_clock;

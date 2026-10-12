@@ -22,7 +22,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace boost::process
+namespace boost::process::v1
 {
 class child;
 }
@@ -66,7 +66,7 @@ struct ModuleDescriptor
     std::chrono::steady_clock::time_point RestartAt{};             // when a scheduled restart is due; epoch if none
 
     std::shared_ptr<ModuleSession> Session;             // Tier 1 socket and session thread; shared so routing can use it without _mutex
-    std::shared_ptr<boost::process::child> Process;     // the module executable
+    std::shared_ptr<boost::process::v1::child> Process;    // the module executable
 };
 
 // Read-only view of a module, for logs and console commands.
