@@ -67,9 +67,9 @@ class TC_GAME_API BotMgr
         void Update(uint32 diff);
 
         // Creates a bot character with this race and class (Player::Create decides whether the combination is valid).
-        // Returns its guid, or 0 with the reason in error. The character is saved in the background; login is
+        // level is the character's level (1 is the race's starting level). Returns its guid, or 0 with the reason in error. The character is saved in the background; login is
         // requested with RequestLogin once it exists.
-        uint64 CreateBot(uint8 race, uint8 classId, std::string& error);
+        uint64 CreateBot(uint8 race, uint8 classId, uint8 level, std::string& error);
 
         // Queues the bot for login. Returns false with the reason if the guid is not a bot. Already online or queued is success.
         bool RequestLogin(uint64 guid, std::string& error);

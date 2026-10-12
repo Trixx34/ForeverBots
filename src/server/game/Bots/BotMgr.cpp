@@ -145,7 +145,7 @@ void BotMgr::LoadRegistry()
     TC_LOG_INFO("server.worldserver", "BotMgr: {} bot accounts, {} bot characters found", accounts.size(), _bots.size());
 }
 
-uint64 BotMgr::CreateBot(uint8 raceId, uint8 classId, std::string& error)
+uint64 BotMgr::CreateBot(uint8 raceId, uint8 classId, uint8 level, std::string& error)
 {
     std::string username;
     uint32 accountId = 0;
@@ -213,6 +213,10 @@ uint64 BotMgr::CreateBot(uint8 raceId, uint8 classId, std::string& error)
     if (!player->Create(sObjectMgr->GetGenerator<HighGuid::Player>().Generate(), &createInfo))
         return fail(Trinity::StringFormat("Player::Create refused race {} class {}", raceId, classId));
 
+    // Level up before the first save, so the character is stored at the requested level with its stats and spells.
+    if (level > 1)
+        player->GiveLevel(level);
+
     player->setCinematic(1);
     player->SetAtLoginFlag(AT_LOGIN_FIRST);
 
@@ -252,7 +256,7 @@ uint64 BotMgr::CreateBot(uint8 raceId, uint8 classId, std::string& error)
     player.reset();
     session.reset();
 
-    TC_LOG_INFO("server.worldserver", "BotMgr: created bot {} (guid {}, race {}, class {}).", username, guid, raceId, classId);
+    TC_LOG_INFO("server.worldserver", "BotMgr: created bot {} (guid {}, race {}, class {}, level {}).", username, guid, raceId, classId, level);
     return guid;
 }
 
