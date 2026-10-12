@@ -279,6 +279,17 @@ bool ModuleMgr::SpawnModule(ModuleId id)
     {
         EnqueueAction(weak, request);
     });
+    session->SetControlHandlers(
+        [this, id, weak = std::weak_ptr<ModuleSession>(session)](uint64 messageId, ModuleWire::ControlRequestMsg const& request)
+        {
+            EnqueueControl(PendingControl{ id, weak, messageId, false, request });
+        },
+        [this, id, weak = std::weak_ptr<ModuleSession>(session)](ModuleWire::ReleaseControlMsg const& release)
+        {
+            ModuleWire::ControlRequestMsg request;
+            request.BotGuid = release.BotGuid;
+            EnqueueControl(PendingControl{ id, weak, 0, true, request });
+        });
 
     std::string error;
     if (!session->Listen(error))
@@ -377,6 +388,15 @@ void ModuleMgr::OnSessionEvent(ModuleId id, ModuleSession::Event event, std::str
     {
         // The core is shutting down and asked the module to exit; a disconnect now is expected.
         return;
+    }
+
+    // A module that loses its connection stops controlling its bots. The bots are not revoked to the module,
+    // since it cannot receive the notify, so core simply takes them back.
+    if (event != ModuleSession::Event::Accepted)
+    {
+        std::vector<uint64> released = _owners.DropModule(id);
+        if (!released.empty())
+            TC_LOG_INFO("modules", "'{}': released {} bot(s) on session end ({}).", d.Name, released.size(), detail);
     }
 
     switch (event)
@@ -595,6 +615,168 @@ void ModuleMgr::EnqueueAction(std::weak_ptr<ModuleSession> session, ModuleWire::
         target->SendActionReply(reply);
 }
 
+void ModuleMgr::SetBotBackend(std::shared_ptr<ModuleBotBackend> backend)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    _botBackend = std::move(backend);
+}
+
+void ModuleMgr::RevokeBot(uint64 botGuid, std::string const& reason)
+{
+    std::shared_ptr<ModuleSession> session;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        uint32 owner = 0;
+        if (!_owners.Revoke(botGuid, owner))
+            return;
+        auto it = _modules.find(owner);
+        if (it != _modules.end())
+            session = it->second.Session;
+    }
+
+    if (session)
+    {
+        ModuleWire::ControlRevokedMsg revoked;
+        revoked.BotGuid = botGuid;
+        revoked.Reason = reason;
+        session->SendControlRevoked(revoked);
+    }
+}
+
+void ModuleMgr::EnqueueControl(PendingControl pending)
+{
+    {
+        std::lock_guard<std::mutex> lock(_actionMutex);
+        // A release always fits: it only shrinks state, and a module can have at most max_bots of them queued.
+        if (pending.Release || _pendingControls.size() < MaxPendingActions)
+        {
+            _pendingControls.push_back(std::move(pending));
+            return;
+        }
+    }
+
+    ModuleWire::ControlResponseMsg response;
+    response.Reason = "core is busy, try again later";
+    if (std::shared_ptr<ModuleSession> target = pending.Session.lock())
+        target->SendControlResponse(pending.MessageId, response);
+}
+
+ModuleWire::ControlResponseMsg ModuleMgr::ExecuteControlRequest(ModuleId module, ModuleWire::ControlRequestMsg const& request)
+{
+    // Runs on the world thread. Checks the module's grant and the backend first; ownership is decided under _mutex.
+    ModuleWire::ControlResponseMsg response;
+    std::shared_ptr<ModuleBotBackend> backend;
+    uint32 maxBots = 0;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        auto it = _modules.find(module);
+        if (it == _modules.end())
+        {
+            response.Reason = "module is no longer loaded";
+            return response;
+        }
+        if (!it->second.Tier2)
+        {
+            response.Reason = "Tier 2 was not granted to this module";
+            return response;
+        }
+        maxBots = it->second.Tier2->GetBounds().MaxBots;
+        backend = _botBackend;
+    }
+
+    if (!backend)
+    {
+        response.Reason = "bot control is not available on this core";
+        return response;
+    }
+
+    if (request.BotGuid == 0)
+    {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (!_owners.CanTakeMore(module, maxBots))
+            {
+                response.Reason = "max_bots exceeded, request a larger bound at handshake";
+                return response;
+            }
+        }
+
+        std::string reason;
+        uint64 const guid = backend->Spawn(request.SpawnParams, reason);
+        if (guid == 0)
+        {
+            response.Reason = reason.empty() ? "bot could not be spawned" : reason;
+            return response;
+        }
+
+        uint32 owner = 0;
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_owners.TryClaim(guid, module, maxBots, owner) != ModuleBotOwnership::Claim::Granted)
+        {
+            response.Reason = "bot was spawned but its ownership could not be recorded";
+            return response;
+        }
+        TC_LOG_INFO("modules", "module {} spawned bot {}.", module, guid);
+        response.Granted = true;
+        response.BotGuid = guid;
+        return response;
+    }
+
+    if (!backend->Exists(request.BotGuid))
+    {
+        response.Reason = "character not found";
+        return response;
+    }
+
+    std::lock_guard<std::mutex> lock(_mutex);
+    uint32 owner = 0;
+    switch (_owners.TryClaim(request.BotGuid, module, maxBots, owner))
+    {
+        case ModuleBotOwnership::Claim::Granted:
+            response.Granted = true;
+            response.BotGuid = request.BotGuid;
+            break;
+        case ModuleBotOwnership::Claim::OwnedByOther:
+        {
+            auto other = _modules.find(owner);
+            response.Reason = "already controlled by module " +
+                              (other != _modules.end() ? other->second.Name : std::to_string(owner));
+            break;
+        }
+        case ModuleBotOwnership::Claim::LimitReached:
+            response.Reason = "max_bots exceeded, request a larger bound at handshake";
+            break;
+    }
+    return response;
+}
+
+void ModuleMgr::RunPendingControls()
+{
+    std::vector<PendingControl> batch;
+    {
+        std::lock_guard<std::mutex> lock(_actionMutex);
+        while (!_pendingControls.empty() && batch.size() < MaxActionsPerTick)
+        {
+            batch.push_back(std::move(_pendingControls.front()));
+            _pendingControls.pop_front();
+        }
+    }
+
+    for (PendingControl& pending : batch)
+    {
+        if (pending.Release)
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _owners.Release(pending.Request.BotGuid, pending.Module);
+            continue;
+        }
+
+        ModuleWire::ControlResponseMsg response = ExecuteControlRequest(pending.Module, pending.Request);
+        if (std::shared_ptr<ModuleSession> target = pending.Session.lock())
+            target->SendControlResponse(pending.MessageId, response);
+    }
+}
+
 void ModuleMgr::RunPendingActions()
 {
     std::vector<PendingAction> batch;
@@ -631,6 +813,7 @@ void ModuleMgr::OnWorldTick(uint64 tick)
         if (region->SnapshotDue(tick))
             region->PublishSnapshot(tick);
 
+    RunPendingControls();
     RunPendingActions();
 }
 

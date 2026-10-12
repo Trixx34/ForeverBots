@@ -2,7 +2,8 @@
  * Module System — core-side module host.
  * See doc/module-system/04-phase2-module-host-design.md for the design. Implemented: discovery,
  * spawn (boost::process), the Tier 1 handshake and heartbeat, and the restart policy (§5).
- * Not yet implemented: resource limits, Tier 2 bot actions and snapshot contents, bot control.
+ * Not yet implemented: resource limits, Tier 2 bot actions and snapshot contents. Bot control is wired; the
+ * bot backend (ModuleBotBackend) is installed by the bot implementation.
  */
 
 #ifndef TRINITYCORE_MODULEMGR_H
@@ -10,6 +11,8 @@
 
 #include "Define.h"
 #include "ModuleApproval.h"
+#include "ModuleBotBackend.h"
+#include "ModuleBotOwnership.h"
 #include "ModuleSession.h"
 
 #include <atomic>
@@ -156,6 +159,13 @@ class TC_GAME_API ModuleMgr
         // "not mine" and the next module is asked. The caller must not hold locks that session events need.
         CommandRouteResult RouteCommand(std::string_view commandText, uint64 issuerGuid, std::string& resultText);
 
+        // Installs the core's bot backend. Until one is installed, bot control requests are refused.
+        void SetBotBackend(std::shared_ptr<ModuleBotBackend> backend);
+
+        // Core takes a bot back from the module controlling it (bot deleted, logged out, GM action). The module
+        // is sent ControlRevoked. Call from the world thread.
+        void RevokeBot(uint64 botGuid, std::string const& reason);
+
         // Snapshot of every known module, sorted by name.
         std::vector<ModuleSnapshot> GetSnapshots();
 
@@ -195,6 +205,19 @@ class TC_GAME_API ModuleMgr
         bool NegotiateTier2(ModuleId id, ModuleWire::HandshakeRequest const& request,
                             ModuleWire::HandshakeResponse& response, std::string& reason);
 
+        // Bot control requests and releases from a module. Queued on the session thread, run on the world thread.
+        struct PendingControl
+        {
+            ModuleId Module = 0;
+            std::weak_ptr<ModuleSession> Session;
+            uint64 MessageId = 0;
+            bool Release = false;
+            ModuleWire::ControlRequestMsg Request; // for a release, Request.BotGuid is the bot
+        };
+        void EnqueueControl(PendingControl pending);
+        void RunPendingControls();
+        ModuleWire::ControlResponseMsg ExecuteControlRequest(ModuleId module, ModuleWire::ControlRequestMsg const& request);
+
         // Module -> core actions. EnqueueAction runs on the session thread and only queues; RunPendingActions
         // runs on the world thread from OnWorldTick and sends the replies.
         struct PendingAction
@@ -226,6 +249,10 @@ class TC_GAME_API ModuleMgr
         std::mutex _mutex; // guards _modules and descriptor fields; never held while stopping sessions
         std::mutex _actionMutex; // guards _pendingActions; held only to push or pop
         std::deque<PendingAction> _pendingActions;
+        std::deque<PendingControl> _pendingControls;
+
+        std::shared_ptr<ModuleBotBackend> _botBackend; // guarded by _mutex
+        ModuleBotOwnership _owners;                    // guarded by _mutex; changed on the world thread only
 
         std::mutex _lifecycleMutex; // serializes restarts with Unload(); held across a restart attempt
         std::unordered_map<ModuleId, ModuleDescriptor> _modules;

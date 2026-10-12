@@ -178,6 +178,24 @@ void ModuleSession::SetActionHandler(ActionHandler handler)
     _actionHandler = std::move(handler);
 }
 
+void ModuleSession::SetControlHandlers(ControlRequestHandler onRequest, ReleaseHandler onRelease)
+{
+    _controlRequestHandler = std::move(onRequest);
+    _releaseHandler = std::move(onRelease);
+}
+
+bool ModuleSession::SendControlResponse(uint64 messageId, ModuleWire::ControlResponseMsg const& response)
+{
+    return Enqueue(ModuleWire::Frame(ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::ControlResponse,
+                                                                ModuleWire::Encode(response), messageId)));
+}
+
+bool ModuleSession::SendControlRevoked(ModuleWire::ControlRevokedMsg const& revoked)
+{
+    return Enqueue(ModuleWire::Frame(ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::ControlRevoked,
+                                                                ModuleWire::Encode(revoked))));
+}
+
 std::optional<ModuleWire::EventReplyMsg> ModuleSession::RequestCommand(std::string_view hook, std::string_view commandText,
                                                                        uint64 issuerGuid, std::chrono::milliseconds timeout)
 {
@@ -503,6 +521,20 @@ void ModuleSession::Run()
                         ModuleWire::ActionRequestMsg request;
                         if (_actionHandler && ModuleWire::Decode(envelope.Payload, request))
                             _actionHandler(request);
+                        break;
+                    }
+                    case ModuleWire::PayloadKind::ControlRequest:
+                    {
+                        ModuleWire::ControlRequestMsg request;
+                        if (_controlRequestHandler && ModuleWire::Decode(envelope.Payload, request))
+                            _controlRequestHandler(envelope.MessageId, request);
+                        break;
+                    }
+                    case ModuleWire::PayloadKind::ReleaseControl:
+                    {
+                        ModuleWire::ReleaseControlMsg release;
+                        if (_releaseHandler && ModuleWire::Decode(envelope.Payload, release))
+                            _releaseHandler(release);
                         break;
                     }
                     default:

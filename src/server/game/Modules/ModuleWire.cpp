@@ -490,6 +490,95 @@ bool Decode(std::string_view bytes, ActionRequestMsg& out)
     return true;
 }
 
+bool Decode(std::string_view bytes, ControlRequestMsg& out)
+{
+    Reader r(bytes);
+    while (!r.AtEnd())
+    {
+        uint32 field = 0, wire = 0;
+        if (!r.ReadTag(field, wire))
+            return false;
+
+        if (field == 1 && wire == WireVarint)
+        {
+            if (!r.ReadVarint(out.BotGuid))
+                return false;
+        }
+        else if (field == 2 && wire == WireLengthDelimited)
+        {
+            // SpawnParams: race=1, class_id=2, level=3, team=4 (all varint).
+            std::string_view spawnBytes;
+            if (!r.ReadBytes(spawnBytes))
+                return false;
+            Reader s(spawnBytes);
+            while (!s.AtEnd())
+            {
+                uint32 sf = 0, sw = 0;
+                if (!s.ReadTag(sf, sw))
+                    return false;
+                uint64 value = 0;
+                if (sf >= 1 && sf <= 4 && sw == WireVarint)
+                {
+                    if (!s.ReadVarint(value))
+                        return false;
+                    uint32 const v = static_cast<uint32>(value);
+                    switch (sf)
+                    {
+                        case 1: out.SpawnParams.Race = v; break;
+                        case 2: out.SpawnParams.ClassId = v; break;
+                        case 3: out.SpawnParams.Level = v; break;
+                        case 4: out.SpawnParams.Team = v; break;
+                    }
+                }
+                else if (!s.Skip(sw))
+                    return false;
+            }
+        }
+        else if (!r.Skip(wire))
+            return false;
+    }
+    return true;
+}
+
+bool Decode(std::string_view bytes, ReleaseControlMsg& out)
+{
+    Reader r(bytes);
+    while (!r.AtEnd())
+    {
+        uint32 field = 0, wire = 0;
+        if (!r.ReadTag(field, wire))
+            return false;
+
+        if (field == 1 && wire == WireVarint)
+        {
+            if (!r.ReadVarint(out.BotGuid))
+                return false;
+        }
+        else if (!r.Skip(wire))
+            return false;
+    }
+    return true;
+}
+
+std::string Encode(ControlResponseMsg const& msg)
+{
+    std::string out;
+    AppendVarintField(out, 1, msg.Granted ? 1 : 0);
+    AppendVarintField(out, 2, msg.BotGuid);
+    if (!msg.Reason.empty())
+        AppendBytesField(out, 3, msg.Reason);
+    return out;
+}
+
+std::string Encode(ControlRevokedMsg const& msg)
+{
+    std::string out;
+    AppendVarintField(out, 1, msg.BotGuid);
+    if (!msg.Reason.empty())
+        AppendBytesField(out, 2, msg.Reason);
+    return out;
+}
+
 std::string Encode(ActionReplyMsg const& msg)
 {
     std::string out;

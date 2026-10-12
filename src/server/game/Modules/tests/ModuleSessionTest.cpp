@@ -406,6 +406,113 @@ void Tier2Handshake()
     CHECK(rejected == 1);
 }
 
+// Bot control over the socket: a request reaches the handler with its message id, the response and a revoke
+// go back out, and a release reaches the release handler.
+void BotControlFlow()
+{
+    std::string const path = SocketPath("control");
+    std::mutex mutex;
+    std::vector<ModuleWire::ControlRequestMsg> requests;
+    std::vector<uint64> requestIds;
+    std::vector<uint64> releases;
+    ModuleSession session(TestSettings(path), 13, [](ModuleSession::Event, std::string const&) {});
+    session.SetControlHandlers(
+        [&](uint64 messageId, ModuleWire::ControlRequestMsg const& request)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            requestIds.push_back(messageId);
+            requests.push_back(request);
+        },
+        [&](ModuleWire::ReleaseControlMsg const& release)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            releases.push_back(release.BotGuid);
+        });
+
+    std::string error;
+    CHECK(session.Listen(error));
+    session.Start();
+
+    int fd = Connect(path);
+    CHECK(fd >= 0);
+    if (fd < 0)
+    {
+        session.Stop();
+        return;
+    }
+
+    CHECK(SendEnvelope(fd, HandshakeRequest("1", "PlayerScript.OnLootItem")));
+    forever_module::Envelope in;
+    CHECK(RecvEnvelope(fd, in));
+    CHECK(in.handshake_response().accepted());
+    CHECK(RecvEnvelope(fd, in)); // ModuleConfig
+    for (int i = 0; i < 200 && !session.IsAccepted(); ++i)
+        std::this_thread::sleep_for(5ms);
+
+    // Spawn request, message id 55.
+    forever_module::Envelope request;
+    request.set_message_id(55);
+    request.mutable_control_request()->set_bot_guid(0);
+    request.mutable_control_request()->mutable_spawn_params()->set_race(2);
+    CHECK(SendEnvelope(fd, request));
+    for (int i = 0; i < 200; ++i)
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!requests.empty())
+                break;
+        }
+        std::this_thread::sleep_for(5ms);
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        CHECK(requests.size() == 1);
+        if (requests.size() == 1)
+        {
+            CHECK(requestIds[0] == 55);
+            CHECK(requests[0].BotGuid == 0);
+            CHECK(requests[0].SpawnParams.Race == 2);
+        }
+    }
+
+    ModuleWire::ControlResponseMsg granted;
+    granted.Granted = true;
+    granted.BotGuid = 900;
+    CHECK(session.SendControlResponse(55, granted));
+    CHECK(RecvUntil(fd, forever_module::Envelope::kControlResponse, in));
+    CHECK(in.message_id() == 55);
+    CHECK(in.control_response().granted());
+    CHECK(in.control_response().bot_guid() == 900);
+
+    ModuleWire::ControlRevokedMsg revoked;
+    revoked.BotGuid = 900;
+    revoked.Reason = "bot deleted";
+    CHECK(session.SendControlRevoked(revoked));
+    CHECK(RecvUntil(fd, forever_module::Envelope::kControlRevoked, in));
+    CHECK(in.control_revoked().bot_guid() == 900);
+    CHECK(in.control_revoked().reason() == "bot deleted");
+
+    forever_module::Envelope release;
+    release.mutable_release_control()->set_bot_guid(900);
+    CHECK(SendEnvelope(fd, release));
+    for (int i = 0; i < 200; ++i)
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!releases.empty())
+                break;
+        }
+        std::this_thread::sleep_for(5ms);
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        CHECK(releases.size() == 1 && releases[0] == 900);
+    }
+
+    session.Stop();
+    ::close(fd);
+}
+
 } // namespace
 
 int main()
@@ -414,6 +521,7 @@ int main()
     RejectsProtocolMismatch();
     TimesOutWithoutConnection();
     Tier2Handshake();
+    BotControlFlow();
 
     if (g_failures == 0)
     {

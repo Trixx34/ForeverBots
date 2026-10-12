@@ -48,6 +48,9 @@ class ModuleSession
         // Called on the session thread for each ActionRequest the module sends. Must not block: it is
         // expected to queue the request for the world thread and return.
         using ActionHandler = std::function<void(ModuleWire::ActionRequestMsg const&)>;
+        // Bot control, called on the session thread like ActionHandler. Must not block.
+        using ControlRequestHandler = std::function<void(uint64 messageId, ModuleWire::ControlRequestMsg const&)>;
+        using ReleaseHandler = std::function<void(ModuleWire::ReleaseControlMsg const&)>;
 
         struct Settings
         {
@@ -101,6 +104,15 @@ class ModuleSession
         // Sets the handler for module -> core actions. Call before Start().
         void SetActionHandler(ActionHandler handler);
 
+        // Sets the bot-control handlers. Call before Start().
+        void SetControlHandlers(ControlRequestHandler onRequest, ReleaseHandler onRelease);
+
+        // Queues a ControlResponse for a ControlRequest with this message id. Thread-safe.
+        bool SendControlResponse(uint64 messageId, ModuleWire::ControlResponseMsg const& response);
+
+        // Queues a ControlRevoked notify: core has taken the bot back. Thread-safe.
+        bool SendControlRevoked(ModuleWire::ControlRevokedMsg const& revoked);
+
         // Queues a PlayerItemLooted EventNotify for a subscribed hook. Same rules as NotifyEvent.
         bool NotifyItemLooted(std::string_view hook, ModuleWire::ItemLootedEvent const& event);
 
@@ -134,6 +146,8 @@ class ModuleSession
         uint64 _moduleId;
         Listener _listener;
         ActionHandler _actionHandler;
+        ControlRequestHandler _controlRequestHandler;
+        ReleaseHandler _releaseHandler;
 
         ModuleSocket::Handle _listenFd = ModuleSocket::kInvalid;
         ModuleSocket::Handle _connFd = ModuleSocket::kInvalid;

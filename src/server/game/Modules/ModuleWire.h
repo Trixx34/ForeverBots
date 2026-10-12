@@ -189,6 +189,44 @@ struct ActionReplyMsg
 bool Decode(std::string_view bytes, ActionRequestMsg& out);
 std::string Encode(ActionReplyMsg const& msg);
 
+// Bot control (control.proto, doc 04 §6). Ownership rules live in ModuleBotOwnership.
+struct SpawnParamsMsg
+{
+    uint32 Race = 0;
+    uint32 ClassId = 0;
+    uint32 Level = 0;
+    uint32 Team = 0;
+};
+
+struct ControlRequestMsg
+{
+    uint64 BotGuid = 0;        // 0 = spawn a new bot
+    SpawnParamsMsg SpawnParams; // only used when BotGuid is 0
+};
+
+struct ControlResponseMsg
+{
+    bool Granted = false;
+    uint64 BotGuid = 0;
+    std::string Reason;
+};
+
+struct ReleaseControlMsg
+{
+    uint64 BotGuid = 0;
+};
+
+struct ControlRevokedMsg
+{
+    uint64 BotGuid = 0;
+    std::string Reason;
+};
+
+bool Decode(std::string_view bytes, ControlRequestMsg& out);
+bool Decode(std::string_view bytes, ReleaseControlMsg& out);
+std::string Encode(ControlResponseMsg const& msg);
+std::string Encode(ControlRevokedMsg const& msg);
+
 // Frame helpers for a byte stream: prepend the length prefix.
 std::string Frame(std::string_view body);
 

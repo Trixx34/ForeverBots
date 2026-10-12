@@ -16,6 +16,7 @@
 
 #include "envelope.pb.h"
 #include "actions.pb.h"
+#include "control.pb.h"
 #include "events.pb.h"
 #include "handshake.pb.h"
 
@@ -365,6 +366,73 @@ int main()
         CHECK(sdk.item_class() == 7);
         CHECK(sdk.sell_price() == 20);
         CHECK(sdk.item_name() == "Tattered Cloth");
+    }
+
+    // SDK -> core: ControlRequest (spawn) and ReleaseControl.
+    {
+        forever_module::Envelope sdk;
+        sdk.set_message_id(41);
+        forever_module::ControlRequest* req = sdk.mutable_control_request();
+        req->set_bot_guid(0);
+        req->mutable_spawn_params()->set_race(2);
+        req->mutable_spawn_params()->set_class_id(3);
+        req->mutable_spawn_params()->set_level(80);
+        req->mutable_spawn_params()->set_team(1);
+        std::string bytes;
+        CHECK(sdk.SerializeToString(&bytes));
+
+        ModuleWire::Envelope env;
+        CHECK(ModuleWire::DecodeEnvelope(bytes, env));
+        CHECK(env.Kind == ModuleWire::PayloadKind::ControlRequest);
+        CHECK(env.MessageId == 41);
+        ModuleWire::ControlRequestMsg core;
+        CHECK(ModuleWire::Decode(env.Payload, core));
+        CHECK(core.BotGuid == 0);
+        CHECK(core.SpawnParams.Race == 2 && core.SpawnParams.ClassId == 3);
+        CHECK(core.SpawnParams.Level == 80 && core.SpawnParams.Team == 1);
+
+        forever_module::Envelope release;
+        release.mutable_release_control()->set_bot_guid(5005);
+        std::string releaseBytes;
+        CHECK(release.SerializeToString(&releaseBytes));
+        ModuleWire::Envelope releaseEnv;
+        CHECK(ModuleWire::DecodeEnvelope(releaseBytes, releaseEnv));
+        CHECK(releaseEnv.Kind == ModuleWire::PayloadKind::ReleaseControl);
+        ModuleWire::ReleaseControlMsg coreRelease;
+        CHECK(ModuleWire::Decode(releaseEnv.Payload, coreRelease));
+        CHECK(coreRelease.BotGuid == 5005);
+    }
+
+    // Core -> SDK: ControlResponse (granted and refused) and ControlRevoked.
+    {
+        ModuleWire::ControlResponseMsg granted;
+        granted.Granted = true;
+        granted.BotGuid = 5005;
+        std::string bytes = ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::ControlResponse, ModuleWire::Encode(granted), 41);
+        forever_module::Envelope sdk;
+        CHECK(sdk.ParseFromString(bytes));
+        CHECK(sdk.payload_case() == forever_module::Envelope::kControlResponse);
+        CHECK(sdk.message_id() == 41);
+        CHECK(sdk.control_response().granted());
+        CHECK(sdk.control_response().bot_guid() == 5005);
+        CHECK(!sdk.control_response().has_reason());
+
+        ModuleWire::ControlResponseMsg refused;
+        refused.Reason = "already controlled by module other";
+        forever_module::ControlResponse parsed;
+        CHECK(parsed.ParseFromString(ModuleWire::Encode(refused)));
+        CHECK(!parsed.granted());
+        CHECK(parsed.reason() == "already controlled by module other");
+
+        ModuleWire::ControlRevokedMsg revoked;
+        revoked.BotGuid = 5005;
+        revoked.Reason = "bot deleted";
+        std::string revokedBytes = ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::ControlRevoked, ModuleWire::Encode(revoked));
+        forever_module::Envelope revokedSdk;
+        CHECK(revokedSdk.ParseFromString(revokedBytes));
+        CHECK(revokedSdk.payload_case() == forever_module::Envelope::kControlRevoked);
+        CHECK(revokedSdk.control_revoked().bot_guid() == 5005);
+        CHECK(revokedSdk.control_revoked().reason() == "bot deleted");
     }
 
     if (g_failures == 0)
