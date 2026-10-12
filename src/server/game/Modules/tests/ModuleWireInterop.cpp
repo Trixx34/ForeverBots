@@ -15,6 +15,7 @@
 #include "ModuleWire.h"
 
 #include "envelope.pb.h"
+#include "actions.pb.h"
 #include "events.pb.h"
 #include "handshake.pb.h"
 
@@ -266,6 +267,104 @@ int main()
         ModuleWire::EventReplyMsg core3;
         CHECK(ModuleWire::Decode(emptyBytes, core3));
         CHECK(core3.MessageId == 79 && !core3.HasCommand);
+    }
+
+    // SDK -> core: SellItem and SendPlayerMessage action requests.
+    {
+        forever_module::Envelope sdk;
+        sdk.set_message_id(31);
+        forever_module::ActionRequest* req = sdk.mutable_action_request();
+        req->set_message_id(31);
+        forever_module::SellItemAction* sell = req->mutable_sell_item();
+        sell->set_player_guid(42);
+        sell->set_item_guid(5001);
+        sell->set_item_entry(2589);
+        sell->set_count(3);
+        std::string bytes;
+        CHECK(sdk.SerializeToString(&bytes));
+
+        ModuleWire::Envelope env;
+        CHECK(ModuleWire::DecodeEnvelope(bytes, env));
+        CHECK(env.Kind == ModuleWire::PayloadKind::ActionRequest);
+        CHECK(env.MessageId == 31);
+        ModuleWire::ActionRequestMsg core;
+        CHECK(ModuleWire::Decode(env.Payload, core));
+        CHECK(core.MessageId == 31);
+        CHECK(core.Kind == ModuleWire::ActionKind::SellItem);
+        CHECK(core.PlayerGuid == 42);
+        CHECK(core.ItemGuid == 5001);
+        CHECK(core.ItemEntry == 2589);
+        CHECK(core.Count == 3);
+
+        forever_module::ActionRequest msg;
+        msg.set_message_id(32);
+        msg.mutable_send_message()->set_player_guid(42);
+        msg.mutable_send_message()->set_text("sold for 60 copper");
+        std::string msgBytes;
+        CHECK(msg.SerializeToString(&msgBytes));
+        ModuleWire::ActionRequestMsg core2;
+        CHECK(ModuleWire::Decode(msgBytes, core2));
+        CHECK(core2.MessageId == 32);
+        CHECK(core2.Kind == ModuleWire::ActionKind::SendPlayerMessage);
+        CHECK(core2.PlayerGuid == 42);
+        CHECK(core2.Text == "sold for 60 copper");
+    }
+
+    // Core -> SDK: ActionReply inside an Envelope, parsed by the SDK's protobuf.
+    {
+        ModuleWire::ActionReplyMsg reply;
+        reply.MessageId = 31;
+        reply.Success = true;
+        reply.CopperGained = 60;
+        std::string bytes = ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::ActionReply, ModuleWire::Encode(reply), 31);
+
+        forever_module::Envelope sdk;
+        CHECK(sdk.ParseFromString(bytes));
+        CHECK(sdk.payload_case() == forever_module::Envelope::kActionReply);
+        CHECK(sdk.message_id() == 31);
+        CHECK(sdk.action_reply().message_id() == 31);
+        CHECK(sdk.action_reply().success());
+        CHECK(sdk.action_reply().copper_gained() == 60);
+        CHECK(!sdk.action_reply().has_reason());
+
+        ModuleWire::ActionReplyMsg failed;
+        failed.MessageId = 32;
+        failed.Reason = "item is gone";
+        std::string failedBytes = ModuleWire::Encode(failed);
+        forever_module::ActionReply parsed;
+        CHECK(parsed.ParseFromString(failedBytes));
+        CHECK(parsed.message_id() == 32);
+        CHECK(!parsed.success());
+        CHECK(parsed.reason() == "item is gone");
+        CHECK(parsed.copper_gained() == 0);
+    }
+
+    // Core -> SDK: PlayerItemLooted notify.
+    {
+        ModuleWire::ItemLootedEvent loot;
+        loot.PlayerGuid = 42;
+        loot.ItemGuid = 5001;
+        loot.ItemEntry = 2589;
+        loot.Count = 3;
+        loot.Quality = 0;
+        loot.ItemClass = 7;
+        loot.SellPrice = 20;
+        loot.ItemName = "Tattered Cloth";
+        std::string body = ModuleWire::EncodeEventNotifyItemLooted("PlayerScript.OnLootItem", loot);
+
+        forever_module::EventNotify notify;
+        CHECK(notify.ParseFromString(body));
+        CHECK(notify.hook_name() == "PlayerScript.OnLootItem");
+        CHECK(notify.event_payload_case() == forever_module::EventNotify::kPlayerItemLooted);
+        forever_module::PlayerItemLootedEvent const& sdk = notify.player_item_looted();
+        CHECK(sdk.player_guid() == 42);
+        CHECK(sdk.item_guid() == 5001);
+        CHECK(sdk.item_entry() == 2589);
+        CHECK(sdk.count() == 3);
+        CHECK(sdk.quality() == 0);
+        CHECK(sdk.item_class() == 7);
+        CHECK(sdk.sell_price() == 20);
+        CHECK(sdk.item_name() == "Tattered Cloth");
     }
 
     if (g_failures == 0)

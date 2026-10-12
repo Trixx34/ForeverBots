@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -144,6 +145,9 @@ class TC_GAME_API ModuleMgr
             TimedOut    // a module that subscribed to CommandScript did not reply in time
         };
 
+        // Delivers PlayerScript.OnLootItem to subscribed modules. Same non-blocking rules as DispatchNotify.
+        void DispatchItemLooted(std::string_view hook, ModuleWire::ItemLootedEvent const& event);
+
         // Offers a chat command (without its leading '.') to the modules subscribed to CommandScript,
         // in module id order. The first success wins. A reply with success=false and no text means
         // "not mine" and the next module is asked. The caller must not hold locks that session events need.
@@ -180,6 +184,16 @@ class TC_GAME_API ModuleMgr
         bool SpawnModule(ModuleId id);
         void OnSessionEvent(ModuleId id, ModuleSession::Event event, std::string const& detail);
 
+        // Module -> core actions. EnqueueAction runs on the session thread and only queues; RunPendingActions
+        // runs on the world thread from OnWorldTick and sends the replies.
+        struct PendingAction
+        {
+            std::weak_ptr<ModuleSession> Session;
+            ModuleWire::ActionRequestMsg Request;
+        };
+        void EnqueueAction(std::weak_ptr<ModuleSession> session, ModuleWire::ActionRequestMsg request);
+        void RunPendingActions();
+
         // Failure bookkeeping. Callers must hold _mutex.
         void SetStatus(ModuleDescriptor& descriptor, ModuleStatus status, std::string reason);
         void ScheduleRestart(ModuleDescriptor& descriptor, bool handshakeFailure);
@@ -199,6 +213,9 @@ class TC_GAME_API ModuleMgr
         std::string _approvalLoadError; // non-empty if approved_modules.json exists but cannot be read
 
         std::mutex _mutex; // guards _modules and descriptor fields; never held while stopping sessions
+        std::mutex _actionMutex; // guards _pendingActions; held only to push or pop
+        std::deque<PendingAction> _pendingActions;
+
         std::mutex _lifecycleMutex; // serializes restarts with Unload(); held across a restart attempt
         std::unordered_map<ModuleId, ModuleDescriptor> _modules;
         ModuleId _nextModuleId = 1;

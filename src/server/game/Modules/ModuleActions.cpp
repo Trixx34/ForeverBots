@@ -1,0 +1,117 @@
+/*
+ * Module -> core actions. See ModuleActions.h.
+ */
+
+#include "ModuleActions.h"
+#include "Chat.h"
+#include "Item.h"
+#include "ItemTemplate.h"
+#include "Log.h"
+#include "ObjectAccessor.h"
+#include "Player.h"
+#include "WorldSession.h"
+
+namespace
+{
+
+// Longest text a module may send a player. Chat lines are short; this only guards against abuse.
+constexpr size_t MaxMessageBytes = 255;
+
+void SellItem(Player* player, ModuleWire::ActionRequestMsg const& request, ModuleWire::ActionReplyMsg& reply)
+{
+    Item* item = player->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(request.ItemGuid));
+    if (!item)
+    {
+        reply.Reason = "item is no longer in the player's bags";
+        return;
+    }
+
+    if (item->GetEntry() != request.ItemEntry)
+    {
+        reply.Reason = "item entry does not match the request";
+        return;
+    }
+
+    if (request.Count == 0 || player->GetItemCount(request.ItemEntry) < request.Count)
+    {
+        reply.Reason = "not enough of the item to sell";
+        return;
+    }
+
+    ItemTemplate const* proto = item->GetTemplate();
+    uint32 const price = proto ? proto->GetSellPrice() : 0;
+    if (price == 0)
+    {
+        reply.Reason = "item has no vendor value";
+        return;
+    }
+
+    // Refuse before removing anything: once the items are gone the money has to be credited.
+    uint64 const total = uint64(price) * request.Count;
+    if (player->GetMoney() > MAX_MONEY_AMOUNT - total)
+    {
+        reply.Reason = "gold cap would be exceeded";
+        return;
+    }
+
+    // Count what was really removed, rather than trusting the return value of DestroyItemCount.
+    uint32 const before = player->GetItemCount(request.ItemEntry);
+    player->DestroyItemCount(request.ItemEntry, request.Count, true);
+    uint32 const removed = before - player->GetItemCount(request.ItemEntry);
+
+    uint64 const credit = uint64(price) * removed;
+    if (credit && !player->ModifyMoney(static_cast<int64>(credit)))
+    {
+        TC_LOG_ERROR("modules", "sold {} x item {} for player {} but could not credit {} copper",
+                     removed, request.ItemEntry, player->GetGUID().ToString(), credit);
+        reply.Reason = "items were removed but the money could not be credited";
+        return;
+    }
+
+    reply.CopperGained = credit;
+    if (removed != request.Count)
+    {
+        reply.Reason = "only part of the requested count was removed";
+        return;
+    }
+
+    reply.Success = true;
+    TC_LOG_DEBUG("modules.actions", "sold {} x item {} [{}] for {} copper, player {}",
+                 removed, request.ItemEntry, request.ItemGuid, credit, player->GetGUID().ToString());
+}
+
+} // namespace
+
+void ExecuteModuleAction(ModuleWire::ActionRequestMsg const& request, ModuleWire::ActionReplyMsg& reply)
+{
+    reply.MessageId = request.MessageId;
+
+    Player* player = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(request.PlayerGuid));
+    if (!player || !player->GetSession())
+    {
+        reply.Reason = "player is not online";
+        return;
+    }
+
+    switch (request.Kind)
+    {
+        case ModuleWire::ActionKind::SellItem:
+            SellItem(player, request, reply);
+            return;
+
+        case ModuleWire::ActionKind::SendPlayerMessage:
+            if (request.Text.empty() || request.Text.size() > MaxMessageBytes)
+            {
+                reply.Reason = "message must be 1 to 255 bytes";
+                return;
+            }
+            ChatHandler(player->GetSession()).SendSysMessage(request.Text);
+            reply.Success = true;
+            return;
+
+        case ModuleWire::ActionKind::None:
+            break;
+    }
+
+    reply.Reason = "unknown action";
+}

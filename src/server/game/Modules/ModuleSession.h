@@ -45,6 +45,9 @@ class ModuleSession
         };
 
         using Listener = std::function<void(Event, std::string const& detail)>;
+        // Called on the session thread for each ActionRequest the module sends. Must not block: it is
+        // expected to queue the request for the world thread and return.
+        using ActionHandler = std::function<void(ModuleWire::ActionRequestMsg const&)>;
 
         struct Settings
         {
@@ -89,6 +92,16 @@ class ModuleSession
         // event was not queued (not subscribed, not accepted, or the queue is full).
         bool NotifyEvent(std::string_view hook, ModuleWire::NotifyKind kind, uint64 value);
 
+        // Sets the handler for module -> core actions. Call before Start().
+        void SetActionHandler(ActionHandler handler);
+
+        // Queues a PlayerItemLooted EventNotify for a subscribed hook. Same rules as NotifyEvent.
+        bool NotifyItemLooted(std::string_view hook, ModuleWire::ItemLootedEvent const& event);
+
+        // Queues an ActionReply for the module. Thread-safe: the world thread answers actions after the
+        // session thread has handed them off. Returns false if the reply could not be queued.
+        bool SendActionReply(ModuleWire::ActionReplyMsg const& reply);
+
         // Queues an EventRequest carrying a chat command and waits up to `timeout` for the reply.
         // Returns nothing on timeout, disconnect, or a full queue.
         std::optional<ModuleWire::EventReplyMsg> RequestCommand(std::string_view hook, std::string_view commandText,
@@ -114,6 +127,7 @@ class ModuleSession
         Settings _settings;
         uint64 _moduleId;
         Listener _listener;
+        ActionHandler _actionHandler;
 
         int _listenFd = -1;
         int _connFd = -1;

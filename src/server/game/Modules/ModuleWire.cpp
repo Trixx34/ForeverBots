@@ -138,6 +138,8 @@ bool IsPayloadField(uint32 field)
         case PayloadKind::ControlResponse:
         case PayloadKind::ReleaseControl:
         case PayloadKind::ControlRevoked:
+        case PayloadKind::ActionRequest:
+        case PayloadKind::ActionReply:
             return true;
         default:
             return false;
@@ -187,6 +189,25 @@ std::string EncodeEventNotify(std::string_view hookName, NotifyKind kind, uint64
     std::string out;
     AppendBytesField(out, 1, hookName);
     AppendBytesField(out, static_cast<uint32>(kind), payload);
+    return out;
+}
+
+std::string EncodeEventNotifyItemLooted(std::string_view hookName, ItemLootedEvent const& event)
+{
+    std::string payload;
+    AppendVarintField(payload, 1, event.PlayerGuid);
+    AppendVarintField(payload, 2, event.ItemGuid);
+    AppendVarintField(payload, 3, event.ItemEntry);
+    AppendVarintField(payload, 4, event.Count);
+    AppendVarintField(payload, 5, event.Quality);
+    AppendVarintField(payload, 6, event.ItemClass);
+    AppendVarintField(payload, 7, event.SellPrice);
+    if (!event.ItemName.empty())
+        AppendBytesField(payload, 8, event.ItemName);
+
+    std::string out;
+    AppendBytesField(out, 1, hookName);
+    AppendBytesField(out, static_cast<uint32>(NotifyKind::PlayerItemLooted), payload);
     return out;
 }
 
@@ -397,6 +418,87 @@ bool Decode(std::string_view bytes, HandshakeRequest& out)
             return false;
     }
     return true;
+}
+
+bool Decode(std::string_view bytes, ActionRequestMsg& out)
+{
+    Reader r(bytes);
+    while (!r.AtEnd())
+    {
+        uint32 field = 0, wire = 0;
+        if (!r.ReadTag(field, wire))
+            return false;
+
+        if (field == 1 && wire == WireVarint)
+        {
+            if (!r.ReadVarint(out.MessageId))
+                return false;
+        }
+        else if ((field == 10 || field == 11) && wire == WireLengthDelimited)
+        {
+            // SellItemAction (10): player_guid=1, item_guid=2, item_entry=3, count=4.
+            // SendPlayerMessageAction (11): player_guid=1, text=2.
+            std::string_view actionBytes;
+            if (!r.ReadBytes(actionBytes))
+                return false;
+            out.Kind = field == 10 ? ActionKind::SellItem : ActionKind::SendPlayerMessage;
+
+            Reader a(actionBytes);
+            while (!a.AtEnd())
+            {
+                uint32 af = 0, aw = 0;
+                if (!a.ReadTag(af, aw))
+                    return false;
+                if (af == 1 && aw == WireVarint)
+                {
+                    if (!a.ReadVarint(out.PlayerGuid))
+                        return false;
+                }
+                else if (field == 10 && af == 2 && aw == WireVarint)
+                {
+                    if (!a.ReadVarint(out.ItemGuid))
+                        return false;
+                }
+                else if (field == 10 && af == 3 && aw == WireVarint)
+                {
+                    uint64 entry = 0;
+                    if (!a.ReadVarint(entry))
+                        return false;
+                    out.ItemEntry = static_cast<uint32>(entry);
+                }
+                else if (field == 10 && af == 4 && aw == WireVarint)
+                {
+                    uint64 count = 0;
+                    if (!a.ReadVarint(count))
+                        return false;
+                    out.Count = static_cast<uint32>(count);
+                }
+                else if (field == 11 && af == 2 && aw == WireLengthDelimited)
+                {
+                    std::string_view text;
+                    if (!a.ReadBytes(text))
+                        return false;
+                    out.Text.assign(text);
+                }
+                else if (!a.Skip(aw))
+                    return false;
+            }
+        }
+        else if (!r.Skip(wire))
+            return false;
+    }
+    return true;
+}
+
+std::string Encode(ActionReplyMsg const& msg)
+{
+    std::string out;
+    AppendVarintField(out, 1, msg.MessageId);
+    AppendVarintField(out, 2, msg.Success ? 1 : 0);
+    if (!msg.Reason.empty())
+        AppendBytesField(out, 3, msg.Reason);
+    AppendVarintField(out, 4, msg.CopperGained);
+    return out;
 }
 
 bool Decode(std::string_view bytes, Heartbeat& out)

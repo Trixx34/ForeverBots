@@ -24,6 +24,9 @@ void ModuleSession::Stop() { }
 void ModuleSession::Run() { }
 bool ModuleSession::Subscribes(std::string_view) const { return false; }
 bool ModuleSession::NotifyEvent(std::string_view, ModuleWire::NotifyKind, uint64) { return false; }
+bool ModuleSession::NotifyItemLooted(std::string_view, ModuleWire::ItemLootedEvent const&) { return false; }
+bool ModuleSession::SendActionReply(ModuleWire::ActionReplyMsg const&) { return false; }
+void ModuleSession::SetActionHandler(ActionHandler) { }
 std::optional<ModuleWire::EventReplyMsg> ModuleSession::RequestCommand(std::string_view, std::string_view, uint64,
                                                                        std::chrono::milliseconds)
 {
@@ -234,6 +237,25 @@ bool ModuleSession::NotifyEvent(std::string_view hook, ModuleWire::NotifyKind ki
         return false;
     return Enqueue(ModuleWire::Frame(ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::EventNotify,
                                                                 ModuleWire::EncodeEventNotify(hook, kind, value))));
+}
+
+bool ModuleSession::NotifyItemLooted(std::string_view hook, ModuleWire::ItemLootedEvent const& event)
+{
+    if (!Subscribes(hook))
+        return false;
+    return Enqueue(ModuleWire::Frame(ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::EventNotify,
+                                                                ModuleWire::EncodeEventNotifyItemLooted(hook, event))));
+}
+
+bool ModuleSession::SendActionReply(ModuleWire::ActionReplyMsg const& reply)
+{
+    return Enqueue(ModuleWire::Frame(ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::ActionReply,
+                                                                ModuleWire::Encode(reply), reply.MessageId)));
+}
+
+void ModuleSession::SetActionHandler(ActionHandler handler)
+{
+    _actionHandler = std::move(handler);
 }
 
 std::optional<ModuleWire::EventReplyMsg> ModuleSession::RequestCommand(std::string_view hook, std::string_view commandText,
@@ -555,6 +577,13 @@ void ModuleSession::Run()
                         ModuleWire::EventReplyMsg reply;
                         if (ModuleWire::Decode(envelope.Payload, reply))
                             CompleteRequest(std::move(reply));
+                        break;
+                    }
+                    case ModuleWire::PayloadKind::ActionRequest:
+                    {
+                        ModuleWire::ActionRequestMsg request;
+                        if (_actionHandler && ModuleWire::Decode(envelope.Payload, request))
+                            _actionHandler(request);
                         break;
                     }
                     default:

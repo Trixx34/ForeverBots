@@ -27923,6 +27923,9 @@ void Player::StoreLootItem(ObjectGuid lootWorldObjectGuid, uint8 lootSlot, Loot*
             else
                 ApplyItemLootedSpell(sObjectMgr->GetItemTemplate(item->itemid));
 
+            if (newitem)
+                sScriptMgr->OnPlayerItemLooted(this, newitem, item->count);
+
             break;
         }
         case LootItemType::Currency:

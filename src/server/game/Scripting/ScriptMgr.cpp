@@ -2107,6 +2107,22 @@ void ScriptMgr::OnPlayerLogin(Player* player, bool firstLogin)
     sModuleMgr->DispatchNotify("PlayerScript.OnLogin", ModuleWire::NotifyKind::PlayerLogin, player->GetGUID().GetCounter());
 }
 
+void ScriptMgr::OnPlayerItemLooted(Player* player, Item* item, uint32 lootedCount)
+{
+    // lootedCount is what this loot action added; the item's stack may already hold other items of the same entry.
+    ModuleWire::ItemLootedEvent event;
+    event.PlayerGuid = player->GetGUID().GetCounter();
+    event.ItemGuid = item->GetGUID().GetCounter();
+    event.ItemEntry = item->GetEntry();
+    event.Count = lootedCount;
+    event.Quality = item->GetQuality();
+    event.ItemClass = item->GetTemplate() ? item->GetTemplate()->GetClass() : 0;
+    event.SellPrice = item->GetTemplate() ? item->GetTemplate()->GetSellPrice() : 0;
+    char const* name = item->GetTemplate() ? item->GetTemplate()->GetDefaultLocaleName() : nullptr;
+    event.ItemName = name ? name : "";
+    sModuleMgr->DispatchItemLooted("PlayerScript.OnLootItem", event);
+}
+
 void ScriptMgr::OnPlayerLogout(Player* player)
 {
     FOREACH_SCRIPT(PlayerScript)->OnLogout(player);

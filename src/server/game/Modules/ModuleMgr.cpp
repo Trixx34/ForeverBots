@@ -5,6 +5,7 @@
 #include "ModuleMgr.h"
 #include "Config.h"
 #include "Log.h"
+#include "ModuleActions.h"
 #include "ModuleManifestInfo.h"
 
 #include <optional>
@@ -33,10 +34,15 @@ std::vector<std::string> const SupportedTier1Hooks = {
     "WorldScript.OnStartup",
     "WorldScript.OnShutdown",
     "CommandScript",
+    "PlayerScript.OnLootItem",
 };
 
 // How long a module gets to exit after Shutdown before it is terminated.
 constexpr std::chrono::milliseconds ShutdownGrace{2000};
+
+// Module actions waiting for the world thread, and how many one world tick runs.
+constexpr size_t MaxPendingActions = 256;
+constexpr size_t MaxActionsPerTick = 32;
 
 // Restart policy (doc 04 §5). The window is fixed here; the budgets and base backoff are config keys.
 constexpr std::chrono::minutes RestartWindow{10};
@@ -251,6 +257,10 @@ bool ModuleMgr::SpawnModule(ModuleId id)
     auto session = std::make_shared<ModuleSession>(settings, id, [this, id](ModuleSession::Event event, std::string const& detail)
     {
         OnSessionEvent(id, event, detail);
+    });
+    session->SetActionHandler([this, weak = std::weak_ptr<ModuleSession>(session)](ModuleWire::ActionRequestMsg const& request)
+    {
+        EnqueueAction(weak, request);
     });
 
     std::string error;
@@ -482,9 +492,73 @@ void ModuleMgr::RestartDueModules()
     }
 }
 
+void ModuleMgr::DispatchItemLooted(std::string_view hook, ModuleWire::ItemLootedEvent const& event)
+{
+    std::vector<std::pair<ModuleId, std::shared_ptr<ModuleSession>>> targets;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (auto const& [id, d] : _modules)
+            if (d.Session && d.Session->Subscribes(hook))
+                targets.emplace_back(id, d.Session);
+    }
+
+    for (auto const& [id, session] : targets)
+    {
+        if (session->NotifyItemLooted(hook, event))
+            continue;
+
+        std::lock_guard<std::mutex> lock(_mutex);
+        auto it = _modules.find(id);
+        if (it != _modules.end() && ++it->second.DroppedEvents == 1)
+            TC_LOG_WARN("modules", "'{}' is not keeping up with its events; notifications are being dropped (first: {}).",
+                        it->second.Name, hook);
+    }
+}
+
+void ModuleMgr::EnqueueAction(std::weak_ptr<ModuleSession> session, ModuleWire::ActionRequestMsg request)
+{
+    {
+        std::lock_guard<std::mutex> lock(_actionMutex);
+        if (_pendingActions.size() < MaxPendingActions)
+        {
+            _pendingActions.push_back(PendingAction{ std::move(session), std::move(request) });
+            return;
+        }
+    }
+
+    // Too many actions waiting for the world thread. Refuse this one now rather than let the queue grow.
+    ModuleWire::ActionReplyMsg reply;
+    reply.MessageId = request.MessageId;
+    reply.Reason = "core is busy, try again later";
+    if (std::shared_ptr<ModuleSession> target = session.lock())
+        target->SendActionReply(reply);
+}
+
+void ModuleMgr::RunPendingActions()
+{
+    std::vector<PendingAction> batch;
+    {
+        std::lock_guard<std::mutex> lock(_actionMutex);
+        while (!_pendingActions.empty() && batch.size() < MaxActionsPerTick)
+        {
+            batch.push_back(std::move(_pendingActions.front()));
+            _pendingActions.pop_front();
+        }
+    }
+
+    for (PendingAction& action : batch)
+    {
+        ModuleWire::ActionReplyMsg reply;
+        ExecuteModuleAction(action.Request, reply);
+        if (std::shared_ptr<ModuleSession> target = action.Session.lock())
+            target->SendActionReply(reply);
+    }
+}
+
 void ModuleMgr::OnWorldTick(uint64 /*tick*/)
 {
-    // TODO (doc 04 §4, doc 03 Tier 2 section): Tier 2 is not implemented yet.
+    // Actions run here, on the world thread (doc 04 §4). Tier 2 is not implemented yet.
+    RunPendingActions();
 }
 
 void ModuleMgr::Unload()

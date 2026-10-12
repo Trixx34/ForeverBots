@@ -41,6 +41,8 @@ enum class PayloadKind : uint32
     ControlResponse = 41,
     ReleaseControl = 42,
     ControlRevoked = 43,
+    ActionRequest = 50,
+    ActionReply = 51,
 };
 
 struct Envelope
@@ -116,11 +118,27 @@ enum class NotifyKind : uint32
     WorldStartup = 12,
     WorldShutdown = 13,
     AccountLogin = 14,
+    PlayerItemLooted = 15,
 };
 
 // Body of an EventNotify. `value` is the player GUID for player events, the account id for AccountLogin,
 // and ignored for world events.
 std::string EncodeEventNotify(std::string_view hookName, NotifyKind kind, uint64 value);
+
+// PlayerItemLootedEvent (events.proto), as the body of an EventNotify. sellPrice is per item, in copper.
+struct ItemLootedEvent
+{
+    uint64 PlayerGuid = 0;
+    uint64 ItemGuid = 0;
+    uint32 ItemEntry = 0;
+    uint32 Count = 0;
+    uint32 Quality = 0;
+    uint32 ItemClass = 0;
+    uint32 SellPrice = 0;
+    std::string ItemName;
+};
+
+std::string EncodeEventNotifyItemLooted(std::string_view hookName, ItemLootedEvent const& event);
 
 // Body of an EventRequest carrying a CommandRequestPayload.
 std::string EncodeEventRequestCommand(uint64 messageId, std::string_view hookName, std::string_view commandText,
@@ -137,6 +155,39 @@ struct EventReplyMsg
 };
 
 bool Decode(std::string_view bytes, EventReplyMsg& out);
+
+// Module -> core action request (actions.proto). Exactly one kind is set per request.
+enum class ActionKind : uint8
+{
+    None = 0,
+    SellItem = 1,
+    SendPlayerMessage = 2,
+};
+
+struct ActionRequestMsg
+{
+    uint64 MessageId = 0;
+    ActionKind Kind = ActionKind::None;
+    uint64 PlayerGuid = 0;
+    // SellItem
+    uint64 ItemGuid = 0;
+    uint32 ItemEntry = 0;
+    uint32 Count = 0;
+    // SendPlayerMessage
+    std::string Text;
+};
+
+// Core -> module reply to an ActionRequest.
+struct ActionReplyMsg
+{
+    uint64 MessageId = 0;
+    bool Success = false;
+    std::string Reason;
+    uint64 CopperGained = 0;
+};
+
+bool Decode(std::string_view bytes, ActionRequestMsg& out);
+std::string Encode(ActionReplyMsg const& msg);
 
 // Frame helpers for a byte stream: prepend the length prefix.
 std::string Frame(std::string_view body);
