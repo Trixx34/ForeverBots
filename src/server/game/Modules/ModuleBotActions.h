@@ -4,8 +4,9 @@
  * The core only carries out what the module asks, for a bot the module controls. Deciding what a bot does is the
  * module's job. Core checks the owner and that the bot is online (ModuleMgr); this file checks the action itself.
  *
- * Targets are players only for now. A creature's guid needs its map and entry, and the 64-bit guid on the wire does
- * not carry them yet. Actions aimed at a creature are refused with a reason.
+ * Targets are unit references (forever_module::MakeUnitRef): a player by its database guid, or a creature by entry
+ * and counter on the bot's map. An attack needs a live target that is hostile to the bot; other actions need only a
+ * unit on the bot's map. Summoned creatures are reachable too, since the reference carries the entry and counter.
  */
 
 #ifndef TRINITYCORE_MODULE_BOT_ACTIONS_H

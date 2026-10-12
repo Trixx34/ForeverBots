@@ -1,5 +1,7 @@
 #include "ModuleBotActions.h"
+#include "Creature.h"
 #include "DB2Structure.h"
+#include "Map.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
@@ -12,10 +14,46 @@ using forever_module::BotAction;
 namespace
 {
 
-// Target guids on the wire are player counters for now (see ModuleBotActions.h).
-Player* ResolvePlayerTarget(uint64 counter)
+// Resolves a unit reference (forever_module::MakeUnitRef) on the bot's map. Players are found anywhere online.
+// Creatures are found only on the bot's map, since a creature guid is meaningless elsewhere.
+Unit* ResolveUnit(Player& bot, uint64 ref)
 {
-    return ObjectAccessor::FindPlayerByLowGUID(counter);
+    switch (static_cast<HighGuid>(forever_module::UnitRefType(ref)))
+    {
+        case HighGuid::Player:
+            return ObjectAccessor::FindPlayerByLowGUID(forever_module::UnitRefCounter(ref));
+
+        case HighGuid::Creature:
+        {
+            Map* map = bot.GetMap();
+            if (!map)
+                return nullptr;
+            ObjectGuid const guid = ObjectGuid::Create<HighGuid::Creature>(uint16(map->GetId()),
+                                                                          forever_module::UnitRefEntry(ref),
+                                                                          forever_module::UnitRefCounter(ref));
+            return map->GetCreature(guid);
+        }
+
+        default:
+            return nullptr;
+    }
+}
+
+// A target the bot may attack: alive, in the world, and hostile to the bot.
+Unit* ResolveHostileTarget(Player& bot, uint64 ref, std::string& reason)
+{
+    Unit* target = ResolveUnit(bot, ref);
+    if (!target || target == &bot || !target->IsInWorld() || !target->IsAlive())
+    {
+        reason = "target is not a live unit on this bot's map";
+        return nullptr;
+    }
+    if (!bot.IsHostileTo(target))
+    {
+        reason = "target is not hostile to the bot";
+        return nullptr;
+    }
+    return target;
 }
 
 } // namespace
@@ -37,10 +75,10 @@ bool ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
 
         case ActionType::kFollow:
         {
-            Player* target = ResolvePlayerTarget(action.target_guid);
-            if (!target || target == &bot)
+            Unit* target = ResolveUnit(bot, action.target_guid);
+            if (!target || target == &bot || !target->IsInWorld())
             {
-                reason = "follow target is not an online player";
+                reason = "follow target is not a unit on this bot's map";
                 return false;
             }
             bot.GetMotionMaster()->Clear();
@@ -50,13 +88,8 @@ bool ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
 
         case ActionType::kAttackTarget:
         {
-            Player* target = ResolvePlayerTarget(action.target_guid);
-            if (!target || target == &bot)
-            {
-                reason = "attack target is not an online player";
-                return false;
-            }
-            return bot.Attack(target, true);
+            Unit* target = ResolveHostileTarget(bot, action.target_guid, reason);
+            return target && bot.Attack(target, true);
         }
 
         case ActionType::kCastSpell:
@@ -71,11 +104,11 @@ bool ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
                 reason = "bot does not know spell " + std::to_string(action.spell_id);
                 return false;
             }
-            // target_guid 0 means the bot casts on itself.
-            Player* target = action.target_guid == 0 ? &bot : ResolvePlayerTarget(action.target_guid);
-            if (!target)
+            // A zero target means the bot casts on itself.
+            Unit* target = action.target_guid == 0 ? &bot : ResolveUnit(bot, action.target_guid);
+            if (!target || !target->IsInWorld())
             {
-                reason = "cast target is not an online player";
+                reason = "cast target is not a unit on this bot's map";
                 return false;
             }
             bot.CastSpell(target, action.spell_id, false);
