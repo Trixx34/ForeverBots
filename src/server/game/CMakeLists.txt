@@ -14,7 +14,8 @@ CollectIncludeDirectories(
   ${CMAKE_CURRENT_SOURCE_DIR}
   PUBLIC_INCLUDES
   EXCLUDE
-  ${CMAKE_CURRENT_SOURCE_DIR}/PrecompiledHeaders)
+  ${CMAKE_CURRENT_SOURCE_DIR}/PrecompiledHeaders
+  ${CMAKE_CURRENT_SOURCE_DIR}/Modules/tests)
 
 # Provide an interface target for the game project to allow
 # dependent projects to build meanwhile.
@@ -35,7 +36,8 @@ CollectAndAddSourceFiles(
   game
   ${CMAKE_CURRENT_SOURCE_DIR}
   EXCLUDE
-  ${CMAKE_CURRENT_SOURCE_DIR}/PrecompiledHeaders)
+  ${CMAKE_CURRENT_SOURCE_DIR}/PrecompiledHeaders
+  ${CMAKE_CURRENT_SOURCE_DIR}/Modules/tests)
 
 target_include_directories(game
   PRIVATE

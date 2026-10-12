@@ -1,20 +1,28 @@
 /*
  * Module System — core-side module host.
- * SKELETON: see doc/module-system/04-phase2-module-host-design.md for the full design and
- * doc/module-system/12-initial-core-changes-scope.md for what's implemented in this pass.
- *
- * No real boost::process spawning, boost::asio socket server, or boost::interprocess shared
- * memory yet -- method bodies in ModuleMgr.cpp are stubs. This establishes the class shape so it
- * can be iterated on alongside the forever-module-sdk client, which is at the same skeleton depth.
+ * See doc/module-system/04-phase2-module-host-design.md for the design. This file implements
+ * discovery, spawn (boost::process), the Tier 1 handshake and heartbeat. Not yet implemented:
+ * restart policy, approval store (doc 06), resource limits, Tier 1 event routing, Tier 2, bot control.
  */
 
 #ifndef TRINITYCORE_MODULEMGR_H
 #define TRINITYCORE_MODULEMGR_H
 
 #include "Define.h"
+#include "ModuleSession.h"
+
+#include <atomic>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
+
+namespace boost::process
+{
+class child;
+}
 
 using ModuleId = uint32;
 
@@ -26,9 +34,10 @@ inline constexpr char const* kModuleProtocolVersion = "1";
 enum class ModuleStatus : uint8
 {
     PendingApproval,    // doc/module-system/06-phase4-approval-audit-design.md §2
-    Running,
-    TransientFailure,   // crash/heartbeat timeout, restart policy applies — doc 04 §5
-    PermanentFailure    // version mismatch / repeated handshake timeout / max restarts exceeded — doc 04 §5
+    Starting,           // spawned, waiting for the handshake
+    Running,            // handshake accepted, heartbeats alive
+    TransientFailure,   // crash/heartbeat timeout/handshake timeout; restart policy applies (not yet implemented)
+    PermanentFailure    // version mismatch / rejected handshake / bad manifest or executable — doc 04 §5
 };
 
 struct ModuleDescriptor
@@ -38,10 +47,21 @@ struct ModuleDescriptor
     std::string Version;
     std::string ProtocolVersion;     // doc 11 — exact-match gate, not the SDK package version
     ModuleStatus Status = ModuleStatus::PendingApproval;
+    std::string StatusReason;        // why the module is in its current status, for logs and `module info`
     uint32 RestartAttempts = 0;
 
-    // TODO: declared tier1 hooks, tier2 participation + negotiated bounds (doc 04 §3),
-    // process handle, Tier 1 socket handle, Tier 2 shared-memory handle.
+    std::unique_ptr<ModuleSession> Session;             // owns the Tier 1 socket and session thread
+    std::shared_ptr<boost::process::child> Process;     // the module executable
+};
+
+// Read-only view of a module, for logs and console commands.
+struct ModuleSnapshot
+{
+    std::string Name;
+    ModuleStatus Status = ModuleStatus::PendingApproval;
+    std::string StatusReason;
+    uint64 HeartbeatCount = 0;
+    bool ProcessRunning = false;
 };
 
 /*
@@ -57,7 +77,7 @@ class TC_GAME_API ModuleMgr
 {
     private:
         ModuleMgr() = default;
-        ~ModuleMgr() = default;
+        ~ModuleMgr();
 
     public:
         ModuleMgr(ModuleMgr const&) = delete;
@@ -67,17 +87,21 @@ class TC_GAME_API ModuleMgr
 
         static ModuleMgr* instance();
 
-        // Scans Modules.Dir for module.json + built executable pairs, applies the capability
-        // approval gate (doc 06), and spawns approved modules. No-op (logs nothing found) until
-        // Modules.Enabled = 1 and at least one module exists in Modules.Dir.
+        // Scans Modules.Dir for <name>/module.json + <name>/<name> pairs, and for each one: checks
+        // the protocol version, requires approval (see below), then spawns the module and runs its
+        // handshake. No-op until Modules.Enabled = 1.
+        //
+        // Approval: the approval store (doc 06) is not implemented yet, so modules are only spawned
+        // when Modules.AutoApproveLocal = 1 (local development). Otherwise they stay PendingApproval.
         void LoadModules();
 
         // Called once per server tick from World::Update, the same way sBotMgr->Update(diff) is
         // called today at World.cpp:2303 (confirmed call-site precedent, doc 12 §2). Iterates
-        // Tier-2-participating modules per their declared cadence. No-op in this skeleton pass.
+        // Tier-2-participating modules per their declared cadence. No-op until Tier 2 exists.
         void OnWorldTick(uint64 tick);
 
-        // Clean shutdown: sends Shutdown to every connected module. No-op in this skeleton pass.
+        // Stops every session (sends Shutdown), gives processes a short grace period, then
+        // terminates any that are still running.
         void Unload();
 
         // Handshake gate: true only when a module's declared protocol_version exactly equals
@@ -85,12 +109,26 @@ class TC_GAME_API ModuleMgr
         // the log (doc 04: mismatch → permanent failure, never spawned, no restart attempts).
         static bool CheckProtocolVersion(std::string const& declared, std::string& reason);
 
-        // TODO (doc 04 §6): RequestControl/ReleaseControl/bot ownership map — needs a real Tier 1
-        // connection to a module before there's anything meaningful to implement here.
+        // Snapshot of every known module, sorted by name.
+        std::vector<ModuleSnapshot> GetSnapshots();
+
+        // TODO (doc 04 §6): RequestControl/ReleaseControl/bot ownership map — needs Tier 1 event
+        // routing before there's anything meaningful to implement here.
 
     private:
+        void ProcessModuleDirectory(std::string const& root, std::string const& name, uint64 handshakeTimeoutMs,
+                                    uint64 heartbeatTimeoutMs, bool autoApprove);
+        bool SpawnModule(ModuleId id, std::string const& executable, std::string const& endpoint,
+                         uint64 handshakeTimeoutMs, uint64 heartbeatTimeoutMs);
+        void OnSessionEvent(ModuleId id, ModuleSession::Event event, std::string const& detail);
+        // Callers must hold _mutex.
+        void SetStatus(ModuleDescriptor& descriptor, ModuleStatus status, std::string reason);
+        static void StopProcess(ModuleDescriptor& descriptor);
+
+        std::mutex _mutex; // guards _modules and descriptor fields; never held while stopping sessions
         std::unordered_map<ModuleId, ModuleDescriptor> _modules;
         ModuleId _nextModuleId = 1;
+        std::atomic<bool> _unloading{false}; // set by Unload() so expected disconnects are not reported as failures
 };
 
 #define sModuleMgr ModuleMgr::instance()
