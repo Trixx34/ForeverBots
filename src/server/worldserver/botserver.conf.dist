@@ -852,6 +852,15 @@ Bot.AI.Move.StuckSec = 8
 Bot.AI.Move.StuckRepaths = 3
 
 #
+#    Bot.AI.Move.StuckMoveYards
+#        Description: Yards a moving bot must walk (measured from the last check point, not toward the goal) to count as
+#                     progress for the stuck test, so detours (ramps, switchbacks) are not flagged NO_PROGRESS. The best
+#                     straight-line distance is not lowered. A bot that stands still or loops in place is still caught.
+#        Default:     6
+#        Values:      0 to 100 (yards); 0 = old behavior (straight-line distance to the goal only)
+Bot.AI.Move.StuckMoveYards = 6
+
+#
 #    Bot.AI.Death.CorpseRunMaxFails
 #        Description: Failed corpse-run goals (and failed spirit healer walks) before the bot gives up: a failed
 #                     corpse run falls back to the spirit healer, and when that fails too the bot is resurrected

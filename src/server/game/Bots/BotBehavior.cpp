@@ -1376,6 +1376,8 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
         _startMs = now;
         _bestDist = dist;
         _bestMs = now;
+        _anchorX = bot->GetPositionX();
+        _anchorY = bot->GetPositionY();
         _issues = 0;
         _episodes = 0;
         _everMoved = false;
@@ -1464,6 +1466,17 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
         _bestMs = now;
         _legFails = 0;
     }
+    // walking a detour (ramp, switchback) is progress even when the straight-line distance does not shrink; the best distance is kept
+    if (float const moveYd = BotAI::Config().StuckMoveYards; moving && moveYd > 0.0f && !bot->HasUnitState(UNIT_STATE_NOT_MOVE))
+    {
+        float const dx = bot->GetPositionX() - _anchorX, dy = bot->GetPositionY() - _anchorY;
+        if (dx * dx + dy * dy > moveYd * moveYd)
+        {
+            _anchorX = bot->GetPositionX();
+            _anchorY = bot->GetPositionY();
+            _bestMs = now;
+        }
+    }
 
     bool const natural = BotMove::Natural().Enabled && ShapedTag(_tag);
     if (natural)
@@ -1487,6 +1500,8 @@ BotMotion::Result BotMotion::Step(BotAI* ai, Player* bot)
             EmitMotion(ai, bot, "stuck", BOTLOG_WARN, "NO_PROGRESS", StringFormat("no progress to the {} goal for {} s", _tag, cfg.StuckSec),
                 StringFormat(R"({{"tag":"{}","quest_id":{},"goal":{},"distance":{:.0f},"path_us":{},{}}})", _tag, _questId, Pos3(_x, _y, _z), dist, _pathUs, info));
         _bestMs = now;
+        _anchorX = bot->GetPositionX();
+        _anchorY = bot->GetPositionY();
         if (natural && NaturalStuck(ai, bot, now))
             return Result::Moving;
         Halt(bot);

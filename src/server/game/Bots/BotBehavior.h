@@ -145,6 +145,7 @@ private:
 
     uint32 _startMs = 0, _issueMs = 0, _lastStepMs = 0, _bestMs = 0;
     float _bestDist = 0.0f;
+    float _anchorX = 0.0f, _anchorY = 0.0f; // position of the last real-movement progress check
     uint32 _issues = 0;
     uint32 _episodes = 0;       // stuck episodes of this goal
     bool _everMoved = false;

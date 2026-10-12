@@ -192,6 +192,7 @@ BotAIConfig const& BotAI::Config()
         _config.ReleaseMaxSec = std::max(_config.ReleaseMinSec, uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Release.MaxDelaySec", 8), 0, 3600)));
         _config.MaxCorpseRunYards = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Recover.MaxCorpseRunYards", 1200), 50, 100000));
         _config.StuckSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.StuckSec", 8), 2, 600));
+        _config.StuckMoveYards = std::clamp(sConfigMgr->GetFloatDefault("Bot.AI.Move.StuckMoveYards", 6.0f), 0.0f, 100.0f);
         _config.StuckRepaths = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Move.StuckRepaths", 3), 1, 20));
         _config.CorpseRunMaxFails = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Death.CorpseRunMaxFails", 3), 1, 20));
         _config.DeathGiveUpSec = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.AI.Death.GiveUpSec", 300), 0, 3600));

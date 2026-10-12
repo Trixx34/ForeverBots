@@ -54,6 +54,7 @@ struct BotAIConfig
     bool IdleReasons = true;      // Bot.Log.IdleReasons: ticks that ran no action, by reason, in AI_TICK_STATS
     uint32 CorpseRunMaxFails = 3; // Bot.AI.Death.CorpseRunMaxFails: failed corpse runs (and spirit healer walks) before the bot gives up
     uint32 DeathGiveUpSec = 300;  // Bot.AI.Death.GiveUpSec: seconds a ghost may spend on the corpse run / spirit healer before it respawns at the graveyard (0 = never)
+    float StuckMoveYards = 6.0f;  // Bot.AI.Move.StuckMoveYards: yards walked since the last anchor that count as progress for the stuck test (0 = straight-line distance only)
     uint32 StuckRepaths = 3;      // Bot.AI.Move.StuckRepaths: episodes (each re-issues the path) before the goal is given up
     // aggro awareness while walking, idle or resting (BotBehavior.cpp)
     bool AggroAvoid = true;       // Bot.AI.AggroAvoid.Enabled
