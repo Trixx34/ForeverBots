@@ -1720,6 +1720,24 @@ Modules.Tier2.MaxActions = 256
 
 Modules.Tier2.MaxTickInterval = 100
 
+#    Bot.Login.MaxPerTick
+#        Default:     5
+#        Bot logins started per world tick. Logins are spread over several ticks so the world does not stall.
+
+Bot.Login.MaxPerTick = 5
+
+#    Bot.Login.TimeoutMs
+#        Default:     60000
+#        A bot whose character has not loaded after this long is logged out again and retried later.
+
+Bot.Login.TimeoutMs = 60000
+
+#    Bot.Relogin.DelayMs
+#        Default:     2000
+#        Wait after a bot's logout before it can log in again, so the logout save reaches the database first.
+
+Bot.Relogin.DelayMs = 2000
+
 #    Modules.ResourceLimits.MemoryMB
 #        Description: Memory cap applied to each spawned module process (Job Object on Windows,
 #                     cgroup on Linux where available).

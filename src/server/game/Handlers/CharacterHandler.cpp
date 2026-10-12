@@ -55,6 +55,8 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Pet.h"
+#include "PhaseShift.h"
+#include "PhasingHandler.h"
 #include "Player.h"
 #include "PlayerDump.h"
 #include "QueryHolder.h"
@@ -1747,6 +1749,161 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder const& holder)
     }
 
     TC_METRIC_EVENT("player_events", "Login", pCurrChar->GetName());
+}
+
+// Player bots (BotMgr): the character load of HandlePlayerLogin without any client packets. Same world state.
+void WorldSession::BeginBotLogin(ObjectGuid guid)
+{
+    // Permissions are needed by gameplay code running on map threads; load them here (world thread) once.
+    if (!_RBACData)
+        LoadPermissions();
+
+    m_playerLoading = guid;
+
+    std::shared_ptr<LoginQueryHolder> holder = std::make_shared<LoginQueryHolder>(GetAccountId(), guid);
+    if (!holder->Initialize())
+    {
+        m_playerLoading.Clear();
+        return;
+    }
+
+    AddQueryHolderCallback(CharacterDatabase.DelayQueryHolder(holder)).AfterComplete([this](SQLQueryHolderBase const& holder)
+    {
+        HandleBotPlayerLogin(static_cast<LoginQueryHolder const&>(holder));
+    });
+}
+
+void WorldSession::ProcessBotLoginCallbacks()
+{
+    _queryHolderProcessor.ProcessReadyCallbacks();
+}
+
+void WorldSession::HandleBotPlayerLogin(LoginQueryHolder const& holder)
+{
+    ObjectGuid playerGuid = holder.GetGuid();
+
+    Player* pCurrChar = new Player(this);
+    if (!pCurrChar->LoadFromDB(playerGuid, holder))
+    {
+        delete pCurrChar;
+        m_playerLoading.Clear();
+        return;
+    }
+    SetPlayer(pCurrChar);
+
+    pCurrChar->SetVirtualPlayerRealm(GetVirtualRealmAddress());
+    pCurrChar->GetMotionMaster()->Initialize();
+
+    // Start positions imported without a height are fixed up the same way as for a real login.
+    if (pCurrChar->GetPositionZ() <= -14999.0f)
+    {
+        float z = pCurrChar->GetMap()->GetClassicSpawnHeight(pCurrChar->GetPhaseShift(), pCurrChar->GetPositionX(), pCurrChar->GetPositionY());
+        if (z > INVALID_HEIGHT)
+            pCurrChar->Relocate(pCurrChar->GetPositionX(), pCurrChar->GetPositionY(), z + 0.5f, pCurrChar->GetOrientation());
+    }
+
+    if (!pCurrChar->getCinematic())
+        pCurrChar->setCinematic(1);
+
+    if (PreparedQueryResult resultGuild = holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_GUILD))
+    {
+        Field* fields = resultGuild->Fetch();
+        pCurrChar->SetInGuild(fields[0].GetUInt64());
+        pCurrChar->SetGuildRank(fields[1].GetUInt8());
+        if (Guild* guild = sGuildMgr->GetGuildById(pCurrChar->GetGuildId()))
+            pCurrChar->SetGuildLevel(guild->GetLevel());
+    }
+    else if (pCurrChar->GetGuildId())
+    {
+        pCurrChar->SetInGuild(UI64LIT(0));
+        pCurrChar->SetGuildRank(0);
+        pCurrChar->SetGuildLevel(0);
+    }
+
+    if (!pCurrChar->GetMap()->AddPlayerToMap(pCurrChar))
+    {
+        if (AreaTriggerTeleport const* at = sObjectMgr->GetGoBackTrigger(pCurrChar->GetMapId()))
+            pCurrChar->TeleportTo(at->Loc);
+        else
+            pCurrChar->TeleportTo(pCurrChar->m_homebind);
+    }
+
+    ObjectAccessor::AddObject(pCurrChar);
+
+    pCurrChar->RemoveAurasWithInterruptFlags(SpellAuraInterruptFlags::Login);
+
+    uint32 newzone, newarea;
+    pCurrChar->GetZoneAndAreaId(newzone, newarea);
+    pCurrChar->UpdateZone(newzone, newarea);
+    PhasingHandler::OnMapChange(pCurrChar);
+    pCurrChar->UpdateItemLevelAreaBasedScaling();
+    pCurrChar->UpdateClassicLegacyUnlock();
+
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CHAR_ONLINE);
+    stmt->setUInt64(0, pCurrChar->GetGUID().GetCounter());
+    CharacterDatabase.Execute(stmt);
+
+    LoginDatabasePreparedStatement* loginStmt = LoginDatabase.GetPreparedStatement(LOGIN_UPD_ACCOUNT_ONLINE);
+    loginStmt->setUInt32(0, GetAccountId());
+    LoginDatabase.Execute(loginStmt);
+
+    pCurrChar->SetInGameTime(GameTime::GetGameTimeMS());
+
+    // Without a client time sync a player sees nothing (Player::CanNeverSee); this flag stands in for the sync.
+    pCurrChar->SetPlayerLocalFlag(PLAYER_LOCAL_FLAG_OVERRIDE_TRANSPORT_SERVER_TIME);
+
+    if (Group* group = pCurrChar->GetGroup())
+    {
+        group->SendUpdate();
+        if (group->GetLeaderGUID() == pCurrChar->GetGUID())
+            group->StopLeaderOfflineTimer();
+    }
+
+    pCurrChar->LoadCorpse(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_CORPSE_LOCATION));
+
+    if (pCurrChar->m_deathState == DEAD)
+    {
+        if (!pCurrChar->HasAura(8326))
+            pCurrChar->CastSpell(pCurrChar, 8326, true); // ghost
+        pCurrChar->SetWaterWalking(true);
+    }
+
+    pCurrChar->ContinueTaxiFlight();
+    pCurrChar->ResummonPetTemporaryUnSummonedIfAny();
+
+    if (pCurrChar->HasPlayerFlag(PLAYER_FLAGS_CONTESTED_PVP))
+        pCurrChar->SetContestedPvP();
+
+    if (pCurrChar->HasAtLoginFlag(AT_LOGIN_RESET_SPELLS))
+        pCurrChar->ResetSpells();
+
+    if (pCurrChar->HasAtLoginFlag(AT_LOGIN_RESET_TALENTS))
+    {
+        pCurrChar->ResetTalents(true);
+        pCurrChar->ResetTalentSpecialization();
+    }
+
+    bool const firstLogin = pCurrChar->HasAtLoginFlag(AT_LOGIN_FIRST);
+    if (firstLogin)
+    {
+        pCurrChar->RemoveAtLoginFlag(AT_LOGIN_FIRST);
+        if (PlayerInfo const* info = sObjectMgr->GetPlayerInfo(pCurrChar->GetRace(), pCurrChar->GetClass()))
+            for (uint32 spellId : info->castSpells[AsUnderlyingType(pCurrChar->GetCreateMode())])
+                pCurrChar->CastSpell(pCurrChar, spellId, true);
+    }
+
+    if (!pCurrChar->IsStandState() && !pCurrChar->HasUnitState(UNIT_STATE_STUNNED))
+        pCurrChar->SetStandState(UNIT_STAND_STATE_STAND);
+
+    pCurrChar->UpdateAverageItemLevelTotal();
+    pCurrChar->UpdateAverageItemLevelEquipped();
+
+    m_playerLoading.Clear();
+
+    _player->UpdateMountCapability();
+    _player->UpdateCriteria(CriteriaType::Login, 1);
+
+    sScriptMgr->OnPlayerLogin(pCurrChar, firstLogin);
 }
 
 void WorldSession::SendFeatureSystemStatus()

@@ -994,6 +994,13 @@ class TC_GAME_API WorldSession
         bool PlayerRecentlyLoggedOut() const { return m_playerRecentlyLogout; }
         bool PlayerDisconnected() const;
 
+        // Player bots (BotMgr): a session without a socket, owned by BotMgr and never in World's session list.
+        bool IsBot() const { return _isBot; }
+        void SetBot() { _isBot = true; }
+        // Loads the character for a bot. BotMgr polls ProcessBotLoginCallbacks() until the player is in the world.
+        void BeginBotLogin(ObjectGuid guid);
+        void ProcessBotLoginCallbacks();
+
         bool IsAddonRegistered(std::string_view prefix) const;
 
         void SendPacket(WorldPacket const* packet, bool forced = false);
@@ -1259,6 +1266,7 @@ class TC_GAME_API WorldSession
         void AbortLogin(WorldPackets::Character::LoginFailureReason reason);
         void HandleLoadScreenOpcode(WorldPackets::Character::LoadingScreenNotify& loadingScreenNotify);
         void HandlePlayerLogin(LoginQueryHolder const& holder);
+        void HandleBotPlayerLogin(LoginQueryHolder const& holder);
         void HandleCheckCharacterNameAvailability(WorldPackets::Character::CheckCharacterNameAvailability& checkCharacterNameAvailability);
         void HandleCharRenameOpcode(WorldPackets::Character::CharacterRenameRequest& request);
         void HandleCharRenameCallBack(std::shared_ptr<WorldPackets::Character::CharacterRenameInfo> renameInfo, PreparedQueryResult result);
@@ -2060,6 +2068,7 @@ class TC_GAME_API WorldSession
         rbac::RBACData* _RBACData;
         uint32 expireTime;
         bool forceExit;
+        bool _isBot = false;
         bool _motdPending = false;          // MOTD due once the client's loading screen after the login is gone
 
         std::unique_ptr<boost::circular_buffer<std::pair<int64, uint32>>> _timeSyncClockDeltaQueue; // first member: clockDelta. Second member: latency of the packet exchange that was used to compute that clockDelta.

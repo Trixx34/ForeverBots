@@ -716,6 +716,7 @@ ModuleWire::ControlResponseMsg ModuleMgr::ExecuteControlRequest(ModuleId module,
             response.Reason = "bot was spawned but its ownership could not be recorded";
             return response;
         }
+        backend->Activate(guid);
         TC_LOG_INFO("modules", "module {} spawned bot {}.", module, guid);
         response.Granted = true;
         response.BotGuid = guid;
@@ -735,6 +736,7 @@ ModuleWire::ControlResponseMsg ModuleMgr::ExecuteControlRequest(ModuleId module,
         case ModuleBotOwnership::Claim::Granted:
             response.Granted = true;
             response.BotGuid = request.BotGuid;
+            backend->Activate(request.BotGuid);
             break;
         case ModuleBotOwnership::Claim::OwnedByOther:
         {

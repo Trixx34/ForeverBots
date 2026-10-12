@@ -37,6 +37,8 @@
 #include "MapManager.h"
 #include "Memory.h"
 #include "Metric.h"
+#include "BotMgr.h"
+#include "BotModuleBackend.h"
 #include "ModuleMgr.h"
 #include "MySQLThreading.h"
 #include "OpenSSLCrypto.h"
@@ -433,6 +435,10 @@ int main(int argc, char** argv)
 
     // Module system (doc/module-system/04-phase2-module-host-design.md). Loaded before the world's
     // OnStartup, so modules subscribed to WorldScript.OnStartup receive it. No-op until Modules.Enabled = 1.
+    // Bot characters are the core's lifecycle; their behaviour comes from the controlling module.
+    sBotMgr->LoadRegistry();
+    sModuleMgr->SetBotBackend(std::make_shared<BotModuleBackend>());
+
     sModuleMgr->LoadModules();
 
     sScriptMgr->OnStartup();
@@ -460,7 +466,10 @@ int main(int argc, char** argv)
 
     sScriptMgr->OnShutdown();
 
-    // Module system: send Shutdown to every connected module (skeleton no-op for now).
+    // Bots are saved and logged out while the modules can still hear about it; each controlled bot is revoked.
+    sBotMgr->LogoutAll("LOGOUT_SHUTDOWN");
+
+    // Module system: send Shutdown to every connected module.
     sModuleMgr->Unload();
 
     // set server offline
