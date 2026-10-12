@@ -179,6 +179,9 @@ public:
         uint32 CreatedBySpellId = 0;
         uint16 SpecializationId = 0;
         uint8 Level = 0;
+        uint8 LoyaltyLevel = 6;                 // Classic 1.60 hunter pets: 1 Rebellious .. 6 Best Friend (character_pet_loyalty)
+        int32 LoyaltyPoints = 17500;            // pets saved before loyalty existed (no character_pet_loyalty row) count as Best Friend so
+                                                // nobody loses an old pet; a new tame starts Rebellious in Pet::CreateBaseAtTamed
         ReactStates ReactState = ReactStates(0);
         PetType Type = MAX_PET_TYPE;
         bool WasRenamed = false;

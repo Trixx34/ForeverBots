@@ -22,7 +22,10 @@
 #include "BattlegroundPackets.h"
 #include "Creature.h"
 #include "CreatureAI.h"
+#include "CreatureData.h"
 #include "GameObject.h"
+#include "GameObjectAI.h"
+#include "GameObjectData.h"
 #include "GameTime.h"
 #include "Log.h"
 #include "Map.h"
@@ -1363,7 +1366,1024 @@ private:
     GuidUnorderedSet _heraldGUIDs;
 };
 
+// Classic 1.60: vanilla Alterac Valley on map 30 (port of VMaNGOS BattleGroundAV). The retail script above needs the
+// retail banner entries (one per node) and world state spawn group conditions; map 30 has the vanilla spawns, where one
+// banner entry serves every graveyard and every node state is a VMaNGOS battleground event. Each event is a spawn group
+// 300000 + event1 * 10 + event2 (world SQL 2026_10_12_40), switched here like VMaNGOS BattleGround::SpawnEvent.
+// Groups of the state active at creation have no manual flag; the event table below mirrors that.
+namespace ClassicAlteracValley
+{
+    static constexpr uint32 GroupBase = 300000;
+    static constexpr uint8 EventNone = 255;
+    static constexpr uint8 NodesMax = 15;
+    static constexpr uint8 TowersMax = 23;                 // tower defenders: event TowersMax + node
+    static constexpr uint8 GraveTypes = 4;                  // defender tiers (armor scraps)
+    static constexpr uint8 MaxStates = 2;
+    static constexpr int32 CaptureTime = 300000;            // 5 minutes
+    static constexpr int32 MineTickTimer = 45000;
+    static constexpr int32 MineReclaimTimer = 1200000;      // 20 minutes
+    static constexpr int32 SnivvleYellTimer = 70000;
+    static constexpr int32 InitialScore = 600;
+
+    enum TeamIndex : uint8
+    {
+        CAV_TEAM_ALLIANCE           = 0,
+        CAV_TEAM_HORDE              = 1,
+        CAV_TEAM_NEUTRAL            = 2
+    };
+
+    enum NodeState : uint8
+    {
+        CAV_STATE_ASSAULTED         = 0,
+        CAV_STATE_CONTROLLED        = 1
+    };
+
+    enum Nodes : uint8
+    {
+        CAV_NODE_FIRSTAID_STATION   = 0,
+        CAV_NODE_STORMPIKE_GRAVE    = 1,
+        CAV_NODE_STONEHEART_GRAVE   = 2,
+        CAV_NODE_SNOWFALL_GRAVE     = 3,
+        CAV_NODE_ICEBLOOD_GRAVE     = 4,
+        CAV_NODE_FROSTWOLF_GRAVE    = 5,
+        CAV_NODE_FROSTWOLF_HUT      = 6,
+        CAV_NODE_DUNBALDAR_SOUTH    = 7,
+        CAV_NODE_STONEHEART_BUNKER  = 10,
+        CAV_NODE_ICEBLOOD_TOWER     = 11,
+        CAV_NODE_FROSTWOLF_WTOWER   = 14
+    };
+
+    // VMaNGOS battleground_events (map 30) event1 values
+    enum Events : uint8
+    {
+        CAV_EVENT_GRAVE_DEFENDERS   = 15,                   // + node, event2 = team * 4 + tier (neutral 8)
+        CAV_EVENT_TOWER_MARSHALS    = 15,                   // + node, event2 = team * 2 + 1
+        CAV_EVENT_MINE_BOSSES       = 46,                   // + mine, event2 = team
+        CAV_EVENT_CAPTAIN_A         = 48,
+        CAV_EVENT_CAPTAIN_H         = 49,
+        CAV_EVENT_MINE              = 50,                   // + mine, event2 = team
+        CAV_EVENT_COMMANDER_A_FIRST = 52,                   // 52 - 55 Alliance, 56 - 59 Horde wing commanders
+        CAV_EVENT_COMMANDER_A_KARL  = 54,
+        CAV_EVENT_COMMANDER_H_FIRST = 56,
+        CAV_EVENT_COMMANDER_H_LOUIS = 57,
+        CAV_EVENT_COMMANDER_H_LAST  = 59,
+        CAV_EVENT_HERALD            = 60,
+        CAV_EVENT_BOSS_A            = 61,
+        CAV_EVENT_BOSS_H            = 62,
+        CAV_EVENT_CAPTAIN_DEAD_A    = 63,
+        CAV_EVENT_CAPTAIN_DEAD_H    = 64,
+        CAV_EVENT_SNIVVLE           = 65,
+        CAV_EVENT_EXPLOSIVES_A      = 66,
+        CAV_EVENT_EXPLOSIVES_H      = 67,
+        CAV_EVENT_LIEUTENANT_A      = 68,
+        CAV_EVENT_LIEUTENANT_H      = 69,
+        CAV_EVENT_SUPPLIES_100      = 80,                   // + team; 82, 84, 86 for 200 - 400
+        CAV_EVENT_TAMED_5           = 90,                   // + team; 92, 94, 96 for 10 - 20
+        CAV_EVENT_LANDMINES_HORDE   = 100,
+        CAV_EVENT_LANDMINES_ALLIANCE = 101,
+        CAV_EVENT_GHOST_GATE        = 253
+    };
+
+    enum Creatures : uint32
+    {
+        CAV_NPC_LANDMINES_LAYER_A   = 13356,
+        CAV_NPC_LANDMINES_LAYER_H   = 13357,
+        CAV_NPC_LANDMINES_EXPERT_A  = 13598,
+        CAV_NPC_LANDMINES_EXPERT_H  = 13597
+    };
+
+    enum GameObjects : uint32
+    {
+        CAV_GO_GATE                 = 180424
+    };
+
+    enum Spells : uint32
+    {
+        CAV_SPELL_BOSS_KILL_QUEST   = 23658,
+        CAV_SPELL_CAPTAIN_BUFF_A    = 23693,
+        CAV_SPELL_CAPTAIN_BUFF_H    = 22751,
+        CAV_SPELL_UNITS_SEASONED    = 28418,                // + 1 veteran, + 2 champion
+        CAV_SPELL_SPIRIT_OF_REDEMPTION = 27827
+    };
+
+    enum Sounds : uint32
+    {
+        CAV_SOUND_ALLIANCE_ASSAULTS = 8212,
+        CAV_SOUND_HORDE_ASSAULTS    = 8174,
+        CAV_SOUND_ALLIANCE_GOOD     = 8173,
+        CAV_SOUND_HORDE_GOOD        = 8213,
+        CAV_SOUND_TOWER_DEFEND      = 8192
+    };
+
+    enum Quests : uint32
+    {
+        CAV_QUEST_GRAVE_A           = 7081,
+        CAV_QUEST_GRAVE_H           = 7082,
+        CAV_QUEST_TOWER_H           = 7101,
+        CAV_QUEST_TOWER_A           = 7102,
+        CAV_QUEST_MINE_A            = 7122,
+        CAV_QUEST_MINE_H            = 7124,
+        CAV_QUEST_COMMANDER_A       = 7281,
+        CAV_QUEST_COMMANDER_H       = 7282,
+        CAV_QUEST_EXPLOSIVES_A      = 7367,
+        CAV_QUEST_EXPLOSIVES_H      = 7368
+    };
+
+    enum WorldStates : int32
+    {
+        CAV_WS_SCORE_ALLIANCE       = 3127,
+        CAV_WS_SCORE_HORDE          = 3128,
+        CAV_WS_SHOW_SCORE_HORDE     = 3133,
+        CAV_WS_SHOW_SCORE_ALLIANCE  = 3134,
+        CAV_WS_SNOWFALL_NEUTRAL     = 1966,
+        CAV_WS_DREKTHAR_ALIVE       = 601,
+        CAV_WS_VANNDAR_ALIVE        = 602,
+        CAV_WS_BALINDA_ALIVE        = 1351,
+        CAV_WS_GALVANGAR_ALIVE      = 1352,
+        CAV_WS_IVUS_COUNT           = 1043,
+        CAV_WS_LOKHOLAR_COUNT       = 923
+    };
+
+    enum Factions : uint32
+    {
+        CAV_FACTION_STORMPIKE       = 730,
+        CAV_FACTION_FROSTWOLF       = 729
+    };
+
+    enum PvpStats : uint32
+    {
+        CAV_PVP_STAT_TOWERS_ASSAULTED     = 61,
+        CAV_PVP_STAT_GRAVEYARDS_ASSAULTED = 63,
+        CAV_PVP_STAT_TOWERS_DEFENDED      = 64,
+        CAV_PVP_STAT_GRAVEYARDS_DEFENDED  = 65
+    };
+
+    // honor (bonus kills) and reputation, VMaNGOS BattleGroundAV.h (normal, holiday weekend)
+    static constexpr uint32 KillBoss = 6, KillCaptain = 3, KillCommander = 1, KillTower = 2;
+    static constexpr uint32 KillSurvivingTower = 3, KillSurvivingCaptain = 3, KillSurvivingGrave = 1, KillSurvivingMine = 1;
+    static constexpr std::array<uint32, 2> RepBoss = { 350, 525 }, RepCaptain = { 125, 185 }, RepCommander = { 12, 18 };
+    static constexpr std::array<uint32, 2> RepTower = { 12, 18 }, RepSurvivingTower = { 12, 18 }, RepSurvivingCaptain = { 125, 175 };
+    static constexpr std::array<uint32, 2> RepOwnedGrave = { 12, 18 }, RepOwnedMine = { 24, 36 };
+    static constexpr int32 ResTower = 75, ResCaptain = 100;
+
+    // alliance assaulted, alliance controlled, horde assaulted, horde controlled (index team * 2 + state)
+    static constexpr std::array<std::array<int32, 4>, NodesMax> NodeWorldStates =
+    { {
+        { 1326, 1325, 1328, 1327 },                         // Stormpike Aid Station
+        { 1335, 1333, 1336, 1334 },                         // Stormpike Graveyard
+        { 1304, 1302, 1303, 1301 },                         // Stonehearth Graveyard
+        { 1343, 1341, 1344, 1342 },                         // Snowfall Graveyard
+        { 1348, 1346, 1349, 1347 },                         // Iceblood Graveyard
+        { 1339, 1337, 1340, 1338 },                         // Frostwolf Graveyard
+        { 1331, 1329, 1332, 1330 },                         // Frostwolf Relief Hut
+        { 1375, 1361, 1378, 1370 },                         // Dun Baldar South Bunker
+        { 1374, 1362, 1379, 1371 },                         // Dun Baldar North Bunker
+        { 1376, 1363, 1380, 1372 },                         // Icewing Bunker
+        { 1377, 1364, 1381, 1373 },                         // Stonehearth Bunker
+        { 1390, 1368, 1395, 1385 },                         // Iceblood Tower
+        { 1389, 1367, 1394, 1384 },                         // Tower Point
+        { 1388, 1366, 1393, 1383 },                         // East Frostwolf Tower
+        { 1387, 1365, 1392, 1382 }                          // West Frostwolf Tower
+    } };
+
+    // 1.60 tower owner world states (1 Alliance, 2 Horde), nodes 7 - 14
+    static constexpr std::array<int32, 8> TowerOwnerWorldStates = { 1181, 1182, 1183, 1184, 1188, 1187, 1186, 1185 };
+
+    // herald (14848) creature_text groups: Alliance captures / Alliance assaults / Horde captures / Horde assaults
+    static constexpr std::array<std::array<uint8, 4>, NodesMax> HeraldTexts =
+    { {
+        { 47, 48, 45, 46 }, {  1,  2,  3,  4 }, { 55, 56, 53, 54 }, {  5,  6,  7,  8 }, { 59, 60, 57, 58 },
+        {  9, 10, 11, 12 }, { 51, 52, 49, 50 }, { 16, 15, 14, 13 }, { 20, 19, 18, 17 }, { 24, 23, 22, 21 },
+        { 28, 27, 26, 25 }, { 44, 43, 42, 41 }, { 40, 39, 38, 37 }, { 36, 35, 34, 33 }, { 32, 31, 30, 29 }
+    } };
+
+    // mines: 0 north (Irondeep), 1 south (Coldtooth); world states alliance / horde / neutral controlled, owner
+    static constexpr std::array<std::array<int32, 3>, 2> MineWorldStates = { { { 1358, 1359, 1360 }, { 1355, 1356, 1357 } } };
+    static constexpr std::array<int32, 2> MineOwnerWorldStates = { 801, 804 };
+    static constexpr std::array<std::array<uint8, 2>, 2> MineHeraldTexts = { { { 62, 64 }, { 61, 63 } } };
+    static constexpr uint8 HeraldTextGeneralDeadH = 65, HeraldTextGeneralDeadA = 66;
+
+    static constexpr Team TeamOf(uint8 teamIdx) { return teamIdx == CAV_TEAM_ALLIANCE ? ALLIANCE : HORDE; }
+    static constexpr uint32 FactionOf(uint8 teamIdx) { return teamIdx == CAV_TEAM_ALLIANCE ? CAV_FACTION_STORMPIKE : CAV_FACTION_FROSTWOLF; }
+    static constexpr uint32 GroupFor(uint8 event1, uint8 event2) { return GroupBase + event1 * 10 + event2; }
+
+    // VMaNGOS event (event1, event2) of a spawn, from its spawn group; false when it is not an AV event spawn
+    static bool GetSpawnEvent(SpawnData const* data, uint8& event1, uint8& event2)
+    {
+        if (!data || !data->spawnGroupData)
+            return false;
+        uint32 const groupId = data->spawnGroupData->groupId;
+        if (groupId < GroupBase || groupId >= GroupBase + 2560)
+            return false;
+        event1 = uint8((groupId - GroupBase) / 10);
+        event2 = uint8((groupId - GroupBase) % 10);
+        return true;
+    }
+
+    struct NodeInfo
+    {
+        uint8 TotalOwner = CAV_TEAM_NEUTRAL;
+        uint8 Owner = CAV_TEAM_NEUTRAL;
+        uint8 PrevOwner = CAV_TEAM_NEUTRAL;
+        uint8 PrevOtherOwner = CAV_TEAM_NEUTRAL;
+        uint8 State = CAV_STATE_CONTROLLED;
+        uint8 PrevState = CAV_STATE_CONTROLLED;
+        int32 Timer = 0;
+        bool Tower = false;
+    };
+}
+
+struct battleground_classic_alterac_valley : BattlegroundScript
+{
+    explicit battleground_classic_alterac_valley(BattlegroundMap* map) : BattlegroundScript(map)
+    {
+        using namespace ClassicAlteracValley;
+        _holiday = sBattlegroundMgr->IsBGWeekend(battleground->GetTypeID()) ? 1 : 0;
+        _activeEvents.fill(EventNone);
+        for (auto& team : _teamQuestStatus)
+            team.fill(0);
+        _scores = { InitialScore, InitialScore };
+        _captainBuffTimer = { int32(120000 + urand(0, 4) * 60000), int32(120000 + urand(0, 4) * 60000) };
+        _mineOwner = { CAV_TEAM_NEUTRAL, CAV_TEAM_NEUTRAL };
+        _mineTimer = { MineTickTimer, MineTickTimer };
+        _mineReclaimTimer = { 0, 0 };
+
+        // VMaNGOS BattleGroundAV::Reset: the matching spawn groups have no manual flag
+        for (uint8 node = CAV_NODE_FIRSTAID_STATION; node <= CAV_NODE_STONEHEART_GRAVE; ++node)
+            InitNode(node, CAV_TEAM_ALLIANCE, false);
+        for (uint8 node = CAV_NODE_DUNBALDAR_SOUTH; node <= CAV_NODE_STONEHEART_BUNKER; ++node)
+            InitNode(node, CAV_TEAM_ALLIANCE, true);
+        for (uint8 node = CAV_NODE_ICEBLOOD_GRAVE; node <= CAV_NODE_FROSTWOLF_HUT; ++node)
+            InitNode(node, CAV_TEAM_HORDE, false);
+        for (uint8 node = CAV_NODE_ICEBLOOD_TOWER; node <= CAV_NODE_FROSTWOLF_WTOWER; ++node)
+            InitNode(node, CAV_TEAM_HORDE, true);
+        InitNode(CAV_NODE_SNOWFALL_GRAVE, CAV_TEAM_NEUTRAL, false);
+
+        for (uint8 mine = 0; mine < 2; ++mine)
+        {
+            _activeEvents[CAV_EVENT_MINE_BOSSES + mine] = CAV_TEAM_NEUTRAL;
+            _activeEvents[CAV_EVENT_MINE + mine] = CAV_TEAM_NEUTRAL;
+        }
+        for (uint8 event1 : { uint8(CAV_EVENT_CAPTAIN_A), uint8(CAV_EVENT_CAPTAIN_H), uint8(CAV_EVENT_HERALD), uint8(CAV_EVENT_SNIVVLE),
+            uint8(CAV_EVENT_BOSS_A), uint8(CAV_EVENT_BOSS_H), uint8(CAV_EVENT_LANDMINES_ALLIANCE), uint8(CAV_EVENT_LANDMINES_HORDE),
+            uint8(CAV_EVENT_EXPLOSIVES_A), uint8(CAV_EVENT_EXPLOSIVES_H), uint8(CAV_EVENT_LIEUTENANT_A), uint8(CAV_EVENT_LIEUTENANT_H),
+            uint8(CAV_EVENT_GHOST_GATE) })
+            _activeEvents[event1] = 0;
+        for (uint8 event1 = CAV_EVENT_COMMANDER_A_FIRST; event1 <= CAV_EVENT_COMMANDER_H_LAST; ++event1)
+            _activeEvents[event1] = 0;
+        // supply crates and stable mounts: reset state (VMaNGOS spawns it before the start)
+        for (uint8 event1 = CAV_EVENT_SUPPLIES_100; event1 < CAV_EVENT_SUPPLIES_100 + 8; ++event1)
+            _activeEvents[event1] = 2;
+        for (uint8 event1 = CAV_EVENT_TAMED_5; event1 < CAV_EVENT_TAMED_5 + 8; ++event1)
+            _activeEvents[event1] = 2;
+    }
+
+    void OnInit() override
+    {
+        using namespace ClassicAlteracValley;
+        UpdateWorldState(CAV_WS_SCORE_ALLIANCE, _scores[CAV_TEAM_ALLIANCE]);
+        UpdateWorldState(CAV_WS_SCORE_HORDE, _scores[CAV_TEAM_HORDE]);
+        // vanilla has no reinforcement defeat (VMaNGOS removed it), so the counters stay hidden
+        UpdateWorldState(CAV_WS_SHOW_SCORE_ALLIANCE, 0);
+        UpdateWorldState(CAV_WS_SHOW_SCORE_HORDE, 0);
+        UpdateWorldState(CAV_WS_DREKTHAR_ALIVE, 1);
+        UpdateWorldState(CAV_WS_VANNDAR_ALIVE, 1);
+        UpdateWorldState(CAV_WS_BALINDA_ALIVE, 1);
+        UpdateWorldState(CAV_WS_GALVANGAR_ALIVE, 1);
+        for (uint8 node = 0; node < NodesMax; ++node)
+            UpdateNodeWorldState(node);
+        for (uint8 mine = 0; mine < 2; ++mine)
+            SendMineWorldStates(mine);
+    }
+
+    void OnStart() override
+    {
+        using namespace ClassicAlteracValley;
+        for (ObjectGuid const& guid : _doors)
+            if (GameObject* door = battlegroundMap->GetGameObject(guid))
+                door->UseDoorOrButton();
+
+        SpawnEvent(CAV_EVENT_GHOST_GATE, 0, false);
+    }
+
+    void OnGameObjectCreate(GameObject* gameObject) override
+    {
+        if (gameObject->GetEntry() == ClassicAlteracValley::CAV_GO_GATE)
+            _doors.insert(gameObject->GetGUID());
+    }
+
+    void OnCreatureCreate(Creature* creature) override
+    {
+        using namespace ClassicAlteracValley;
+        uint8 event1, event2;
+        if (!GetSpawnEvent(creature->GetCreatureData(), event1, event2))
+            return;
+
+        switch (event1)
+        {
+            case CAV_EVENT_HERALD: _heraldGUID = creature->GetGUID(); break;
+            case CAV_EVENT_SNIVVLE: _snivvleGUID = creature->GetGUID(); break;
+            case CAV_EVENT_CAPTAIN_A: _captainGUIDs[CAV_TEAM_ALLIANCE] = creature->GetGUID(); break;
+            case CAV_EVENT_CAPTAIN_H: _captainGUIDs[CAV_TEAM_HORDE] = creature->GetGUID(); break;
+            default: break;
+        }
+    }
+
+    void OnUpdate(uint32 diff) override
+    {
+        using namespace ClassicAlteracValley;
+        if (!_snivvleDone)
+        {
+            _snivvleTimer += int32(diff);
+            if (_snivvleTimer >= SnivvleYellTimer)
+            {
+                _snivvleDone = true;
+                if (Creature* snivvle = battlegroundMap->GetCreature(_snivvleGUID))
+                    snivvle->AI()->Talk(0);
+            }
+        }
+
+        if (battleground->GetStatus() != STATUS_IN_PROGRESS)
+            return;
+
+        // captain buffs
+        for (uint8 team = CAV_TEAM_ALLIANCE; team <= CAV_TEAM_HORDE; ++team)
+        {
+            _captainBuffTimer[team] -= int32(diff);
+            if (_captainBuffTimer[team] > 0)
+                continue;
+
+            _captainBuffTimer[team] = int32(120000 + urand(0, 4) * 60000);
+            if (_activeEvents[CAV_EVENT_CAPTAIN_DEAD_A + team] == 0)
+                continue;
+
+            battleground->CastSpellOnTeam(team == CAV_TEAM_ALLIANCE ? CAV_SPELL_CAPTAIN_BUFF_A : CAV_SPELL_CAPTAIN_BUFF_H, TeamOf(team));
+            if (Creature* captain = battlegroundMap->GetCreature(_captainGUIDs[team]))
+                if (captain->IsAlive() && captain->AI())
+                    captain->AI()->DoAction(ACTION_BUFF_YELL);
+        }
+
+        // mine resources, mine reclaim by the neutral owner
+        for (uint8 mine = 0; mine < 2; ++mine)
+        {
+            if (_mineOwner[mine] == CAV_TEAM_NEUTRAL)
+                continue;
+
+            _mineTimer[mine] -= int32(diff);
+            if (_mineTimer[mine] <= 0)
+            {
+                UpdateScore(_mineOwner[mine], 1);
+                _mineTimer[mine] = MineTickTimer;
+            }
+
+            _mineReclaimTimer[mine] -= int32(diff);
+            if (_mineReclaimTimer[mine] <= 0)
+                ChangeMineOwner(mine, CAV_TEAM_NEUTRAL);
+        }
+
+        // assaulted nodes: towers burn down, graveyards go to the assaulting team
+        for (uint8 node = 0; node < NodesMax; ++node)
+        {
+            if (_nodes[node].State != CAV_STATE_ASSAULTED)
+                continue;
+
+            _nodes[node].Timer -= int32(diff);
+            if (_nodes[node].Timer <= 0)
+                EventPlayerDestroyedPoint(node);
+        }
+    }
+
+    void OnPlayerKilled(Player* victim, Player* /*killer*/) override
+    {
+        using namespace ClassicAlteracValley;
+        if (battleground->GetStatus() != STATUS_IN_PROGRESS || victim->HasAura(CAV_SPELL_SPIRIT_OF_REDEMPTION))
+            return;
+
+        Team const team = battleground->GetPlayerTeam(victim->GetGUID());
+        if (team == ALLIANCE || team == HORDE)
+            UpdateScore(team == ALLIANCE ? CAV_TEAM_ALLIANCE : CAV_TEAM_HORDE, -1);
+    }
+
+    void OnUnitKilled(Creature* victim, Unit* killer) override
+    {
+        using namespace ClassicAlteracValley;
+        if (battleground->GetStatus() != STATUS_IN_PROGRESS)
+            return;
+
+        switch (victim->GetEntry())
+        {
+            case CAV_NPC_LANDMINES_LAYER_A:
+            case CAV_NPC_LANDMINES_LAYER_H:
+                // landmines stop respawning
+                SetEventRespawn(victim->GetEntry() == CAV_NPC_LANDMINES_LAYER_A ? CAV_EVENT_LANDMINES_ALLIANCE : CAV_EVENT_LANDMINES_HORDE, 0, false);
+                return;
+            case CAV_NPC_LANDMINES_EXPERT_A:
+            case CAV_NPC_LANDMINES_EXPERT_H:
+                // all landmines go away
+                SpawnEvent(victim->GetEntry() == CAV_NPC_LANDMINES_EXPERT_A ? CAV_EVENT_LANDMINES_ALLIANCE : CAV_EVENT_LANDMINES_HORDE, 0, false);
+                return;
+            default:
+                break;
+        }
+
+        uint8 event1, event2;
+        if (!GetSpawnEvent(victim->GetCreatureData(), event1, event2))
+            return;
+
+        Player* player = killer ? killer->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+        if (!player)
+            return;
+
+        Team const killerTeam = battleground->GetPlayerTeam(player->GetGUID());
+        if (killerTeam != ALLIANCE && killerTeam != HORDE)
+            return;
+        uint8 const killerIdx = killerTeam == ALLIANCE ? CAV_TEAM_ALLIANCE : CAV_TEAM_HORDE;
+
+        switch (event1)
+        {
+            case CAV_EVENT_BOSS_A:
+            case CAV_EVENT_BOSS_H:
+            {
+                uint8 const winner = event1 == CAV_EVENT_BOSS_A ? CAV_TEAM_HORDE : CAV_TEAM_ALLIANCE;
+                UpdateWorldState(event1 == CAV_EVENT_BOSS_A ? CAV_WS_VANNDAR_ALIVE : CAV_WS_DREKTHAR_ALIVE, 0);
+                battleground->CastSpellOnTeam(CAV_SPELL_BOSS_KILL_QUEST, TeamOf(winner));
+                battleground->RewardReputationToTeam(FactionOf(winner), RepBoss[_holiday], TeamOf(winner));
+                battleground->RewardHonorToTeam(battleground->GetBonusHonorFromKill(KillBoss), TeamOf(winner));
+                HeraldTalk(event1 == CAV_EVENT_BOSS_A ? HeraldTextGeneralDeadA : HeraldTextGeneralDeadH);
+                battleground->EndBattleground(TeamOf(winner));
+                break;
+            }
+            case CAV_EVENT_CAPTAIN_A:
+            case CAV_EVENT_CAPTAIN_H:
+            {
+                uint8 const loser = event1 == CAV_EVENT_CAPTAIN_A ? CAV_TEAM_ALLIANCE : CAV_TEAM_HORDE;
+                uint8 const winner = loser == CAV_TEAM_ALLIANCE ? CAV_TEAM_HORDE : CAV_TEAM_ALLIANCE;
+                if (_activeEvents[CAV_EVENT_CAPTAIN_DEAD_A + loser] == 0)
+                    break;
+                UpdateWorldState(loser == CAV_TEAM_ALLIANCE ? CAV_WS_BALINDA_ALIVE : CAV_WS_GALVANGAR_ALIVE, 0);
+                battleground->RewardReputationToTeam(FactionOf(winner), RepCaptain[_holiday], TeamOf(winner));
+                battleground->RewardHonorToTeam(battleground->GetBonusHonorFromKill(KillCaptain), TeamOf(winner));
+                UpdateScore(loser, -ResCaptain);
+                SpawnEvent(CAV_EVENT_CAPTAIN_DEAD_A + loser, 0, true);   // burning keep
+                break;
+            }
+            case CAV_EVENT_MINE_BOSSES:
+            case CAV_EVENT_MINE_BOSSES + 1:
+                ChangeMineOwner(event1 - CAV_EVENT_MINE_BOSSES, killerIdx);
+                break;
+            case CAV_EVENT_EXPLOSIVES_A:
+            case CAV_EVENT_EXPLOSIVES_H:
+                CompleteQuestForAll(event1 == CAV_EVENT_EXPLOSIVES_A ? CAV_QUEST_EXPLOSIVES_A : CAV_QUEST_EXPLOSIVES_H);
+                SetEventRespawn(event1, 0, false);
+                break;
+            case CAV_EVENT_LIEUTENANT_A:
+            case CAV_EVENT_LIEUTENANT_H:
+            {
+                uint8 const winner = event1 == CAV_EVENT_LIEUTENANT_A ? CAV_TEAM_HORDE : CAV_TEAM_ALLIANCE;
+                battleground->RewardReputationToTeam(FactionOf(winner), RepCommander[_holiday], TeamOf(winner));
+                battleground->RewardHonorToTeam(battleground->GetBonusHonorFromKill(KillCommander), TeamOf(winner));
+                break;
+            }
+            default:
+                if (event1 >= CAV_EVENT_COMMANDER_A_FIRST && event1 <= CAV_EVENT_COMMANDER_H_LAST)
+                {
+                    uint8 const winner = event1 < CAV_EVENT_COMMANDER_H_FIRST ? CAV_TEAM_HORDE : CAV_TEAM_ALLIANCE;
+                    battleground->RewardReputationToTeam(FactionOf(winner), RepCommander[_holiday], TeamOf(winner));
+                    battleground->RewardHonorToTeam(battleground->GetBonusHonorFromKill(KillCommander), TeamOf(winner));
+                    SetEventRespawn(event1, 0, false);
+                    if (event1 == CAV_EVENT_COMMANDER_A_KARL)
+                        CompleteQuestForAll(CAV_QUEST_COMMANDER_A);
+                    else if (event1 == CAV_EVENT_COMMANDER_H_LOUIS)
+                        CompleteQuestForAll(CAV_QUEST_COMMANDER_H);
+                }
+                break;
+        }
+    }
+
+    void DoAction(uint32 actionId, WorldObject* source, WorldObject* target) override
+    {
+        using namespace ClassicAlteracValley;
+        Player* player = Object::ToPlayer(source);
+        if (!player)
+            return;
+
+        if (actionId == ACTION_AV_INTERACT_CAPTURABLE_OBJECT)
+        {
+            if (GameObject* banner = Object::ToGameObject(target))
+                HandleBannerClick(player, banner);
+            return;
+        }
+
+        if (battleground->GetStatus() != STATUS_IN_PROGRESS)
+            return;
+
+        Team const team = battleground->GetPlayerTeam(player->GetGUID());
+        if (team != ALLIANCE && team != HORDE)
+            return;
+        uint8 const teamIdx = team == ALLIANCE ? CAV_TEAM_ALLIANCE : CAV_TEAM_HORDE;
+
+        // VMaNGOS BattleGroundAV::HandleQuestComplete (team reputation on top of the quest reward)
+        uint32 reputation = 0;
+        switch (actionId)
+        {
+            case ACTION_TURN_IN_SCRAPS:
+            {
+                uint32& scraps = _teamQuestStatus[teamIdx][0];
+                scraps += 20;
+                reputation = 1;
+                // supply crates every 100 resources
+                switch (scraps % 500)
+                {
+                    case 100: SpawnEvent(CAV_EVENT_SUPPLIES_100 + teamIdx, 0, true); break;
+                    case 200: SpawnEvent(CAV_EVENT_SUPPLIES_100 + 2 + teamIdx, 0, true); break;
+                    case 300: SpawnEvent(CAV_EVENT_SUPPLIES_100 + 4 + teamIdx, 0, true); break;
+                    case 400: SpawnEvent(CAV_EVENT_SUPPLIES_100 + 6 + teamIdx, 0, true); break;
+                    case 0:
+                        for (uint8 i = 0; i < 4; ++i)
+                            SpawnEvent(CAV_EVENT_SUPPLIES_100 + i * 2 + teamIdx, 2, true);
+                        break;
+                    default:
+                        break;
+                }
+                // 500 / 1000 / 1500: seasoned, veteran, champion defenders (VMaNGOS UpgradeArmor)
+                if (scraps == 500 || scraps == 1000 || scraps == 1500)
+                {
+                    battleground->CastSpellOnTeam(CAV_SPELL_UNITS_SEASONED + scraps / 500 - 1, team);
+                    for (uint8 node = 0; node < NodesMax; ++node)
+                        if (_nodes[node].Owner == teamIdx && _nodes[node].State == CAV_STATE_CONTROLLED)
+                            PopulateNode(node);
+                }
+                break;
+            }
+            case ACTION_TURN_IN_COMMANDER_1:
+                ++_teamQuestStatus[teamIdx][1];
+                reputation = 1;
+                break;
+            case ACTION_TURN_IN_COMMANDER_2:
+                ++_teamQuestStatus[teamIdx][2];
+                reputation = 2;
+                break;
+            case ACTION_TURN_IN_COMMANDER_3:
+                ++_teamQuestStatus[teamIdx][3];
+                reputation = 5;
+                break;
+            case ACTION_TURN_IN_BOSS_1:
+                _teamQuestStatus[teamIdx][4] += 4;
+                reputation = 4;
+                [[fallthrough]];
+            case ACTION_TURN_IN_BOSS_2:
+                ++_teamQuestStatus[teamIdx][4];
+                reputation += 1;
+                UpdateWorldState(teamIdx == CAV_TEAM_ALLIANCE ? CAV_WS_IVUS_COUNT : CAV_WS_LOKHOLAR_COUNT, _teamQuestStatus[teamIdx][4]);
+                break;
+            case ACTION_TURN_IN_NEAR_MINE:
+                ++_teamQuestStatus[teamIdx][5];
+                reputation = 2;
+                break;
+            case ACTION_TURN_IN_OTHER_MINE:
+                ++_teamQuestStatus[teamIdx][6];
+                reputation = 3;
+                break;
+            case ACTION_TURN_IN_RIDER_HIDE:
+                ++_teamQuestStatus[teamIdx][7];
+                reputation = 1;
+                break;
+            case ACTION_TURN_IN_RIDER_TAME:
+            {
+                uint32 const tamed = ++_teamQuestStatus[teamIdx][8];
+                reputation = 1;
+                // stable mounts every 5 tamed rams / wolves
+                switch (tamed % 25)
+                {
+                    case 5: SpawnEvent(CAV_EVENT_TAMED_5 + teamIdx, 0, true); break;
+                    case 10: SpawnEvent(CAV_EVENT_TAMED_5 + 2 + teamIdx, 0, true); break;
+                    case 15: SpawnEvent(CAV_EVENT_TAMED_5 + 4 + teamIdx, 0, true); break;
+                    case 20: SpawnEvent(CAV_EVENT_TAMED_5 + 6 + teamIdx, 0, true); break;
+                    default:
+                        if (tamed == 1)
+                            for (uint8 i = 0; i < 4; ++i)
+                                SpawnEvent(CAV_EVENT_TAMED_5 + i * 2 + teamIdx, 2, true);
+                        break;
+                }
+                break;
+            }
+            default:
+                return;
+        }
+
+        if (reputation)
+            battleground->RewardReputationToTeam(FactionOf(teamIdx), reputation, team);
+    }
+
+    void OnEnd(Team winner) override
+    {
+        using namespace ClassicAlteracValley;
+        BattlegroundScript::OnEnd(winner);
+
+        // VMaNGOS BattleGroundAV::EndBattleGround bonus honor / reputation
+        std::array<uint32, 2> towersSurvived = { 0, 0 };
+        std::array<uint32, 2> gravesOwned = { 0, 0 };
+        std::array<uint32, 2> minesOwned = { 0, 0 };
+        for (uint8 node = CAV_NODE_DUNBALDAR_SOUTH; node < NodesMax; ++node)
+        {
+            uint8 const originalOwner = node <= CAV_NODE_STONEHEART_BUNKER ? CAV_TEAM_ALLIANCE : CAV_TEAM_HORDE;
+            if (_nodes[node].State == CAV_STATE_CONTROLLED && _nodes[node].TotalOwner == originalOwner)
+                ++towersSurvived[originalOwner];
+        }
+        for (uint8 node = 0; node < NodesMax; ++node)
+            if (!_nodes[node].Tower && _nodes[node].State == CAV_STATE_CONTROLLED && _nodes[node].Owner != CAV_TEAM_NEUTRAL
+                && node != CAV_NODE_FROSTWOLF_HUT && node != CAV_NODE_FIRSTAID_STATION)
+                ++gravesOwned[_nodes[node].Owner];
+        for (uint8 owner : _mineOwner)
+            if (owner != CAV_TEAM_NEUTRAL)
+                ++minesOwned[owner];
+
+        for (uint8 team = CAV_TEAM_ALLIANCE; team <= CAV_TEAM_HORDE; ++team)
+        {
+            if (towersSurvived[team])
+            {
+                battleground->RewardReputationToTeam(FactionOf(team), towersSurvived[team] * RepSurvivingTower[_holiday], TeamOf(team));
+                battleground->RewardHonorToTeam(battleground->GetBonusHonorFromKill(towersSurvived[team] * KillSurvivingTower), TeamOf(team));
+            }
+            if (gravesOwned[team])
+            {
+                battleground->RewardReputationToTeam(FactionOf(team), gravesOwned[team] * RepOwnedGrave[_holiday], TeamOf(team));
+                battleground->RewardHonorToTeam(battleground->GetBonusHonorFromKill(gravesOwned[team] * KillSurvivingGrave), TeamOf(team));
+            }
+            if (minesOwned[team])
+            {
+                battleground->RewardReputationToTeam(FactionOf(team), minesOwned[team] * RepOwnedMine[_holiday], TeamOf(team));
+                battleground->RewardHonorToTeam(battleground->GetBonusHonorFromKill(minesOwned[team] * KillSurvivingMine), TeamOf(team));
+            }
+            if (_activeEvents[CAV_EVENT_CAPTAIN_DEAD_A + team] != 0)
+            {
+                battleground->RewardReputationToTeam(FactionOf(team), RepSurvivingCaptain[_holiday], TeamOf(team));
+                battleground->RewardHonorToTeam(battleground->GetBonusHonorFromKill(KillSurvivingCaptain), TeamOf(team));
+            }
+        }
+
+        // holiday weekend: 8 bonus kills for both teams, 2 more for the winner (VMaNGOS 1584 / 396 honor at level 60)
+        if (_holiday)
+        {
+            for (Team team : { ALLIANCE, HORDE })
+                battleground->RewardHonorToTeam(battleground->GetBonusHonorFromKill(winner == team ? 10 : 8), team);
+        }
+    }
+
+    Team GetPrematureWinner() override
+    {
+        using namespace ClassicAlteracValley;
+        if (_scores[CAV_TEAM_ALLIANCE] > _scores[CAV_TEAM_HORDE])
+            return ALLIANCE;
+        if (_scores[CAV_TEAM_HORDE] > _scores[CAV_TEAM_ALLIANCE])
+            return HORDE;
+        return BattlegroundScript::GetPrematureWinner();
+    }
+
+private:
+    // VMaNGOS BattleGround::SpawnEvent: spawning an event despawns the active event2 of the same event1
+    void SpawnEvent(uint8 event1, uint8 event2, bool spawn)
+    {
+        using namespace ClassicAlteracValley;
+        if (event2 == EventNone)
+            return;
+
+        if (spawn)
+        {
+            if (_activeEvents[event1] == event2)
+                return;
+            if (_activeEvents[event1] != EventNone)
+                DespawnGroup(GroupFor(event1, _activeEvents[event1]));
+            _activeEvents[event1] = event2;
+            if (battlegroundMap->GetSpawnGroupData(GroupFor(event1, event2)))
+                battlegroundMap->SpawnGroupSpawn(GroupFor(event1, event2), true);
+        }
+        else
+        {
+            if (_activeEvents[event1] != event2)
+                return;
+            _activeEvents[event1] = EventNone;
+            DespawnGroup(GroupFor(event1, event2));
+        }
+    }
+
+    void DespawnGroup(uint32 groupId)
+    {
+        if (battlegroundMap->GetSpawnGroupData(groupId))
+            battlegroundMap->SpawnGroupDespawn(groupId, true);
+    }
+
+    // VMaNGOS SetSpawnEventMode: RESPAWN_FORCED respawns the dead of an active event, RESPAWN_STOP stops respawning
+    // (the creatures alive keep fighting)
+    void SetEventRespawn(uint8 event1, uint8 event2, bool respawn)
+    {
+        using namespace ClassicAlteracValley;
+        uint32 const groupId = GroupFor(event1, event2);
+        if (event2 == EventNone || _activeEvents[event1] != event2 || !battlegroundMap->GetSpawnGroupData(groupId))
+            return;
+
+        if (respawn)
+            battlegroundMap->SpawnGroupSpawn(groupId, true);
+        else
+            battlegroundMap->SetSpawnGroupInactive(groupId);
+    }
+
+    uint8 DefenderTier(uint8 teamIdx) const
+    {
+        using namespace ClassicAlteracValley;
+        if (teamIdx == CAV_TEAM_NEUTRAL)
+            return 0;
+        uint32 const scraps = _teamQuestStatus[teamIdx][0];
+        return scraps < 500 ? 0 : scraps < 1000 ? 1 : scraps < 1500 ? 2 : 3;
+    }
+
+    void InitNode(uint8 node, uint8 teamIdx, bool tower)
+    {
+        using namespace ClassicAlteracValley;
+        NodeInfo& info = _nodes[node];
+        info.TotalOwner = info.Owner = info.PrevOwner = info.PrevOtherOwner = teamIdx;
+        info.State = info.PrevState = CAV_STATE_CONTROLLED;
+        info.Timer = 0;
+        info.Tower = tower;
+        _activeEvents[node] = teamIdx * MaxStates + CAV_STATE_CONTROLLED;
+        if (!tower)
+            _activeEvents[CAV_EVENT_GRAVE_DEFENDERS + node] = teamIdx * GraveTypes;
+        else
+        {
+            _activeEvents[CAV_EVENT_TOWER_MARSHALS + node] = teamIdx * MaxStates + 1;
+            _activeEvents[TowersMax + node] = teamIdx * GraveTypes;
+        }
+    }
+
+    // VMaNGOS PopulateNode: banner / defenders of a node after a state change
+    void PopulateNode(uint8 node)
+    {
+        using namespace ClassicAlteracValley;
+        NodeInfo const& info = _nodes[node];
+        uint8 const newTeam = info.Owner;
+        uint8 const oldTeam = info.PrevOtherOwner;
+        uint8 const tierNew = DefenderTier(newTeam);
+        uint8 const tierOld = DefenderTier(oldTeam);
+
+        if (!info.Tower)
+        {
+            if (info.State == CAV_STATE_CONTROLLED)
+            {
+                SetEventRespawn(CAV_EVENT_GRAVE_DEFENDERS + node, newTeam * GraveTypes + tierNew, true);
+                SpawnEvent(CAV_EVENT_GRAVE_DEFENDERS + node, newTeam * GraveTypes + tierNew, true);
+            }
+            else
+                SetEventRespawn(CAV_EVENT_GRAVE_DEFENDERS + node, oldTeam * GraveTypes + tierOld, false);
+        }
+        else if (newTeam != CAV_TEAM_NEUTRAL)
+        {
+            if (info.State == CAV_STATE_CONTROLLED)
+            {
+                SetEventRespawn(CAV_EVENT_TOWER_MARSHALS + node, newTeam * MaxStates + 1, true);
+                SpawnEvent(CAV_EVENT_TOWER_MARSHALS + node, newTeam * MaxStates + 1, true);
+                SetEventRespawn(TowersMax + node, newTeam * GraveTypes + tierNew, true);
+                SpawnEvent(TowersMax + node, newTeam * GraveTypes + tierNew, true);
+            }
+            else
+            {
+                SetEventRespawn(CAV_EVENT_TOWER_MARSHALS + node, oldTeam * MaxStates + 1, false);
+                SetEventRespawn(TowersMax + node, oldTeam * GraveTypes + tierOld, false);
+            }
+        }
+
+        SpawnEvent(node, newTeam * MaxStates + info.State, true);
+    }
+
+    void HandleBannerClick(Player* player, GameObject* banner)
+    {
+        using namespace ClassicAlteracValley;
+        if (battleground->GetStatus() != STATUS_IN_PROGRESS || !player->CanUseBattlegroundObject(banner))
+            return;
+
+        uint8 event1, event2;
+        if (!GetSpawnEvent(banner->GetGameObjectData(), event1, event2) || event1 >= NodesMax)
+            return;
+
+        Team const team = battleground->GetPlayerTeam(player->GetGUID());
+        if (team != ALLIANCE && team != HORDE)
+            return;
+
+        player->RemoveAurasByType(SPELL_AURA_MOD_STEALTH);
+        player->RemoveAurasByType(SPELL_AURA_MOD_INVISIBILITY);
+
+        uint8 const teamIdx = team == ALLIANCE ? CAV_TEAM_ALLIANCE : CAV_TEAM_HORDE;
+        if (event2 % MaxStates == CAV_STATE_CONTROLLED)
+            EventPlayerAssaultsPoint(player, teamIdx, event1);
+        else
+            EventPlayerDefendsPoint(player, teamIdx, event1);
+    }
+
+    void EventPlayerAssaultsPoint(Player* player, uint8 teamIdx, uint8 node)
+    {
+        using namespace ClassicAlteracValley;
+        NodeInfo& info = _nodes[node];
+        if (info.Owner == teamIdx || info.TotalOwner == teamIdx)
+            return;
+        // only an assaulted node without a total owner (Snowfall) can be assaulted again
+        if (info.State == CAV_STATE_ASSAULTED && info.TotalOwner != CAV_TEAM_NEUTRAL)
+            return;
+
+        info.Timer = CaptureTime;
+        info.PrevOwner = info.Owner;
+        info.PrevOtherOwner = info.Owner;
+        info.Owner = teamIdx;
+        info.PrevState = info.State;
+        info.State = CAV_STATE_ASSAULTED;
+
+        UpdateNodeWorldState(node);
+        PopulateNode(node);
+
+        HeraldTalk(HeraldTexts[node][teamIdx == CAV_TEAM_ALLIANCE ? 1 : 3]);
+        battleground->UpdatePvpStat(player, info.Tower ? CAV_PVP_STAT_TOWERS_ASSAULTED : CAV_PVP_STAT_GRAVEYARDS_ASSAULTED, 1);
+        battleground->PlaySoundToAll(teamIdx == CAV_TEAM_ALLIANCE ? CAV_SOUND_ALLIANCE_ASSAULTS : CAV_SOUND_HORDE_ASSAULTS);
+    }
+
+    void EventPlayerDefendsPoint(Player* player, uint8 teamIdx, uint8 node)
+    {
+        using namespace ClassicAlteracValley;
+        NodeInfo& info = _nodes[node];
+        if (info.Owner == teamIdx || info.State != CAV_STATE_ASSAULTED)
+            return;
+
+        // first Snowfall capture: the other team assaults it instead
+        if (info.TotalOwner == CAV_TEAM_NEUTRAL)
+        {
+            EventPlayerAssaultsPoint(player, teamIdx, node);
+            return;
+        }
+
+        if (info.PrevOwner != teamIdx || info.TotalOwner != teamIdx)
+            return;
+
+        info.PrevOwner = info.Owner;
+        info.PrevOtherOwner = info.Owner;
+        info.Owner = teamIdx;
+        info.PrevState = info.State;
+        info.State = CAV_STATE_CONTROLLED;
+        info.Timer = 0;
+
+        PopulateNode(node);
+        UpdateNodeWorldState(node);
+
+        HeraldTalk(HeraldTexts[node][teamIdx == CAV_TEAM_ALLIANCE ? 0 : 2]);
+        if (info.Tower)
+        {
+            battleground->UpdatePvpStat(player, CAV_PVP_STAT_TOWERS_DEFENDED, 1);
+            battleground->PlaySoundToAll(CAV_SOUND_TOWER_DEFEND);
+        }
+        else
+        {
+            battleground->UpdatePvpStat(player, CAV_PVP_STAT_GRAVEYARDS_DEFENDED, 1);
+            battleground->PlaySoundToAll(teamIdx == CAV_TEAM_ALLIANCE ? CAV_SOUND_ALLIANCE_GOOD : CAV_SOUND_HORDE_GOOD);
+        }
+    }
+
+    void EventPlayerDestroyedPoint(uint8 node)
+    {
+        using namespace ClassicAlteracValley;
+        NodeInfo& info = _nodes[node];
+        uint8 const owner = info.Owner;
+        if (owner == CAV_TEAM_NEUTRAL)
+            return;
+
+        info.TotalOwner = owner;
+        info.PrevOwner = owner;
+        info.PrevState = info.State;
+        info.State = CAV_STATE_CONTROLLED;
+        info.Timer = 0;
+
+        PopulateNode(node);
+        UpdateNodeWorldState(node);
+
+        HeraldTalk(HeraldTexts[node][owner == CAV_TEAM_ALLIANCE ? 0 : 2]);
+        if (info.Tower)
+        {
+            uint8 const loser = owner == CAV_TEAM_ALLIANCE ? CAV_TEAM_HORDE : CAV_TEAM_ALLIANCE;
+            UpdateScore(loser, -ResTower);
+            battleground->RewardReputationToTeam(FactionOf(owner), RepTower[_holiday], TeamOf(owner));
+            battleground->RewardHonorToTeam(battleground->GetBonusHonorFromKill(KillTower), TeamOf(owner));
+            CompleteQuestForAll(owner == CAV_TEAM_ALLIANCE ? CAV_QUEST_TOWER_A : CAV_QUEST_TOWER_H);
+        }
+        else
+        {
+            battleground->PlaySoundToAll(owner == CAV_TEAM_ALLIANCE ? CAV_SOUND_ALLIANCE_GOOD : CAV_SOUND_HORDE_GOOD);
+            CompleteQuestForAll(owner == CAV_TEAM_ALLIANCE ? CAV_QUEST_GRAVE_A : CAV_QUEST_GRAVE_H);
+        }
+    }
+
+    void ChangeMineOwner(uint8 mine, uint8 teamIdx)
+    {
+        using namespace ClassicAlteracValley;
+        _mineTimer[mine] = MineTickTimer;
+        if (_mineOwner[mine] == teamIdx)
+            return;
+
+        _mineOwner[mine] = teamIdx;
+        SendMineWorldStates(mine);
+
+        SpawnEvent(CAV_EVENT_MINE + mine, teamIdx, true);
+        SpawnEvent(CAV_EVENT_MINE_BOSSES + mine, teamIdx, true);
+
+        if (teamIdx == CAV_TEAM_NEUTRAL)
+            return;
+
+        _mineReclaimTimer[mine] = MineReclaimTimer;
+        battleground->PlaySoundToAll(teamIdx == CAV_TEAM_ALLIANCE ? CAV_SOUND_ALLIANCE_GOOD : CAV_SOUND_HORDE_GOOD);
+        HeraldTalk(MineHeraldTexts[mine][teamIdx]);
+        CompleteQuestForAll(teamIdx == CAV_TEAM_ALLIANCE ? CAV_QUEST_MINE_A : CAV_QUEST_MINE_H);
+    }
+
+    void UpdateNodeWorldState(uint8 node) const
+    {
+        using namespace ClassicAlteracValley;
+        NodeInfo const& info = _nodes[node];
+        for (uint8 i = 0; i < 4; ++i)
+            UpdateWorldState(NodeWorldStates[node][i], info.Owner != CAV_TEAM_NEUTRAL && i == info.Owner * MaxStates + info.State ? 1 : 0);
+        if (node == CAV_NODE_SNOWFALL_GRAVE)
+            UpdateWorldState(CAV_WS_SNOWFALL_NEUTRAL, info.Owner == CAV_TEAM_NEUTRAL ? 1 : 0);
+        if (info.Tower)
+            UpdateWorldState(TowerOwnerWorldStates[node - CAV_NODE_DUNBALDAR_SOUTH], info.Owner == CAV_TEAM_HORDE ? 2 : 1);
+    }
+
+    void SendMineWorldStates(uint8 mine) const
+    {
+        using namespace ClassicAlteracValley;
+        for (uint8 team = CAV_TEAM_ALLIANCE; team <= CAV_TEAM_NEUTRAL; ++team)
+            UpdateWorldState(MineWorldStates[mine][team], _mineOwner[mine] == team ? 1 : 0);
+        UpdateWorldState(MineOwnerWorldStates[mine], _mineOwner[mine] == CAV_TEAM_HORDE ? 2 : _mineOwner[mine] == CAV_TEAM_ALLIANCE ? 1 : 0);
+    }
+
+    // reinforcements: VMaNGOS keeps the counter but a team at 0 does not lose
+    void UpdateScore(uint8 teamIdx, int32 points)
+    {
+        using namespace ClassicAlteracValley;
+        if (teamIdx > CAV_TEAM_HORDE)
+            return;
+        _scores[teamIdx] = std::max(0, _scores[teamIdx] + points);
+        UpdateWorldState(teamIdx == CAV_TEAM_HORDE ? CAV_WS_SCORE_HORDE : CAV_WS_SCORE_ALLIANCE, _scores[teamIdx]);
+    }
+
+    void HeraldTalk(uint8 textId)
+    {
+        if (Creature* herald = battlegroundMap->GetCreature(_heraldGUID))
+            if (herald->AI())
+                herald->AI()->Talk(textId);
+    }
+
+    void CompleteQuestForAll(uint32 questId)
+    {
+        battlegroundMap->DoOnPlayers([questId](Player* player)
+        {
+            if (player->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE)
+                player->CompleteQuest(questId);
+        });
+    }
+
+    std::array<ClassicAlteracValley::NodeInfo, ClassicAlteracValley::NodesMax> _nodes;
+    std::array<uint8, 256> _activeEvents = { };
+    std::array<std::array<uint32, 9>, 2> _teamQuestStatus = { };
+    std::array<int32, 2> _scores = { };
+    std::array<int32, 2> _captainBuffTimer = { };
+    std::array<uint8, 2> _mineOwner = { };
+    std::array<int32, 2> _mineTimer = { };
+    std::array<int32, 2> _mineReclaimTimer = { };
+    std::array<ObjectGuid, 2> _captainGUIDs;
+    ObjectGuid _heraldGUID;
+    ObjectGuid _snivvleGUID;
+    GuidUnorderedSet _doors;
+    int32 _snivvleTimer = 0;
+    bool _snivvleDone = false;
+    uint8 _holiday = 0;
+};
+
+// Classic 1.60: Alterac Valley banners on map 30 (one entry for every graveyard / tower state); the node and state come
+// from the spawn group of the clicked banner
+struct go_classic_av_banner : GameObjectAI
+{
+    explicit go_classic_av_banner(GameObject* go) : GameObjectAI(go) { }
+
+    bool OnGossipHello(Player* player) override
+    {
+        if (me->GetMapId() != 30)
+            return false;
+
+        if (ZoneScript* zoneScript = me->GetZoneScript())
+            zoneScript->DoAction(ACTION_AV_INTERACT_CAPTURABLE_OBJECT, player, me);
+
+        return true;
+    }
+};
+
 void AddSC_battleground_alterac_valley()
 {
     RegisterBattlegroundMapScript(battleground_alterac_valley, 30);
+
+    // Classic 1.60
+    RegisterBattlegroundMapScript(battleground_classic_alterac_valley, 30);
+    RegisterGameObjectAI(go_classic_av_banner);
 }
