@@ -197,6 +197,7 @@ void AddSC_classic_world_event_wareffort();
 void AddSC_classic_npcs_special();
 void AddSC_classic_go_scripts();
 void AddSC_classic_spell_scripts();
+void AddSC_classic_dbscript_spells();
 void AddSC_classic_talents_mage_shaman();
 void AddSC_classic_talents_warrior_rogue_hunter();
 void AddSC_classic_talents_priest_paladin();
@@ -397,6 +398,7 @@ void AddClassicScripts()
     AddSC_classic_npcs_special();
     AddSC_classic_go_scripts();
     AddSC_classic_spell_scripts();
+    AddSC_classic_dbscript_spells();
     AddSC_classic_talents_mage_shaman();
     AddSC_classic_talents_warrior_rogue_hunter();
     AddSC_classic_talents_priest_paladin();

@@ -30,6 +30,14 @@ WorldPacket const* PetSpells::Write()
     _worldPacket << uint8(Flag);
     _worldPacket << uint8(ReactState);
     _worldPacket.append(ActionButtons.data(), ActionButtons.size());
+    // Classic 1.60: 18 action button slots before the counts (official SMSG_PET_SPELLS_MESSAGE, 70291 hunter pet: the 10 buttons,
+    // then attack / follow / move / first slot, 0x16000000, the three reactions). With only 10 the client read our first Actions
+    // entry as the Actions count (imp Phase Shift 0xC100119F -> BC_ASSERT int conversion crash)
+    for (std::size_t i : { 0, 1, 2, 3 })
+        _worldPacket << int32(ActionButtons[i]);
+    _worldPacket << int32(0x16000000);
+    for (std::size_t i : { 7, 8, 9 })
+        _worldPacket << int32(ActionButtons[i]);
     _worldPacket << Size<uint32>(Actions);
     _worldPacket << Size<uint32>(Cooldowns);
     _worldPacket << Size<uint32>(SpellHistory);

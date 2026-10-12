@@ -100,6 +100,24 @@ class TC_GAME_API Pet final : public Guardian
         float GetHappinessDamageMod() const;                    // unhappy 75%, content 100%, happy 125%
         static int32 GetFoodBenefit(uint8 petLevel, uint32 foodLevel); // happiness per Feed Pet tick, 0 = too low level
 
+        // Classic 1.60 hunter pet loyalty and training points (vanilla rules, VMaNGOS Pet::ModifyLoyalty / GetTPForSpell). The client shows
+        // the loyalty level in the stable and the pet paper doll (StablePetInfo::LoyaltyLevel) and gets the training points in UnitData.
+        enum PetLoyaltyLevel : uint8 { REBELLIOUS = 1, UNRULY = 2, SUBMISSIVE = 3, DEPENDABLE = 4, FAITHFUL = 5, BEST_FRIEND = 6 };
+        static constexpr int32 LOYALTY_TAMED = 1000;             // loyalty points of a freshly tamed beast (Rebellious)
+        static constexpr uint32 LOYALTY_TICK_INTERVAL = 12000;
+        bool HasLoyalty() const { return getPetType() == HUNTER_PET; }
+        uint8 GetLoyaltyLevel() const { return m_loyaltyLevel; }
+        int32 GetLoyaltyPoints() const { return m_loyaltyPoints; }
+        void InitLoyalty(uint8 loyaltyLevel, int32 loyaltyPoints);
+        bool ModifyLoyalty(int32 addvalue);                      // false: the pet ran away (loyalty below 0 while Rebellious)
+        void KillLoyaltyBonus(uint8 level);
+        static int32 GetLoyaltyLevelUpPoints(uint8 loyaltyLevel);
+        static int32 GetLoyaltyStartPoints(uint8 loyaltyLevel);
+        static uint32 GetSpellTrainingPoints(uint32 spellId);   // classic_pet_spell_training_points, 0 = free
+        uint32 GetTrainingPointsTotal() const;                  // level * (loyalty level - 1)
+        uint32 GetTrainingPointsUsed() const;
+        void UpdateTrainingPoints();
+
         void SetDuration(int32 dur) { m_duration = dur; }
         int32 GetDuration() const { return m_duration; }
 
@@ -167,6 +185,9 @@ class TC_GAME_API Pet final : public Guardian
         bool    m_loading;
         uint32  m_focusRegenTimer;
         uint32  m_happinessTimer = HAPPINESS_LOSS_INTERVAL;
+        uint32  m_loyaltyTimer = LOYALTY_TICK_INTERVAL;
+        uint8   m_loyaltyLevel = REBELLIOUS;
+        int32   m_loyaltyPoints = LOYALTY_TAMED;
         uint32  m_groupUpdateMask;
 
         std::unique_ptr<DeclinedName> m_declinedname;
