@@ -2,8 +2,8 @@
 -- legacy event_scripts rows (VMaNGOS spawn guids + 30000000), SmartAI event scripts (SmartEventTrigger), Pyroguard Emberseer start
 -- removed: TC retail event_scripts rows of events that a classic C++ EventScript handles (VMaNGOS skips the DB script there)
 
-DELETE FROM world.event_scripts WHERE id IN (466,467,468,525,1653,2609,3980,5258,5438,5439,5618,5619,5620,5621,5622,5623,8420,8428,9104);
-INSERT INTO world.event_scripts (id, delay, command, datalong, datalong2, dataint, x, y, z, o, Comment) VALUES
+DELETE FROM event_scripts WHERE id IN (466,467,468,525,1653,2609,3980,5258,5438,5439,5618,5619,5620,5621,5622,5623,8420,8428,9104);
+INSERT INTO event_scripts (id, delay, command, datalong, datalong2, dataint, x, y, z, o, Comment) VALUES
 (466, 0, 9, 30332887, 60, 0, 0.0000, 0.0000, 0.0000, 0.0000, 'VMaNGOS event 466: Cleanse Winterhoof Well (spell 4975): cleansing aura'),
 (467, 0, 9, 30332888, 60, 0, 0.0000, 0.0000, 0.0000, 0.0000, 'VMaNGOS event 467: Cleanse Thunderhorn Well (spell 4977): cleansing aura'),
 (468, 0, 9, 30332889, 60, 0, 0.0000, 0.0000, 0.0000, 0.0000, 'VMaNGOS event 468: Cleanse Wildmane Well (spell 4978): cleansing aura'),
@@ -52,13 +52,13 @@ INSERT INTO world.event_scripts (id, delay, command, datalong, datalong2, datain
 (5258, 0, 9, 30002143, 86400, 0, 0.0000, 0.0000, 0.0000, 0.0000, 'VMaNGOS event 5258: Scarlet Archive (quest 5251): archive fires'),
 (5438, 0, 9, 30002644, 18, 0, 0.0000, 0.0000, 0.0000, 0.0000, 'VMaNGOS event 5438: Remains of Lucien Sarkhoff (quest 5382): fire'),
 (5439, 0, 9, 30002643, 18, 0, 0.0000, 0.0000, 0.0000, 0.0000, 'VMaNGOS event 5439: Remains of Eva Sarkhoff (quest 5382): fire');
-DELETE FROM world.event_script_names WHERE Id IN (413,4845,3718,4884);
-INSERT INTO world.event_script_names (Id, ScriptName) VALUES (413, 'SmartEventTrigger'), (4845, 'SmartEventTrigger'), (3718, 'SmartEventTrigger'), (4884, 'SmartEventTrigger');
-DELETE FROM world.smart_scripts WHERE source_type = 3 AND entryorguid IN (413,4845,3718,4884);
-DELETE FROM world.conditions WHERE SourceTypeOrReferenceId = 22 AND SourceId = 3 AND SourceEntry IN (413,4845,3718,4884);
+DELETE FROM event_script_names WHERE Id IN (413,4845,3718,4884);
+INSERT INTO event_script_names (Id, ScriptName) VALUES (413, 'SmartEventTrigger'), (4845, 'SmartEventTrigger'), (3718, 'SmartEventTrigger'), (4884, 'SmartEventTrigger');
+DELETE FROM smart_scripts WHERE source_type = 3 AND entryorguid IN (413,4845,3718,4884);
+DELETE FROM conditions WHERE SourceTypeOrReferenceId = 22 AND SourceId = 3 AND SourceEntry IN (413,4845,3718,4884);
 -- Pyroguard Emberseer / Blackhand Incarcerator: rows 100+ (rows below 100 are the VMaNGOS EventAI conversion)
-DELETE FROM world.smart_scripts WHERE source_type = 0 AND entryorguid IN (9816, 10316) AND id >= 100;
-INSERT INTO world.smart_scripts (entryorguid, source_type, id, link, Difficulties, event_type, event_phase_mask, event_chance, event_flags, event_param1, event_param2, event_param3, event_param4, event_param5, event_param_string, action_type, action_param1, action_param2, action_param3, action_param4, action_param5, action_param6, action_param7, action_param_string, target_type, target_param1, target_param2, target_param3, target_param4, target_param_string, target_x, target_y, target_z, target_o, comment) VALUES
+DELETE FROM smart_scripts WHERE source_type = 0 AND entryorguid IN (9816, 10316) AND id >= 100;
+INSERT INTO smart_scripts (entryorguid, source_type, id, link, Difficulties, event_type, event_phase_mask, event_chance, event_flags, event_param1, event_param2, event_param3, event_param4, event_param5, event_param_string, action_type, action_param1, action_param2, action_param3, action_param4, action_param5, action_param6, action_param7, action_param_string, target_type, target_param1, target_param2, target_param3, target_param4, target_param_string, target_x, target_y, target_z, target_o, comment) VALUES
 (413, 3, 0, 1, '', 87, 0, 100, 0, 0, 0, 0, 0, 0, '', 12, 2570, 1, 300000, 0, 0, 0, 0, '', 8, 0, 0, 0, 0, '', -1777.9100, -1501.2800, 65.0042, 4.6600, 'VMaNGOS event 413 Runed Pedestal - summon guardians'),
 (413, 3, 1, 2, '', 61, 0, 100, 0, 0, 0, 0, 0, 0, '', 12, 2569, 1, 300000, 0, 0, 0, 0, '', 8, 0, 0, 0, 0, '', -1729.0300, -1574.7700, 53.9953, 3.5954, 'VMaNGOS event 413 Runed Pedestal - summon guardians'),
 (413, 3, 2, 3, '', 61, 0, 100, 0, 0, 0, 0, 0, 0, '', 12, 2569, 1, 300000, 0, 0, 0, 0, '', 8, 0, 0, 0, 0, '', -1742.5500, -1594.4300, 52.7884, 1.9722, 'VMaNGOS event 413 Runed Pedestal - summon guardians'),
@@ -86,5 +86,5 @@ INSERT INTO world.smart_scripts (entryorguid, source_type, id, link, Difficultie
 (10316, 0, 100, 101, '', 38, 0, 100, 0, 1, 1, 0, 0, 0, '', 144, 0, 0, 0, 0, 0, 0, 0, '', 1, 0, 0, 0, 0, '', 0.0000, 0.0000, 0.0000, 0.0000, 'VMaNGOS generic 103162: Blackhand Incarcerator - immune flags off, combat pulse'),
 (10316, 0, 101, 102, '', 61, 0, 100, 0, 0, 0, 0, 0, 0, '', 145, 0, 0, 0, 0, 0, 0, 0, '', 1, 0, 0, 0, 0, '', 0.0000, 0.0000, 0.0000, 0.0000, 'VMaNGOS generic 103162: Blackhand Incarcerator - immune flags off, combat pulse'),
 (10316, 0, 102, 0, '', 61, 0, 100, 0, 0, 0, 0, 0, 0, '', 38, 0, 0, 0, 0, 0, 0, 0, '', 1, 0, 0, 0, 0, '', 0.0000, 0.0000, 0.0000, 0.0000, 'VMaNGOS generic 103162: Blackhand Incarcerator - immune flags off, combat pulse');
-INSERT INTO world.conditions (SourceTypeOrReferenceId, SourceGroup, SourceEntry, SourceId, ElseGroup, ConditionTypeOrReference, ConditionTarget, ConditionValue1, ConditionValue2, ConditionValue3, NegativeCondition, Comment) VALUES
+INSERT INTO conditions (SourceTypeOrReferenceId, SourceGroup, SourceEntry, SourceId, ElseGroup, ConditionTypeOrReference, ConditionTarget, ConditionValue1, ConditionValue2, ConditionValue3, NegativeCondition, Comment) VALUES
 (22, 1, 413, 3, 0, 29, 1, 2794, 100, 0, 1, 'VMaNGOS event 413: no Summoned Guardian nearby');

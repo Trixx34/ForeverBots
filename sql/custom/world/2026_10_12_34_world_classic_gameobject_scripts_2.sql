@@ -2,11 +2,11 @@
 -- Scholomance shadow portal gates, Sharpbeak cage, Stratholme ziggurat door, Service Entrance gate (C++ classic_go_strat_service_entrance)
 -- gameobject actionlists 940100000+
 
-UPDATE world.gameobject_template SET AIName = 'SmartGameObjectAI' WHERE entry IN (144070,175796,177371,177372,177373,177375,177376,177377) AND ScriptName = '';
-UPDATE world.gameobject_template SET ScriptName = 'classic_go_strat_service_entrance', AIName = '' WHERE entry = 175368;
-DELETE FROM world.smart_scripts WHERE source_type = 1 AND entryorguid IN (-30046076,-30043203,-30043196,-30043188,-30043187,-30043184,-30035848,-30035798);
-DELETE FROM world.smart_scripts WHERE source_type = 9 AND entryorguid BETWEEN 940100000 AND 940199999;
-INSERT INTO world.smart_scripts (entryorguid, source_type, id, link, Difficulties, event_type, event_phase_mask, event_chance, event_flags, event_param1, event_param2, event_param3, event_param4, event_param5, event_param_string, action_type, action_param1, action_param2, action_param3, action_param4, action_param5, action_param6, action_param7, action_param_string, target_type, target_param1, target_param2, target_param3, target_param4, target_param_string, target_x, target_y, target_z, target_o, comment) VALUES
+UPDATE gameobject_template SET AIName = 'SmartGameObjectAI' WHERE entry IN (144070,175796,177371,177372,177373,177375,177376,177377) AND ScriptName = '';
+UPDATE gameobject_template SET ScriptName = 'classic_go_strat_service_entrance', AIName = '' WHERE entry = 175368;
+DELETE FROM smart_scripts WHERE source_type = 1 AND entryorguid IN (-30046076,-30043203,-30043196,-30043188,-30043187,-30043184,-30035848,-30035798);
+DELETE FROM smart_scripts WHERE source_type = 9 AND entryorguid BETWEEN 940100000 AND 940199999;
+INSERT INTO smart_scripts (entryorguid, source_type, id, link, Difficulties, event_type, event_phase_mask, event_chance, event_flags, event_param1, event_param2, event_param3, event_param4, event_param5, event_param_string, action_type, action_param1, action_param2, action_param3, action_param4, action_param5, action_param6, action_param7, action_param_string, target_type, target_param1, target_param2, target_param3, target_param4, target_param_string, target_x, target_y, target_z, target_o, comment) VALUES
 (940100000, 9, 0, 0, '', 0, 0, 100, 0, 0, 0, 0, 0, 0, '', 63, 1, 0, 1, 0, 0, 0, 0, '', 1, 0, 0, 0, 0, '', 0.0000, 0.0000, 0.0000, 0.0000, 'VMaNGOS event 5618: shadow portal room'),
 (940100000, 9, 1, 0, '', 0, 0, 100, 0, 0, 0, 0, 0, 0, '', 147, 10, 0, 0, 0, 0, 0, 0, '', 1, 0, 0, 0, 0, '', 0.0000, 0.0000, 0.0000, 0.0000, 'VMaNGOS event 5618: shadow portal room'),
 (940100000, 9, 2, 0, '', 0, 0, 100, 0, 0, 0, 0, 0, 0, '', 12, 11598, 1, 300000, 0, 0, 0, 0, '', 8, 0, 0, 0, 0, '', 256.2890, 0.6520, 84.9240, 4.7650, 'VMaNGOS event 5618: shadow portal room'),

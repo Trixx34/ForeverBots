@@ -2,8 +2,8 @@
 -- C++: Custom/Classic/world/classic_dbscript_spells.cpp (class mount visuals, Lunar Festival teleport traps, Jingling Bell, Soul Link,
 -- Darkmoon Faire Steam Tonk control)
 
-DELETE FROM world.spell_script_names WHERE spell_id IN (5784,13819,23161,23214,26406,26408,26409,26410,26412,26414,26528,19028,24935,24936,24937) AND ScriptName IN ('classic_spell_dbscript_cast', 'classic_spell_warl_soul_link', 'classic_spell_summon_rc_tank', 'classic_spell_rc_tank_control', 'classic_spell_using_control_console');
-INSERT INTO world.spell_script_names (spell_id, ScriptName) VALUES
+DELETE FROM spell_script_names WHERE spell_id IN (5784,13819,23161,23214,26406,26408,26409,26410,26412,26414,26528,19028,24935,24936,24937) AND ScriptName IN ('classic_spell_dbscript_cast', 'classic_spell_warl_soul_link', 'classic_spell_summon_rc_tank', 'classic_spell_rc_tank_control', 'classic_spell_using_control_console');
+INSERT INTO spell_script_names (spell_id, ScriptName) VALUES
 (5784, 'classic_spell_dbscript_cast'),
 (13819, 'classic_spell_dbscript_cast'),
 (23161, 'classic_spell_dbscript_cast'),
