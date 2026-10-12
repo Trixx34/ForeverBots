@@ -1,8 +1,8 @@
 /*
  * Module System — core-side module host.
- * See doc/module-system/04-phase2-module-host-design.md for the design. This file implements
- * discovery, spawn (boost::process), the Tier 1 handshake and heartbeat. Not yet implemented:
- * restart policy, approval store (doc 06), resource limits, Tier 1 event routing, Tier 2, bot control.
+ * See doc/module-system/04-phase2-module-host-design.md for the design. Implemented: discovery,
+ * spawn (boost::process), the Tier 1 handshake and heartbeat, and the restart policy (§5).
+ * Not yet implemented: approval store (doc 06), resource limits, Tier 1 event routing, Tier 2, bot control.
  */
 
 #ifndef TRINITYCORE_MODULEMGR_H
@@ -12,10 +12,12 @@
 #include "ModuleSession.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -36,8 +38,8 @@ enum class ModuleStatus : uint8
     PendingApproval,    // doc/module-system/06-phase4-approval-audit-design.md §2
     Starting,           // spawned, waiting for the handshake
     Running,            // handshake accepted, heartbeats alive
-    TransientFailure,   // crash/heartbeat timeout/handshake timeout; restart policy applies (not yet implemented)
-    PermanentFailure    // version mismatch / rejected handshake / bad manifest or executable — doc 04 §5
+    TransientFailure,   // failed; a restart is scheduled (RestartAt) — doc 04 §5
+    PermanentFailure    // will not be restarted; needs operator action — doc 04 §5
 };
 
 struct ModuleDescriptor
@@ -46,9 +48,17 @@ struct ModuleDescriptor
     std::string Name;
     std::string Version;
     std::string ProtocolVersion;     // doc 11 — exact-match gate, not the SDK package version
+    std::string Executable;          // <Modules.Dir>/<name>/<name>
+    std::string Endpoint;            // <Modules.Dir>/<name>.sock
+
     ModuleStatus Status = ModuleStatus::PendingApproval;
-    std::string StatusReason;        // why the module is in its current status, for logs and `module info`
-    uint32 RestartAttempts = 0;
+    std::string StatusReason;        // why the module is in its current status
+    std::string LastFailure;         // most recent failure reason, kept across restarts
+
+    uint32 HandshakeAttempts = 0;    // consecutive handshake failures; reset when a handshake is accepted
+    uint32 RestartAttempts = 0;      // lifetime count of restarts scheduled, for `module info`
+    std::vector<std::chrono::steady_clock::time_point> RestartTimes; // post-handshake restarts in the rolling window
+    std::chrono::steady_clock::time_point RestartAt{};             // when a scheduled restart is due; epoch if none
 
     std::unique_ptr<ModuleSession> Session;             // owns the Tier 1 socket and session thread
     std::shared_ptr<boost::process::child> Process;     // the module executable
@@ -60,7 +70,10 @@ struct ModuleSnapshot
     std::string Name;
     ModuleStatus Status = ModuleStatus::PendingApproval;
     std::string StatusReason;
+    std::string LastFailure;
+    uint32 RestartAttempts = 0;
     uint64 HeartbeatCount = 0;
+    uint64 ProcessId = 0;
     bool ProcessRunning = false;
 };
 
@@ -89,7 +102,7 @@ class TC_GAME_API ModuleMgr
 
         // Scans Modules.Dir for <name>/module.json + <name>/<name> pairs, and for each one: checks
         // the protocol version, requires approval (see below), then spawns the module and runs its
-        // handshake. No-op until Modules.Enabled = 1.
+        // handshake. Starts the supervisor thread that performs restarts. No-op until Modules.Enabled = 1.
         //
         // Approval: the approval store (doc 06) is not implemented yet, so modules are only spawned
         // when Modules.AutoApproveLocal = 1 (local development). Otherwise they stay PendingApproval.
@@ -100,8 +113,8 @@ class TC_GAME_API ModuleMgr
         // Tier-2-participating modules per their declared cadence. No-op until Tier 2 exists.
         void OnWorldTick(uint64 tick);
 
-        // Stops every session (sends Shutdown), gives processes a short grace period, then
-        // terminates any that are still running.
+        // Sends Shutdown to every connected module, gives processes a short grace period, terminates
+        // any still running, then stops the supervisor.
         void Unload();
 
         // Handshake gate: true only when a module's declared protocol_version exactly equals
@@ -116,19 +129,45 @@ class TC_GAME_API ModuleMgr
         // routing before there's anything meaningful to implement here.
 
     private:
-        void ProcessModuleDirectory(std::string const& root, std::string const& name, uint64 handshakeTimeoutMs,
-                                    uint64 heartbeatTimeoutMs, bool autoApprove);
-        bool SpawnModule(ModuleId id, std::string const& executable, std::string const& endpoint,
-                         uint64 handshakeTimeoutMs, uint64 heartbeatTimeoutMs);
+        // Settings read from worldserver.conf in LoadModules().
+        struct Config
+        {
+            uint64 HandshakeTimeoutMs = 5000;
+            uint64 HeartbeatTimeoutMs = 15000;
+            uint32 MaxHandshakeAttempts = 3;
+            uint32 MaxRestartAttempts = 5;
+            uint64 RestartBackoffMs = 1000;
+            bool AutoApprove = false;
+        };
+
+        void ProcessModuleDirectory(std::string const& root, std::string const& name);
+        // Starts one attempt: listen, spawn the process, start the session. Callers must not hold _mutex.
+        bool SpawnModule(ModuleId id);
         void OnSessionEvent(ModuleId id, ModuleSession::Event event, std::string const& detail);
-        // Callers must hold _mutex.
+
+        // Failure bookkeeping. Callers must hold _mutex.
         void SetStatus(ModuleDescriptor& descriptor, ModuleStatus status, std::string reason);
+        void ScheduleRestart(ModuleDescriptor& descriptor, bool handshakeFailure);
+        void MarkPermanent(ModuleDescriptor& descriptor, std::string reason);
         static void StopProcess(ModuleDescriptor& descriptor);
 
+        // Restarts due transient failures. Runs on its own thread so that restarts (and the module
+        // processes they spawn) live on a thread that only exits during Unload().
+        void StartSupervisor();
+        void StopSupervisor();
+        void SupervisorLoop();
+        void RestartDueModules();
+
+        Config _config;
+
         std::mutex _mutex; // guards _modules and descriptor fields; never held while stopping sessions
+        std::mutex _lifecycleMutex; // serializes restarts with Unload(); held across a restart attempt
         std::unordered_map<ModuleId, ModuleDescriptor> _modules;
         ModuleId _nextModuleId = 1;
-        std::atomic<bool> _unloading{false}; // set by Unload() so expected disconnects are not reported as failures
+
+        std::atomic<bool> _unloading{false};       // set by Unload() so expected disconnects are not reported as failures
+        std::atomic<bool> _supervisorStop{false};
+        std::thread _supervisor;
 };
 
 #define sModuleMgr ModuleMgr::instance()

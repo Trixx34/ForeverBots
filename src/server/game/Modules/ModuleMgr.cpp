@@ -10,14 +10,14 @@
 #include <boost/process.hpp>
 
 #include <algorithm>
-#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
-#include <thread>
 
 namespace bp = boost::process;
 namespace fs = std::filesystem;
+
+using Clock = std::chrono::steady_clock;
 
 namespace
 {
@@ -35,6 +35,19 @@ std::vector<std::string> const SupportedTier1Hooks = {
 
 // How long a module gets to exit after Shutdown before it is terminated.
 constexpr std::chrono::milliseconds ShutdownGrace{2000};
+
+// Restart policy (doc 04 §5). The window is fixed here; the budgets and base backoff are config keys.
+constexpr std::chrono::minutes RestartWindow{10};
+constexpr std::chrono::milliseconds MaxRestartBackoff{60000};
+constexpr std::chrono::milliseconds SupervisorPollInterval{50};
+
+// Exponential backoff: base * 2^(n-1) for the n-th failure, capped at MaxRestartBackoff.
+std::chrono::milliseconds BackoffFor(uint64 baseMs, uint32 failureNumber)
+{
+    uint32 const shift = std::min<uint32>(failureNumber > 0 ? failureNumber - 1 : 0, 16);
+    auto const backoff = std::chrono::milliseconds(baseMs << shift);
+    return std::min(backoff, MaxRestartBackoff);
+}
 
 } // namespace
 
@@ -59,10 +72,14 @@ void ModuleMgr::LoadModules()
         return;
     }
 
+    _config.HandshakeTimeoutMs = static_cast<uint64>(sConfigMgr->GetIntDefault("Modules.HandshakeTimeoutMs", 5000));
+    _config.HeartbeatTimeoutMs = static_cast<uint64>(sConfigMgr->GetIntDefault("Modules.HeartbeatTimeoutMs", 15000));
+    _config.MaxHandshakeAttempts = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.MaxHandshakeAttempts", 3));
+    _config.MaxRestartAttempts = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.MaxRestartAttempts", 5));
+    _config.RestartBackoffMs = static_cast<uint64>(sConfigMgr->GetIntDefault("Modules.RestartBackoffMs", 1000));
+    _config.AutoApprove = sConfigMgr->GetBoolDefault("Modules.AutoApproveLocal", false);
+
     std::string const root = sConfigMgr->GetStringDefault("Modules.Dir", "modules_runtime");
-    auto const handshakeTimeoutMs = static_cast<uint64>(sConfigMgr->GetIntDefault("Modules.HandshakeTimeoutMs", 5000));
-    auto const heartbeatTimeoutMs = static_cast<uint64>(sConfigMgr->GetIntDefault("Modules.HeartbeatTimeoutMs", 15000));
-    bool const autoApprove = sConfigMgr->GetBoolDefault("Modules.AutoApproveLocal", false);
 
     std::error_code ec;
     if (!fs::is_directory(root, ec))
@@ -78,11 +95,12 @@ void ModuleMgr::LoadModules()
     std::sort(names.begin(), names.end());
 
     for (std::string const& name : names)
-        ProcessModuleDirectory(root, name, handshakeTimeoutMs, heartbeatTimeoutMs, autoApprove);
+        ProcessModuleDirectory(root, name);
+
+    StartSupervisor();
 }
 
-void ModuleMgr::ProcessModuleDirectory(std::string const& root, std::string const& name, uint64 handshakeTimeoutMs,
-                                       uint64 heartbeatTimeoutMs, bool autoApprove)
+void ModuleMgr::ProcessModuleDirectory(std::string const& root, std::string const& name)
 {
     fs::path const dir = fs::path(root) / name;
 
@@ -121,20 +139,22 @@ void ModuleMgr::ProcessModuleDirectory(std::string const& root, std::string cons
         d.Name = name;
         d.Version = info.Version;
         d.ProtocolVersion = info.ProtocolVersion;
+        d.Executable = (dir / name).string();
+        d.Endpoint = (fs::path(root) / (name + ".sock")).string();
     }
 
     std::string reason;
     if (!CheckProtocolVersion(info.ProtocolVersion, reason))
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        SetStatus(_modules.at(id), ModuleStatus::PermanentFailure, reason);
+        MarkPermanent(_modules.at(id), reason);
         TC_LOG_ERROR("modules", "'{}' not loaded: {}", name, reason);
         return;
     }
 
     // Approval gate (doc 06). The approval store is not implemented yet, so the only way to spawn a
     // module is the local-development override. Deny by default.
-    if (!autoApprove)
+    if (!_config.AutoApprove)
     {
         std::lock_guard<std::mutex> lock(_mutex);
         SetStatus(_modules.at(id), ModuleStatus::PendingApproval,
@@ -143,27 +163,39 @@ void ModuleMgr::ProcessModuleDirectory(std::string const& root, std::string cons
         return;
     }
 
-    fs::path const executable = dir / name;
     std::error_code ec;
+    std::string executable;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        executable = _modules.at(id).Executable;
+    }
     if (!fs::is_regular_file(executable, ec))
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        SetStatus(_modules.at(id), ModuleStatus::PermanentFailure, "executable not found: " + executable.string());
-        TC_LOG_ERROR("modules", "'{}' not loaded: executable not found at '{}'.", name, executable.string());
+        MarkPermanent(_modules.at(id), "executable not found: " + executable);
+        TC_LOG_ERROR("modules", "'{}' not loaded: executable not found at '{}'.", name, executable);
         return;
     }
 
-    std::string const endpoint = (fs::path(root) / (name + ".sock")).string();
-    SpawnModule(id, executable.string(), endpoint, handshakeTimeoutMs, heartbeatTimeoutMs);
+    SpawnModule(id);
 }
 
-bool ModuleMgr::SpawnModule(ModuleId id, std::string const& executable, std::string const& endpoint,
-                            uint64 handshakeTimeoutMs, uint64 heartbeatTimeoutMs)
+bool ModuleMgr::SpawnModule(ModuleId id)
 {
     ModuleSession::Settings settings;
+    std::string executable;
+    std::string endpoint;
+    std::string name;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        ModuleDescriptor const& d = _modules.at(id);
+        executable = d.Executable;
+        endpoint = d.Endpoint;
+        name = d.Name;
+    }
     settings.Endpoint = endpoint;
-    settings.HandshakeTimeout = std::chrono::milliseconds(handshakeTimeoutMs);
-    settings.HeartbeatTimeout = std::chrono::milliseconds(heartbeatTimeoutMs);
+    settings.HandshakeTimeout = std::chrono::milliseconds(_config.HandshakeTimeoutMs);
+    settings.HeartbeatTimeout = std::chrono::milliseconds(_config.HeartbeatTimeoutMs);
     settings.ExpectedProtocolVersion = kModuleProtocolVersion;
     settings.SupportedHooks = SupportedTier1Hooks;
     // Module config from modules.d/<name>.conf is not wired up yet; the module gets an empty config.
@@ -176,9 +208,10 @@ bool ModuleMgr::SpawnModule(ModuleId id, std::string const& executable, std::str
     std::string error;
     if (!session->Listen(error))
     {
+        // Binding the endpoint is a local configuration problem; a restart will not fix it.
         std::lock_guard<std::mutex> lock(_mutex);
-        SetStatus(_modules.at(id), ModuleStatus::PermanentFailure, error);
-        TC_LOG_ERROR("modules", "module {}: cannot listen for its connection: {}", id, error);
+        MarkPermanent(_modules.at(id), "cannot listen for the module: " + error);
+        TC_LOG_ERROR("modules", "'{}': cannot listen for its connection: {}", name, error);
         return false;
     }
 
@@ -198,8 +231,10 @@ bool ModuleMgr::SpawnModule(ModuleId id, std::string const& executable, std::str
     {
         session->Stop();
         std::lock_guard<std::mutex> lock(_mutex);
-        SetStatus(_modules.at(id), ModuleStatus::TransientFailure, std::string("failed to start process: ") + e.what());
-        TC_LOG_ERROR("modules", "module {}: failed to start '{}': {}", id, executable, e.what());
+        ModuleDescriptor& d = _modules.at(id);
+        d.LastFailure = std::string("failed to start process: ") + e.what();
+        ScheduleRestart(d, /*handshakeFailure=*/true);
+        TC_LOG_ERROR("modules", "'{}': failed to start '{}': {}", name, executable, e.what());
         return false;
     }
 
@@ -231,28 +266,46 @@ void ModuleMgr::OnSessionEvent(ModuleId id, ModuleSession::Event event, std::str
     switch (event)
     {
         case ModuleSession::Event::Accepted:
+            d.HandshakeAttempts = 0;
             SetStatus(d, ModuleStatus::Running, "");
             TC_LOG_INFO("modules", "'{}' handshake accepted (module id {}).", d.Name, id);
             break;
+
         case ModuleSession::Event::Rejected:
-            SetStatus(d, ModuleStatus::PermanentFailure, detail);
+            // Refused by core (wrong protocol, unsupported hook, Tier 2 requested). Config or build
+            // problem: a restart cannot fix it.
+            StopProcess(d);
+            MarkPermanent(d, detail);
             TC_LOG_ERROR("modules", "'{}' handshake rejected: {}", d.Name, detail);
-            StopProcess(d);
             break;
+
         case ModuleSession::Event::HandshakeTimeout:
-            SetStatus(d, ModuleStatus::TransientFailure, detail);
-            TC_LOG_ERROR("modules", "'{}' handshake failed: {} (restart policy not implemented yet).", d.Name, detail);
-            StopProcess(d);
-            break;
-        case ModuleSession::Event::HeartbeatTimeout:
-            SetStatus(d, ModuleStatus::TransientFailure, detail);
-            TC_LOG_ERROR("modules", "'{}' is unresponsive: {} (restart policy not implemented yet).", d.Name, detail);
-            StopProcess(d);
-            break;
         case ModuleSession::Event::Disconnected:
-            SetStatus(d, ModuleStatus::TransientFailure, detail);
-            TC_LOG_ERROR("modules", "'{}' disconnected: {} (restart policy not implemented yet).", d.Name, detail);
+            if (d.Status == ModuleStatus::Starting)
+            {
+                // Failed before the handshake completed: counts against MaxHandshakeAttempts.
+                d.LastFailure = detail;
+                StopProcess(d);
+                ++d.HandshakeAttempts;
+                TC_LOG_ERROR("modules", "'{}' failed before handshake (attempt {} of {}): {}",
+                             d.Name, d.HandshakeAttempts, _config.MaxHandshakeAttempts, detail);
+                ScheduleRestart(d, /*handshakeFailure=*/true);
+            }
+            else
+            {
+                // Crash or silence after a successful handshake: uses the rolling restart budget.
+                d.LastFailure = detail;
+                TC_LOG_ERROR("modules", "'{}' failed: {}", d.Name, detail);
+                StopProcess(d);
+                ScheduleRestart(d, /*handshakeFailure=*/false);
+            }
+            break;
+
+        case ModuleSession::Event::HeartbeatTimeout:
+            d.LastFailure = detail;
+            TC_LOG_ERROR("modules", "'{}' is unresponsive: {}", d.Name, detail);
             StopProcess(d);
+            ScheduleRestart(d, /*handshakeFailure=*/false);
             break;
     }
 }
@@ -261,6 +314,53 @@ void ModuleMgr::SetStatus(ModuleDescriptor& descriptor, ModuleStatus status, std
 {
     descriptor.Status = status;
     descriptor.StatusReason = std::move(reason);
+    if (status != ModuleStatus::TransientFailure)
+        descriptor.RestartAt = {};
+}
+
+void ModuleMgr::MarkPermanent(ModuleDescriptor& descriptor, std::string reason)
+{
+    SetStatus(descriptor, ModuleStatus::PermanentFailure, std::move(reason));
+}
+
+void ModuleMgr::ScheduleRestart(ModuleDescriptor& descriptor, bool handshakeFailure)
+{
+    auto const now = Clock::now();
+
+    std::chrono::milliseconds backoff{0};
+    if (handshakeFailure)
+    {
+        if (descriptor.HandshakeAttempts >= _config.MaxHandshakeAttempts)
+        {
+            MarkPermanent(descriptor, "failed " + std::to_string(descriptor.HandshakeAttempts) +
+                          " handshake attempt(s), giving up; last failure: " + descriptor.LastFailure);
+            TC_LOG_ERROR("modules", "'{}' permanently failed: {}", descriptor.Name, descriptor.StatusReason);
+            return;
+        }
+        backoff = BackoffFor(_config.RestartBackoffMs, descriptor.HandshakeAttempts);
+    }
+    else
+    {
+        // Drop restarts that have aged out of the window, then check the budget.
+        auto& times = descriptor.RestartTimes;
+        times.erase(std::remove_if(times.begin(), times.end(), [&](Clock::time_point t) { return now - t > RestartWindow; }),
+                    times.end());
+        if (times.size() >= _config.MaxRestartAttempts)
+        {
+            MarkPermanent(descriptor, "crash loop: restarted " + std::to_string(times.size()) + " time(s) within " +
+                          std::to_string(RestartWindow.count()) + " minutes, giving up; last failure: " + descriptor.LastFailure);
+            TC_LOG_ERROR("modules", "'{}' permanently failed: {}", descriptor.Name, descriptor.StatusReason);
+            return;
+        }
+        times.push_back(now);
+        backoff = BackoffFor(_config.RestartBackoffMs, static_cast<uint32>(times.size()));
+    }
+
+    ++descriptor.RestartAttempts;
+    SetStatus(descriptor, ModuleStatus::TransientFailure,
+              "restarting in " + std::to_string(backoff.count()) + " ms after: " + descriptor.LastFailure);
+    descriptor.RestartAt = now + backoff;
+    TC_LOG_INFO("modules", "'{}' restart {} scheduled in {} ms.", descriptor.Name, descriptor.RestartAttempts, backoff.count());
 }
 
 void ModuleMgr::StopProcess(ModuleDescriptor& descriptor)
@@ -272,6 +372,68 @@ void ModuleMgr::StopProcess(ModuleDescriptor& descriptor)
     descriptor.Process->wait(); // reaps the child; returns at once if it has already exited
 }
 
+void ModuleMgr::StartSupervisor()
+{
+    _supervisorStop = false;
+    if (!_supervisor.joinable())
+        _supervisor = std::thread([this] { SupervisorLoop(); });
+}
+
+void ModuleMgr::StopSupervisor()
+{
+    _supervisorStop = true;
+    if (_supervisor.joinable())
+        _supervisor.join();
+}
+
+void ModuleMgr::SupervisorLoop()
+{
+    while (!_supervisorStop)
+    {
+        RestartDueModules();
+        std::this_thread::sleep_for(SupervisorPollInterval);
+    }
+}
+
+void ModuleMgr::RestartDueModules()
+{
+    auto const now = Clock::now();
+    std::vector<ModuleId> due;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (auto& [id, d] : _modules)
+        {
+            if (d.Status == ModuleStatus::TransientFailure && d.RestartAt != Clock::time_point{} && now >= d.RestartAt)
+            {
+                d.RestartAt = {}; // claimed; a failure during the attempt schedules a new one
+                due.push_back(id);
+            }
+        }
+    }
+
+    for (ModuleId id : due)
+    {
+        std::lock_guard<std::mutex> lifecycle(_lifecycleMutex);
+        if (_unloading || _supervisorStop)
+            return;
+
+        // The previous session has already reported its failure and its thread is exiting; join it
+        // and drop the process handle before starting the next attempt.
+        std::unique_ptr<ModuleSession> oldSession;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            ModuleDescriptor& d = _modules.at(id);
+            oldSession = std::move(d.Session);
+            d.Process.reset();
+        }
+        if (oldSession)
+            oldSession->Stop();
+
+        TC_LOG_INFO("modules", "restarting module {}.", id);
+        SpawnModule(id);
+    }
+}
+
 void ModuleMgr::OnWorldTick(uint64 /*tick*/)
 {
     // TODO (doc 04 §4, doc 03 Tier 2 section): Tier 2 is not implemented yet.
@@ -279,7 +441,12 @@ void ModuleMgr::OnWorldTick(uint64 /*tick*/)
 
 void ModuleMgr::Unload()
 {
+    // Stop new restarts and events from running before the modules are stopped. The lifecycle lock
+    // makes this wait for a restart already in progress, so the module set is stable from here on.
     _unloading = true;
+    _supervisorStop = true;
+
+    std::lock_guard<std::mutex> lifecycle(_lifecycleMutex);
 
     // Move sessions and processes out under the lock, then stop them without holding it: a session
     // thread may be waiting on the lock to report an event while it shuts down.
@@ -301,16 +468,22 @@ void ModuleMgr::Unload()
 
     for (auto& process : processes)
     {
-        auto const deadline = std::chrono::steady_clock::now() + ShutdownGrace;
-        while (process->running() && std::chrono::steady_clock::now() < deadline)
+        auto const deadline = Clock::now() + ShutdownGrace;
+        while (process->running() && Clock::now() < deadline)
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         if (process->running())
             process->terminate();
         process->wait();
     }
 
-    std::lock_guard<std::mutex> lock(_mutex);
-    _modules.clear();
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _modules.clear();
+    }
+
+    // Join last: processes spawned by the supervisor die with it (PR_SET_PDEATHSIG), and by now they
+    // have been stopped gracefully.
+    StopSupervisor();
 }
 
 std::vector<ModuleSnapshot> ModuleMgr::GetSnapshots()
@@ -323,7 +496,10 @@ std::vector<ModuleSnapshot> ModuleMgr::GetSnapshots()
         s.Name = d.Name;
         s.Status = d.Status;
         s.StatusReason = d.StatusReason;
+        s.LastFailure = d.LastFailure;
+        s.RestartAttempts = d.RestartAttempts;
         s.HeartbeatCount = d.Session ? d.Session->HeartbeatCount() : 0;
+        s.ProcessId = d.Process ? static_cast<uint64>(d.Process->id()) : 0;
         s.ProcessRunning = d.Process && d.Process->running();
         snapshots.push_back(std::move(s));
     }
