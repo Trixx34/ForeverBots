@@ -116,6 +116,10 @@ class ModuleSession
         // Queues a PlayerItemLooted EventNotify for a subscribed hook. Same rules as NotifyEvent.
         bool NotifyItemLooted(std::string_view hook, ModuleWire::ItemLootedEvent const& event);
 
+        // Queues a ModuleConfig with the module's current config (sent again after a config reload). Thread-safe.
+        // Returns false if the session is not accepted or the frame could not be queued.
+        bool SendConfig(std::vector<ModuleWire::ConfigEntry> const& config);
+
         // Queues an ActionReply for the module. Thread-safe: the world thread answers actions after the
         // session thread has handed them off. Returns false if the reply could not be queued.
         bool SendActionReply(ModuleWire::ActionReplyMsg const& reply);

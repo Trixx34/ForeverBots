@@ -580,6 +580,7 @@ void World::LoadConfigSettings(bool reload)
         }
         sLog->LoadFromConfig();
         sMetric->LoadFromConfigs();
+        sModuleMgr->ResendConfig();
     }
 
     m_defaultDbcLocale = LocaleConstant(sConfigMgr->GetIntDefault("DBC.Locale"sv, 0));

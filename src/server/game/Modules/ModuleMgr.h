@@ -167,6 +167,10 @@ class TC_GAME_API ModuleMgr
         // is sent ControlRevoked. Call from the world thread.
         void RevokeBot(uint64 botGuid, std::string const& reason);
 
+        // Sends every accepted module its current config again. Called after a successful config reload, on the world
+        // thread. Modules treat each delivery as the full config (doc 03, Config delivery).
+        void ResendConfig();
+
         // Snapshot of every known module, sorted by name.
         std::vector<ModuleSnapshot> GetSnapshots();
 

@@ -258,6 +258,23 @@ static std::vector<ModuleWire::ConfigEntry> LoadModuleConfig(std::string const& 
                            [](std::string const& key) { return sConfigMgr->GetStringDefault(key, "", true); });
 }
 
+void ModuleMgr::ResendConfig()
+{
+    std::vector<std::pair<std::string, std::shared_ptr<ModuleSession>>> accepted;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (auto const& entry : _modules)
+            if (entry.second.Session && entry.second.Session->IsAccepted())
+                accepted.emplace_back(entry.second.Name, entry.second.Session);
+    }
+
+    for (auto const& [name, session] : accepted)
+    {
+        if (!session->SendConfig(LoadModuleConfig(name)))
+            TC_LOG_WARN("modules", "'{}': could not queue the reloaded config; it keeps the previous one.", name);
+    }
+}
+
 bool ModuleMgr::SpawnModule(ModuleId id)
 {
     ModuleSession::Settings settings;
