@@ -25,6 +25,13 @@ message Envelope {
 }
 ```
 
+### Framing
+
+Each Tier 1 message on the socket is a 4-byte **little-endian** unsigned length followed by that
+many bytes of a serialized `Envelope`. A length of 0 or above 1 MiB (1,048,576 bytes) is a protocol
+error and the connection is dropped. Both sides send frames whole. Writes are serialized per
+connection, since the module's heartbeat thread and its main thread can both write.
+
 ### Handshake
 
 `HandshakeRequest` (module → core): module name, module version, `protocol_version` (the exact-match gate, per Phase 0 §3 and `11-sdk-scope.md`), `sdk_package_version` (informational only), declared Tier 1 hook subscriptions, Tier 2 participation flag + `requested_max_bots` / `requested_max_nearby_units` / `requested_max_actions` / `requested_tick_interval` (only meaningful if Tier 2 flag set).
