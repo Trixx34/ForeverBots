@@ -434,6 +434,42 @@ bool Decode(std::string_view bytes, ActionRequestMsg& out)
             if (!r.ReadVarint(out.MessageId))
                 return false;
         }
+        else if (field >= 12 && field <= 15 && wire == WireLengthDelimited)
+        {
+            // StoreGetAction (12): key=1. StoreSetAction (13): key=1, value=2. StoreDeleteAction (14): key=1.
+            // StoreListAction (15): prefix=1 (carried in Key).
+            std::string_view storeBytes;
+            if (!r.ReadBytes(storeBytes))
+                return false;
+            out.Kind = field == 12   ? ActionKind::StoreGet
+                       : field == 13 ? ActionKind::StoreSet
+                       : field == 14 ? ActionKind::StoreDelete
+                                     : ActionKind::StoreList;
+
+            Reader s(storeBytes);
+            while (!s.AtEnd())
+            {
+                uint32 sf = 0, sw = 0;
+                if (!s.ReadTag(sf, sw))
+                    return false;
+                if (sf == 1 && sw == WireLengthDelimited)
+                {
+                    std::string_view key;
+                    if (!s.ReadBytes(key))
+                        return false;
+                    out.Key.assign(key);
+                }
+                else if (field == 13 && sf == 2 && sw == WireLengthDelimited)
+                {
+                    std::string_view value;
+                    if (!s.ReadBytes(value))
+                        return false;
+                    out.Value.assign(value);
+                }
+                else if (!s.Skip(sw))
+                    return false;
+            }
+        }
         else if ((field == 10 || field == 11) && wire == WireLengthDelimited)
         {
             // SellItemAction (10): player_guid=1, item_guid=2, item_entry=3, count=4.
@@ -587,6 +623,12 @@ std::string Encode(ActionReplyMsg const& msg)
     if (!msg.Reason.empty())
         AppendBytesField(out, 3, msg.Reason);
     AppendVarintField(out, 4, msg.CopperGained);
+    if (msg.Found)
+        AppendVarintField(out, 5, 1);
+    if (!msg.Value.empty())
+        AppendBytesField(out, 6, msg.Value);
+    for (std::string const& key : msg.Keys)
+        AppendBytesField(out, 7, key);
     return out;
 }
 

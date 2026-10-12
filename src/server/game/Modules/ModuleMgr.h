@@ -227,10 +227,11 @@ class TC_GAME_API ModuleMgr
         // runs on the world thread from OnWorldTick and sends the replies.
         struct PendingAction
         {
+            ModuleId Module = 0;
             std::weak_ptr<ModuleSession> Session;
             ModuleWire::ActionRequestMsg Request;
         };
-        void EnqueueAction(std::weak_ptr<ModuleSession> session, ModuleWire::ActionRequestMsg request);
+        void EnqueueAction(ModuleId module, std::weak_ptr<ModuleSession> session, ModuleWire::ActionRequestMsg request);
         void RunPendingActions();
 
         // Failure bookkeeping. Callers must hold _mutex.

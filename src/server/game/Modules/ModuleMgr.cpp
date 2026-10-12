@@ -304,9 +304,9 @@ bool ModuleMgr::SpawnModule(ModuleId id)
     {
         OnSessionEvent(id, event, detail);
     });
-    session->SetActionHandler([this, weak = std::weak_ptr<ModuleSession>(session)](ModuleWire::ActionRequestMsg const& request)
+    session->SetActionHandler([this, id, weak = std::weak_ptr<ModuleSession>(session)](ModuleWire::ActionRequestMsg const& request)
     {
-        EnqueueAction(weak, request);
+        EnqueueAction(id, weak, request);
     });
     session->SetControlHandlers(
         [this, id, weak = std::weak_ptr<ModuleSession>(session)](uint64 messageId, ModuleWire::ControlRequestMsg const& request)
@@ -625,13 +625,13 @@ void ModuleMgr::DispatchItemLooted(std::string_view hook, ModuleWire::ItemLooted
     }
 }
 
-void ModuleMgr::EnqueueAction(std::weak_ptr<ModuleSession> session, ModuleWire::ActionRequestMsg request)
+void ModuleMgr::EnqueueAction(ModuleId module, std::weak_ptr<ModuleSession> session, ModuleWire::ActionRequestMsg request)
 {
     {
         std::lock_guard<std::mutex> lock(_actionMutex);
         if (_pendingActions.size() < MaxPendingActions)
         {
-            _pendingActions.push_back(PendingAction{ std::move(session), std::move(request) });
+            _pendingActions.push_back(PendingAction{ module, std::move(session), std::move(request) });
             return;
         }
     }
@@ -822,8 +822,16 @@ void ModuleMgr::RunPendingActions()
 
     for (PendingAction& action : batch)
     {
+        // The module's name decides which store rows an action may touch. Empty if the module has been unloaded.
+        std::string moduleName;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (auto it = _modules.find(action.Module); it != _modules.end())
+                moduleName = it->second.Name;
+        }
+
         ModuleWire::ActionReplyMsg reply;
-        ExecuteModuleAction(action.Request, reply);
+        ExecuteModuleAction(action.Request, reply, moduleName);
         if (std::shared_ptr<ModuleSession> target = action.Session.lock())
             target->SendActionReply(reply);
     }

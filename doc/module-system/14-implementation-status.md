@@ -22,7 +22,8 @@ the code is the reference and the difference is listed.
 | Spawn level | `SpawnParams.level` honoured; 0 is the starting level; above max level refused | `BotModuleBackend::Spawn`, `BotMgr::CreateBot` |
 | Spawn team | 0 from race, 1 Alliance, 2 Horde; a team that disagrees with the race is refused | `BotModuleBackend::Spawn` |
 | Spell cooldowns | Up to 8 active cooldowns per bot in each snapshot, as spell id and remaining ms, closest to expiring first | `ModuleBotSnapshot.cpp` (`FillCooldowns`) |
-| Restart reclaim | The module keeps its bot guids in a state file and takes them back on start | module repo `src/bot_state_file.*`; core needs no change |
+| Module store | Per-module key/value rows in the world database, through the action path; the module's own rows only | `ModuleStore.*`, `ModuleStoreRules.*`, `sql/updates/world/master/2026_10_12_00_world.sql`, doc 15 |
+| Restart reclaim | The module keeps its bot guids as store rows (`bot/<guid>`) and takes them back on start | module repo `src/bot_store.*`; core store (doc 15) |
 
 ## Differs from the design documents
 

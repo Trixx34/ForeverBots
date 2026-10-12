@@ -11,6 +11,9 @@
 #include "ModuleWire.h"
 
 // Fills reply with the outcome. reply.MessageId is set from the request. Must be called on the world thread.
-void ExecuteModuleAction(ModuleWire::ActionRequestMsg const& request, ModuleWire::ActionReplyMsg& reply);
+// moduleName is the requesting module's name; store actions only reach that module's rows. Empty means the module
+// is no longer loaded, and the action is refused.
+void ExecuteModuleAction(ModuleWire::ActionRequestMsg const& request, ModuleWire::ActionReplyMsg& reply,
+                         std::string const& moduleName);
 
 #endif // TRINITYCORE_MODULE_ACTIONS_H
