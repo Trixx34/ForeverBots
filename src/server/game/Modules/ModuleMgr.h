@@ -9,6 +9,7 @@
 #define TRINITYCORE_MODULEMGR_H
 
 #include "Define.h"
+#include "ModuleApproval.h"
 #include "ModuleSession.h"
 
 #include <atomic>
@@ -42,12 +43,15 @@ enum class ModuleStatus : uint8
     PermanentFailure    // will not be restarted; needs operator action — doc 04 §5
 };
 
+char const* ModuleStatusName(ModuleStatus status);
+
 struct ModuleDescriptor
 {
     ModuleId Id = 0;
     std::string Name;
     std::string Version;
     std::string ProtocolVersion;     // doc 11 — exact-match gate, not the SDK package version
+    CapabilityDeclaration Capabilities; // what the manifest asks for; compared against the approval store
     std::string Executable;          // <Modules.Dir>/<name>/<name>
     std::string Endpoint;            // <Modules.Dir>/<name>.sock
 
@@ -68,6 +72,9 @@ struct ModuleDescriptor
 struct ModuleSnapshot
 {
     std::string Name;
+    std::string Version;
+    std::string ApprovedVersion;     // empty if never approved
+    CapabilityDeclaration Capabilities;
     ModuleStatus Status = ModuleStatus::PendingApproval;
     std::string StatusReason;
     std::string LastFailure;
@@ -125,6 +132,11 @@ class TC_GAME_API ModuleMgr
         // Snapshot of every known module, sorted by name.
         std::vector<ModuleSnapshot> GetSnapshots();
 
+        // Operator approval (`module approve <name>`): records the module's current capabilities in
+        // approved_modules.json. Reads the manifest from Modules.Dir. Takes effect at the next load.
+        // Returns false with an explanation in message on any failure.
+        bool ApproveModule(std::string const& name, std::string& message);
+
         // TODO (doc 04 §6): RequestControl/ReleaseControl/bot ownership map — needs Tier 1 event
         // routing before there's anything meaningful to implement here.
 
@@ -141,6 +153,8 @@ class TC_GAME_API ModuleMgr
         };
 
         void ProcessModuleDirectory(std::string const& root, std::string const& name);
+        void LoadApprovalStore(); // called with _mutex held, or before any module threads exist
+        std::string ApprovalStorePath() const;
         // Starts one attempt: listen, spawn the process, start the session. Callers must not hold _mutex.
         bool SpawnModule(ModuleId id);
         void OnSessionEvent(ModuleId id, ModuleSession::Event event, std::string const& detail);
@@ -159,6 +173,9 @@ class TC_GAME_API ModuleMgr
         void RestartDueModules();
 
         Config _config;
+        ApprovalStore _approvals;
+        bool _approvalsLoaded = false;
+        std::string _approvalLoadError; // non-empty if approved_modules.json exists but cannot be read
 
         std::mutex _mutex; // guards _modules and descriptor fields; never held while stopping sessions
         std::mutex _lifecycleMutex; // serializes restarts with Unload(); held across a restart attempt

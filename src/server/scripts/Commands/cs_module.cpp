@@ -17,7 +17,7 @@
 
 /* ScriptData
 Name: module_commandscript
-%Complete: 10 (skeleton -- see doc/module-system/06-phase4-approval-audit-design.md §3)
+%Complete: 100
 Comment: Operator commands for the external module system: approve/list/info.
 Category: commandscripts
 EndScriptData */
@@ -52,25 +52,54 @@ public:
         return commandTable;
     }
 
-    // SKELETON: all three handlers just report "not yet implemented" -- see
-    // doc/module-system/12-initial-core-changes-scope.md. ModuleMgr itself has no discovery/
-    // approval-store logic yet for these to call into.
-
-    static bool HandleModuleApproveCommand(ChatHandler* handler, std::string const& /*moduleName*/)
+    // Records the module's current capabilities as approved. Takes effect at the next module load.
+    static bool HandleModuleApproveCommand(ChatHandler* handler, std::string const& moduleName)
     {
-        handler->SendSysMessage("Module system: approval flow not yet implemented (skeleton).");
+        std::string message;
+        sModuleMgr->ApproveModule(moduleName, message);
+        handler->PSendSysMessage("{}", message);
         return true;
     }
 
     static bool HandleModuleListCommand(ChatHandler* handler)
     {
-        handler->SendSysMessage("Module system: discovery not yet implemented (skeleton). No modules to list.");
+        std::vector<ModuleSnapshot> modules = sModuleMgr->GetSnapshots();
+        if (modules.empty())
+        {
+            handler->SendSysMessage("No modules are loaded (see Modules.Enabled and Modules.Dir).");
+            return true;
+        }
+
+        for (ModuleSnapshot const& m : modules)
+            handler->PSendSysMessage("{} {} [{}] {}", m.Name, m.Version, ModuleStatusName(m.Status), m.StatusReason);
         return true;
     }
 
-    static bool HandleModuleInfoCommand(ChatHandler* handler, std::string const& /*moduleName*/)
+    static bool HandleModuleInfoCommand(ChatHandler* handler, std::string const& moduleName)
     {
-        handler->SendSysMessage("Module system: discovery not yet implemented (skeleton).");
+        for (ModuleSnapshot const& m : sModuleMgr->GetSnapshots())
+        {
+            if (m.Name != moduleName)
+                continue;
+
+            std::string hooks;
+            for (std::string const& hook : m.Capabilities.Hooks)
+                hooks += (hooks.empty() ? "" : ", ") + hook;
+
+            handler->PSendSysMessage("Module {} version {}", m.Name, m.Version);
+            handler->PSendSysMessage("  status:      {} ({})", ModuleStatusName(m.Status), m.StatusReason);
+            handler->PSendSysMessage("  approved:    {}", m.ApprovedVersion.empty() ? std::string("never") : m.ApprovedVersion);
+            handler->PSendSysMessage("  tier 1 hooks: {}", hooks.empty() ? std::string("none") : hooks);
+            handler->PSendSysMessage("  tier 2:      {}", m.Capabilities.Tier2Participates ? "requested" : "no");
+            handler->PSendSysMessage("  process:     {}", m.ProcessRunning ? "pid " + std::to_string(m.ProcessId) : std::string("not running"));
+            handler->PSendSysMessage("  heartbeats:  {}", m.HeartbeatCount);
+            handler->PSendSysMessage("  restarts:    {}", m.RestartAttempts);
+            if (!m.LastFailure.empty())
+                handler->PSendSysMessage("  last failure: {}", m.LastFailure);
+            return true;
+        }
+
+        handler->PSendSysMessage("No module named '{}'.", moduleName);
         return true;
     }
 };

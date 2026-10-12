@@ -1711,7 +1711,9 @@ Modules.ResourceLimits.CpuPercent = 25
 #    Modules.AutoApproveLocal
 #        Description: Dev-convenience only -- skips the capability-approval gate
 #                     (doc/module-system/06-phase4-approval-audit-design.md) entirely, approving
-#                     every module on every load. NOT FOR PRODUCTION USE.
+#                     every module on every load. NOT FOR PRODUCTION USE. Normally, approve a module
+#                     with the console command `module approve <name>`; approvals are stored in
+#                     approved_modules.json next to worldserver.conf and take effect at the next load.
 #        Default:     0 - (Disabled)
 #                     1 - (Enabled)
 

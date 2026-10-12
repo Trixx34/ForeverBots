@@ -18,6 +18,9 @@ class StubConfigMgr
         }
 
         std::map<std::string, std::string, std::less<>> Values;
+        std::string Filename = "worldserver.conf";
+
+        std::string const& GetFilename() { return Filename; }
 
         std::string GetStringDefault(std::string_view name, std::string_view def, bool = false) const
         {

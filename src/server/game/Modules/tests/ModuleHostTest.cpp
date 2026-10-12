@@ -4,11 +4,11 @@
  * /bin/sleep, which exits without connecting.
  *
  * Not part of the worldserver build. Build against a bundled-fmt checkout:
- *   g++ -std=c++17 -DFMT_HEADER_ONLY -Isrc/common -Isrc/server/game/Modules/tests/stubs \
- *       -Isrc/server/game/Modules -Idep/fmt/include \
- *       src/server/game/Modules/{ModuleMgr,ModuleSession,ModuleWire,ModuleManifestInfo}.cpp \
- *       src/server/game/Modules/tests/ModuleHostTest.cpp \
- *       -lboost_filesystem -lboost_system -lpthread -o module_host_test
+ *   g++ -std=c++20 -DFMT_HEADER_ONLY -Isrc/common -Isrc/common/Cryptography -Isrc/common/Debugging \
+ *       -Isrc/server/game/Modules/tests/stubs -Isrc/server/game/Modules -Idep/fmt/include \
+ *       src/server/game/Modules/{ModuleMgr,ModuleSession,ModuleWire,ModuleManifestInfo,ModuleApproval}.cpp \
+ *       src/server/game/Modules/tests/ModuleHostTest.cpp src/server/game/Modules/tests/stubs/ErrorsStub.cpp \
+ *       -lboost_filesystem -lboost_system -lcrypto -lpthread -o module_host_test
  *   ./module_host_test <path-to-minimal_module> /bin/sleep
  */
 
@@ -253,6 +253,85 @@ void ScenarioCrashLoop()
     sModuleMgr->Unload();
 }
 
+void WriteManifest(fs::path const& root, std::string const& name, std::string const& version, std::string const& hooks)
+{
+    std::ofstream manifest(root / name / "module.json");
+    manifest << "{\"name\":\"" << name << "\",\"version\":\"" << version << "\",\"protocol_version\":\"1\","
+             << "\"sdk_package_version\":\"0.1.0\",\"tier1\":{\"hooks\":[" << hooks << "]},\"tier2\":{\"participates\":false}}";
+}
+
+// G: approval flow. Unapproved modules are not spawned; `module approve` records them; a capability
+// change blocks the module again; a version-only change does not. An unreadable store blocks everything
+// and approve refuses to overwrite it.
+void ScenarioApprovalFlow()
+{
+    std::printf("-- approval store: approve, capability change, unreadable store\n");
+    fs::path const root = g_work / "approval-flow";
+    InstallModule(root, "minimal-module", "1", g_minimalModule);
+    Configure(false, 5000, 8000, root);
+    StubConfigMgr::Get().Filename = (root / "worldserver.conf").string();
+    fs::path const store = root / "approved_modules.json";
+
+    // 1. Never approved: pending, not spawned, no store file created by loading.
+    sModuleMgr->LoadModules();
+    ModuleSnapshot s = Find("minimal-module");
+    CHECK(s.Status == ModuleStatus::PendingApproval);
+    CHECK(s.StatusReason.find("never approved") != std::string::npos);
+    CHECK(!s.ProcessRunning);
+    CHECK(!fs::exists(store));
+    sModuleMgr->Unload();
+
+    // 2. Approve it. Unknown modules and invalid names are refused.
+    std::string message;
+    CHECK(sModuleMgr->ApproveModule("minimal-module", message));
+    CHECK(fs::exists(store));
+    CHECK(!sModuleMgr->ApproveModule("no-such-module", message));
+    CHECK(!sModuleMgr->ApproveModule("../escape", message));
+
+    // 3. The next load runs it.
+    sModuleMgr->LoadModules();
+    CHECK(WaitFor([] { return Find("minimal-module").Status == ModuleStatus::Running; }, 5000ms));
+    CHECK(Find("minimal-module").ApprovedVersion == "0.1.0");
+    sModuleMgr->Unload();
+
+    // 4. Version-only change: same capabilities, so still approved.
+    WriteManifest(root, "minimal-module", "0.2.0", "\"WorldScript.OnStartup\"");
+    sModuleMgr->LoadModules();
+    CHECK(WaitFor([] { return Find("minimal-module").Status == ModuleStatus::Running; }, 5000ms));
+    sModuleMgr->Unload();
+
+    // 5. Capability change: blocked until approved again, with the change described.
+    WriteManifest(root, "minimal-module", "0.2.0", "\"WorldScript.OnStartup\",\"CommandScript\"");
+    sModuleMgr->LoadModules();
+    s = Find("minimal-module");
+    CHECK(s.Status == ModuleStatus::PendingApproval);
+    CHECK(s.StatusReason.find("capabilities changed") != std::string::npos);
+    CHECK(s.StatusReason.find("adds Tier 1 hook CommandScript") != std::string::npos);
+    CHECK(!s.ProcessRunning);
+    sModuleMgr->Unload();
+
+    CHECK(sModuleMgr->ApproveModule("minimal-module", message));
+    sModuleMgr->LoadModules();
+    CHECK(WaitFor([] { return Find("minimal-module").Status == ModuleStatus::Running; }, 5000ms));
+    sModuleMgr->Unload();
+
+    // 6. Unreadable store: nothing spawns, and approve refuses rather than overwriting the file.
+    std::string const garbage = "{ this is not json";
+    { std::ofstream(store) << garbage; }
+    sModuleMgr->LoadModules();
+    s = Find("minimal-module");
+    CHECK(s.Status == ModuleStatus::PendingApproval);
+    CHECK(s.StatusReason.find("approval store unreadable") != std::string::npos);
+    CHECK(!s.ProcessRunning);
+    CHECK(!sModuleMgr->ApproveModule("minimal-module", message));
+    CHECK(message.find("unreadable") != std::string::npos);
+    sModuleMgr->Unload();
+
+    std::ifstream check(store);
+    std::string contents((std::istreambuf_iterator<char>(check)), std::istreambuf_iterator<char>());
+    CHECK(contents == garbage);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -274,11 +353,12 @@ int main(int argc, char** argv)
     ScenarioHeartbeatCrashLoop();
     ScenarioCrashRecovers();
     ScenarioCrashLoop();
+    ScenarioApprovalFlow();
 
     fs::remove_all(g_work);
     if (g_failures == 0)
     {
-        std::printf("PASS  module host: approval gate, handshake, heartbeats, shutdown, handshake retries,\n"
+        std::printf("PASS  module host: approval flow, handshake, heartbeats, shutdown, handshake retries,\n"
                     "      crash restart, restart budget (heartbeat and crash loops)\n");
         return 0;
     }

@@ -66,6 +66,9 @@ void ModuleMgr::LoadModules()
 {
     _unloading = false; // a previous Unload() must not suppress events for modules loaded now
 
+    // Loaded before the Enabled check so `module approve` always works on the full store.
+    LoadApprovalStore();
+
     if (!sConfigMgr->GetBoolDefault("Modules.Enabled", false))
     {
         TC_LOG_INFO("modules", "Modules.Enabled = 0, module system is disabled.");
@@ -95,7 +98,14 @@ void ModuleMgr::LoadModules()
     std::sort(names.begin(), names.end());
 
     for (std::string const& name : names)
+    {
+        if (!IsValidModuleName(name))
+        {
+            TC_LOG_WARN("modules", "'{}' is not a valid module directory name (letters, digits, '_' and '-' only), skipping.", name);
+            continue;
+        }
         ProcessModuleDirectory(root, name);
+    }
 
     StartSupervisor();
 }
@@ -139,6 +149,7 @@ void ModuleMgr::ProcessModuleDirectory(std::string const& root, std::string cons
         d.Name = name;
         d.Version = info.Version;
         d.ProtocolVersion = info.ProtocolVersion;
+        d.Capabilities = CapabilitiesOf(info);
         d.Executable = (dir / name).string();
         d.Endpoint = (fs::path(root) / (name + ".sock")).string();
     }
@@ -152,14 +163,48 @@ void ModuleMgr::ProcessModuleDirectory(std::string const& root, std::string cons
         return;
     }
 
-    // Approval gate (doc 06). The approval store is not implemented yet, so the only way to spawn a
-    // module is the local-development override. Deny by default.
-    if (!_config.AutoApprove)
+    // Approval gate (doc 06): the module runs only if the capabilities it declares are the ones an
+    // operator approved. Deny by default.
+    CapabilityDeclaration const capabilities = CapabilitiesOf(info);
+    std::string const hash = CapabilityHash(capabilities);
+
+    bool approved = false;
+    std::string pendingReason;
+    std::vector<std::string> changes;
+    if (_config.AutoApprove)
+    {
+        TC_LOG_WARN("modules", "'{}' runs under Modules.AutoApproveLocal = 1: its capabilities are not checked. Development only.", name);
+        approved = true;
+    }
+    else if (!_approvalLoadError.empty())
+    {
+        pendingReason = "approval store unreadable: " + _approvalLoadError;
+    }
+    else
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        SetStatus(_modules.at(id), ModuleStatus::PendingApproval,
-                  "not approved: the approval store is not implemented yet; set Modules.AutoApproveLocal = 1 for local development");
+        ApprovalRecord const* record = _approvals.Find(name);
+        if (!record)
+            pendingReason = "never approved; run 'module approve " + name + "' to approve version " + info.Version;
+        else if (record->CapabilityHash != hash)
+        {
+            changes = DescribeCapabilityChanges(record->Capabilities, capabilities);
+            pendingReason = "capabilities changed since version " + record->ApprovedVersion + ": ";
+            for (size_t i = 0; i < changes.size(); ++i)
+                pendingReason += (i ? "; " : "") + changes[i];
+            pendingReason += "; run 'module approve " + name + "' to approve";
+        }
+        else
+            approved = true;
+    }
+
+    if (!approved)
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        SetStatus(_modules.at(id), ModuleStatus::PendingApproval, pendingReason);
         TC_LOG_INFO("modules", "'{}' {} is pending approval and was not started.", name, info.Version);
+        for (std::string const& change : changes)
+            TC_LOG_INFO("modules", "'{}' capability change: {}", name, change);
         return;
     }
 
@@ -494,6 +539,10 @@ std::vector<ModuleSnapshot> ModuleMgr::GetSnapshots()
     {
         ModuleSnapshot s;
         s.Name = d.Name;
+        s.Version = d.Version;
+        if (ApprovalRecord const* record = _approvals.Find(d.Name))
+            s.ApprovedVersion = record->ApprovedVersion;
+        s.Capabilities = d.Capabilities;
         s.Status = d.Status;
         s.StatusReason = d.StatusReason;
         s.LastFailure = d.LastFailure;
@@ -518,4 +567,113 @@ bool ModuleMgr::CheckProtocolVersion(std::string const& declared, std::string& r
     reason = "protocol_version mismatch: core speaks \"" + std::string(kModuleProtocolVersion) +
              "\", module declared \"" + declared + "\"";
     return false;
+}
+
+void ModuleMgr::LoadApprovalStore()
+{
+    _approvals = ApprovalStore();
+    _approvalLoadError.clear();
+
+    std::string error;
+    if (!_approvals.Load(ApprovalStorePath(), error))
+    {
+        _approvalLoadError = error;
+        TC_LOG_ERROR("modules", "{}. Modules will not be spawned until it is fixed; `module approve` is refused.", error);
+    }
+    _approvalsLoaded = true;
+}
+
+std::string ModuleMgr::ApprovalStorePath() const
+{
+    return (fs::path(sConfigMgr->GetFilename()).parent_path() / "approved_modules.json").string();
+}
+
+bool ModuleMgr::ApproveModule(std::string const& name, std::string& message)
+{
+    if (!IsValidModuleName(name))
+    {
+        message = "invalid module name '" + name + "'";
+        return false;
+    }
+
+    std::string const root = sConfigMgr->GetStringDefault("Modules.Dir", "modules_runtime");
+    fs::path const dir = fs::path(root) / name;
+
+    std::string json;
+    {
+        std::ifstream in(dir / "module.json");
+        if (!in)
+        {
+            message = "no module.json for '" + name + "' in " + root;
+            return false;
+        }
+        std::stringstream buffer;
+        buffer << in.rdbuf();
+        json = buffer.str();
+    }
+
+    ModuleManifestInfo info;
+    std::string error;
+    if (!ParseModuleManifest(json, info, error))
+    {
+        message = error;
+        return false;
+    }
+    if (info.Name != name)
+    {
+        message = "module.json name '" + info.Name + "' does not match directory '" + name + "'";
+        return false;
+    }
+    std::string reason;
+    if (!CheckProtocolVersion(info.ProtocolVersion, reason))
+    {
+        message = "cannot approve: " + reason;
+        return false;
+    }
+
+    CapabilityDeclaration const capabilities = CapabilitiesOf(info);
+    ApprovalRecord record;
+    record.ApprovedVersion = info.Version;
+    record.ApprovedAt = UtcTimestampNow();
+    record.CapabilityHash = CapabilityHash(capabilities);
+    record.Capabilities = capabilities;
+
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (!_approvalsLoaded)
+        LoadApprovalStore();
+    if (!_approvalLoadError.empty())
+    {
+        // Saving now would overwrite a store we could not read, losing every other approval.
+        message = "approval store is unreadable (" + _approvalLoadError + "); fix or move it before approving";
+        return false;
+    }
+
+    // Save a copy first, so a failed write leaves the in-memory store unchanged.
+    ApprovalStore next = _approvals;
+    next.Set(name, record);
+    std::string saveError;
+    if (!next.Save(ApprovalStorePath(), saveError))
+    {
+        message = "approval not saved: " + saveError;
+        return false;
+    }
+    _approvals = std::move(next);
+
+    message = "approved '" + name + "' version " + info.Version + " (capability hash " +
+              record.CapabilityHash.substr(0, 12) + "). Takes effect at the next module load.";
+    TC_LOG_INFO("modules", "'{}' {} approved by operator; capability hash {}.", name, info.Version, record.CapabilityHash);
+    return true;
+}
+
+char const* ModuleStatusName(ModuleStatus status)
+{
+    switch (status)
+    {
+        case ModuleStatus::PendingApproval:  return "pending approval";
+        case ModuleStatus::Starting:         return "starting";
+        case ModuleStatus::Running:          return "running";
+        case ModuleStatus::TransientFailure: return "restart scheduled";
+        case ModuleStatus::PermanentFailure: return "failed";
+    }
+    return "unknown";
 }
