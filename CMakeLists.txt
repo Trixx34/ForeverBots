@@ -83,7 +83,7 @@ add_subdirectory(dep)
 # add core sources
 add_subdirectory(src)
 
-# Module system: isolated per-module build discovery (docs/module-system/05-phase3-build-discovery-design.md).
+# Module system: isolated per-module build discovery (doc/module-system/05-phase3-build-discovery-design.md).
 # A broken module's configure/build failure is logged as a warning and skipped -- never fails this target.
 set(MODULES_SOURCE_DIR "${CMAKE_SOURCE_DIR}/modules")
 set(MODULES_BUILD_DIR "${CMAKE_BINARY_DIR}/modules")

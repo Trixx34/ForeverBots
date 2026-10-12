@@ -437,7 +437,7 @@ class TC_GAME_API UnitScript : public ScriptObject
         // Called when Spell Damage is being Dealt
         virtual void ModifySpellDamageTaken(Unit* target, Unit* attacker, int32& damage, SpellInfo const* spellInfo);
 
-        // Called when an aura is applied to or removed from a unit (module system — see docs/module-system/09-onaurachange-hook-design.md)
+        // Called when an aura is applied to or removed from a unit (module system — see doc/module-system/09-onaurachange-hook-design.md)
         virtual void OnAuraChange(Unit* target, AuraApplication* aurApp, bool apply);
 };
 

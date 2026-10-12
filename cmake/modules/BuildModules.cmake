@@ -1,10 +1,10 @@
 # Module System — isolated per-module build discovery.
-# See docs/module-system/05-phase3-build-discovery-design.md for the full design.
+# See doc/module-system/05-phase3-build-discovery-design.md for the full design.
 #
 # Invoked from the top-level CMakeLists.txt as a custom target added to ALL. Every failure path
 # below uses message(WARNING ...), never message(FATAL_ERROR) -- a broken module must never fail
-# the overall core build (docs/module-system/05 §2-3). Failed/skipped modules simply never appear
-# in MODULES_RUNTIME_DIR, so ModuleMgr::LoadModules() (docs/module-system/04) never sees them.
+# the overall core build (doc/module-system/05 §2-3). Failed/skipped modules simply never appear
+# in MODULES_RUNTIME_DIR, so ModuleMgr::LoadModules() (doc/module-system/04) never sees them.
 #
 # Expected variables (passed via -D on the invoking cmake -P call):
 #   MODULES_SOURCE_DIR  - absolute path to this repo's modules/ directory
@@ -44,7 +44,7 @@ foreach(candidate ${module_candidates})
 
     # TODO: parse module.json's "name" field (CMake has no native JSON parser pre-3.19's
     # string(JSON ...) -- use that once a minimum CMake version is pinned) and verify it exactly
-    # matches module_dir_name per docs/module-system/05 §1. Skipping this check in the skeleton.
+    # matches module_dir_name per doc/module-system/05 §1. Skipping this check in the skeleton.
 
     set(module_build_dir "${MODULES_BUILD_DIR}/${module_dir_name}")
 

@@ -17,7 +17,7 @@
 
 /* ScriptData
 Name: module_commandscript
-%Complete: 10 (skeleton -- see docs/module-system/06-phase4-approval-audit-design.md §3)
+%Complete: 10 (skeleton -- see doc/module-system/06-phase4-approval-audit-design.md §3)
 Comment: Operator commands for the external module system: approve/list/info.
 Category: commandscripts
 EndScriptData */
@@ -53,7 +53,7 @@ public:
     }
 
     // SKELETON: all three handlers just report "not yet implemented" -- see
-    // docs/module-system/12-initial-core-changes-scope.md. ModuleMgr itself has no discovery/
+    // doc/module-system/12-initial-core-changes-scope.md. ModuleMgr itself has no discovery/
     // approval-store logic yet for these to call into.
 
     static bool HandleModuleApproveCommand(ChatHandler* handler, std::string const& /*moduleName*/)

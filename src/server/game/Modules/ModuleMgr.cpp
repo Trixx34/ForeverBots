@@ -1,5 +1,5 @@
 /*
- * SKELETON — see ModuleMgr.h and docs/module-system/04-phase2-module-host-design.md.
+ * SKELETON — see ModuleMgr.h and doc/module-system/04-phase2-module-host-design.md.
  * No real boost::process/boost::asio/boost::interprocess implementation yet.
  */
 

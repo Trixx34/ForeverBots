@@ -433,7 +433,7 @@ int main(int argc, char** argv)
 
     sScriptMgr->OnStartup();
 
-    // Module system (docs/module-system/04-phase2-module-host-design.md). SKELETON: no-op until
+    // Module system (doc/module-system/04-phase2-module-host-design.md). SKELETON: no-op until
     // Modules.Enabled = 1 and modules exist in Modules.Dir.
     sModuleMgr->LoadModules();
 

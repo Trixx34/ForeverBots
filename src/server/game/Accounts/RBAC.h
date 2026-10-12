@@ -757,8 +757,8 @@ enum RBACPermissions
     // IF YOU ADD NEW PERMISSIONS, ADD THEM IN 3.3.5 BRANCH AS WELL!
     //
     // custom permissions 1000+
-    // Module system (docs/module-system/06-phase4-approval-audit-design.md §3) — "module approve/list/info".
-    // RBAC row must be seeded separately via SQL (see docs/module-system/12-initial-core-changes-scope.md),
+    // Module system (doc/module-system/06-phase4-approval-audit-design.md §3) — "module approve/list/info".
+    // RBAC row must be seeded separately via SQL (see doc/module-system/12-initial-core-changes-scope.md),
     // not included in this pass.
     RBAC_PERM_COMMAND_MODULE                                 = 1001,
     RBAC_PERM_MAX

@@ -1,7 +1,7 @@
 /*
  * Module System — core-side module host.
- * SKELETON: see docs/module-system/04-phase2-module-host-design.md for the full design and
- * docs/module-system/12-initial-core-changes-scope.md for what's implemented in this pass.
+ * SKELETON: see doc/module-system/04-phase2-module-host-design.md for the full design and
+ * doc/module-system/12-initial-core-changes-scope.md for what's implemented in this pass.
  *
  * No real boost::process spawning, boost::asio socket server, or boost::interprocess shared
  * memory yet -- method bodies in ModuleMgr.cpp are stubs. This establishes the class shape so it
@@ -20,7 +20,7 @@ using ModuleId = uint32;
 
 enum class ModuleStatus : uint8
 {
-    PendingApproval,    // docs/module-system/06-phase4-approval-audit-design.md §2
+    PendingApproval,    // doc/module-system/06-phase4-approval-audit-design.md §2
     Running,
     TransientFailure,   // crash/heartbeat timeout, restart policy applies — doc 04 §5
     PermanentFailure    // version mismatch / repeated handshake timeout / max restarts exceeded — doc 04 §5

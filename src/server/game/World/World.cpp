@@ -2477,7 +2477,7 @@ void World::Update(uint32 diff)
 
     {
         TC_METRIC_TIMER("world_update_time", TC_METRIC_TAG("type", "Update modules"));
-        // Module system (docs/module-system/04-phase2-module-host-design.md §4). SKELETON: no-op
+        // Module system (doc/module-system/04-phase2-module-host-design.md §4). SKELETON: no-op
         // until modules exist -- see ModuleMgr::OnWorldTick. Tick counter is local to this call
         // site for now; revisit if ModuleMgr ends up needing a shared/authoritative tick source.
         static uint64 moduleSystemTick = 0;

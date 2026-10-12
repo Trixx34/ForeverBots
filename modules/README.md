@@ -1,8 +1,8 @@
 # `modules/` — Module System Source Directory
 
 **Status: skeleton.** This directory is the clone target for the module system designed in
-`docs/module-system/`. See `docs/module-system/05-phase3-build-discovery-design.md` for the full
-design and `docs/module-system/12-initial-core-changes-scope.md` for what's implemented so far.
+`doc/module-system/`. See `doc/module-system/05-phase3-build-discovery-design.md` for the full
+design and `doc/module-system/12-initial-core-changes-scope.md` for what's implemented so far.
 
 ## Convention
 
@@ -12,7 +12,7 @@ and builds it automatically via `cmake/modules/BuildModules.cmake` — no change
 source are needed.
 
 A broken/failing module build does not block the rest of the core build (it's logged as a
-warning and skipped) — see `docs/module-system/05-phase3-build-discovery-design.md` §2-3.
+warning and skipped) — see `doc/module-system/05-phase3-build-discovery-design.md` §2-3.
 
 ## Status of the discovery mechanism
 
