@@ -1631,6 +1631,10 @@ HotSwap.ReCompilerBuildType = ""
 # act on most of these -- declared here so ConfigMgr has something to load once it does
 # (doc/module-system/12-initial-core-changes-scope.md).
 #
+# Per-module settings go in modules.d/<module-name>.conf, in the same directory as this file. Every .conf file
+# under that directory is loaded at startup, and each key must be written as Module.<module-name>.<Key>. The core
+# sends a module its keys with the prefix removed, right after the handshake. A module cannot read this file itself.
+#
 #    Modules.Enabled
 #        Description: Enables the external process-isolated module system.
 #        Default:     0 - (Disabled)

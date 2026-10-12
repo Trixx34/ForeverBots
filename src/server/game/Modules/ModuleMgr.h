@@ -2,8 +2,8 @@
  * Module System — core-side module host.
  * See doc/module-system/04-phase2-module-host-design.md for the design. Implemented: discovery,
  * spawn (boost::process), the Tier 1 handshake and heartbeat, and the restart policy (§5).
- * Not yet implemented: resource limits, Tier 2 bot actions and snapshot contents. Bot control is wired; the
- * bot backend (ModuleBotBackend) is installed by the bot implementation.
+ * Not yet implemented: resource limits, bot data in Tier 2 snapshots. Bot control and Tier 2 bot actions are wired;
+ * the bot backend (ModuleBotBackend) is installed by the bot implementation.
  */
 
 #ifndef TRINITYCORE_MODULEMGR_H
@@ -34,6 +34,7 @@ class child;
 using ModuleId = uint32;
 
 class ModuleTier2Region;
+struct ModuleActionSet;
 
 // Wire protocol this core speaks (Tier 1 schema + Tier 2 layout). Must equal kProtocolVersion in
 // forever-module-sdk's include/forever_module/protocol_version.h. Exact match only, no compat
@@ -196,6 +197,9 @@ class TC_GAME_API ModuleMgr
         };
 
         void ProcessModuleDirectory(std::string const& root, std::string const& name);
+        // Applies the actions a module published, for the bots that module controls and that are online.
+        // Called on the world thread with no lock held.
+        void ApplyModuleActions(ModuleId module, ModuleActionSet const& actions);
         void LoadApprovalStore(); // called with _mutex held, or before any module threads exist
         std::string ApprovalStorePath() const;
         // Starts one attempt: listen, spawn the process, start the session. Callers must not hold _mutex.

@@ -8,6 +8,8 @@
 #include <boost/interprocess/mapped_region.hpp>
 #include <boost/interprocess/shared_memory_object.hpp>
 
+#include <algorithm>
+#include <cstring>
 #include <new>
 
 using namespace forever_module;
@@ -89,4 +91,34 @@ uint64 ModuleTier2Region::PublishedSnapshotTick() const
 uint64 ModuleTier2Region::PublishedActionTick() const
 {
     return _header->published_action_tick.load(std::memory_order_acquire);
+}
+
+bool ModuleTier2Region::ReadNewActions(ModuleActionSet& out)
+{
+    auto const* base = static_cast<std::byte const*>(_mapping->get_address());
+
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
+        uint8 const buffer = _header->published_action_buffer.load(std::memory_order_acquire);
+        // The header tick is the cheap check for "nothing new", so an idle module costs one load per tick.
+        if (buffer == _seenActionBuffer && _header->published_action_tick.load(std::memory_order_acquire) == _seenActionTick)
+            return false;
+
+        auto const* queue = reinterpret_cast<ActionQueueHeader const*>(base + _actionOffset + buffer * _actionBytes);
+        uint32 const count = std::min(queue->action_count, _bounds.MaxActions);
+        ModuleActionSet copy;
+        copy.Tick = queue->tick_number;
+        copy.Actions.resize(count);
+        if (count > 0)
+            std::memcpy(copy.Actions.data(), reinterpret_cast<std::byte const*>(queue + 1), count * sizeof(forever_module::BotAction));
+
+        if (_header->published_action_buffer.load(std::memory_order_acquire) != buffer)
+            continue; // the module published again while we copied; read the new buffer
+
+        _seenActionBuffer = buffer;
+        _seenActionTick = copy.Tick;
+        out = std::move(copy);
+        return true;
+    }
+    return false; // the index kept flipping; the next tick tries again
 }

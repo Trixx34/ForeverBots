@@ -6,7 +6,9 @@
 #include "Config.h"
 #include "Log.h"
 #include "ModuleActions.h"
+#include "ModuleBotActions.h"
 #include "ModuleTier2.h"
+#include "BotMgr.h"
 #include "ModuleManifestInfo.h"
 
 #include <optional>
@@ -246,6 +248,17 @@ void ModuleMgr::ProcessModuleDirectory(std::string const& root, std::string cons
     SpawnModule(id);
 }
 
+// Keys the operator wrote as Module.<name>.<Key> (in modules.d/<name>.conf, loaded with the other config files).
+// The prefix is stripped, so the module sees its own key names. See doc/module-system/03, Config delivery.
+static std::vector<ModuleWire::ConfigEntry> LoadModuleConfig(std::string const& moduleName)
+{
+    std::string const prefix = "Module." + moduleName + ".";
+    std::vector<ModuleWire::ConfigEntry> entries;
+    for (std::string const& key : sConfigMgr->GetKeysByString(prefix))
+        entries.push_back({ key.substr(prefix.size()), sConfigMgr->GetStringDefault(key, "", true) });
+    return entries;
+}
+
 bool ModuleMgr::SpawnModule(ModuleId id)
 {
     ModuleSession::Settings settings;
@@ -269,7 +282,7 @@ bool ModuleMgr::SpawnModule(ModuleId id)
     {
         return NegotiateTier2(id, request, response, reason);
     };
-    // Module config from modules.d/<name>.conf is not wired up yet; the module gets an empty config.
+    settings.Config = LoadModuleConfig(name);
 
     auto session = std::make_shared<ModuleSession>(settings, id, [this, id](ModuleSession::Event event, std::string const& detail)
     {
@@ -803,20 +816,55 @@ void ModuleMgr::RunPendingActions()
 void ModuleMgr::OnWorldTick(uint64 tick)
 {
     // Runs on the world thread (doc 04 §4). Copy the regions out under the lock; publishing needs no lock.
-    std::vector<std::shared_ptr<ModuleTier2Region>> regions;
+    std::vector<std::pair<ModuleId, std::shared_ptr<ModuleTier2Region>>> regions;
     {
         std::lock_guard<std::mutex> lock(_mutex);
         for (auto const& entry : _modules)
             if (entry.second.Tier2 && entry.second.Session && entry.second.Session->IsAccepted())
-                regions.push_back(entry.second.Tier2);
+                regions.emplace_back(entry.first, entry.second.Tier2);
     }
 
-    for (std::shared_ptr<ModuleTier2Region> const& region : regions)
+    for (auto const& [id, region] : regions)
+    {
         if (region->SnapshotDue(tick))
             region->PublishSnapshot(tick);
 
+        ModuleActionSet actions;
+        if (region->ReadNewActions(actions))
+            ApplyModuleActions(id, actions);
+    }
+
     RunPendingControls();
     RunPendingActions();
+}
+
+void ModuleMgr::ApplyModuleActions(ModuleId module, ModuleActionSet const& actions)
+{
+    for (forever_module::BotAction const& action : actions.Actions)
+    {
+        uint32 owner = 0;
+        bool owned = false;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            owned = _owners.Owner(action.bot_guid, owner) && owner == module;
+        }
+        if (!owned)
+        {
+            TC_LOG_DEBUG("modules", "module {} sent an action for bot {}, which it does not control; dropped.", module, action.bot_guid);
+            continue;
+        }
+
+        Player* bot = sBotMgr->GetOnlinePlayer(action.bot_guid);
+        if (!bot)
+        {
+            TC_LOG_DEBUG("modules", "module {} sent an action for bot {}, which is not online; dropped.", module, action.bot_guid);
+            continue;
+        }
+
+        std::string reason;
+        if (!ApplyBotAction(*bot, action, reason))
+            TC_LOG_DEBUG("modules", "module {}: action on bot {} refused: {}.", module, action.bot_guid, reason);
+    }
 }
 
 void ModuleMgr::Unload()

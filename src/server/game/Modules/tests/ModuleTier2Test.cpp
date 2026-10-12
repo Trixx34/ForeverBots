@@ -8,7 +8,9 @@
 #include <boost/interprocess/shared_memory_object.hpp>
 
 #include <cstdio>
+#include <cstring>
 #include <string>
+#include <vector>
 
 namespace bi = boost::interprocess;
 
@@ -75,6 +77,62 @@ int main()
     auto const* snapshot = reinterpret_cast<forever_module::WorldTickSnapshotHeader const*>(
         base + forever_module::Tier2SnapshotBufferOffset(4, 2, header->published_snapshot_buffer.load()));
     CHECK(snapshot->tick_number == 6);
+
+    // Actions: the module writes into the buffer the core is not reading, then publishes the tick and the index,
+    // the way the SDK's Tier2Session::PublishActions does. The core reads only what is new.
+    bi::shared_memory_object shmRw(bi::open_only, name.c_str(), bi::read_write);
+    bi::mapped_region rw(shmRw, bi::read_write);
+    auto* rwBase = static_cast<std::byte*>(rw.get_address());
+    auto* rwHeader = static_cast<forever_module::Tier2RegionHeader*>(rw.get_address());
+
+    auto publishActions = [&](std::uint64_t actionTick, std::vector<forever_module::BotAction> const& actions,
+                              std::uint32_t claimedCount)
+    {
+        std::uint8_t const target = rwHeader->published_action_buffer.load() ^ 1;
+        auto* queue = reinterpret_cast<forever_module::ActionQueueHeader*>(
+            rwBase + forever_module::Tier2ActionBufferOffset(4, 2, 8, target));
+        queue->tick_number = actionTick;
+        queue->action_count = claimedCount;
+        if (!actions.empty())
+            std::memcpy(static_cast<void*>(queue + 1), actions.data(), actions.size() * sizeof(forever_module::BotAction));
+        rwHeader->published_action_tick.store(actionTick);
+        rwHeader->published_action_buffer.store(target);
+    };
+
+    forever_module::BotAction move;
+    move.bot_guid = 42;
+    move.type = forever_module::ActionType::kMoveTo;
+    move.dest_x = 1.0f;
+    forever_module::BotAction stop;
+    stop.bot_guid = 42;
+    stop.type = forever_module::ActionType::kStop;
+
+    ModuleActionSet actions;
+    CHECK(!region->ReadNewActions(actions)); // nothing published yet
+
+    publishActions(7, {move, stop}, 2);
+    CHECK(region->ReadNewActions(actions));
+    CHECK(actions.Tick == 7);
+    CHECK(actions.Actions.size() == 2);
+    if (actions.Actions.size() == 2)
+    {
+        CHECK(actions.Actions[0].bot_guid == 42 && actions.Actions[0].type == forever_module::ActionType::kMoveTo);
+        CHECK(actions.Actions[0].dest_x == 1.0f);
+        CHECK(actions.Actions[1].type == forever_module::ActionType::kStop);
+    }
+    CHECK(!region->ReadNewActions(actions)); // the same set is not returned twice
+
+    // An empty set is still new (it tells the core the module now wants nothing).
+    publishActions(8, {}, 0);
+    CHECK(region->ReadNewActions(actions));
+    CHECK(actions.Tick == 8);
+    CHECK(actions.Actions.empty());
+
+    // A claimed count above MaxActions is clamped to what the region holds (8 here).
+    std::vector<forever_module::BotAction> full(8, stop);
+    publishActions(9, full, 9);
+    CHECK(region->ReadNewActions(actions));
+    CHECK(actions.Actions.size() == 8);
 
     // Removing the region drops the name, so a later module attach fails.
     region.reset();

@@ -18,12 +18,20 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace boost::interprocess
 {
 class shared_memory_object;
 class mapped_region;
 }
+
+// One action set the module published: the snapshot tick it answers, and its actions (at most MaxActions).
+struct ModuleActionSet
+{
+    uint64 Tick = 0;
+    std::vector<forever_module::BotAction> Actions;
+};
 
 class ModuleTier2Region
 {
@@ -56,6 +64,12 @@ class ModuleTier2Region
         uint64 PublishedSnapshotTick() const;
         uint64 PublishedActionTick() const;
 
+        // Copies the action set the module published since the last call. Returns false if nothing new was published.
+        // The module publishes into the buffer the core is not reading, so a copy is retried if the index flips during it.
+        // A set is new when its buffer index or tick differs from the last one returned. Two publishes between two
+        // calls leave only the second visible, so the module should publish at most once per world tick.
+        bool ReadNewActions(ModuleActionSet& out);
+
     private:
         ModuleTier2Region(std::string name, Bounds bounds);
 
@@ -68,6 +82,8 @@ class ModuleTier2Region
         std::size_t _snapshotBytes = 0;  // one snapshot buffer
         std::size_t _actionOffset = 0;   // first action buffer
         std::size_t _actionBytes = 0;    // one action buffer
+        uint8 _seenActionBuffer = 0;     // index of the action set last returned by ReadNewActions
+        uint64 _seenActionTick = 0;      // tick of that set
 };
 
 #endif // TRINITYCORE_MODULE_TIER2_H
