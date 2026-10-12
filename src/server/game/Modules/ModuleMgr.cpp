@@ -8,6 +8,7 @@
 #include "ModuleActions.h"
 #include "ModuleBotActions.h"
 #include "ModuleBotSnapshot.h"
+#include "ModuleConfig.h"
 #include "ModuleTier2.h"
 #include "BotMgr.h"
 #include "ModuleManifestInfo.h"
@@ -253,11 +254,8 @@ void ModuleMgr::ProcessModuleDirectory(std::string const& root, std::string cons
 // The prefix is stripped, so the module sees its own key names. See doc/module-system/03, Config delivery.
 static std::vector<ModuleWire::ConfigEntry> LoadModuleConfig(std::string const& moduleName)
 {
-    std::string const prefix = "Module." + moduleName + ".";
-    std::vector<ModuleWire::ConfigEntry> entries;
-    for (std::string const& key : sConfigMgr->GetKeysByString(prefix))
-        entries.push_back({ key.substr(prefix.size()), sConfigMgr->GetStringDefault(key, "", true) });
-    return entries;
+    return ModuleConfigFor(moduleName, sConfigMgr->GetKeysByString("Module." + moduleName + "."),
+                           [](std::string const& key) { return sConfigMgr->GetStringDefault(key, "", true); });
 }
 
 bool ModuleMgr::SpawnModule(ModuleId id)
