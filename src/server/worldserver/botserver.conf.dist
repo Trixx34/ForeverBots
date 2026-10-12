@@ -4337,6 +4337,13 @@ Bot.StartGear.AllowBindOnPickup = 0
 #        Values:      0 (off) or 1 (on)
 Bot.StartGear.Armor = 1
 Bot.StartGear.Weapons = 1
+#
+#    Bot.StartGear.MaxItemLevel
+#        Description: Skip items whose item level is above this value. Guards against items that list a low required level
+#                     but a high item level. The START_GEAR log rows show each granted item's item level ("ilvl").
+#        Default:     0 (no cap)
+#        Values:      0 or an item level
+Bot.StartGear.MaxItemLevel = 0
 
 #
 #    Bot.Log.Diet.Enabled

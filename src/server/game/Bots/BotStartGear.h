@@ -37,6 +37,7 @@ namespace BotStartGear
         uint8 Slot = 0;
         uint32 Entry = 0;
         uint32 ReqLevel = 0;
+        uint32 ItemLevel = 0;
         uint32 Quality = 0;
         std::string Name;
     };

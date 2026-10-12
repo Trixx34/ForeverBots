@@ -43,7 +43,7 @@ lower type for a slot with no piece of the best type. Cloaks, neck and rings are
 the main hand keeps its starting weapon or the main hand pick fails. The main hand takes the better
 of the best two-hander and the best one-hander plus off hand (shield, holdable, or a second one-hander when the class can dual wield).
 
-Settings: `Enabled` (1), `MaxQuality` (2), `LevelOffset` (0), `MinLevel` (1), `LevelStep` (5), `AllowBindOnPickup` (0), `Armor` (1),
+Settings: `Enabled` (1), `MaxQuality` (2), `LevelOffset` (0), `MinLevel` (1), `LevelStep` (5), `AllowBindOnPickup` (0), `MaxItemLevel` (0, no cap), `Armor` (1),
 `Weapons` (1). Bows, crossbows and guns are skipped while the item data has no ammunition items (the current data has none).
 
 Limits: a bot that already wears a level 1 starter weapon keeps it (slots are not replaced). Item data comes from the loaded item templates at runtime, so no item ids are hard coded. The data has no ammunition items, so hunters get no ranged weapon.

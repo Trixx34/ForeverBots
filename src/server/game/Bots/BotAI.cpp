@@ -1912,7 +1912,7 @@ void BotAI::RunStartGear(Player* bot, char const* cause)
             items += ',';
         std::string name = g.Name;
         name.erase(std::remove_if(name.begin(), name.end(), [](char c) { return c == '"' || c == '\\'; }), name.end());
-        items += Trinity::StringFormat(R"({{"slot":{},"entry":{},"name":"{}","req":{},"q":{}}})", uint32(g.Slot), g.Entry, name, g.ReqLevel, g.Quality);
+        items += Trinity::StringFormat(R"({{"slot":{},"entry":{},"name":"{}","req":{},"ilvl":{},"q":{}}})", uint32(g.Slot), g.Entry, name, g.ReqLevel, g.ItemLevel, g.Quality);
     }
     BotEvent event = MakeEvent(bot, "gear", BOTLOG_INFO, r.Items.empty() ? "START_GEAR_NONE" : "START_GEAR",
         Trinity::StringFormat("{} of {} empty slots filled at L{}", r.Items.size(), r.EmptyBefore, uint32(bot->GetLevel())));

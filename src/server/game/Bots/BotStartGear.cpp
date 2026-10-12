@@ -43,6 +43,7 @@ struct Settings
     bool AllowBop = false;      // Bot.StartGear.AllowBindOnPickup
     bool Armor = true;          // Bot.StartGear.Armor
     bool Weapons = true;        // Bot.StartGear.Weapons
+    uint32 MaxItemLevel = 0;    // Bot.StartGear.MaxItemLevel: skip items above this item level (0 = no cap)
 };
 
 Settings s_cfg;
@@ -61,6 +62,7 @@ Settings const& Cfg()
         s.AllowBop = sConfigMgr->GetBoolDefault("Bot.StartGear.AllowBindOnPickup", false);
         s.Armor = sConfigMgr->GetBoolDefault("Bot.StartGear.Armor", true);
         s.Weapons = sConfigMgr->GetBoolDefault("Bot.StartGear.Weapons", true);
+        s.MaxItemLevel = uint32(std::clamp<int32>(sConfigMgr->GetIntDefault("Bot.StartGear.MaxItemLevel", 0), 0, 1000));
         s_cfg = s;
     });
     return s_cfg;
@@ -170,6 +172,8 @@ std::vector<Cand> const& Candidates(uint8 classId, uint32 level, Settings const&
             continue;
         if (p.GetQuality() > s.MaxQuality || p.GetBaseRequiredLevel() > maxReq)
             continue;
+        if (s.MaxItemLevel && p.GetBaseItemLevel() > s.MaxItemLevel)
+            continue;
         if (p.GetBaseItemLevel() == 0 || p.GetRequiredSkill() || p.GetRequiredSpell() || p.GetRequiredReputationFaction() || p.GetStartQuest() ||
             p.GetDuration() || p.GetMap() || p.GetArea(0) || p.GetItemSet() || p.GetPlayerLevelToItemLevelCurveId() || p.GetScalingStatContentTuning() ||
             p.GetHolidayID() || p.GetItemLimitCategory())
@@ -250,6 +254,7 @@ bool Equip(Player* bot, Cand const& c, uint8 slot, Result& res)
     g.Slot = slot;
     g.Entry = c.Entry;
     g.ReqLevel = c.ReqLevel;
+    g.ItemLevel = c.Proto->GetBaseItemLevel();
     g.Quality = c.Proto->GetQuality();
     char const* n = c.Proto->GetName(LOCALE_enUS);
     g.Name = n ? n : "";
