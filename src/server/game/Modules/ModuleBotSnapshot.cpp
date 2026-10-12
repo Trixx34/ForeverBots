@@ -109,9 +109,13 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby)
 
     FillCooldowns(bot, entry.spell_cooldowns);
 
+    entry.in_combat = bot.IsInCombat() ? 1 : 0;
     if (Unit* victim = bot.GetVictim())
+    {
         if (!EncodeUnitRef(*victim, entry.threat_target_guid))
             entry.threat_target_guid = 0;
+        entry.target_distance = bot.GetDistance(victim);
+    }
 
     if (maxNearby == 0)
         return result;

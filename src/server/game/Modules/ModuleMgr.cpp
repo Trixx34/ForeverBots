@@ -18,6 +18,7 @@
 #include <boost/process/v1.hpp>
 
 #include <algorithm>
+#include <iterator>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -861,8 +862,21 @@ void ModuleMgr::OnWorldTick(uint64 tick)
 
             std::vector<ModuleSnapshotBot> bots;
             for (uint64 guid : owned)
-                if (Player* bot = sBotMgr->GetOnlinePlayer(guid))
-                    bots.push_back(BuildSnapshotBot(*bot, region->GetBounds().MaxNearbyUnits));
+            {
+                Player* bot = sBotMgr->GetOnlinePlayer(guid);
+                if (!bot)
+                    continue;
+
+                ModuleSnapshotBot entry = BuildSnapshotBot(*bot, region->GetBounds().MaxNearbyUnits);
+                if (auto result = _actionResults.find(guid); result != _actionResults.end())
+                {
+                    entry.Bot.last_action_type = result->second.Type;
+                    entry.Bot.last_action_status = result->second.Status;
+                    entry.Bot.last_action_spell = result->second.Spell;
+                    entry.Bot.last_action_sequence = result->second.Sequence;
+                }
+                bots.push_back(std::move(entry));
+            }
             region->PublishSnapshot(tick, bots);
         }
 
@@ -873,6 +887,23 @@ void ModuleMgr::OnWorldTick(uint64 tick)
 
     RunPendingControls();
     RunPendingActions();
+
+    // Results are kept only while some module owns the bot; a bot nobody controls has nothing to report to.
+    std::lock_guard<std::mutex> lock(_mutex);
+    for (auto it = _actionResults.begin(); it != _actionResults.end();)
+    {
+        uint32 owner = 0;
+        it = _owners.Owner(it->first, owner) ? std::next(it) : _actionResults.erase(it);
+    }
+}
+
+void ModuleMgr::RecordActionResult(uint64 botGuid, forever_module::BotAction const& action, forever_module::BotActionStatus status)
+{
+    ActionResult& result = _actionResults[botGuid];
+    result.Status = status;
+    result.Type = uint8(action.type);
+    result.Spell = action.type == forever_module::ActionType::kCastSpell ? action.spell_id : 0;
+    ++result.Sequence;
 }
 
 void ModuleMgr::ApplyModuleActions(ModuleId module, ModuleActionSet const& actions)
@@ -888,6 +919,7 @@ void ModuleMgr::ApplyModuleActions(ModuleId module, ModuleActionSet const& actio
         if (!owned)
         {
             TC_LOG_DEBUG("modules", "module {} sent an action for bot {}, which it does not control; dropped.", module, action.bot_guid);
+            RecordActionResult(action.bot_guid, action, forever_module::BotActionStatus::kRefused);
             continue;
         }
 
@@ -895,12 +927,15 @@ void ModuleMgr::ApplyModuleActions(ModuleId module, ModuleActionSet const& actio
         if (!bot)
         {
             TC_LOG_DEBUG("modules", "module {} sent an action for bot {}, which is not online; dropped.", module, action.bot_guid);
+            RecordActionResult(action.bot_guid, action, forever_module::BotActionStatus::kNotOnline);
             continue;
         }
 
         std::string reason;
-        if (!ApplyBotAction(*bot, action, reason))
-            TC_LOG_DEBUG("modules", "module {}: action on bot {} refused: {}.", module, action.bot_guid, reason);
+        forever_module::BotActionStatus const status = ApplyBotAction(*bot, action, reason);
+        RecordActionResult(action.bot_guid, action, status);
+        if (status != forever_module::BotActionStatus::kApplied)
+            TC_LOG_DEBUG("modules", "module {}: action on bot {} refused ({}): {}.", module, action.bot_guid, int(status), reason);
     }
 }
 

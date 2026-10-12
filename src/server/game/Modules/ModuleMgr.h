@@ -14,6 +14,7 @@
 #include "ModuleBotBackend.h"
 #include "ModuleBotOwnership.h"
 #include "ModuleSession.h"
+#include "ModuleTier2Layout.h"
 
 #include <atomic>
 #include <chrono>
@@ -39,7 +40,7 @@ struct ModuleActionSet;
 // Wire protocol this core speaks (Tier 1 schema + Tier 2 layout). Must equal kProtocolVersion in
 // forever-module-sdk's include/forever_module/protocol_version.h. Exact match only, no compat
 // shims in v1 (doc/module-system/02-phase0-decisions.md §3, doc/module-system/11-sdk-scope.md).
-inline constexpr char const* kModuleProtocolVersion = "2";
+inline constexpr char const* kModuleProtocolVersion = "3";
 
 enum class ModuleStatus : uint8
 {
@@ -201,6 +202,17 @@ class TC_GAME_API ModuleMgr
         // Applies the actions a module published, for the bots that module controls and that are online.
         // Called on the world thread with no lock held.
         void ApplyModuleActions(ModuleId module, ModuleActionSet const& actions);
+
+        // What the last action applied to each bot gave (world thread only). Copied into the bot's snapshot entry.
+        struct ActionResult
+        {
+            forever_module::BotActionStatus Status = forever_module::BotActionStatus::kNone;
+            uint8 Type = 0;   // ActionType
+            uint32 Spell = 0;
+            uint32 Sequence = 0;
+        };
+        std::unordered_map<uint64, ActionResult> _actionResults;
+        void RecordActionResult(uint64 botGuid, forever_module::BotAction const& action, forever_module::BotActionStatus status);
         void LoadApprovalStore(); // called with _mutex held, or before any module threads exist
         std::string ApprovalStorePath() const;
         // Starts one attempt: listen, spawn the process, start the session. Callers must not hold _mutex.

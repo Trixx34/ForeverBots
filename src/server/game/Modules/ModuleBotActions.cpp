@@ -10,6 +10,7 @@
 
 using forever_module::ActionType;
 using forever_module::BotAction;
+using forever_module::BotActionStatus;
 
 namespace
 {
@@ -56,9 +57,34 @@ Unit* ResolveHostileTarget(Player& bot, uint64 ref, std::string& reason)
     return target;
 }
 
+// Maps a cast result to the status a module sees in the next snapshot.
+BotActionStatus StatusForCast(SpellCastResult result)
+{
+    switch (result)
+    {
+        case SPELL_CAST_OK:
+            return BotActionStatus::kApplied;
+        case SPELL_FAILED_OUT_OF_RANGE:
+            return BotActionStatus::kOutOfRange;
+        case SPELL_FAILED_NOT_READY:
+            return BotActionStatus::kOnCooldown;
+        case SPELL_FAILED_NO_POWER:
+            return BotActionStatus::kNotEnoughPower;
+        case SPELL_FAILED_LINE_OF_SIGHT:
+            return BotActionStatus::kNoLineOfSight;
+        case SPELL_FAILED_BAD_TARGETS:
+        case SPELL_FAILED_BAD_IMPLICIT_TARGETS:
+            return BotActionStatus::kInvalidTarget;
+        case SPELL_FAILED_NOT_KNOWN:
+            return BotActionStatus::kNotKnown;
+        default:
+            return BotActionStatus::kRefused;
+    }
+}
+
 } // namespace
 
-bool ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
+BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
 {
     switch (action.type)
     {
@@ -66,12 +92,12 @@ bool ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
             bot.StopMoving();
             bot.GetMotionMaster()->Clear();
             bot.GetMotionMaster()->MoveIdle();
-            return true;
+            return BotActionStatus::kApplied;
 
         case ActionType::kMoveTo:
             bot.GetMotionMaster()->Clear();
             bot.GetMotionMaster()->MovePoint(0, action.dest_x, action.dest_y, action.dest_z);
-            return true;
+            return BotActionStatus::kApplied;
 
         case ActionType::kFollow:
         {
@@ -79,17 +105,24 @@ bool ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
             if (!target || target == &bot || !target->IsInWorld())
             {
                 reason = "follow target is not a unit on this bot's map";
-                return false;
+                return BotActionStatus::kInvalidTarget;
             }
             bot.GetMotionMaster()->Clear();
             bot.GetMotionMaster()->MoveFollow(target, 1.0f);
-            return true;
+            return BotActionStatus::kApplied;
         }
 
         case ActionType::kAttackTarget:
         {
             Unit* target = ResolveHostileTarget(bot, action.target_guid, reason);
-            return target && bot.Attack(target, true);
+            if (!target)
+                return BotActionStatus::kInvalidTarget;
+            if (!bot.Attack(target, true))
+            {
+                reason = "attack was refused";
+                return BotActionStatus::kRefused;
+            }
+            return BotActionStatus::kApplied;
         }
 
         case ActionType::kCastSpell:
@@ -97,25 +130,27 @@ bool ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
             if (!sSpellMgr->GetSpellInfo(action.spell_id, DIFFICULTY_NONE))
             {
                 reason = "unknown spell " + std::to_string(action.spell_id);
-                return false;
+                return BotActionStatus::kUnknownSpell;
             }
             if (!bot.HasSpell(action.spell_id))
             {
                 reason = "bot does not know spell " + std::to_string(action.spell_id);
-                return false;
+                return BotActionStatus::kNotKnown;
             }
             // A zero target means the bot casts on itself.
             Unit* target = action.target_guid == 0 ? &bot : ResolveUnit(bot, action.target_guid);
             if (!target || !target->IsInWorld())
             {
                 reason = "cast target is not a unit on this bot's map";
-                return false;
+                return BotActionStatus::kInvalidTarget;
             }
-            bot.CastSpell(target, action.spell_id, false);
-            return true;
+            SpellCastResult const result = bot.CastSpell(target, action.spell_id, false);
+            if (result != SPELL_CAST_OK)
+                reason = "cast of spell " + std::to_string(action.spell_id) + " returned result " + std::to_string(int32(result));
+            return StatusForCast(result);
         }
     }
 
     reason = "unknown action type";
-    return false;
+    return BotActionStatus::kRefused;
 }

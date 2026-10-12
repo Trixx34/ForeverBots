@@ -19,7 +19,7 @@
 
 class Player;
 
-// Returns true if the action was applied. On false, reason says why it was refused.
-bool ApplyBotAction(Player& bot, forever_module::BotAction const& action, std::string& reason);
+// Applies the action and returns what happened. Anything but kApplied comes with the reason in `reason` (for the log).
+forever_module::BotActionStatus ApplyBotAction(Player& bot, forever_module::BotAction const& action, std::string& reason);
 
 #endif // TRINITYCORE_MODULE_BOT_ACTIONS_H
