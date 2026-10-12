@@ -70,6 +70,11 @@ class TC_GAME_API BotMgr
         // every bot out with `reason`. Update() does not run after the loop, so LogoutAll alone would leave logins hanging.
         void Shutdown(char const* reason);
 
+        // Whether a new bot may be created now. When it may not, reason says why: the run's stop time has passed, the bot
+        // limit is reached, the world update is running behind, or the character database queue is too long. The reason is
+        // logged when it changes.
+        bool AcceptSpawn(std::string& reason);
+
         // Creates a bot character with this race and class (Player::Create decides whether the combination is valid).
         // level is the character's level (1 is the race's starting level). Returns its guid, or 0 with the reason in error. The character is saved in the background; login is
         // requested with RequestLogin once it exists.
@@ -94,7 +99,8 @@ class TC_GAME_API BotMgr
         BotMgr() = default;
 
         void StartLogin(BotInfo& bot);
-        void ProcessLogins();
+        void ProcessLogins(uint32 diff);
+        void CheckStopTime();
         void PollLogins(); // advances the logins in flight: finishes or fails them
         void PollCreates(); // runs the save callbacks of characters that finished committing
         void FinishCreate(uint64 guid, bool success);
@@ -114,6 +120,20 @@ class TC_GAME_API BotMgr
         uint32 _loginTimeoutMs = 60000;
         uint32 _reloginDelayMs = 2000; // lets the previous logout save reach the database before the next load
         bool _registryLoaded = false;
+
+        // Login rate: a token bucket, one login per token, refilled at Bot.Login.MaxPerSecond.
+        uint32 _loginPerSecond = 10;
+        double _loginTokens = 0.0;
+
+        // Spawn limits (Bot.Limit.*) and the run's stop time (Bot.Run.StopTime).
+        uint32 _limitMaxBots = 1500;
+        uint32 _limitMaxWorldDiffMs = 250;
+        uint32 _limitMaxDbQueue = 5000;
+        uint32 _lastWorldDiffMs = 0;     // the interval of the last world update: it grows when the world falls behind
+        bool _stopConfigured = false;
+        uint32 _stopAtMs = 0;            // uptime at which the run stops
+        bool _stopRequested = false;
+        std::string _lastRefusal;        // the last reason a spawn was refused, so each new reason is logged once
 };
 
 #define sBotMgr BotMgr::instance()

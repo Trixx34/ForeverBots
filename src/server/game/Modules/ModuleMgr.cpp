@@ -103,9 +103,9 @@ void ModuleMgr::LoadModules()
     _config.RestartBackoffMs = static_cast<uint64>(sConfigMgr->GetIntDefault("Modules.RestartBackoffMs", 1000));
     _config.CommandRequestTimeoutMs = static_cast<uint64>(sConfigMgr->GetIntDefault("Modules.CommandRequestTimeoutMs", 200));
     _config.AutoApprove = sConfigMgr->GetBoolDefault("Modules.AutoApproveLocal", false);
-    _config.Tier2MaxBots = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxBots", 64));
+    _config.Tier2MaxBots = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxBots", 1500));
     _config.Tier2MaxNearbyUnits = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxNearbyUnits", 16));
-    _config.Tier2MaxActions = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxActions", 256));
+    _config.Tier2MaxActions = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxActions", 3000));
     _config.Tier2MaxTickInterval = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxTickInterval", 100));
 
     std::string const root = sConfigMgr->GetStringDefault("Modules.Dir", "modules_runtime");

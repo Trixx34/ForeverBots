@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <ctime>
 #include <map>
 #include <memory>
 #include <set>
@@ -81,6 +82,47 @@ BotMgr* BotMgr::instance()
     return &instance;
 }
 
+namespace
+{
+
+// Seconds since local midnight for "HH:MM" or "HH:MM:SS"; -1 if the text is not a clock time.
+int32 ParseClockSeconds(std::string const& text)
+{
+    if (text.size() != 5 && text.size() != 8)
+        return -1;
+    if (text[2] != ':' || (text.size() == 8 && text[5] != ':'))
+        return -1;
+
+    auto field = [&text](size_t pos, int32 max) -> int32
+    {
+        if (text[pos] < '0' || text[pos] > '9' || text[pos + 1] < '0' || text[pos + 1] > '9')
+            return -1;
+        int32 const value = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
+        return value <= max ? value : -1;
+    };
+
+    int32 const hours = field(0, 23);
+    int32 const minutes = field(3, 59);
+    int32 const seconds = text.size() == 8 ? field(6, 59) : 0;
+    if (hours < 0 || minutes < 0 || seconds < 0)
+        return -1;
+    return hours * 3600 + minutes * 60 + seconds;
+}
+
+int32 LocalSecondsOfDay()
+{
+    time_t const now = time(nullptr);
+    tm local{};
+#ifdef _WIN32
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    return local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec;
+}
+
+} // namespace
+
 void BotMgr::LoadRegistry()
 {
     if (_registryLoaded)
@@ -90,6 +132,31 @@ void BotMgr::LoadRegistry()
     _loginMaxPerTick = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Login.MaxPerTick", 5)));
     _loginTimeoutMs = uint32(std::max<int32>(1000, sConfigMgr->GetIntDefault("Bot.Login.TimeoutMs", 60000)));
     _reloginDelayMs = uint32(std::max<int32>(0, sConfigMgr->GetIntDefault("Bot.Relogin.DelayMs", 2000)));
+    _loginPerSecond = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Login.MaxPerSecond", 10)));
+    _limitMaxBots = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Limit.MaxBots", 1500)));
+    _limitMaxWorldDiffMs = uint32(std::max<int32>(10, sConfigMgr->GetIntDefault("Bot.Limit.MaxWorldDiffMs", 250)));
+    _limitMaxDbQueue = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Limit.MaxDbQueue", 5000)));
+
+    // The run's stop time is the first such local clock time after startup. At that point no bot is created, and the
+    // server shuts down through the normal shutdown path, so the bots are saved and logged out.
+    std::string const stopText = sConfigMgr->GetStringDefault("Bot.Run.StopTime", "");
+    if (!stopText.empty())
+    {
+        int32 const stopSec = ParseClockSeconds(stopText);
+        if (stopSec < 0)
+        {
+            TC_LOG_ERROR("server.worldserver", "Bot.Run.StopTime '{}' is not HH:MM or HH:MM:SS; the run has no stop time.", stopText);
+        }
+        else
+        {
+            int32 untilStop = (stopSec - LocalSecondsOfDay() + 86400) % 86400;
+            if (untilStop == 0)
+                untilStop = 86400;
+            _stopConfigured = true;
+            _stopAtMs = uint32(untilStop) * 1000;
+            TC_LOG_INFO("server.worldserver", "Bot run stops at {} local, in {} minutes.", stopText, untilStop / 60);
+        }
+    }
 
     std::vector<uint32> accounts;
     std::map<uint32, std::string> accountNames;
@@ -369,9 +436,52 @@ void BotMgr::LogoutAll(char const* reason)
 void BotMgr::Update(uint32 diff)
 {
     _uptimeMs += diff;
+    _lastWorldDiffMs = diff;
     PollCreates();
     PollLogins();
-    ProcessLogins();
+    CheckStopTime();
+    ProcessLogins(diff);
+}
+
+bool BotMgr::AcceptSpawn(std::string& reason)
+{
+    std::string refusal;
+    if (_stopRequested || (_stopConfigured && _uptimeMs >= _stopAtMs))
+        refusal = "the bot run's stop time has passed";
+    else if (_bots.size() >= _limitMaxBots)
+        refusal = "the bot limit of " + std::to_string(_limitMaxBots) + " is reached";
+    else if (_lastWorldDiffMs > _limitMaxWorldDiffMs)
+        refusal = "the world update interval is " + std::to_string(_lastWorldDiffMs) + " ms (limit " +
+                  std::to_string(_limitMaxWorldDiffMs) + " ms)";
+    else if (uint64(CharacterDatabase.QueueSize()) > _limitMaxDbQueue)
+        refusal = "the character database queue has " + std::to_string(CharacterDatabase.QueueSize()) + " statements (limit " +
+                  std::to_string(_limitMaxDbQueue) + ")";
+
+    if (refusal.empty())
+    {
+        _lastRefusal.clear();
+        return true;
+    }
+
+    reason = "not creating a bot: " + refusal;
+    if (refusal != _lastRefusal)
+    {
+        _lastRefusal = refusal;
+        TC_LOG_WARN("server.worldserver", "{}.", reason);
+    }
+    return false;
+}
+
+// At the stop time the run ends: a normal shutdown, so the world loop stops and Main.cpp logs every bot out.
+void BotMgr::CheckStopTime()
+{
+    if (!_stopConfigured || _stopRequested || _uptimeMs < _stopAtMs)
+        return;
+
+    _stopRequested = true;
+    TC_LOG_INFO("server.worldserver", "Bot run stop time reached after {} minutes: no more bots are created, and the server shuts down.",
+                _stopAtMs / 60000);
+    sWorld->ShutdownServ(60, 0, SHUTDOWN_EXIT_CODE, "bot run stop time");
 }
 
 // Advances the logins in flight: a bot that is in the world is finished, one that timed out fails.
@@ -431,10 +541,14 @@ void BotMgr::Shutdown(char const* reason)
     LogoutAll(reason);
 }
 
-void BotMgr::ProcessLogins()
+void BotMgr::ProcessLogins(uint32 diff)
 {
+    // Logins start at Bot.Login.MaxPerSecond a second, at most one second's worth saved up, and at most
+    // Bot.Login.MaxPerTick in one tick.
+    _loginTokens = std::min<double>(_loginTokens + double(diff) * _loginPerSecond / 1000.0, double(_loginPerSecond));
+
     uint32 started = 0;
-    while (!_loginQueue.empty() && started < _loginMaxPerTick)
+    while (!_loginQueue.empty() && started < _loginMaxPerTick && _loginTokens >= 1.0)
     {
         uint64 const guid = _loginQueue.front();
         auto it = _bots.find(guid);
@@ -450,6 +564,7 @@ void BotMgr::ProcessLogins()
 
         _loginQueue.pop_front();
         StartLogin(bot);
+        _loginTokens -= 1.0;
         ++started;
     }
 }

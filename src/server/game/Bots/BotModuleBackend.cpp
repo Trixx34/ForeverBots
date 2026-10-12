@@ -51,6 +51,11 @@ uint64 BotModuleBackend::Spawn(ModuleWire::SpawnParamsMsg const& params, std::st
     }
     uint8 const level = params.Level == 0 ? uint8(1) : uint8(params.Level);
 
+    // The run's limits (bot count, stop time, world update interval, database queue) are checked here, so every spawn
+    // path honours them, not only the module's ramp.
+    if (!sBotMgr->AcceptSpawn(reason))
+        return 0;
+
     std::string error;
     uint64 const guid = sBotMgr->CreateBot(uint8(params.Race), uint8(params.ClassId), level, error);
     if (!guid)

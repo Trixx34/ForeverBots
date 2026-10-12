@@ -1701,11 +1701,12 @@ Modules.RestartBackoffMs = 1000
 Modules.CommandRequestTimeoutMs = 200
 
 #    Modules.Tier2.MaxBots
-#        Default:     64
+#        Default:     1500
 #        Upper limit on bots in a module's Tier 2 region. A module's request is capped at this value.
-#        Each bot costs about 88 bytes per snapshot buffer plus its nearby units; the region is allocated per module.
+#        Each bot costs 144 bytes per snapshot buffer plus 40 bytes per nearby unit (16 units by default, so about 784 bytes
+#        a bot). At 1500 bots the region is about 2.5 MiB, allocated per module.
 
-Modules.Tier2.MaxBots = 64
+Modules.Tier2.MaxBots = 1500
 
 #    Modules.Tier2.MaxNearbyUnits
 #        Default:     16
@@ -1714,10 +1715,10 @@ Modules.Tier2.MaxBots = 64
 Modules.Tier2.MaxNearbyUnits = 16
 
 #    Modules.Tier2.MaxActions
-#        Default:     256
-#        Upper limit on bot actions a module may publish per tick.
+#        Default:     3000
+#        Upper limit on bot actions a module may publish per tick. Two per bot at the 1500-bot ceiling.
 
-Modules.Tier2.MaxActions = 256
+Modules.Tier2.MaxActions = 3000
 
 #    Modules.Tier2.MaxTickInterval
 #        Default:     100
@@ -1730,6 +1731,39 @@ Modules.Tier2.MaxTickInterval = 100
 #        Bot logins started per world tick. Logins are spread over several ticks so the world does not stall.
 
 Bot.Login.MaxPerTick = 5
+
+#    Bot.Login.MaxPerSecond
+#        Default:     10
+#        Bot logins started per second, on a token bucket of one second's worth. 100 bots queued at once take about 10
+#        seconds to log in.
+
+Bot.Login.MaxPerSecond = 10
+
+#    Bot.Limit.MaxBots
+#        Default:     1500
+#        Most bots the core creates. A spawn over this is refused with the reason in the module's log.
+
+Bot.Limit.MaxBots = 1500
+
+#    Bot.Limit.MaxWorldDiffMs
+#        Default:     250
+#        Spawns stop while the interval between world updates is above this many milliseconds: the world is behind.
+
+Bot.Limit.MaxWorldDiffMs = 250
+
+#    Bot.Limit.MaxDbQueue
+#        Default:     5000
+#        Spawns stop while the character database has more queued statements than this.
+
+Bot.Limit.MaxDbQueue = 5000
+
+#    Bot.Run.StopTime
+#        Default:     (empty: no stop time)
+#        Local time of day, HH:MM or HH:MM:SS. The first such time after startup ends the run: no bot is created after it,
+#        and the server shuts down cleanly (bots are saved and logged out), as a console shutdown does.
+#        Example: Bot.Run.StopTime = 06:00
+
+Bot.Run.StopTime =
 
 #    Bot.Login.TimeoutMs
 #        Default:     60000
