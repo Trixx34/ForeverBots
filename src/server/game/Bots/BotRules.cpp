@@ -111,8 +111,8 @@ Settings const& Cfg()
         s.Pick.MinXp = uint32(Int("Bot.Rules.TargetPick.MinXp", 25, 0, 100000));
 
         s.QuestFilter = Bool("Bot.Rules.QuestFilter.Enabled", true);
-        s.QuestBlocked = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.QuestFilter.BlockedQuests", "794,5441,1656,3905,47,400,2160"));
-        s.QuestNeverBlock = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.QuestFilter.NeverBlock", "404,112,789,792,380,488,92544"));
+        s.QuestBlocked = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.QuestFilter.BlockedQuests", "794,5441,1656,3905,47,400,2160,170,4402,805,789,6394"));
+        s.QuestNeverBlock = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.QuestFilter.NeverBlock", "404,112,792,380,488,92544"));
         s.QuestLowLevelBlocked = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.QuestFilter.LowLevelBlocked", "92515,92553,92516,92551"));
         s.QuestLowLevelUntil = uint32(Int("Bot.Rules.QuestFilter.LowLevelUntil", 7, 1, 80));
         s.CampAvoid = Bool("Bot.Rules.CampAvoid.Enabled", true);
@@ -126,6 +126,18 @@ Settings const& Cfg()
         s.QuestLevelSlack = uint32(Int("Bot.Rules.QuestFilter.LevelSlack", 0, 0, 10));
         s.QuestGlobalSec = uint32(Int("Bot.Rules.QuestFilter.GlobalQuarantineSec", 3600, 60, 604800));
         s.QuestLocalFails = uint32(Int("Bot.Rules.QuestFilter.LocalFails", 3, 1, 20));
+
+        s.CasterSafe = Bool("Bot.Rules.CasterSafe.Enabled", true);
+        s.CasterMaxLevel = uint32(Int("Bot.Rules.CasterSafe.MaxLevel", 4, 1, 60));
+        s.CasterMaxAbove = Int("Bot.Rules.CasterSafe.MaxAbove", 1, -5, 10);
+        s.CasterPackYd = float(Int("Bot.Rules.CasterSafe.PackYards", 10, 3, 60));
+        s.MultiFlee = Bool("Bot.Rules.MultiFlee.Enabled", true);
+        s.MultiFleePct = uint32(Int("Bot.Rules.MultiFlee.HpPct", 35, 1, 90));
+        s.MultiFleeAttackers = uint32(Int("Bot.Rules.MultiFlee.Attackers", 2, 2, 10));
+        s.QuestBlockedIntervalSec = uint32(Int("Bot.Log.QuestBlockedIntervalSec", 600, 0, 86400));
+        s.AvoidMobs = Bool("Bot.Rules.AvoidMobs.Enabled", true);
+        s.AvoidMobEntries = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.AvoidMobs", "3125,1526,1525,706"));
+        s.AvoidMobMargin = Int("Bot.Rules.AvoidMobs.LevelMargin", 2, 0, 10);
 
         s.LogDiet = Bool("Bot.Log.Diet.Enabled", true);
         s.HourlyCaps = BotRule::ParseHourlyCaps(sConfigMgr->GetStringDefault("Bot.Log.Diet.HourlyCaps", "TARGET_PICKED:60,AGGRO_AVOID:30"));

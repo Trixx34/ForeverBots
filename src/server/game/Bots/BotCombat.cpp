@@ -193,8 +193,32 @@ int32 FleeModeOf(Player const* bot)
 
 bool AvoidedByList(Player const* bot, Unit const* mob)
 {
-    return mob && mob->GetTypeId() == TYPEID_UNIT &&
-        BotAvoid::ShouldAvoid(Cfg().AvoidEntries, mob->GetEntry(), int(mob->GetLevel()), int(bot->GetLevel()), Cfg().AvoidMaxGap);
+    if (!mob || mob->GetTypeId() != TYPEID_UNIT)
+        return false;
+    if (BotAvoid::ShouldAvoid(Cfg().AvoidEntries, mob->GetEntry(), int(mob->GetLevel()), int(bot->GetLevel()), Cfg().AvoidMaxGap))
+        return true;
+    // R-V4-05: Bot.Rules.AvoidMobs, listed killers more than LevelMargin levels above the bot
+    BotRules::Settings const& r = BotRules::Cfg();
+    return r.AvoidMobs && BotRules::Applies(bot) &&
+        BotAvoid::ShouldAvoid(r.AvoidMobEntries, mob->GetEntry(), int(mob->GetLevel()), int(bot->GetLevel()), r.AvoidMobMargin);
+}
+
+// Health percent below which the bot flees now: Bot.AI.Combat.Flee.LowHpPct, raised to Bot.Rules.MultiFlee.HpPct while
+// MultiFlee.Attackers or more mobs are attacking it (R-V4-02).
+uint32 LowHpLimitPct(Player const* bot)
+{
+    uint32 pct = Cfg().LowHpFleePct;
+    BotRules::Settings const& r = BotRules::Cfg();
+    if (pct && r.MultiFlee && BotRules::Applies(bot) && bot->GetHealthPct() < float(r.MultiFleePct))
+    {
+        uint32 n = 0;
+        for (Unit* u : bot->getAttackers())
+            if (u && u->IsAlive() && u->GetTypeId() == TYPEID_UNIT)
+                ++n;
+        if (n >= r.MultiFleeAttackers)
+            pct = std::max(pct, r.MultiFleePct);
+    }
+    return pct;
 }
 
 std::string Json(std::string const& s)
@@ -947,7 +971,7 @@ public:
     bool IsActive() override
     {
         Player* bot = GetBot();
-        if (!bot || !Cfg().FleeEnabled || FleeModeOf(bot) == 1 || !Cfg().LowHpFleePct || GetAI()->GetState() != BotState::Combat || bot->GetHealthPct() >= float(Cfg().LowHpFleePct))
+        if (!bot || !Cfg().FleeEnabled || FleeModeOf(bot) == 1 || !Cfg().LowHpFleePct || GetAI()->GetState() != BotState::Combat || bot->GetHealthPct() >= float(LowHpLimitPct(bot)))
             return false;
         BotCombatCtx* ctx = static_cast<BotCombatCtx*>(GetAI()->GetValueRaw("combat_ctx"));
         if (!ctx || !ctx->InFight || ctx->Fleeing || ctx->FleeAttempts >= Cfg().FleeMaxAttempts || GetAI()->GetNowMs() < ctx->LowHpNextMs)
@@ -1142,7 +1166,7 @@ public:
         Threat const t = Assess(bot, from);
         LogDecision(ai, bot, ctx, "FLEE_LEVEL_DIFF", StringFormat("flees at {:.0f}% health from {} L{} (attempt {})", bot->GetHealthPct(), from->GetName(), uint32(from->GetLevel()), ctx->FleeAttempts),
             StringFormat(R"({},"flee_reason":"low_hp","attempt":{},"max_attempts":{},"hp_pct":{:.0f},"limit_pct":{},"attackers":{},"destination":{{"x":{:.1f},"y":{:.1f},"z":{:.1f}}})", MobJson(bot, from, t), ctx->FleeAttempts,
-                Cfg().FleeMaxAttempts, bot->GetHealthPct(), Cfg().LowHpFleePct, bot->getAttackers().size(), fx, fy, fz), BOTLOG_WARN);
+                Cfg().FleeMaxAttempts, bot->GetHealthPct(), LowHpLimitPct(bot), bot->getAttackers().size(), fx, fy, fz), BOTLOG_WARN);
         return true;
     }
 };

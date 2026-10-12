@@ -1514,6 +1514,7 @@ public:
     uint32 GoalFails = 0;                       // movement failures in the current task
     std::unordered_map<uint32, uint32> Blacklist;   // quest -> AI clock until
     std::unordered_set<uint64> Logged;              // (quest, code) pairs already written
+    std::unordered_map<uint32, uint32> BlockedLogAt; // quest -> AI clock of the last quest_blocked row (Bot.Log.QuestBlockedIntervalSec)
     std::unordered_map<uint64, uint32> Ignore;      // mob guid (counter) -> AI clock until
     std::vector<Visited> Seen;                      // recently searched spawn points
     uint32 NextPruneMs = 0;                         // next sweep of expired Ignore entries
@@ -1648,6 +1649,16 @@ void Blocked(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 questId, char const*
     c.Recent.Add(code, summary);
     if (once && !c.Logged.insert(LogKey(questId, code)).second)
         return;
+    if (questId)
+    {
+        // R-V4-03: one quest_blocked row per bot and quest, then at most one per Bot.Log.QuestBlockedIntervalSec
+        uint32 const gap = BotRules::Cfg().QuestBlockedIntervalSec * 1000;
+        uint32 const nowMs = ai->GetNowMs();
+        auto it = c.BlockedLogAt.find(questId);
+        if (gap && it != c.BlockedLogAt.end() && nowMs - it->second < gap)
+            return;
+        c.BlockedLogAt[questId] = nowMs;
+    }
     BotEvent ev = ai->MakeEvent(bot, "quest_blocked", severity, code, std::move(summary));
     if (questId)
         ev.QuestId = questId;
@@ -5899,6 +5910,26 @@ private:
         return c.PullLast != BotRule::PullBlock::None;
     }
 
+    // R-V4-01: priest, mage and warlock up to Bot.Rules.CasterSafe.MaxLevel do not pull a target more than MaxAbove levels above
+    // them, nor one with another hostile within PackYards of it. Only evaluated for those bots, so the creature scan is rare.
+    bool CasterUnsafe(Player* bot, Creature* m)
+    {
+        BotRules::Settings const& r = BotRules::Cfg();
+        uint8 const cls = bot->GetClass();
+        if (!r.CasterSafe || bot->GetLevel() > r.CasterMaxLevel || (cls != CLASS_PRIEST && cls != CLASS_MAGE && cls != CLASS_WARLOCK) || !BotRules::Applies(bot))
+            return false;
+        if (EffectiveDiff(bot, m) > r.CasterMaxAbove)
+            return true;
+        FindCreatureOptions opt;
+        opt.IsAlive = FindCreatureAliveState::Alive;
+        std::vector<Creature*> near;
+        m->GetCreatureListWithOptionsInGrid(near, r.CasterPackYd, opt);
+        for (Creature* o : near)
+            if (o != m && !o->IsPet() && !o->IsTotem() && !o->IsCritter() && !o->IsCivilian() && !o->GetCreatureTemplate()->npcflag && bot->IsValidAttackTarget(o))
+                return true;
+        return false;
+    }
+
     // ----- kill / loot -----
     bool CandidateMob(Player* bot, BotQuestCtx& c, Task& t, Creature* m, uint32 now)
     {
@@ -5917,6 +5948,11 @@ private:
         if (BotCombatAvoids(bot, m))
         {
             ++t.TooStrongSeen;   // Bot.AI.Avoid.*: listed killers are skipped unless within the allowed level gap
+            return false;
+        }
+        if (CasterUnsafe(bot, m))
+        {
+            ++t.TooStrongSeen;   // R-V4-01: low level casters skip targets above them and packs
             return false;
         }
         int32 diffCap = BotCombatFleeMode(bot) >= 1 ? std::min<int32>(Cfg().MaxMobLevelDiff, 1) : Cfg().MaxMobLevelDiff;

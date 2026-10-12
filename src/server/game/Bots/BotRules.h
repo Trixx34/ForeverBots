@@ -98,6 +98,19 @@ namespace BotRules
         bool KillCredit = true;                   // Bot.Rules.KillCredit.Enabled (R-V3-06): pet kills and XP-only kills count as kills
         bool V3Log = true;                        // Bot.Rules.V3Log.Enabled (R-V3-01 and extra logging; logs only, ignores ArmPct)
 
+        // R-V4-xx (docs/playerbots/rules-v4-20261012.md)
+        bool CasterSafe = true;                   // Bot.Rules.CasterSafe.Enabled (R-V4-01)
+        uint32 CasterMaxLevel = 4;                // Bot.Rules.CasterSafe.MaxLevel: casters up to this level are careful
+        int32 CasterMaxAbove = 1;                 // Bot.Rules.CasterSafe.MaxAbove: skip targets more than this many levels above the bot
+        float CasterPackYd = 10.0f;               // Bot.Rules.CasterSafe.PackYards: another hostile this close to the target = a pack, skipped
+        bool MultiFlee = true;                    // Bot.Rules.MultiFlee.Enabled (R-V4-02)
+        uint32 MultiFleePct = 35;                 // Bot.Rules.MultiFlee.HpPct: health percent that triggers the flee while MultiFlee.Attackers or more mobs attack
+        uint32 MultiFleeAttackers = 2;            // Bot.Rules.MultiFlee.Attackers
+        uint32 QuestBlockedIntervalSec = 600;     // Bot.Log.QuestBlockedIntervalSec (R-V4-03): quest_blocked rows per bot and quest, 0 = no limit
+        bool AvoidMobs = true;                    // Bot.Rules.AvoidMobs.Enabled (R-V4-05)
+        std::vector<uint32> AvoidMobEntries;      // Bot.Rules.AvoidMobs
+        int32 AvoidMobMargin = 2;                 // Bot.Rules.AvoidMobs.LevelMargin: avoided when more than this many levels above the bot
+
         bool LogDiet = true;            // Bot.Log.Diet.Enabled (N-09)
         std::vector<std::pair<std::string, uint32>> HourlyCaps;
         bool AuraDeathOnly = true;      // Bot.Log.Diet.AuraDeathOnly

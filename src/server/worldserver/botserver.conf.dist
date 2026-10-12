@@ -4196,16 +4196,18 @@ Bot.Rules.QuestFilter.Enabled = 1
 #    Bot.Rules.QuestFilter.BlockedQuests
 #        Description: Comma separated quest ids that are never offered (R-V3-02: quests with a reward rate under 10 percent over
 #                     at least 15 acceptances in the last simulation run; 794, 5441, 1656, 3905, 47). Empty the list to offer them again.
-#        Default:     "794,5441,1656,3905,47,400,2160"
+#                     R-V4-04 adds 170, 4402, 805, 789, 6394.
+#        Default:     "794,5441,1656,3905,47,400,2160,170,4402,805,789,6394"
 #        Values:      quest ids
-Bot.Rules.QuestFilter.BlockedQuests = "794,5441,1656,3905,47,400,2160"
+Bot.Rules.QuestFilter.BlockedQuests = "794,5441,1656,3905,47,400,2160,170,4402,805,789,6394"
 #
 #    Bot.Rules.QuestFilter.NeverBlock
 #        Description: R-V3-03. Quest ids that stay offered even when they appear in BlockedQuests (dangerous but completable
 #                     quests; the group-after-deaths rule handles them).
-#        Default:     "404,112,789,792,380,488,92544"
+#                     789 was removed from the default in R-V4-04 (it is on BlockedQuests now).
+#        Default:     "404,112,792,380,488,92544"
 #        Values:      quest ids
-Bot.Rules.QuestFilter.NeverBlock = "404,112,789,792,380,488,92544"
+Bot.Rules.QuestFilter.NeverBlock = "404,112,792,380,488,92544"
 #
 #    Bot.Rules.QuestFilter.LowLevelBlocked
 #        Description: R-V3-05. Quest ids not offered to bots below LowLevelUntil.
@@ -4284,6 +4286,73 @@ Bot.Rules.QuestFilter.GlobalQuarantineSec = 3600
 #        Default:     3
 #        Values:      whole number 1 to 20
 Bot.Rules.QuestFilter.LocalFails = 3
+
+###################################################################################################
+# BOT RULES V4 (docs/playerbots/rules-v4-20261012.md)
+#
+#    Bot.Rules.CasterSafe.Enabled
+#        Description: R-V4-01. Priests (5), mages (8) and warlocks (9) up to CasterSafe.MaxLevel do not pull a target more than
+#                     CasterSafe.MaxAbove levels above them (elite bonus included), nor a target with another hostile within
+#                     CasterSafe.PackYards of it.
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.CasterSafe.Enabled = 1
+#
+#    Bot.Rules.CasterSafe.MaxLevel
+#        Default:     4
+#        Values:      whole number 1 to 60
+Bot.Rules.CasterSafe.MaxLevel = 4
+#
+#    Bot.Rules.CasterSafe.MaxAbove
+#        Default:     1
+#        Values:      whole number -5 to 10
+Bot.Rules.CasterSafe.MaxAbove = 1
+#
+#    Bot.Rules.CasterSafe.PackYards
+#        Default:     10
+#        Values:      whole number 3 to 60
+Bot.Rules.CasterSafe.PackYards = 10
+#
+#    Bot.Rules.MultiFlee.Enabled
+#        Description: R-V4-02. While Attackers or more mobs attack the bot, the low health flee starts at HpPct instead of
+#                     Bot.AI.Combat.Flee.LowHpPct (the flee budget and the about-to-win exception are unchanged).
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.MultiFlee.Enabled = 1
+#
+#    Bot.Rules.MultiFlee.HpPct
+#        Default:     35
+#        Values:      whole number 1 to 90
+Bot.Rules.MultiFlee.HpPct = 35
+#
+#    Bot.Rules.MultiFlee.Attackers
+#        Default:     2
+#        Values:      whole number 2 to 10
+Bot.Rules.MultiFlee.Attackers = 2
+#
+#    Bot.Log.QuestBlockedIntervalSec
+#        Description: R-V4-03. quest_blocked rows are written once per bot and quest, then at most once per this many seconds
+#                     for the same bot and quest (any reason code). 0 = no limit (old behavior).
+#        Default:     600
+#        Values:      whole number 0 to 86400
+Bot.Log.QuestBlockedIntervalSec = 600
+#
+#    Bot.Rules.AvoidMobs.Enabled
+#        Description: R-V4-05. Creature entries on Bot.Rules.AvoidMobs are not fought when more than LevelMargin levels above
+#                     the bot (same effect as Bot.AI.Avoid.Entries, separate list and margin).
+#        Default:     1
+#        Values:      0 (off) or 1 (on)
+Bot.Rules.AvoidMobs.Enabled = 1
+#
+#    Bot.Rules.AvoidMobs
+#        Default:     "3125,1526,1525,706"
+#        Values:      creature entries
+Bot.Rules.AvoidMobs = "3125,1526,1525,706"
+#
+#    Bot.Rules.AvoidMobs.LevelMargin
+#        Default:     2
+#        Values:      whole number 0 to 10
+Bot.Rules.AvoidMobs.LevelMargin = 2
 
 ###################################################################################################
 # BOT STARTER GEAR
