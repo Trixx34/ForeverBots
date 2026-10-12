@@ -106,7 +106,9 @@ namespace BotRules
         bool MultiFlee = true;                    // Bot.Rules.MultiFlee.Enabled (R-V4-02)
         uint32 MultiFleePct = 35;                 // Bot.Rules.MultiFlee.HpPct: health percent that triggers the flee while MultiFlee.Attackers or more mobs attack
         uint32 MultiFleeAttackers = 2;            // Bot.Rules.MultiFlee.Attackers
-        uint32 QuestBlockedIntervalSec = 600;     // Bot.Log.QuestBlockedIntervalSec (R-V4-03): quest_blocked rows per bot and quest, 0 = no limit
+        bool QuestBlockedSkipEarly = true;        // Bot.Log.QuestBlockedSkipEarly: no quest_blocked rows for QUEST_LEVEL / QUEST_PREREQ
+        bool QuestBlockedSummary = true;          // Bot.Log.QuestBlockedSummary: one QUEST_BLOCKED_SUMMARY row per bot and level
+        uint32 QuestBlockedIntervalSec = 600;    // Bot.Log.QuestBlockedIntervalSec (R-V4-03): quest_blocked rows per bot and quest, 0 = no limit
         bool AvoidMobs = true;                    // Bot.Rules.AvoidMobs.Enabled (R-V4-05)
         std::vector<uint32> AvoidMobEntries;      // Bot.Rules.AvoidMobs
         int32 AvoidMobMargin = 2;                 // Bot.Rules.AvoidMobs.LevelMargin: avoided when more than this many levels above the bot

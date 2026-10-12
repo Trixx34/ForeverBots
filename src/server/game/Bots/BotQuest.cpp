@@ -1589,6 +1589,9 @@ public:
     uint32 VendorRetryMs = 0;                       // R-V2-04: no forced vendor trip before this (the last visit freed no slot)
     uint32 VendorRetryLogMs = 0;                    // R-V2-04: VENDOR_RETRY_WAIT is logged once per wait
     uint32 CrowdLogMs = 0;                          // earliest next CROWD_SPREAD row
+    // Bot.Log.QuestBlockedSkipEarly / Bot.Log.QuestBlockedSummary: quest_blocked rows skipped since the last summary
+    uint32 SkipLevelCnt = 0, SkipPrereqCnt = 0;
+    uint8 SkipLevel = 0;                            // bot level while the counts were collected
 
     bool Blacklisted(uint32 quest, uint32 now) const
     {
@@ -1643,6 +1646,25 @@ float PullRange(Player const* bot) { return IsMeleeClass(bot) ? Cfg().PullMelee 
 
 std::string QuestTitle(uint32 questId);
 
+// Bot.Log.QuestBlockedSummary: one quest_blocked row (reason QUEST_BLOCKED_SUMMARY) with the counts skipped at the previous level.
+// Written when the bot's level differs from the level the counts were collected at. Never goes through the skip filter.
+void FlushBlockedSummary(BotAI* ai, Player* bot, BotQuestCtx& c, uint8 level)
+{
+    if (!c.SkipLevelCnt && !c.SkipPrereqCnt)
+        return;
+    if (c.SkipLevel == level)
+        return;
+    uint32 const nl = c.SkipLevelCnt, np = c.SkipPrereqCnt;
+    uint8 const was = c.SkipLevel;
+    c.SkipLevelCnt = c.SkipPrereqCnt = 0;
+    if (!BotRules::Cfg().QuestBlockedSummary)
+        return;
+    BotEvent ev = ai->MakeEvent(bot, "quest_blocked", BOTLOG_INFO, "QUEST_BLOCKED_SUMMARY",
+        StringFormat("skipped quest_blocked rows at level {}: QUEST_LEVEL {}, QUEST_PREREQ {}", was, nl, np));
+    ev.Details = StringFormat(R"({{"QUEST_LEVEL":{},"QUEST_PREREQ":{},"level":{}}})", nl, np, was);
+    sBotMgr->LogEvent(std::move(ev));
+}
+
 // quest_blocked event, once per (quest, code) per bot unless `once` is false; the quest title is added to the details
 void Blocked(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 questId, char const* code, std::string summary, std::string details = std::string(), uint32 entry = 0, bool once = true, uint8 severity = BOTLOG_WARN)
 {
@@ -1658,6 +1680,18 @@ void Blocked(BotAI* ai, Player* bot, BotQuestCtx& c, uint32 questId, char const*
         if (gap && it != c.BlockedLogAt.end() && nowMs - it->second < gap)
             return;
         c.BlockedLogAt[questId] = nowMs;
+        // Bot.Log.QuestBlockedSkipEarly: quests the bot cannot take yet are counted, not written (summary row per level)
+        if (BotRules::Cfg().QuestBlockedSkipEarly)
+        {
+            bool const isLevel = !std::strcmp(code, "QUEST_LEVEL");
+            if (isLevel || !std::strcmp(code, "QUEST_PREREQ"))
+            {
+                FlushBlockedSummary(ai, bot, c, bot->GetLevel());
+                c.SkipLevel = bot->GetLevel();
+                ++(isLevel ? c.SkipLevelCnt : c.SkipPrereqCnt);
+                return;
+            }
+        }
     }
     BotEvent ev = ai->MakeEvent(bot, "quest_blocked", severity, code, std::move(summary));
     if (questId)
@@ -4131,6 +4165,8 @@ private:
             c.CraftNextMs = now + 15000;
             CraftForSkill(ai, bot, c, now);
         }
+
+        FlushBlockedSummary(ai, bot, c, uint8(level));
 
         // 1a. free spell learning on level up and login (replaces the class trainer trip)
         if (BotSpellLearn::Due(AutoLearnSpells(), level, c.LearnLevel))

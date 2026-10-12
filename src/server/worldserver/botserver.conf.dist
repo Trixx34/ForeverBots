@@ -4346,6 +4346,20 @@ Bot.Rules.MultiFlee.Attackers = 2
 #        Values:      whole number 0 to 86400
 Bot.Log.QuestBlockedIntervalSec = 600
 #
+#    Bot.Log.QuestBlockedSkipEarly
+#        Description: Do not write quest_blocked rows for the reasons QUEST_LEVEL and QUEST_PREREQ (quests the bot cannot take
+#                     yet). The bot's blocked state is unchanged; other reasons are still logged.
+#        Default:     1
+#        Values:      0 or 1
+Bot.Log.QuestBlockedSkipEarly = 1
+#
+#    Bot.Log.QuestBlockedSummary
+#        Description: With SkipEarly, write one quest_blocked row per bot and level (reason QUEST_BLOCKED_SUMMARY, details
+#                     {"QUEST_LEVEL":n,"QUEST_PREREQ":m,"level":L}) with the number of rows skipped at that level.
+#        Default:     1
+#        Values:      0 or 1
+Bot.Log.QuestBlockedSummary = 1
+#
 #    Bot.Rules.AvoidMobs.Enabled
 #        Description: R-V4-05. Creature entries on Bot.Rules.AvoidMobs are not fought when more than LevelMargin levels above
 #                     the bot (same effect as Bot.AI.Avoid.Entries, separate list and margin).

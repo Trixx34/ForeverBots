@@ -135,6 +135,8 @@ Settings const& Cfg()
         s.MultiFleePct = uint32(Int("Bot.Rules.MultiFlee.HpPct", 35, 1, 90));
         s.MultiFleeAttackers = uint32(Int("Bot.Rules.MultiFlee.Attackers", 2, 2, 10));
         s.QuestBlockedIntervalSec = uint32(Int("Bot.Log.QuestBlockedIntervalSec", 600, 0, 86400));
+        s.QuestBlockedSkipEarly = Bool("Bot.Log.QuestBlockedSkipEarly", true);
+        s.QuestBlockedSummary = Bool("Bot.Log.QuestBlockedSummary", true);
         s.AvoidMobs = Bool("Bot.Rules.AvoidMobs.Enabled", true);
         s.AvoidMobEntries = BotAvoid::ParseEntryList(sConfigMgr->GetStringDefault("Bot.Rules.AvoidMobs", "3125,1526,1525,706"));
         s.AvoidMobMargin = Int("Bot.Rules.AvoidMobs.LevelMargin", 2, 0, 10);
