@@ -77,8 +77,8 @@ the run: record the step number and the log lines around it.
    - `not online; dropped`: the bot was logged out between snapshot and action.
 3. Move the mob out of range (it should leave the 40-yard snapshot). Expect the bot to stop attacking and then follow
    the closest player, or stop if there is none (`kFollow` or `kStop`).
-4. Send an unknown spell? Not possible from the module today; check the `does not know spell` path by reading the code
-   rather than the live run.
+4. The `unknown spell` and `does not know spell` refusals are not exercised by the module today (the policy never
+   casts). Check them by reading `ModuleBotActions.cpp`, not in the live run.
 
 ## 9. Revocation and shutdown
 
