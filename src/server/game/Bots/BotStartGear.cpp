@@ -178,6 +178,12 @@ std::vector<Cand> const& Candidates(uint8 classId, uint32 level, Settings const&
             p.GetDuration() || p.GetMap() || p.GetArea(0) || p.GetItemSet() || p.GetPlayerLevelToItemLevelCurveId() || p.GetScalingStatContentTuning() ||
             p.GetHolidayID() || p.GetItemLimitCategory())
             continue;
+        bool onUse = false;   // gimmick items (parachute cloak, rocket boots, ...) carry an on-use spell; only plain gear is granted
+        for (ItemEffectEntry const* eff : p.Effects)
+            if (eff && eff->TriggerType == ITEM_SPELLTRIGGER_ON_USE && eff->SpellID)
+                onUse = true;
+        if (onUse)
+            continue;
         ItemBondingType const bond = p.GetBonding();
         if (bond != BIND_NONE && bond != BIND_ON_EQUIP && !(s.AllowBop && bond == BIND_ON_ACQUIRE))
             continue;

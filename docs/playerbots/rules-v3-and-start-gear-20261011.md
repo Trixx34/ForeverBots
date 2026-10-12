@@ -46,6 +46,8 @@ of the best two-hander and the best one-hander plus off hand (shield, holdable, 
 Settings: `Enabled` (1), `MaxQuality` (2), `LevelOffset` (0), `MinLevel` (1), `LevelStep` (5), `AllowBindOnPickup` (0), `MaxItemLevel` (0, no cap), `Armor` (1),
 `Weapons` (1). Bows, crossbows and guns are skipped while the item data has no ammunition items (the current data has none).
 
+Items with an on-use spell (parachute cloak, rocket boots and similar gimmick gear) are never candidates, so only plain gear is granted.
+
 Limits: a bot that already wears a level 1 starter weapon keeps it (slots are not replaced). Item data comes from the loaded item templates at runtime, so no item ids are hard coded. The data has no ammunition items, so hunters get no ranged weapon.
 
 ## Not done
