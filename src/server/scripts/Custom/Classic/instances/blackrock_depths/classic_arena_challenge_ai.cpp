@@ -37,7 +37,11 @@ enum ArenaChallenge
 
     SPELL_KORV_FROST_SHOCK              = 21401,
     SPELL_KORV_EARTHBIND_TOTEM          = 15786,
+    // Fire Nova Totem 11314 is not in the 1.60 client. Vanilla 11314 summons totem 7844 for 5s (duration index 28),
+    // which then explodes with Fire Nova 11307 (still in the client). Done by hand in classic_npc_korv.
     SPELL_KORV_FIRENOVA_TOTEM           = 11314,
+    SPELL_KORV_FIRENOVA                 = 11307,
+    NPC_KORV_FIRENOVA_TOTEM             = 7844,
 
     SPELL_LEFTY_FIVE_FAT_FINGERS        = 27673,
 
@@ -205,6 +209,29 @@ struct classic_npc_korv : public ScriptedAI
         Initialize();
     }
 
+    // Replacement for SPELL_KORV_FIRENOVA_TOTEM (11314, missing from the 1.60 client): the totem lives 5s,
+    // then casts Fire Nova around itself. Killing the totem first prevents the nova, as in vanilla.
+    void SummonFireNovaTotem()
+    {
+        Position pos = me->GetNearPosition(2.0f, 0.0f);
+        TempSummon* totem = me->SummonCreature(NPC_KORV_FIRENOVA_TOTEM, pos, TEMPSUMMON_TIMED_DESPAWN, 6s);
+        if (!totem)
+            return;
+
+        totem->SetFaction(me->GetFaction());
+        totem->SetLevel(me->GetLevel());
+        totem->SetReactState(REACT_PASSIVE);
+        totem->SetControlled(true, UNIT_STATE_ROOT);
+        totem->m_Events.AddEventAtOffset([totem]()
+        {
+            if (totem->IsAlive())
+            {
+                totem->CastSpell(totem, SPELL_KORV_FIRENOVA, true);
+                totem->DespawnOrUnsummon(500ms);
+            }
+        }, 5s);
+    }
+
     void UpdateAI(uint32 diff) override
     {
         if (!UpdateVictim())
@@ -231,8 +258,11 @@ struct classic_npc_korv : public ScriptedAI
 
         if (m_uiFireNovaTimer < diff)
         {
-            if (DoCastSelf(SPELL_KORV_FIRENOVA_TOTEM) == SPELL_CAST_OK)
+            if (!me->IsNonMeleeSpellCast(false))
+            {
+                SummonFireNovaTotem();
                 m_uiFireNovaTimer = 20000;
+            }
         }
         else
             m_uiFireNovaTimer -= diff;

@@ -25,6 +25,7 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "ScriptedCreature.h"
+#include "SpellAuras.h"
 #include "classic_script_text.h"
 #include "classic_temple_of_ahnqiraj.h"
 #include <algorithm>
@@ -51,7 +52,11 @@ enum ClassicAQ40Skeram : uint32
     SPELL_TRUE_FULFILLMENT      = 785,
     SPELL_TF_HASTE              = 2313,
     SPELL_TF_MOD_HEAL           = 26525,
-    SPELL_TF_IMMUNITY           = 26526,
+    // Vanilla 26526 (True Fulfillment: immune to root, snare and stun for 20s) is not in the 1.60 client.
+    // 5579 Immune Root/Snare/Stun has the same three mechanic immunities (100ms duration): applied as an aura
+    // and stretched to 20s, see ApplyFulfillmentImmunity.
+    SPELL_TF_IMMUNITY           = 5579,
+    TF_IMMUNITY_DURATION        = 20000,
     SPELL_TF_CANCEL             = 26589,
 
     SPELL_BLINK_0               = 4801,
@@ -158,6 +163,16 @@ struct classic_boss_skeram : public ScriptedAI
             FulfilledPlayer->RemoveAurasDueToSpell(SPELL_TF_HASTE, ObjectGuid::Empty, 0, AURA_REMOVE_BY_CANCEL);
             FulfilledPlayer->RemoveAurasDueToSpell(SPELL_TF_MOD_HEAL, ObjectGuid::Empty, 0, AURA_REMOVE_BY_CANCEL);
             FulfilledPlayer->RemoveAurasDueToSpell(SPELL_TF_IMMUNITY, ObjectGuid::Empty, 0, AURA_REMOVE_BY_CANCEL);
+        }
+    }
+
+    // 5579 targets its caster, so add it directly on the player (Skeram as caster) instead of casting it
+    void ApplyFulfillmentImmunity(Player* target)
+    {
+        if (Aura* aura = me->AddAura(SPELL_TF_IMMUNITY, target))
+        {
+            aura->SetMaxDuration(TF_IMMUNITY_DURATION);
+            aura->SetDuration(TF_IMMUNITY_DURATION);
         }
     }
 
@@ -312,7 +327,7 @@ struct classic_boss_skeram : public ScriptedAI
 
                     me->CastSpell(target, SPELL_TF_HASTE, true);
                     me->CastSpell(target, SPELL_TF_MOD_HEAL, true);
-                    me->CastSpell(target, SPELL_TF_IMMUNITY, true);
+                    ApplyFulfillmentImmunity(target);
 
                     FullFillment_Timer = urand(20500, 25000);
                     ControlledPlayerGUID = target->GetGUID();

@@ -1,8 +1,8 @@
 # ![logo](https://community.trinitycore.org/public/style_images/1_trinitycore.png) TrinityCore (master)
 
-## This fork: WoW Classic beta 1.60.1.70245 ("Forever")
+## This fork: WoW Classic beta 1.60.1.70338 ("Forever")
 
-Branch `forever` runs TrinityCore master against the **WoW Classic beta client 1.60.1.70245** (`_classic_beta_\WowB.exe`)
+Branch `forever` runs TrinityCore master against the **WoW Classic beta client 1.60.1.70338** (`_classic_beta_\WowB.exe`)
 with a vanilla world (converted from VMaNGOS) and the Skyborne / Zephras Isle content.
 
 **Just want to play?** Use the Windows repack from the releases: extract, run `Setup.bat`, start the servers in the
@@ -22,13 +22,6 @@ start takes a few minutes). The result is identical to the released database.
 
 Already have a database from an older version (including one built with `vmangos_world`)? Just pull and start
 worldserver: it applies the new files on top, and `vmangos_world` can be dropped afterwards.
-
-**Bot databases (optional, only if you run bots).** Not created automatically. Apply once as a MySQL admin:
-`sql/bots/forever-botlog-setup.sql` (creates the bot log database and its user; replace the password and host
-placeholders first; upgrading an older one: `forever-botlog-migrate-1.sql`, `forever-botlog-migrate-2.sql`) and
-`sql/bots/forever-characters-bot-alt.sql` in the characters database (table `bot_alt`, for `.bot alt`). Then fill
-`BotLogDatabaseInfo` in `botserver.conf`. (`forever-db-setup.sql` only creates the four main databases and their user,
-for a manual setup without the auto-setup.)
 
 **2. Config.** The Classic client needs these (everything else can stay default):
 
@@ -68,7 +61,7 @@ Then move `dbc`, `gt`, `maps`, `vmaps` and `mmaps` into the worldserver's `DataD
 - a certificate for `trinity.actual.battle.net` signed by a root CA that the client PC trusts. Create your **own** CA
   (restrict it with `nameConstraints = critical,permitted;DNS:actual.battle.net`) and never share its private key.
   The repack's `setup\Setup.ps1` shows the exact openssl commands.
-- start the client with the [Forever Launcher](https://github.com/advocaite/foreverlauncher-releases), which sets the portal and
+- start the client with the [Forever Launcher](https://github.com/advocaite/foreverlauncher-releases/releases), which sets the portal and
   the server's public key.
 
 [![Average time to resolve an issue](https://isitmaintained.com/badge/resolution/TrinityCore/TrinityCore.svg)](https://isitmaintained.com/project/TrinityCore/TrinityCore "Average time to resolve an issue") [![Percentage of issues still open](https://isitmaintained.com/badge/open/TrinityCore/TrinityCore.svg)](https://isitmaintained.com/project/TrinityCore/TrinityCore "Percentage of issues still open")
