@@ -72,6 +72,22 @@ Unit* ResolveHostileTarget(Player& bot, uint64 ref, std::string& reason)
     return target;
 }
 
+// Why Unit::Attack refused an attack, for the log. The checks follow the ones Unit::Attack makes before it starts an attack.
+std::string AttackRefusalReason(Player& bot, Unit* target)
+{
+    if (!bot.IsAlive())
+        return "bot is dead";
+    if (!target->IsInWorld() || !target->IsAlive())
+        return "target is dead or not in the world";
+    if (bot.IsMounted())
+        return "bot is mounted";
+    if (target->IsPlayer() && target->ToPlayer()->IsGameMaster())
+        return "target is a game master";
+    if (target->IsCreature() && target->ToCreature()->IsEvadingAttacks())
+        return "target is evading attacks";
+    return "the core refused the attack for no known reason";
+}
+
 // Maps a cast result to the status a module sees in the next snapshot.
 BotActionStatus StatusForCast(SpellCastResult result)
 {
@@ -429,9 +445,12 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
             Unit* target = ResolveHostileTarget(bot, action.target_guid, reason);
             if (!target)
                 return BotActionStatus::kInvalidTarget;
+            // Already meleeing this target: Unit::Attack refuses a repeat, but the bot is attacking as asked.
+            if (bot.GetVictim() == target && bot.HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+                return BotActionStatus::kApplied;
             if (!bot.Attack(target, true))
             {
-                reason = "attack was refused";
+                reason = "attack refused: " + AttackRefusalReason(bot, target);
                 return BotActionStatus::kRefused;
             }
             return BotActionStatus::kApplied;
