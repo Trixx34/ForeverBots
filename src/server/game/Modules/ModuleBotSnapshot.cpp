@@ -4,6 +4,8 @@
 #include "CellImpl.h"
 #include "CreatureData.h"
 #include "Group.h"
+#include "DB2Stores.h"
+#include "Item.h"
 #include "Log.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -147,6 +149,8 @@ struct VendorSpot
     float X;
     float Y;
     float Z;
+    bool Repair;                           // the creature repairs gear (UNIT_NPC_FLAG_REPAIR)
+    FactionTemplateEntry const* Faction;   // the creature's faction, so a bot does not walk to a town that kills it
 };
 
 std::unordered_map<uint32, std::vector<VendorSpot>> const& VendorsByMap()
@@ -163,19 +167,21 @@ std::unordered_map<uint32, std::vector<VendorSpot>> const& VendorsByMap()
             CreatureData const& spawn = spawnEntry.second;
             ++spawns;
             CreatureTemplate const* templ = sObjectMgr->GetCreatureTemplate(spawn.id);
-            if (!templ || (templ->npcflag & UNIT_NPC_FLAG_VENDOR_MASK) == 0)
+            if (!templ || (templ->npcflag & (UNIT_NPC_FLAG_VENDOR_MASK | UNIT_NPC_FLAG_REPAIR)) == 0)
                 continue;
+            uint32 const factionId = templ->faction;
             vendors[spawn.mapId].push_back({ spawn.spawnPoint.GetPositionX(), spawn.spawnPoint.GetPositionY(),
-                                             spawn.spawnPoint.GetPositionZ() });
+                                             spawn.spawnPoint.GetPositionZ(), (templ->npcflag & UNIT_NPC_FLAG_REPAIR) != 0,
+                                             sFactionTemplateStore.LookupEntry(factionId) });
         }
 
         // One scan of every creature spawn, inside the first snapshot: its cost is logged, since it is a stall of one world update.
         size_t vendorCount = 0;
         for (auto const& onMap : vendors)
             vendorCount += onMap.second.size();
-        TC_LOG_INFO("server.worldserver", "Bots: vendor index built from {} creature spawns in {} ms: {} vendors on {} maps.", spawns,
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count(), vendorCount,
-            vendors.size());
+        TC_LOG_INFO("server.worldserver", "Bots: vendor index built from {} creature spawns in {} ms: {} vendors and repairmen on {} maps.",
+            spawns, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count(),
+            vendorCount, vendors.size());
     }
     return vendors;
 }
@@ -189,12 +195,15 @@ struct VendorLookup
     uint32 MapId = 0;
     float X = 0.0f;
     float Y = 0.0f;
-    bool Found = false;     // the map has a vendor
-    VendorSpot Spot{};
+    bool FoundVendor = false;   // the map has a vendor friendly to the bot
+    VendorSpot Vendor{};
+    bool FoundRepair = false;   // ... and a repairman
+    VendorSpot Repairman{};
 };
 
-// Fills the nearest-vendor fields of the snapshot entry (layout 6, M6). The position is 2D for the distance: vendors sit at
-// different heights in the same town, and the walk is on the ground.
+// Fills the nearest-vendor fields (layout 6, M6) and the nearest-repairman fields (layout 9). The position is 2D for the distance:
+// vendors sit at different heights in the same town, and the walk is on the ground. Only vendors the bot's faction is not hostile to
+// count: a Horde bot must not be sent to Stormwind.
 void FillNearestVendor(Player& bot, BotSnapshot& entry)
 {
     static std::unordered_map<uint64, VendorLookup> lookups; // bot counter -> its last lookup
@@ -213,32 +222,67 @@ void FillNearestVendor(Player& bot, BotSnapshot& entry)
         last.MapId = mapId;
         last.X = x;
         last.Y = y;
+        FactionTemplateEntry const* mine = bot.GetFactionTemplateEntry();
         auto const& vendors = VendorsByMap();
         auto const onMap = vendors.find(mapId);
         if (onMap != vendors.end())
         {
-            float bestSq = std::numeric_limits<float>::max();
+            float bestVendorSq = std::numeric_limits<float>::max();
+            float bestRepairSq = std::numeric_limits<float>::max();
             for (VendorSpot const& spot : onMap->second)
             {
+                if (mine && spot.Faction && mine->IsHostileTo(spot.Faction))
+                    continue;
                 float const sx = spot.X - x;
                 float const sy = spot.Y - y;
-                if (sx * sx + sy * sy < bestSq)
+                float const distSq = sx * sx + sy * sy;
+                if (!spot.Repair && distSq < bestVendorSq)
                 {
-                    bestSq = sx * sx + sy * sy;
-                    last.Spot = spot;
-                    last.Found = true;
+                    bestVendorSq = distSq;
+                    last.Vendor = spot;
+                    last.FoundVendor = true;
+                }
+                if (spot.Repair && distSq < bestRepairSq)
+                {
+                    bestRepairSq = distSq;
+                    last.Repairman = spot;
+                    last.FoundRepair = true;
                 }
             }
         }
     }
 
-    if (last.Found)
+    if (last.FoundVendor)
     {
-        entry.vendor_x = last.Spot.X;
-        entry.vendor_y = last.Spot.Y;
-        entry.vendor_z = last.Spot.Z;
+        entry.vendor_x = last.Vendor.X;
+        entry.vendor_y = last.Vendor.Y;
+        entry.vendor_z = last.Vendor.Z;
         entry.vendor_valid = 1;
     }
+    if (last.FoundRepair)
+    {
+        entry.repair_x = last.Repairman.X;
+        entry.repair_y = last.Repairman.Y;
+        entry.repair_z = last.Repairman.Z;
+        entry.repair_valid = 1;
+    }
+}
+
+// The lowest durability among the equipped items that wear out, in percent (100 when none does).
+uint8 LowestDurabilityPct(Player& bot)
+{
+    uint32 lowest = 100;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = bot.GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            continue;
+        uint32 const maxDurability = *item->m_itemData->MaxDurability;
+        if (!maxDurability)
+            continue;
+        lowest = std::min<uint32>(lowest, uint32(uint64(*item->m_itemData->Durability) * 100 / maxDurability));
+    }
+    return uint8(lowest);
 }
 
 // The bot's party and any invite it has not answered (layout 5, M8).
@@ -313,6 +357,7 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
 
     FillParty(bot, entry);
     FillNearestVendor(bot, entry);
+    entry.durability_pct = LowestDurabilityPct(bot);
 
     if (maxNearby == 0)
         return result;
