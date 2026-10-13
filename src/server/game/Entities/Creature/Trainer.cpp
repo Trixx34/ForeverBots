@@ -133,6 +133,25 @@ namespace Trainer
         }
     }
 
+    uint32 Trainer::TeachAvailableSpellsFree(Player* player) const
+    {
+        uint32 learned = 0;
+        for (Spell const& trainerSpell : _spells)
+        {
+            if (trainerSpell.ReqSkillLine || !CanTeachSpell(player, &trainerSpell))
+                continue;
+
+            if (trainerSpell.IsCastable())
+                player->CastSpell(player, trainerSpell.SpellId, true);
+            else
+                player->LearnSpell(trainerSpell.SpellId, false);
+
+            if (player->HasSpell(trainerSpell.SpellId))
+                ++learned;
+        }
+        return learned;
+    }
+
     Spell const* Trainer::GetSpell(uint32 spellId) const
     {
         auto itr = std::find_if(_spells.begin(), _spells.end(), [spellId](Spell const& trainerSpell)

@@ -7,6 +7,7 @@
 #include "CharacterCache.h"
 #include "CharacterPackets.h"
 #include "Config.h"
+#include "DB2Stores.h"
 #include "CryptoRandom.h"
 #include "DatabaseEnv.h"
 #include "Log.h"
@@ -23,6 +24,7 @@
 #include "SpellMgr.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
+#include "Trainer.h"
 #include "Util.h"
 #include "World.h"
 #include "WorldSession.h"
@@ -235,12 +237,16 @@ void BotMgr::LoadRegistry()
 namespace
 {
 
+// Set while DumpAbilities levels its probe, so BotMgr::OnBotLevelChanged leaves it alone and the dump shows what the core grants by itself.
+bool g_dumpingAbilities = false;
+
 // Logs the spells a new character of this race and class has at each level, as the core itself grants them: a Player::Create, then
 // GiveLevel up through the levels, on an unsaved player that is never in the world (the same calls CreateBot makes for a bot created above
 // level 1). Each line lists the spells gained at that level, with their names, so it shows what a bot can use. Only for finding out
 // what bots have (Bot.Dump.Abilities); it creates a second, temporary player per race and class.
 void DumpAbilities(WorldSession* session, WorldPackets::Character::CharacterCreateInfo const& createInfo)
 {
+    struct Guard { Guard() { g_dumpingAbilities = true; } ~Guard() { g_dumpingAbilities = false; } } guard;
     auto deleter = [](Player* player)
     {
         player->CleanupsBeforeDelete();
@@ -708,12 +714,70 @@ void BotMgr::SpreadBot(Player& bot)
     }
 }
 
+// Level-up and login: trainer spells and combat skills, which a bot would otherwise only get by visiting trainers and weapon masters
+// and by using its weapons for hours. A trainer's own checks (class, level, required spells) decide what is taught; ranks need the
+// previous rank, so the passes repeat until one teaches nothing.
+void BotMgr::OnBotLevelChanged(Player& bot)
+{
+    if (g_dumpingAbilities)
+        return;
+
+    static bool const learnSpells = sConfigMgr->GetBoolDefault("Bot.Learn.TrainerSpells", true);
+    static bool const raiseSkills = sConfigMgr->GetBoolDefault("Bot.Learn.CombatSkills", true);
+
+    uint32 taught = 0;
+    if (learnSpells)
+    {
+        for (int pass = 0; pass < 8; ++pass)
+        {
+            uint32 learned = 0;
+            for (auto const& [id, trainer] : sObjectMgr->GetTrainers())
+                if (trainer.GetType() != Trainer::Type::Tradeskill && trainer.GetType() != Trainer::Type::Pet)
+                    learned += trainer.TeachAvailableSpellsFree(&bot);
+            taught += learned;
+            if (!learned)
+                break;
+        }
+    }
+
+    uint32 raised = 0;
+    if (raiseSkills)
+    {
+        // Weapon skills, Unarmed, Thrown, Wands and Defense. They are 5 per level for a player who trained and used them.
+        static constexpr std::array<uint32, 17> skills = { 43, 55, 44, 172, 54, 160, 229, 136, 173, 473, 45, 46, 226, 176, 228, 162, 95 };
+        uint16 const target = uint16(bot.GetLevel() * 5);
+        for (uint32 skill : skills)
+        {
+            if (!bot.HasSkill(skill))
+            {
+                SkillRaceClassInfoEntry const* info = sDB2Manager.GetSkillRaceClassInfo(skill, bot.GetRace(), bot.GetClass());
+                if (!info)
+                    continue;
+                bot.LearnDefaultSkill(info); // also learns the proficiency spell
+                if (!bot.HasSkill(skill))
+                    continue;
+            }
+            uint16 const wanted = std::max<uint16>(target, bot.GetPureMaxSkillValue(skill));
+            if (bot.GetPureSkillValue(skill) < wanted || bot.GetPureMaxSkillValue(skill) < wanted)
+            {
+                bot.SetSkill(skill, bot.GetSkillStep(skill), wanted, wanted);
+                ++raised;
+            }
+        }
+    }
+
+    if (taught || raised)
+        TC_LOG_INFO("server.worldserver", "BotMgr: {} (level {}) learned {} trainer spell(s), raised {} skill(s).", bot.GetName(),
+            uint32(bot.GetLevel()), taught, raised);
+}
+
 void BotMgr::FinishLogin(BotInfo& bot)
 {
     bot.State = BOT_ONLINE;
     if (Player* player = bot.Session->GetPlayer())
     {
         SpreadBot(*player);
+        OnBotLevelChanged(*player);
         bot.Level = player->GetLevel();
         TC_LOG_INFO("server.worldserver", "BotMgr: bot {} (guid {}) is in the world.", bot.Name, bot.Guid);
     }

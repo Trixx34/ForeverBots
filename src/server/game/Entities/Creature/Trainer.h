@@ -73,6 +73,12 @@ namespace Trainer
         // Every spell this trainer teaches, for a bot that learns them itself (ModuleBotActions, kTrain).
         std::vector<Spell> const& Spells() const { return _spells; }
 
+        Type GetType() const { return _type; }
+
+        // Teaches the player every spell of this trainer it could learn at the trainer right now, without an NPC and without
+        // payment (bots, which level up away from trainers). Skill-line (profession) spells are left out. Returns how many were taught.
+        uint32 TeachAvailableSpellsFree(Player* player) const;
+
     private:
         Spell const* GetSpell(uint32 spellId) const;
         bool CanTeachSpell(Player const* player, Spell const* trainerSpell) const;

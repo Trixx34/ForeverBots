@@ -55,6 +55,10 @@ class TC_GAME_API BotMgr
     public:
         static BotMgr* instance();
 
+        // A bot's level changed (called from Player::GiveLevel for bot sessions) or it logged in: it learns the spells a trainer
+        // would teach it and raises its weapon skills and Defense to what a player of its level has. Bot.Learn.* switch the parts.
+        static void OnBotLevelChanged(Player& bot);
+
         BotMgr(BotMgr const&) = delete;
         BotMgr(BotMgr&&) = delete;
         BotMgr& operator=(BotMgr const&) = delete;

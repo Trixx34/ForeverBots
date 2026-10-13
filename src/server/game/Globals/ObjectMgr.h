@@ -1610,6 +1610,7 @@ class TC_GAME_API ObjectMgr
         bool DeleteGameTele(std::string_view name);
 
         Trainer::Trainer const* GetTrainer(uint32 trainerId) const;
+        std::unordered_map<uint32, Trainer::Trainer> const& GetTrainers() const { return _trainers; }
         uint32 GetCreatureDefaultTrainer(uint32 creatureId) const
         {
             if (uint32 trainerId = GetCreatureTrainerForGossipOption(creatureId, 0, 0))

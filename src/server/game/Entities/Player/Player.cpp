@@ -16,6 +16,7 @@
  */
 
 #include "Player.h"
+#include "BotMgr.h"
 #include "CombatEnchantProc.h"
 #include "DeathRecap.h"
 #include "AreaTrigger.h"
@@ -2319,6 +2320,9 @@ void Player::GiveLevel(uint8 level)
     UpdateClassicLegacyUnlock();
 
     sScriptMgr->OnPlayerLevelChanged(this, oldLevel);
+
+    if (WorldSession* botSession = GetSession(); botSession && botSession->IsBot() && level > oldLevel)
+        BotMgr::OnBotLevelChanged(*this);
 
     BattlenetPresence::OnCharacterChanged(this);
 }
