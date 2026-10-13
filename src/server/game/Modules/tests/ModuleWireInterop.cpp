@@ -401,6 +401,11 @@ int main()
         req->mutable_spawn_params()->set_class_id(3);
         req->mutable_spawn_params()->set_level(80);
         req->mutable_spawn_params()->set_team(1);
+        req->mutable_spawn_params()->set_place(true);
+        req->mutable_spawn_params()->set_map_id(36);
+        req->mutable_spawn_params()->set_pos_x(-16.5f);
+        req->mutable_spawn_params()->set_pos_y(-383.0f);
+        req->mutable_spawn_params()->set_pos_z(61.8f);
         std::string bytes;
         CHECK(sdk.SerializeToString(&bytes));
 
@@ -413,6 +418,8 @@ int main()
         CHECK(core.BotGuid == 0);
         CHECK(core.SpawnParams.Race == 2 && core.SpawnParams.ClassId == 3);
         CHECK(core.SpawnParams.Level == 80 && core.SpawnParams.Team == 1);
+        CHECK(core.SpawnParams.Place && core.SpawnParams.MapId == 36);
+        CHECK(core.SpawnParams.X == -16.5f && core.SpawnParams.Y == -383.0f && core.SpawnParams.Z == 61.8f);
 
         forever_module::Envelope release;
         release.mutable_release_control()->set_bot_guid(5005);

@@ -681,6 +681,18 @@ void BotMgr::StartLogin(BotInfo& bot)
 // moved: once it has moved (or been moved), its saved position is kept. A candidate point must have ground at about the
 // start's height and a clear line of sight from the start (no wall or ledge in between); otherwise the next candidate is
 // tried, and if none fits the bot stays where it is.
+void BotMgr::SetStart(uint64 guid, uint32 mapId, float x, float y, float z)
+{
+    auto itr = _bots.find(guid);
+    if (itr == _bots.end())
+        return;
+    itr->second.HasStart = true;
+    itr->second.StartMap = mapId;
+    itr->second.StartX = x;
+    itr->second.StartY = y;
+    itr->second.StartZ = z;
+}
+
 void BotMgr::SpreadBot(Player& bot)
 {
     if (_spreadSpacing <= 0.0f)
@@ -807,7 +819,10 @@ void BotMgr::FinishLogin(BotInfo& bot)
     bot.State = BOT_ONLINE;
     if (Player* player = bot.Session->GetPlayer())
     {
-        SpreadBot(*player);
+        if (bot.HasStart)
+            player->TeleportTo(bot.StartMap, bot.StartX, bot.StartY, bot.StartZ, player->GetOrientation());
+        else
+            SpreadBot(*player);
         OnBotLevelChanged(*player);
         bot.Level = player->GetLevel();
         TC_LOG_INFO("server.worldserver", "BotMgr: bot {} (guid {}) is in the world.", bot.Name, bot.Guid);

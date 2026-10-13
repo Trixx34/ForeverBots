@@ -212,6 +212,11 @@ struct SpawnParamsMsg
     uint32 ClassId = 0;
     uint32 Level = 0;
     uint32 Team = 0;
+    bool Place = false;        // put the bot at (MapId, X, Y, Z) when it logs in (control.proto fields 5 to 9)
+    uint32 MapId = 0;
+    float X = 0.0f;
+    float Y = 0.0f;
+    float Z = 0.0f;
 };
 
 struct ControlRequestMsg

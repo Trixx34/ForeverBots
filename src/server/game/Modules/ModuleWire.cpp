@@ -3,6 +3,7 @@
  */
 
 #include "ModuleWire.h"
+#include <cstring>
 
 namespace ModuleWire
 {
@@ -45,6 +46,18 @@ class Reader
             field = static_cast<uint32>(tag >> 3);
             wire = static_cast<uint32>(tag & 0x7);
             return field != 0;
+        }
+
+        bool ReadFloat(float& out)
+        {
+            if (_data.size() - _pos < 4)
+                return false;
+            uint32 bits = 0;
+            for (int i = 0; i < 4; ++i)
+                bits |= static_cast<uint32>(static_cast<uint8>(_data[_pos + i])) << (8 * i);
+            _pos += 4;
+            std::memcpy(&out, &bits, sizeof(out));
+            return true;
         }
 
         bool ReadBytes(std::string_view& out)
@@ -574,7 +587,7 @@ bool Decode(std::string_view bytes, ControlRequestMsg& out)
         }
         else if (field == 2 && wire == WireLengthDelimited)
         {
-            // SpawnParams: race=1, class_id=2, level=3, team=4 (all varint).
+            // SpawnParams: race=1, class_id=2, level=3, team=4, place=5, map_id=6 (varint), pos_x/y/z=7,8,9 (float).
             std::string_view spawnBytes;
             if (!r.ReadBytes(spawnBytes))
                 return false;
@@ -585,7 +598,14 @@ bool Decode(std::string_view bytes, ControlRequestMsg& out)
                 if (!s.ReadTag(sf, sw))
                     return false;
                 uint64 value = 0;
-                if (sf >= 1 && sf <= 4 && sw == WireVarint)
+                if (sf >= 7 && sf <= 9 && sw == WireFixed32)
+                {
+                    float v = 0.0f;
+                    if (!s.ReadFloat(v))
+                        return false;
+                    (sf == 7 ? out.SpawnParams.X : sf == 8 ? out.SpawnParams.Y : out.SpawnParams.Z) = v;
+                }
+                else if ((sf == 1 || sf == 2 || sf == 3 || sf == 4 || sf == 5 || sf == 6) && sw == WireVarint)
                 {
                     if (!s.ReadVarint(value))
                         return false;
@@ -596,6 +616,8 @@ bool Decode(std::string_view bytes, ControlRequestMsg& out)
                         case 2: out.SpawnParams.ClassId = v; break;
                         case 3: out.SpawnParams.Level = v; break;
                         case 4: out.SpawnParams.Team = v; break;
+                        case 5: out.SpawnParams.Place = v != 0; break;
+                        case 6: out.SpawnParams.MapId = v; break;
                     }
                 }
                 else if (!s.Skip(sw))

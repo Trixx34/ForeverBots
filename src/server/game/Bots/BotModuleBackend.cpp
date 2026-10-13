@@ -60,6 +60,8 @@ uint64 BotModuleBackend::Spawn(ModuleWire::SpawnParamsMsg const& params, std::st
     uint64 const guid = sBotMgr->CreateBot(uint8(params.Race), uint8(params.ClassId), level, error);
     if (!guid)
         reason = error;
+    else if (params.Place)
+        sBotMgr->SetStart(guid, params.MapId, params.X, params.Y, params.Z);
     return guid;
 }
 
