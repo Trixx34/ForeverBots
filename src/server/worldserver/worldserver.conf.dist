@@ -1764,6 +1764,14 @@ Bot.Limit.MaxWorldDiffMs = 250
 
 Bot.Limit.MaxDbQueue = 5000
 
+#    Bot.Dump.Abilities
+#        Default:     0
+#        1 = the first bot created for each race and class also logs the spells a character of that kind has at levels 1, 5, 10 ... 60,
+#            as the core grants them (one "BotAbilities:" line per level, with the spell ids and names). A diagnostic: it creates a second
+#            temporary player per race and class. Use it to see what bots can use; leave it off otherwise.
+
+Bot.Dump.Abilities = 0
+
 #    Bot.Run.StopTime
 #        Default:     (empty: no stop time)
 #        Local time of day, HH:MM or HH:MM:SS. The first such time after startup ends the run: no bot is created after it,

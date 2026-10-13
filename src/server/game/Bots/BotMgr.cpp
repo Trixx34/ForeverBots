@@ -19,6 +19,8 @@
 #include "RealmList.h"
 #include "Random.h"
 #include "ScriptMgr.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "Util.h"
@@ -230,6 +232,55 @@ void BotMgr::LoadRegistry()
     TC_LOG_INFO("server.worldserver", "BotMgr: {} bot accounts, {} bot characters found", accounts.size(), _bots.size());
 }
 
+namespace
+{
+
+// Logs the spells a new character of this race and class has at each level, as the core itself grants them: a Player::Create, then
+// GiveLevel up through the levels, on an unsaved player that is never in the world (the same calls CreateBot makes for a bot created above
+// level 1). Each line lists the spells gained at that level, with their names, so it shows what a bot can use. Only for finding out
+// what bots have (Bot.Dump.Abilities); it creates a second, temporary player per race and class.
+void DumpAbilities(WorldSession* session, WorldPackets::Character::CharacterCreateInfo const& createInfo)
+{
+    auto deleter = [](Player* player)
+    {
+        player->CleanupsBeforeDelete();
+        delete player;
+    };
+    std::unique_ptr<Player, decltype(deleter)> probe(new Player(session), deleter);
+    probe->GetMotionMaster()->Initialize();
+    if (!probe->Create(sObjectMgr->GetGenerator<HighGuid::Player>().Generate(), &createInfo))
+        return;
+
+    static constexpr uint8 Levels[] = { 1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60 };
+    uint32 const maxLevel = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
+
+    std::set<uint32> known;
+    for (uint8 level : Levels)
+    {
+        if (level > maxLevel)
+            break;
+        if (level > probe->GetLevel())
+            probe->GiveLevel(level);
+
+        std::vector<uint32> gained;
+        for (auto const& entry : probe->GetSpellMap())
+            if (entry.second.state != PLAYERSPELL_REMOVED && known.insert(entry.first).second)
+                gained.push_back(entry.first);
+        std::sort(gained.begin(), gained.end());
+
+        std::string list;
+        for (uint32 spellId : gained)
+        {
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE);
+            list += (list.empty() ? "" : "; ") + std::to_string(spellId) + " " + (info && info->SpellName ? std::string((*info->SpellName)[sWorld->GetDefaultDbcLocale()]) : std::string("?"));
+        }
+        TC_LOG_INFO("server.worldserver", "BotAbilities: race {} class {} level {}: {} new spell(s), {} in total: {}",
+            uint32(createInfo.Race), uint32(createInfo.Class), uint32(probe->GetLevel()), gained.size(), known.size(), list);
+    }
+}
+
+} // namespace
+
 uint64 BotMgr::CreateBot(uint8 raceId, uint8 classId, uint8 level, std::string& error)
 {
     std::string username;
@@ -297,6 +348,15 @@ uint64 BotMgr::CreateBot(uint8 raceId, uint8 classId, uint8 level, std::string& 
     player->GetMotionMaster()->Initialize();
     if (!player->Create(sObjectMgr->GetGenerator<HighGuid::Player>().Generate(), &createInfo))
         return fail(Trinity::StringFormat("Player::Create refused race {} class {}", raceId, classId));
+
+    // Bot.Dump.Abilities: the first bot of each race and class also logs what a character of that kind has at each level.
+    static bool const dumpAbilities = sConfigMgr->GetBoolDefault("Bot.Dump.Abilities", false);
+    if (dumpAbilities)
+    {
+        static std::set<uint32> dumped;
+        if (dumped.insert(uint32(raceId) << 8 | classId).second)
+            DumpAbilities(session.get(), createInfo);
+    }
 
     // Level up before the first save, so the character is stored at the requested level with its stats and spells.
     if (level > 1)
