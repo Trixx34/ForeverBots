@@ -275,27 +275,58 @@ uint32 EquipBestGear(Player& bot)
 
 // The gear the core may hand out: weapons and armour of common to Bot.AutoGear.MaxQuality (default 2, uncommon), with a slot, no
 // quest-bound items and no unfinished-looking names (test, deprecated or placeholder items). Built once.
+struct GearPoolStats
+{
+    uint32 WeaponsAndArmor = 0, QualityTooLow = 0, QualityOverCap = 0, QuestBound = 0, NoSlot = 0, Placeholder = 0, Kept = 0;
+};
+
 std::vector<ItemTemplate const*> const& GearCandidates()
 {
     static std::vector<ItemTemplate const*> const candidates = []
     {
         std::vector<ItemTemplate const*> out;
+        GearPoolStats stats;
         uint32 const maxQuality = uint32(std::max(1, sConfigMgr->GetIntDefault("Bot.AutoGear.MaxQuality", 2)));
         for (auto const& [id, proto] : sObjectMgr->GetItemTemplateStore())
         {
             if (proto.GetClass() != ITEM_CLASS_WEAPON && proto.GetClass() != ITEM_CLASS_ARMOR)
                 continue;
-            if (proto.GetQuality() < kQualityCommon || proto.GetQuality() > maxQuality || proto.GetBonding() == BIND_QUEST)
+            ++stats.WeaponsAndArmor;
+            if (proto.GetQuality() < kQualityCommon)
+            {
+                ++stats.QualityTooLow;
                 continue;
+            }
+            if (proto.GetQuality() > maxQuality)
+            {
+                ++stats.QualityOverCap;
+                continue;
+            }
+            if (proto.GetBonding() == BIND_QUEST)
+            {
+                ++stats.QuestBound;
+                continue;
+            }
             if (proto.GetInventoryType() == INVTYPE_BODY || EquipSlotFor(proto.GetInventoryType()) == NULL_SLOT)
+            {
+                ++stats.NoSlot;
                 continue;
+            }
             std::string name = proto.GetName(DEFAULT_LOCALE) ? proto.GetName(DEFAULT_LOCALE) : "";
             std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return char(std::tolower(c)); });
             if (name.empty() || name.find("deprecated") != std::string::npos || name.find("test") == 0 ||
                 name.find("unused") != std::string::npos || name.find("[ph]") != std::string::npos || name.rfind("zz", 0) == 0)
+            {
+                ++stats.Placeholder;
                 continue;
+            }
             out.push_back(&proto);
         }
+        stats.Kept = uint32(out.size());
+        TC_LOG_INFO("server.worldserver",
+            "BotMgr: autogear pool maxquality={} weapons_armor={} quality_below_common={} quality_over_cap={} quest_bound={} no_slot={} placeholder={} candidates={}",
+            maxQuality, stats.WeaponsAndArmor, stats.QualityTooLow, stats.QualityOverCap, stats.QuestBound, stats.NoSlot, stats.Placeholder,
+            stats.Kept);
         return out;
     }();
     return candidates;
@@ -343,26 +374,40 @@ void Consider(GearPick& pick, ItemTemplate const& item, int32 score)
         pick = { &item, score };
 }
 
+enum class GearResult { Equipped, KeptBetter, NoBagSpace, CannotEquip };
+
+char const* GearResultName(GearResult result)
+{
+    switch (result)
+    {
+        case GearResult::Equipped: return "equipped";
+        case GearResult::KeptBetter: return "kept_worn_item_level_not_lower";
+        case GearResult::NoBagSpace: return "no_bag_space";
+        case GearResult::CannotEquip: return "cannot_equip_stays_in_bags";
+    }
+    return "unknown";
+}
+
 // Creates the item in the bags and moves it into `slot`, unless the slot already holds an item of at least this item level.
-bool GiveAndEquip(Player& bot, ItemTemplate const& item, uint8 slot)
+GearResult GiveAndEquip(Player& bot, ItemTemplate const& item, uint8 slot)
 {
     Item* current = bot.GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
     if (current && current->GetTemplate()->GetBaseItemLevel() >= item.GetBaseItemLevel())
-        return false;
+        return GearResult::KeptBetter;
 
     ItemPosCountVec destination;
     if (bot.CanStoreNewItem(NULL_BAG, NULL_SLOT, destination, item.GetId(), 1) != EQUIP_ERR_OK)
-        return false;
+        return GearResult::NoBagSpace;
     Item* created = bot.StoreNewItem(destination, item.GetId(), true);
     if (!created)
-        return false;
+        return GearResult::NoBagSpace;
 
     uint16 target = uint16(INVENTORY_SLOT_BAG_0) << 8 | slot;
     uint16 equipDestination = target;
     if (bot.CanEquipItem(slot, equipDestination, created, true) != EQUIP_ERR_OK)
-        return false; // stays in the bags
+        return GearResult::CannotEquip; // stays in the bags
     bot.SwapItem(uint16(created->GetBagSlot()) << 8 | created->GetSlot(), target);
-    return bot.GetItemByPos(INVENTORY_SLOT_BAG_0, slot) == created;
+    return bot.GetItemByPos(INVENTORY_SLOT_BAG_0, slot) == created ? GearResult::Equipped : GearResult::CannotEquip;
 }
 
 // spell_id bit 1: a tank (one-hand weapon and shield).
@@ -387,10 +432,20 @@ BotActionStatus AutoGearAction(Player& bot, uint32 flags, std::string& reason)
     std::vector<std::pair<int32, ItemTemplate const*>> oneHand;   // main-hand weapons (one-hand, main hand)
     std::vector<std::pair<int32, ItemTemplate const*>> offHand;    // off-hand weapons (off hand only, and one-hand for dual wield)
 
+    uint32 const candidates = uint32(GearCandidates().size());
+    uint32 levelTooHigh = 0, cannotUse = 0;
     for (ItemTemplate const* item : GearCandidates())
     {
-        if (item->GetBaseRequiredLevel() > int32(bot.GetLevel()) || bot.CanUseItem(item) != EQUIP_ERR_OK)
+        if (item->GetBaseRequiredLevel() > int32(bot.GetLevel()))
+        {
+            ++levelTooHigh;
             continue;
+        }
+        if (bot.CanUseItem(item) != EQUIP_ERR_OK)
+        {
+            ++cannotUse;
+            continue;
+        }
         int32 const score = GearScore(preferred, *item);
         switch (item->GetInventoryType())
         {
@@ -438,17 +493,45 @@ BotActionStatus AutoGearAction(Player& bot, uint32 flags, std::string& reason)
         off = shield.Item ? shield : holdable;
     }
 
-    uint32 equipped = 0;
-    if (main.Item && GiveAndEquip(bot, *main.Item, EQUIPMENT_SLOT_MAINHAND))
-        ++equipped;
-    if (off.Item && (!main.Item || main.Item->GetInventoryType() != INVTYPE_2HWEAPON) && GiveAndEquip(bot, *off.Item, EQUIPMENT_SLOT_OFFHAND))
-        ++equipped;
+    uint32 equipped = 0, keptBetter = 0, failed = 0, tried = 0;
+    auto const apply = [&](GearPick const& pick, uint8 slot)
+    {
+        ++tried;
+        GearResult const result = GiveAndEquip(bot, *pick.Item, slot);
+        equipped += result == GearResult::Equipped;
+        keptBetter += result == GearResult::KeptBetter;
+        failed += result == GearResult::NoBagSpace || result == GearResult::CannotEquip;
+        TC_LOG_INFO("server.worldserver", "BotMgr: autogear pick bot={} slot={} item={} quality={} ilvl={} reqlevel={} result={}", bot.GetName(), uint32(slot),
+            pick.Item->GetId(), uint32(pick.Item->GetQuality()), pick.Item->GetBaseItemLevel(), pick.Item->GetBaseRequiredLevel(), GearResultName(result));
+    };
+    if (main.Item)
+        apply(main, EQUIPMENT_SLOT_MAINHAND);
+    if (off.Item && (!main.Item || main.Item->GetInventoryType() != INVTYPE_2HWEAPON))
+        apply(off, EQUIPMENT_SLOT_OFFHAND);
     for (auto const& [slot, pick] : bySlot)
-        if (pick.Item && GiveAndEquip(bot, *pick.Item, slot))
-            ++equipped;
+        if (pick.Item)
+            apply(pick, slot);
 
-    TC_LOG_INFO("server.worldserver", "BotMgr: autogear {} (class {}, level {}): {} item(s) equipped.", bot.GetName(), uint32(bot.GetClass()),
-        uint32(bot.GetLevel()), equipped);
+    // What the bot wears now, from the loaded item template store, each against the quality cap.
+    uint32 const maxQuality = uint32(std::max(1, sConfigMgr->GetIntDefault("Bot.AutoGear.MaxQuality", 2)));
+    uint32 wornItems = 0, overCap = 0;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* worn = bot.GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!worn)
+            continue;
+        ItemTemplate const* proto = worn->GetTemplate();
+        ++wornItems;
+        bool const withinCap = proto->GetQuality() <= maxQuality;
+        overCap += !withinCap;
+        TC_LOG_INFO("server.worldserver", "BotMgr: gear bot={} slot={} item={} quality={} ilvl={} reqlevel={} within_cap={}", bot.GetName(), uint32(slot),
+            proto->GetId(), uint32(proto->GetQuality()), proto->GetBaseItemLevel(), proto->GetBaseRequiredLevel(), withinCap ? 1 : 0);
+    }
+
+    TC_LOG_INFO("server.worldserver",
+        "BotMgr: autogear {} (class {}, level {}): {} item(s) equipped. summary bot={} class={} level={} considered={} level_too_high={} cannot_use={} picks={} equipped={} kept_better={} failed={} worn={} over_cap={}",
+        bot.GetName(), uint32(bot.GetClass()), uint32(bot.GetLevel()), equipped, bot.GetName(), uint32(bot.GetClass()), uint32(bot.GetLevel()), candidates,
+        levelTooHigh, cannotUse, tried, equipped, keptBetter, failed, wornItems, overCap);
     return BotActionStatus::kApplied;
 }
 
