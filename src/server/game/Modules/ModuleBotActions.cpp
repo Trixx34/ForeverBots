@@ -122,6 +122,10 @@ BotActionStatus StatusForCast(SpellCastResult result)
             return BotActionStatus::kInvalidTarget;
         case SPELL_FAILED_NOT_KNOWN:
             return BotActionStatus::kNotKnown;
+        case SPELL_FAILED_MOVING:
+            return BotActionStatus::kMoving;
+        case SPELL_FAILED_SPELL_IN_PROGRESS:
+            return BotActionStatus::kBusy;
         default:
             return BotActionStatus::kRefused;
     }
@@ -1010,6 +1014,27 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
             {
                 reason = "cast target is not a unit on this bot's map";
                 return BotActionStatus::kInvalidTarget;
+            }
+            // Known to fail: a cast while another is in progress, and a spell with a cast time while moving. The module is told which, and
+            // waits or stops, instead of getting a generic refusal from the spell system.
+            if (Spell const* current = bot.GetCurrentSpell(CURRENT_GENERIC_SPELL); current && current->getState() != SPELL_STATE_FINISHED)
+            {
+                reason = "bot is casting spell " + std::to_string(current->GetSpellInfo()->Id);
+                return BotActionStatus::kBusy;
+            }
+            if (Spell const* channel = bot.GetCurrentSpell(CURRENT_CHANNELED_SPELL); channel && channel->getState() != SPELL_STATE_FINISHED)
+            {
+                reason = "bot is channeling spell " + std::to_string(channel->GetSpellInfo()->Id);
+                return BotActionStatus::kBusy;
+            }
+            if (bot.isMoving())
+            {
+                SpellInfo const* castInfo = sSpellMgr->GetSpellInfo(castId, DIFFICULTY_NONE);
+                if (castInfo && castInfo->CalcCastTime() > 0)
+                {
+                    reason = "spell " + std::to_string(castId) + " has a cast time and the bot is moving";
+                    return BotActionStatus::kMoving;
+                }
             }
             if (target != &bot && !bot.HasInArc(3.14159265f, target))
                 bot.SetFacingToObject(target); // spells aimed at a unit need it in front; the client would turn the caster

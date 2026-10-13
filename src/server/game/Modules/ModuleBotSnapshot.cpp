@@ -15,6 +15,7 @@
 #include "Player.h"
 #include "SpawnData.h"
 #include "SharedDefines.h"
+#include "Spell.h"
 #include "SpellHistory.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -346,6 +347,20 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
 
     FillCooldowns(bot, entry.spell_cooldowns);
     FillQuestLog(bot, entry);
+
+    // What the bot is doing now (layout 10): moving, and the cast or channel in progress.
+    entry.moving = bot.isMoving() ? 1 : 0;
+    for (CurrentSpellTypes type : { CURRENT_GENERIC_SPELL, CURRENT_CHANNELED_SPELL })
+    {
+        if (Spell const* spell = bot.GetCurrentSpell(type))
+        {
+            if (spell->getState() == SPELL_STATE_FINISHED)
+                continue;
+            entry.casting_spell = spell->GetSpellInfo()->Id;
+            entry.cast_remaining_ms = uint32(std::max<int32>(0, spell->GetTimer()));
+            break;
+        }
+    }
 
     entry.in_combat = bot.IsInCombat() ? 1 : 0;
     if (Unit* victim = bot.GetVictim())
