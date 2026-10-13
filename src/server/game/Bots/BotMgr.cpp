@@ -339,6 +339,20 @@ uint64 BotMgr::CreateBot(uint8 raceId, uint8 classId, uint8 level, std::string& 
     _bots[guid] = std::move(bot);
 
     size_t const knownSpells = player->GetSpellMap().size();
+
+    // The spell ids of the first bot of each race and class, once: the level-1 spell list of that combination.
+    static std::set<uint32> loggedCombinations;
+    if (loggedCombinations.insert(uint32(raceId) << 8 | classId).second)
+    {
+        std::vector<uint32> spellIds;
+        for (auto const& entry : player->GetSpellMap())
+            spellIds.push_back(entry.first);
+        std::sort(spellIds.begin(), spellIds.end());
+        std::string list;
+        for (uint32 spellId : spellIds)
+            list += (list.empty() ? "" : " ") + std::to_string(spellId);
+        TC_LOG_INFO("server.worldserver", "BotMgr: race {} class {} level {} spells ({}): {}", raceId, classId, level, spellIds.size(), list);
+    }
     player.reset();
     session.reset();
 
