@@ -1,4 +1,5 @@
 #include "ModuleBotActions.h"
+#include "ModuleBotSnapshot.h"
 #include "BotMgr.h"
 #include "Cell.h"
 #include "MapManager.h"
@@ -77,9 +78,9 @@ Unit* ResolveHostileTarget(Player& bot, uint64 ref, std::string& reason)
         reason = "target is not a live unit on this bot's map";
         return nullptr;
     }
-    if (!bot.IsHostileTo(target))
+    if (!BotMayFight(bot, *target))
     {
-        reason = "target is not hostile to the bot";
+        reason = "target is not one the bot may attack (friendly, a critter, an NPC, or not attackable)";
         return nullptr;
     }
     return target;
@@ -898,6 +899,7 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
                 reason = "attack refused: " + AttackRefusalReason(bot, target);
                 return BotActionStatus::kRefused;
             }
+            bot.SetFacingToObject(target); // a swing and most spells need the target in front
             return BotActionStatus::kApplied;
         }
 
@@ -1009,6 +1011,8 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
                 reason = "cast target is not a unit on this bot's map";
                 return BotActionStatus::kInvalidTarget;
             }
+            if (target != &bot && !bot.HasInArc(3.14159265f, target))
+                bot.SetFacingToObject(target); // spells aimed at a unit need it in front; the client would turn the caster
             SpellCastResult const result = bot.CastSpell(target, castId, false);
             if (result != SPELL_CAST_OK)
                 reason = "cast of spell " + std::to_string(castId) + " returned result " + std::to_string(int32(result));

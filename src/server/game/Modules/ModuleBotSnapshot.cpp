@@ -434,3 +434,8 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
     cachedNearby = result.Nearby;
     return result;
 }
+
+bool BotMayFight(Player const& bot, Unit const& unit)
+{
+    return CanBeFought(bot, unit);
+}

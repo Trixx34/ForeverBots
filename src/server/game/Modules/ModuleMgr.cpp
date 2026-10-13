@@ -3,6 +3,9 @@
  */
 
 #include "ModuleMgr.h"
+#include <map>
+#include <functional>
+#include <chrono>
 #include "Config.h"
 #include "Log.h"
 #include "ModuleActions.h"
@@ -947,8 +950,37 @@ void ModuleMgr::ApplyModuleActions(ModuleId module, ModuleActionSet const& actio
         forever_module::BotActionStatus const status = ApplyBotAction(*bot, action, reason);
         RecordActionResult(action.bot_guid, action, status);
         if (status != forever_module::BotActionStatus::kApplied)
+        {
             TC_LOG_DEBUG("modules", "module {}: action on bot {} refused ({}): {}.", module, action.bot_guid, int(status), reason);
+            NoteRefusal(int(action.type), int(status), reason);
+        }
     }
+}
+
+// Refusals are counted by action type, status and reason, and the commonest are logged once a minute, so a run shows why its actions
+// fail without debug logging.
+void ModuleMgr::NoteRefusal(int actionType, int status, std::string const& reason)
+{
+    static std::map<std::string, uint32> counts;
+    static std::chrono::steady_clock::time_point lastReport = std::chrono::steady_clock::now();
+    ++counts["type " + std::to_string(actionType) + " status " + std::to_string(status) + ": " + reason];
+
+    auto const now = std::chrono::steady_clock::now();
+    if (now - lastReport < std::chrono::minutes(1))
+        return;
+    lastReport = now;
+
+    std::vector<std::pair<uint32, std::string>> ranked;
+    for (auto const& [text, count] : counts)
+        ranked.emplace_back(count, text);
+    std::sort(ranked.begin(), ranked.end(), std::greater<>());
+    uint32 total = 0;
+    for (auto const& entry : ranked)
+        total += entry.first;
+    TC_LOG_INFO("server.worldserver", "Modules: {} action(s) refused in the last minute; the commonest reasons:", total);
+    for (size_t i = 0; i < ranked.size() && i < 12; ++i)
+        TC_LOG_INFO("server.worldserver", "Modules:   {} x {}", ranked[i].first, ranked[i].second);
+    counts.clear();
 }
 
 void ModuleMgr::Unload()

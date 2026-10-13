@@ -154,6 +154,9 @@ class TC_GAME_API ModuleMgr
         };
 
         // Delivers PlayerScript.OnLootItem to subscribed modules. Same non-blocking rules as DispatchNotify.
+        // Counts a refused bot action for the once-a-minute summary log (see ModuleMgr.cpp).
+        static void NoteRefusal(int actionType, int status, std::string const& reason);
+
         void DispatchItemLooted(std::string_view hook, ModuleWire::ItemLootedEvent const& event);
 
         // Offers a chat command (without its leading '.') to the modules subscribed to CommandScript,

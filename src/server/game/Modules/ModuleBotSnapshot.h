@@ -25,6 +25,11 @@ bool EncodeUnitRef(Unit const& unit, uint64& ref);
 // this cap, a crowd of bots fills every slot with other bots and no creature is ever seen (the 1500-bot run).
 constexpr uint32 kNearbyPlayerSlots = 4;
 
+// Whether the bot may attack this unit: the rule behind the snapshot's is_hostile. Hostile units, and neutral creatures that are not
+// critters or NPCs; never a unit a player cannot attack. The attack action uses the same rule, so a unit the module is shown as a
+// target is one the core lets it attack.
+bool BotMayFight(Player const& bot, Unit const& unit);
+
 // The snapshot entry for one bot, with up to `maxNearby` units near it. Creatures come first, closest first, and at most
 // kNearbyPlayerSlots players are listed ahead of them. When refreshNearby is false the nearby units are the last ones
 // stored in cachedNearby, so the range query runs for only some of the bots on each tick.
