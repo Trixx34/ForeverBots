@@ -1,10 +1,13 @@
 #include "ModuleBotActions.h"
+#include "BotMgr.h"
 #include "Cell.h"
 #include "CellImpl.h"
 #include "Creature.h"
 #include "DB2Structure.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "Group.h"
+#include "GroupMgr.h"
 #include "Item.h"
 #include "ItemTemplate.h"
 #include "Map.h"
@@ -15,6 +18,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Trainer.h"
+#include "World.h"
 
 #include <algorithm>
 #include <list>
@@ -263,6 +267,135 @@ BotActionStatus LearnFromTrainer(Player& bot, std::string& reason)
     return BotActionStatus::kApplied;
 }
 
+// Party actions (M8). A bot invites only other bots the module controls, so the module's parties are its own; an invite
+// never reaches a player on a real account. The steps follow the core's own invite and accept handlers (GroupHandler.cpp).
+BotActionStatus InviteToParty(Player& bot, uint64 targetRef, std::string& reason)
+{
+    if (forever_module::UnitRefType(targetRef) != uint8(HighGuid::Player))
+    {
+        reason = "party invite target is not a player";
+        return BotActionStatus::kInvalidTarget;
+    }
+    uint32 const counter = forever_module::UnitRefCounter(targetRef);
+    Player* target = ObjectAccessor::FindPlayerByLowGUID(counter);
+    if (!target || target == &bot || !target->IsInWorld() || !sBotMgr->Exists(counter))
+    {
+        reason = "party invite target is not a bot on this realm";
+        return BotActionStatus::kInvalidTarget;
+    }
+    if (target->GetGroup() || target->GetGroupInvite())
+    {
+        reason = "party invite target is already in a party or invited";
+        return BotActionStatus::kRefused;
+    }
+    if (!sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_GROUP) && bot.GetTeam() != target->GetTeam())
+    {
+        reason = "party invite target is on the other team";
+        return BotActionStatus::kRefused;
+    }
+
+    // A bot already in a party, or leading a pending one, invites into it. Only its leader does.
+    Group* group = bot.GetGroup();
+    if (!group)
+        group = bot.GetGroupInvite();
+    if (group && !group->IsLeader(bot.GetGUID()) && !group->IsAssistant(bot.GetGUID()))
+    {
+        reason = "bot is not the party leader";
+        return BotActionStatus::kRefused;
+    }
+    if (group && group->IsFull())
+    {
+        reason = "party is full";
+        return BotActionStatus::kRefused;
+    }
+
+    bool const fresh = group == nullptr;
+    if (fresh)
+    {
+        // The party is not saved until a second member joins, so a failed invite just drops it.
+        group = new Group();
+        if (!group->AddLeaderInvite(&bot))
+        {
+            delete group;
+            reason = "could not start a party";
+            return BotActionStatus::kRefused;
+        }
+    }
+    if (!group->AddInvite(target))
+    {
+        if (fresh)
+        {
+            group->RemoveAllInvites();
+            delete group;
+        }
+        reason = "could not invite the bot";
+        return BotActionStatus::kRefused;
+    }
+    return BotActionStatus::kApplied;
+}
+
+// Accepts the bot's pending party invite. The first accept forms the party, as the core's accept handler does.
+BotActionStatus AcceptPartyInvite(Player& bot, std::string& reason)
+{
+    Group* group = bot.GetGroupInvite();
+    if (!group)
+    {
+        reason = "bot has no pending party invite";
+        return BotActionStatus::kRefused;
+    }
+
+    group->RemoveInvite(&bot);
+    if (group->GetLeaderGUID() == bot.GetGUID())
+    {
+        reason = "bot leads the party it was invited to";
+        return BotActionStatus::kRefused;
+    }
+    if (group->IsFull())
+    {
+        reason = "party is full";
+        return BotActionStatus::kRefused;
+    }
+
+    if (!group->IsCreated())
+    {
+        // The leader may be zoning; the invite is dropped rather than left dangling.
+        Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+        if (!leader)
+        {
+            group->RemoveAllInvites();
+            reason = "party leader is offline";
+            return BotActionStatus::kRefused;
+        }
+        group->RemoveInvite(leader);
+        group->Create(leader);
+        sGroupMgr->AddGroup(group);
+    }
+    if (!group->AddMember(&bot))
+    {
+        reason = "could not join the party";
+        return BotActionStatus::kRefused;
+    }
+    group->BroadcastGroupUpdate();
+    return BotActionStatus::kApplied;
+}
+
+// Leaves the bot's party, or declines its pending invite when it is in none (the core's own uninvite path).
+BotActionStatus LeaveParty(Player& bot, std::string& reason)
+{
+    if (bot.GetGroup())
+    {
+        bot.RemoveFromGroup(GROUP_REMOVEMETHOD_LEAVE);
+        return BotActionStatus::kApplied;
+    }
+    if (bot.GetGroupInvite())
+    {
+        bot.UninviteFromGroup();
+        return BotActionStatus::kApplied;
+    }
+    reason = "bot is not in a party";
+    return BotActionStatus::kRefused;
+}
+
 BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
 {
     switch (action.type)
@@ -356,6 +489,24 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
             }
             bot.SetStandState(UNIT_STAND_STATE_SIT);
             return BotActionStatus::kApplied;
+        }
+
+        case ActionType::kGroup:
+        {
+            // Forming and changing a party is out of combat only, the same as the trainer and vendor actions.
+            if (bot.IsInCombat())
+            {
+                reason = "bot is in combat";
+                return BotActionStatus::kRefused;
+            }
+            switch (action.spell_id)
+            {
+                case 1: return InviteToParty(bot, action.target_guid, reason);
+                case 2: return AcceptPartyInvite(bot, reason);
+                case 3: return LeaveParty(bot, reason);
+            }
+            reason = "unknown party action " + std::to_string(action.spell_id);
+            return BotActionStatus::kRefused;
         }
 
         case ActionType::kCastSpell:

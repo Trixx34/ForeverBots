@@ -2,6 +2,7 @@
 #include "Cell.h"
 #include "DB2Structure.h"
 #include "CellImpl.h"
+#include "Group.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "ObjectGuid.h"
@@ -66,6 +67,27 @@ void FillCooldowns(Player& bot, SpellCooldown (&slots)[forever_module::kMaxTrack
         slots[i] = { active[i].SpellId, active[i].Remaining };
 }
 
+// A player's unit reference, for a party leader. The leader need not be in the bot's view for the reference to be valid.
+uint64 PlayerRef(ObjectGuid guid)
+{
+    if (guid.GetCounter() > forever_module::kUnitRefCounterMask)
+        return 0;
+    return forever_module::MakeUnitRef(uint8(HighGuid::Player), 0, guid.GetCounter());
+}
+
+// The bot's party and any invite it has not answered (layout 5, M8).
+void FillParty(Player& bot, BotSnapshot& entry)
+{
+    if (Group* group = bot.GetGroup())
+    {
+        entry.group_role = group->IsLeader(bot.GetGUID()) ? 2 : 1;
+        entry.group_size = group->GetMembersCount();
+        entry.group_leader_guid = PlayerRef(group->GetLeaderGUID());
+    }
+    if (Group* invite = bot.GetGroupInvite())
+        entry.group_invite_from = PlayerRef(invite->GetLeaderGUID());
+}
+
 } // namespace
 
 bool EncodeUnitRef(Unit const& unit, uint64& ref)
@@ -120,6 +142,8 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
             entry.threat_target_guid = 0;
         entry.target_distance = bot.GetDistance(victim);
     }
+
+    FillParty(bot, entry);
 
     if (maxNearby == 0)
         return result;
