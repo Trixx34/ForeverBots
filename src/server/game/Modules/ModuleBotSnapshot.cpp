@@ -9,6 +9,7 @@
 #include "GridNotifiersImpl.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
+#include "QuestDef.h"
 #include "Player.h"
 #include "SpawnData.h"
 #include "SharedDefines.h"
@@ -40,6 +41,39 @@ uint32 ClampToUint32(uint64 value)
 uint32 ClampToUint32(int64 value)
 {
     return value <= 0 ? 0 : ClampToUint32(static_cast<uint64>(value));
+}
+
+// The bot's quest log (layout 8): the quest ids in its slots, the status, and the progress of the first objectives.
+void FillQuestLog(Player& bot, forever_module::BotSnapshot& entry)
+{
+    entry.quest_count = 0;
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE && entry.quest_count < forever_module::kMaxQuestLog; ++slot)
+    {
+        uint32 const questId = bot.GetQuestSlotQuestId(slot);
+        if (!questId)
+            continue;
+
+        forever_module::QuestEntry& out = entry.quests[entry.quest_count];
+        out = forever_module::QuestEntry{};
+        out.quest_id = questId;
+        switch (bot.GetQuestStatus(questId))
+        {
+            case QUEST_STATUS_COMPLETE: out.status = 2; break;
+            case QUEST_STATUS_FAILED: out.status = 3; break;
+            default: out.status = 1; break;
+        }
+        if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+        {
+            size_t index = 0;
+            for (QuestObjective const& objective : quest->Objectives)
+            {
+                if (index >= forever_module::kMaxQuestObjectives)
+                    break;
+                out.counts[index++] = uint16(std::clamp<int32>(bot.GetQuestObjectiveData(objective), 0, 65535));
+            }
+        }
+        ++entry.quest_count;
+    }
 }
 
 // The bot's active cooldowns, closest to expiring first, up to the slots in the snapshot. Each is a known spell
@@ -267,6 +301,7 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
     entry.map_id = bot.GetMapId(); // layout 7: the map, for a module's hubs (M7)
 
     FillCooldowns(bot, entry.spell_cooldowns);
+    FillQuestLog(bot, entry);
 
     entry.in_combat = bot.IsInCombat() ? 1 : 0;
     if (Unit* victim = bot.GetVictim())

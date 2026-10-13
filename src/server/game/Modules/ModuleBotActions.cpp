@@ -18,6 +18,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "QuestDef.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Trainer.h"
@@ -261,6 +262,129 @@ uint32 EquipBestGear(Player& bot)
 
 // Learns every spell the trainer in range teaches this bot now: lowest level first, so each rank comes before the next. The
 // core's own teach checks decide money, class and prerequisites, so nothing here is granted that the trainer would refuse.
+// The closest creature in interaction range that starts (`ender` false) or ends the quest, or nullptr.
+Creature* NearestQuestNpc(Player& bot, uint32 questId, bool ender)
+{
+    std::list<Unit*> inRange;
+    Trinity::AnyUnitInObjectRangeCheck check(&bot, INTERACTION_DISTANCE);
+    Trinity::UnitListSearcher<Trinity::AnyUnitInObjectRangeCheck> searcher(&bot, inRange, check);
+    Cell::VisitAllObjects(&bot, searcher, INTERACTION_DISTANCE);
+
+    Creature* best = nullptr;
+    float bestDist = INTERACTION_DISTANCE;
+    for (Unit* unit : inRange)
+    {
+        Creature* npc = unit->ToCreature();
+        if (!npc || !(ender ? npc->hasInvolvedQuest(questId) : npc->hasQuest(questId)))
+            continue;
+        float const dist = bot.GetDistance(npc);
+        if (dist >= bestDist || !bot.CanInteractWithQuestGiver(npc))
+            continue;
+        best = npc;
+        bestDist = dist;
+    }
+    return best;
+}
+
+// The reward a bot picks from a quest's choices: the item it can use with the highest sell price, else the highest sell price. 0 when
+// the quest offers no choice.
+uint32 PickQuestReward(Player& bot, Quest const& quest)
+{
+    uint32 best = 0;
+    bool bestUsable = false;
+    uint64 bestPrice = 0;
+    for (uint32 i = 0; i < quest.GetRewChoiceItemsCount(); ++i)
+    {
+        if (!quest.RewardChoiceItemId[i] || quest.RewardChoiceItemType[i] != LootItemType::Item)
+            continue;
+        ItemTemplate const* item = sObjectMgr->GetItemTemplate(quest.RewardChoiceItemId[i]);
+        if (!item)
+            continue;
+        bool const usable = bot.CanUseItem(item) == EQUIP_ERR_OK;
+        uint64 const price = item->GetSellPrice();
+        if (!best || (usable && !bestUsable) || (usable == bestUsable && price > bestPrice))
+        {
+            best = item->GetId();
+            bestUsable = usable;
+            bestPrice = price;
+        }
+    }
+    return best;
+}
+
+// kQuest: spell_id = (operation << 24) | quest id. 1 accepts the quest from a giver in range, 2 hands it in at an ender in range
+// (picking the reward), 3 abandons it.
+BotActionStatus QuestAction(Player& bot, uint32 code, std::string& reason)
+{
+    uint32 const operation = code >> 24;
+    uint32 const questId = code & 0xFFFFFF;
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    if (!quest)
+    {
+        reason = "unknown quest";
+        return BotActionStatus::kRefused;
+    }
+
+    if (operation == 3)
+    {
+        if (bot.GetQuestStatus(questId) == QUEST_STATUS_NONE)
+        {
+            reason = "quest is not in the log";
+            return BotActionStatus::kRefused;
+        }
+        bot.RemoveActiveQuest(questId);
+        return BotActionStatus::kApplied;
+    }
+
+    if (operation != 1 && operation != 2)
+    {
+        reason = "unknown quest operation";
+        return BotActionStatus::kRefused;
+    }
+    if (bot.IsInCombat())
+    {
+        reason = "bot is in combat";
+        return BotActionStatus::kRefused;
+    }
+
+    Creature* npc = NearestQuestNpc(bot, questId, operation == 2);
+    if (!npc)
+    {
+        reason = operation == 1 ? "no giver of the quest within interaction range" : "no ender of the quest within interaction range";
+        return BotActionStatus::kRefused;
+    }
+
+    if (operation == 1)
+    {
+        if (!bot.CanTakeQuest(quest, false))
+        {
+            reason = "bot cannot take the quest";
+            return BotActionStatus::kRefused;
+        }
+        if (!bot.CanAddQuest(quest, false))
+        {
+            reason = "bot cannot add the quest (log or bags full)";
+            return BotActionStatus::kRefused;
+        }
+        bot.AddQuestAndCheckCompletion(quest, npc);
+        return BotActionStatus::kApplied;
+    }
+
+    if (bot.GetQuestStatus(questId) != QUEST_STATUS_COMPLETE || !bot.CanRewardQuest(quest, false))
+    {
+        reason = "quest is not complete";
+        return BotActionStatus::kRefused;
+    }
+    uint32 const reward = PickQuestReward(bot, *quest);
+    if (!bot.CanRewardQuest(quest, LootItemType::Item, reward, false))
+    {
+        reason = "bot cannot receive the reward (bags full)";
+        return BotActionStatus::kRefused;
+    }
+    bot.RewardQuest(quest, LootItemType::Item, reward, npc);
+    return BotActionStatus::kApplied;
+}
+
 BotActionStatus LearnFromTrainer(Player& bot, std::string& reason)
 {
     Creature* trainer = NearestServiceNpc(bot, UNIT_NPC_FLAG_TRAINER);
@@ -588,6 +712,9 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
 
         case ActionType::kLoot:
             return LootCorpse(bot, action.target_guid, reason);
+
+        case ActionType::kQuest:
+            return QuestAction(bot, action.spell_id, reason);
 
         case ActionType::kGroup:
         {
