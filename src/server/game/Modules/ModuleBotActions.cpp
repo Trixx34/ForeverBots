@@ -332,6 +332,36 @@ std::vector<ItemTemplate const*> const& GearCandidates()
     return candidates;
 }
 
+// The heaviest armour a class wears at a level (ITEM_SUBCLASS_ARMOR_*): cloth, leather, mail or plate. Lighter armour is allowed too.
+uint32 MaxArmorSubclass(uint8 classId, uint32 level)
+{
+    switch (classId)
+    {
+        case CLASS_WARRIOR:
+        case CLASS_PALADIN: return level >= 40 ? ITEM_SUBCLASS_ARMOR_PLATE : ITEM_SUBCLASS_ARMOR_MAIL;
+        case CLASS_HUNTER:
+        case CLASS_SHAMAN: return level >= 40 ? ITEM_SUBCLASS_ARMOR_MAIL : ITEM_SUBCLASS_ARMOR_LEATHER;
+        case CLASS_ROGUE:
+        case CLASS_DRUID: return ITEM_SUBCLASS_ARMOR_LEATHER;
+        default: return ITEM_SUBCLASS_ARMOR_CLOTH; // priest, mage, warlock
+    }
+}
+
+// True for armour in the body slots that is heavier than the class wears. Jewellery, cloaks and shields are not judged here.
+bool ArmorTooHeavy(Player const& bot, ItemTemplate const& item)
+{
+    if (item.GetClass() != ITEM_CLASS_ARMOR)
+        return false;
+    uint32 const sub = item.GetSubClass();
+    switch (item.GetInventoryType())
+    {
+        case INVTYPE_HEAD: case INVTYPE_SHOULDERS: case INVTYPE_CHEST: case INVTYPE_ROBE: case INVTYPE_WAIST: case INVTYPE_LEGS:
+        case INVTYPE_FEET: case INVTYPE_WRISTS: case INVTYPE_HANDS:
+            return sub > ITEM_SUBCLASS_ARMOR_MISCELLANEOUS && sub <= ITEM_SUBCLASS_ARMOR_PLATE && sub > MaxArmorSubclass(bot.GetClass(), bot.GetLevel());
+        default: return false;
+    }
+}
+
 // What a class wants from its gear, as item-mod stats: the stats it uses, in no order.
 std::vector<int32> PreferredStats(uint8 classId)
 {
@@ -389,8 +419,9 @@ char const* GearResultName(GearResult result)
 }
 
 // Creates the item in the bags and moves it into `slot`, unless the slot already holds an item of at least this item level.
-GearResult GiveAndEquip(Player& bot, ItemTemplate const& item, uint8 slot)
+GearResult GiveAndEquip(Player& bot, ItemTemplate const& item, uint8 slot, uint32& equipError)
 {
+    equipError = 0;
     Item* current = bot.GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
     if (current && current->GetTemplate()->GetBaseItemLevel() >= item.GetBaseItemLevel())
         return GearResult::KeptBetter;
@@ -404,8 +435,12 @@ GearResult GiveAndEquip(Player& bot, ItemTemplate const& item, uint8 slot)
 
     uint16 target = uint16(INVENTORY_SLOT_BAG_0) << 8 | slot;
     uint16 equipDestination = target;
-    if (bot.CanEquipItem(slot, equipDestination, created, true) != EQUIP_ERR_OK)
+    InventoryResult const canEquip = bot.CanEquipItem(slot, equipDestination, created, true);
+    if (canEquip != EQUIP_ERR_OK)
+    {
+        equipError = uint32(canEquip);
         return GearResult::CannotEquip; // stays in the bags
+    }
     bot.SwapItem(uint16(created->GetBagSlot()) << 8 | created->GetSlot(), target);
     return bot.GetItemByPos(INVENTORY_SLOT_BAG_0, slot) == created ? GearResult::Equipped : GearResult::CannotEquip;
 }
@@ -441,7 +476,7 @@ BotActionStatus AutoGearAction(Player& bot, uint32 flags, std::string& reason)
             ++levelTooHigh;
             continue;
         }
-        if (bot.CanUseItem(item) != EQUIP_ERR_OK)
+        if (bot.CanUseItem(item) != EQUIP_ERR_OK || ArmorTooHeavy(bot, *item))
         {
             ++cannotUse;
             continue;
@@ -497,12 +532,14 @@ BotActionStatus AutoGearAction(Player& bot, uint32 flags, std::string& reason)
     auto const apply = [&](GearPick const& pick, uint8 slot)
     {
         ++tried;
-        GearResult const result = GiveAndEquip(bot, *pick.Item, slot);
+        uint32 equipError = 0;
+        GearResult const result = GiveAndEquip(bot, *pick.Item, slot, equipError);
         equipped += result == GearResult::Equipped;
         keptBetter += result == GearResult::KeptBetter;
         failed += result == GearResult::NoBagSpace || result == GearResult::CannotEquip;
-        TC_LOG_INFO("server.worldserver", "BotMgr: autogear pick bot={} slot={} item={} quality={} ilvl={} reqlevel={} result={}", bot.GetName(), uint32(slot),
-            pick.Item->GetId(), uint32(pick.Item->GetQuality()), pick.Item->GetBaseItemLevel(), pick.Item->GetBaseRequiredLevel(), GearResultName(result));
+        TC_LOG_INFO("server.worldserver", "BotMgr: autogear pick bot={} slot={} item={} quality={} ilvl={} reqlevel={} armor_subclass={} result={} equip_error={}", bot.GetName(), uint32(slot),
+            pick.Item->GetId(), uint32(pick.Item->GetQuality()), pick.Item->GetBaseItemLevel(), pick.Item->GetBaseRequiredLevel(),
+            pick.Item->GetClass() == ITEM_CLASS_ARMOR ? int32(pick.Item->GetSubClass()) : -1, GearResultName(result), equipError);
     };
     if (main.Item)
         apply(main, EQUIPMENT_SLOT_MAINHAND);
