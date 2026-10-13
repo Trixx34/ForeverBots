@@ -10,8 +10,11 @@
 #include "GroupMgr.h"
 #include "Item.h"
 #include "ItemTemplate.h"
+#include "Loot.h"
+#include "LootPackets.h"
 #include "Map.h"
 #include "MotionMaster.h"
+#include "Opcodes.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -19,9 +22,12 @@
 #include "SpellMgr.h"
 #include "Trainer.h"
 #include "World.h"
+#include "WorldPacket.h"
+#include "WorldSession.h"
 
 #include <algorithm>
 #include <list>
+#include <vector>
 
 using forever_module::ActionType;
 using forever_module::BotAction;
@@ -412,6 +418,76 @@ BotActionStatus LeaveParty(Player& bot, std::string& reason)
     return BotActionStatus::kRefused;
 }
 
+// Loots a corpse the way the client does: through the bot's own session handlers (open the loot, take each item, take the money,
+// release it), so the loot rights, the group rules and the bag space are the core's, not a copy of them here. The distance is the one
+// the loot handler uses for a corpse. A corpse that is empty, or whose items do not all fit, is not an error: the bot took what it could.
+constexpr float kLootDistanceYards = 30.0f;
+
+BotActionStatus LootCorpse(Player& bot, uint64 targetRef, std::string& reason)
+{
+    Unit* unit = ResolveUnit(bot, targetRef);
+    Creature* corpse = unit ? unit->ToCreature() : nullptr;
+    if (!corpse)
+    {
+        reason = "loot target is not a creature on this bot's map";
+        return BotActionStatus::kInvalidTarget;
+    }
+    if (corpse->IsAlive())
+    {
+        reason = "loot target is alive";
+        return BotActionStatus::kInvalidTarget;
+    }
+    if (!bot.IsAlive())
+    {
+        reason = "bot is dead";
+        return BotActionStatus::kRefused;
+    }
+    if (!bot.IsWithinDist(corpse, kLootDistanceYards))
+    {
+        reason = "corpse is more than 30 yards away";
+        return BotActionStatus::kOutOfRange;
+    }
+    if (!bot.isAllowedToLoot(corpse))
+    {
+        reason = "bot has no right to loot this corpse";
+        return BotActionStatus::kRefused;
+    }
+
+    WorldSession* session = bot.GetSession();
+    if (!session)
+    {
+        reason = "bot has no session";
+        return BotActionStatus::kRefused;
+    }
+
+    // Open the loot. Every corpse that is lootable within range joins the bot's loot view, as for a player.
+    WorldPackets::Loot::LootUnit open{ WorldPacket(CMSG_LOOT_UNIT) };
+    open.Unit = corpse->GetGUID();
+    session->HandleLootOpcode(open);
+    if (bot.GetAELootView().empty())
+        return BotActionStatus::kApplied; // nothing to take
+
+    // Take every item of every loot in the view, then the money.
+    WorldPackets::Loot::LootItem take{ WorldPacket(CMSG_LOOT_ITEM) };
+    for (std::pair<ObjectGuid const, Loot*> const& view : bot.GetAELootView())
+        for (::LootItem const& item : view.second->items)
+            if (take.Loot.size() < 100)
+                take.Loot.push_back({ view.first, uint8(item.LootListId) });
+    if (!take.Loot.empty())
+        session->HandleAutostoreLootItemOpcode(take);
+
+    WorldPackets::Loot::LootMoney money{ WorldPacket(CMSG_LOOT_MONEY) };
+    session->HandleLootMoneyOpcode(money);
+
+    // Release each loot. The view changes as they are released, so the list is copied first.
+    std::vector<Loot*> opened;
+    for (std::pair<ObjectGuid const, Loot*> const& view : bot.GetAELootView())
+        opened.push_back(view.second);
+    for (Loot* loot : opened)
+        session->DoLootRelease(loot);
+    return BotActionStatus::kApplied;
+}
+
 BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
 {
     switch (action.type)
@@ -509,6 +585,9 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
             bot.SetStandState(UNIT_STAND_STATE_SIT);
             return BotActionStatus::kApplied;
         }
+
+        case ActionType::kLoot:
+            return LootCorpse(bot, action.target_guid, reason);
 
         case ActionType::kGroup:
         {
