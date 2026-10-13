@@ -48,6 +48,11 @@ struct BotInfo
     bool LogoutRequested = false;      // logout asked for while the character was logging in
     uint32 NotBeforeMs = 0;            // no login before this uptime (the previous logout save must land first)
     uint32 LoginStartedMs = 0;
+    bool HasStart = false;             // placed at a given spot on login (a scenario), not spread around the race's start
+    uint32 StartMap = 0;
+    float StartX = 0.0f;
+    float StartY = 0.0f;
+    float StartZ = 0.0f;
 };
 
 class TC_GAME_API BotMgr
@@ -83,6 +88,9 @@ class TC_GAME_API BotMgr
         // level is the character's level (1 is the race's starting level). Returns its guid, or 0 with the reason in error. The character is saved in the background; login is
         // requested with RequestLogin once it exists.
         uint64 CreateBot(uint8 race, uint8 classId, uint8 level, std::string& error);
+
+        // The bot is put at this spot when it logs in, instead of being spread around its race's start (scenarios).
+        void SetStart(uint64 guid, uint32 mapId, float x, float y, float z);
 
         // Queues the bot for login. Returns false with the reason if the guid is not a bot. Already online or queued is success.
         bool RequestLogin(uint64 guid, std::string& error);
