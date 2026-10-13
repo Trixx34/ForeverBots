@@ -95,8 +95,9 @@ std::unordered_map<uint32, std::vector<VendorSpot>> const& VendorsByMap()
     if (!built)
     {
         built = true;
-        for (auto const& [spawnId, spawn] : sObjectMgr->GetAllCreatureData())
+        for (auto const& spawnEntry : sObjectMgr->GetAllCreatureData())
         {
+            CreatureData const& spawn = spawnEntry.second;
             CreatureTemplate const* templ = sObjectMgr->GetCreatureTemplate(spawn.id);
             if (!templ || (templ->npcflag & UNIT_NPC_FLAG_VENDOR_MASK) == 0)
                 continue;
@@ -140,7 +141,9 @@ void FillNearestVendor(Player& bot, BotSnapshot& entry)
         last.MapId = mapId;
         last.X = x;
         last.Y = y;
-        if (auto const vendors = VendorsByMap(); auto const onMap = vendors.find(mapId); onMap != vendors.end())
+        auto const& vendors = VendorsByMap();
+        auto const onMap = vendors.find(mapId);
+        if (onMap != vendors.end())
         {
             float bestSq = std::numeric_limits<float>::max();
             for (VendorSpot const& spot : onMap->second)
