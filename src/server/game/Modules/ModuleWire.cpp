@@ -128,6 +128,15 @@ void AppendVarintField(std::string& out, uint32 field, uint64 value)
     AppendVarint(out, value);
 }
 
+void AppendFloatField(std::string& out, uint32 field, float value)
+{
+    AppendTag(out, field, 5); // wire type 5: fixed32
+    uint32 bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    for (int i = 0; i < 4; ++i)
+        out.push_back(static_cast<char>((bits >> (8 * i)) & 0xFF));
+}
+
 void AppendBytesField(std::string& out, uint32 field, std::string_view value)
 {
     AppendTag(out, field, WireLengthDelimited);
@@ -213,6 +222,12 @@ std::string EncodeEventNotifyChat(std::string_view hookName, ChatEvent const& ev
     AppendBytesField(payload, 3, event.Text);
     if (event.RecipientGuid != 0)
         AppendVarintField(payload, 4, event.RecipientGuid);
+    AppendVarintField(payload, 5, event.MapId);
+    AppendFloatField(payload, 6, event.PosX);
+    AppendFloatField(payload, 7, event.PosY);
+    AppendFloatField(payload, 8, event.PosZ);
+    if (event.TargetRef != 0)
+        AppendVarintField(payload, 9, event.TargetRef);
 
     std::string out;
     AppendBytesField(out, 1, hookName);

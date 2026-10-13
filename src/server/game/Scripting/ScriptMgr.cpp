@@ -18,6 +18,7 @@
 #include "ScriptMgr.h"
 #include "AchievementMgr.h"
 #include "ModuleMgr.h"
+#include "ModuleBotSnapshot.h"
 #include "AreaTrigger.h"
 #include "AreaTriggerAI.h"
 #include "ChatCommand.h"
@@ -2080,6 +2081,24 @@ void ScriptMgr::OnPlayerDuelEnd(Player* winner, Player* loser, DuelCompleteType 
     FOREACH_SCRIPT(PlayerScript)->OnDuelEnd(winner, loser, type);
 }
 
+namespace
+{
+// Where the speaker is and what it has selected, for a module that obeys a chat command (goto here, pull, heal).
+void FillChatSpeaker(ModuleWire::ChatEvent& event, Player* player)
+{
+    event.MapId = player->GetMapId();
+    event.PosX = player->GetPositionX();
+    event.PosY = player->GetPositionY();
+    event.PosZ = player->GetPositionZ();
+    if (Unit* selected = player->GetSelectedUnit())
+    {
+        uint64 ref = 0;
+        if (EncodeUnitRef(*selected, ref))
+            event.TargetRef = ref;
+    }
+}
+}
+
 void ScriptMgr::OnPlayerChat(Player* player, uint32 type, uint32 lang, std::string& msg)
 {
     FOREACH_SCRIPT(PlayerScript)->OnChat(player, type, lang, msg);
@@ -2108,6 +2127,7 @@ void ScriptMgr::OnPlayerChat(Player* player, uint32 type, uint32 lang, std::stri
             event.PlayerGuid = player->GetGUID().GetCounter();
             event.Channel = type == CHAT_MSG_PARTY_LEADER ? 1 : 2;
             event.Text = msg;
+            FillChatSpeaker(event, player);
             sModuleMgr->DispatchChat("PlayerScript.OnChat", event);
         }
     }
@@ -2139,6 +2159,7 @@ void ScriptMgr::OnPlayerChatSent(Player* player, uint32 type, uint32 lang, std::
         event.Channel = 3;
         event.Text = msg;
         event.RecipientGuid = receiver->GetGUID().GetCounter();
+        FillChatSpeaker(event, player);
         sModuleMgr->DispatchChat("PlayerScript.OnChat", event);
     }
 

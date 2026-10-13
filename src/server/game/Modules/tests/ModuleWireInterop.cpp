@@ -231,6 +231,11 @@ int main()
         chat.Channel = 3;
         chat.Text = "follow";
         chat.RecipientGuid = 66;
+        chat.MapId = 36;
+        chat.PosX = 1.5f;
+        chat.PosY = -2.5f;
+        chat.PosZ = 3.25f;
+        chat.TargetRef = 99;
         std::string bytes = ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::EventNotify,
                                                        ModuleWire::EncodeEventNotifyChat("PlayerScript.OnChat", chat));
         forever_module::Envelope sdk;
@@ -241,6 +246,10 @@ int main()
         CHECK(sdk.event_notify().player_chat().channel() == 3);
         CHECK(sdk.event_notify().player_chat().text() == "follow");
         CHECK(sdk.event_notify().player_chat().recipient_guid() == 66);
+        CHECK(sdk.event_notify().player_chat().map_id() == 36);
+        CHECK(sdk.event_notify().player_chat().pos_x() == 1.5f && sdk.event_notify().player_chat().pos_y() == -2.5f &&
+              sdk.event_notify().player_chat().pos_z() == 3.25f);
+        CHECK(sdk.event_notify().player_chat().target_ref() == 99);
     }
 
     // core -> SDK: EventRequest carrying a command, with the envelope message id set.

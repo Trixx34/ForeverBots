@@ -149,6 +149,9 @@ struct ChatEvent
     uint32 Channel = 0;
     std::string Text;
     uint64 RecipientGuid = 0;
+    uint32 MapId = 0;                   // the speaker's map and position
+    float PosX = 0.0f, PosY = 0.0f, PosZ = 0.0f;
+    uint64 TargetRef = 0;               // the speaker's selected unit as a Tier 2 unit reference, 0 = none
 };
 
 std::string EncodeEventNotifyChat(std::string_view hookName, ChatEvent const& event);
