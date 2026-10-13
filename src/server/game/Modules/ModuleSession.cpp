@@ -167,6 +167,14 @@ bool ModuleSession::NotifyItemLooted(std::string_view hook, ModuleWire::ItemLoot
                                                                 ModuleWire::EncodeEventNotifyItemLooted(hook, event))));
 }
 
+bool ModuleSession::NotifyChat(std::string_view hook, ModuleWire::ChatEvent const& event)
+{
+    if (!Subscribes(hook))
+        return false;
+    return Enqueue(ModuleWire::Frame(ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::EventNotify,
+                                                                ModuleWire::EncodeEventNotifyChat(hook, event))));
+}
+
 bool ModuleSession::SendConfig(std::vector<ModuleWire::ConfigEntry> const& config)
 {
     if (!IsAccepted())

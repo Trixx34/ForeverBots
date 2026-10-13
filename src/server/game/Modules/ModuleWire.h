@@ -119,6 +119,7 @@ enum class NotifyKind : uint32
     WorldShutdown = 13,
     AccountLogin = 14,
     PlayerItemLooted = 15,
+    PlayerChat = 16,
 };
 
 // Body of an EventNotify. `value` is the player GUID for player events, the account id for AccountLogin,
@@ -139,6 +140,18 @@ struct ItemLootedEvent
 };
 
 std::string EncodeEventNotifyItemLooted(std::string_view hookName, ItemLootedEvent const& event);
+
+// PlayerChatEvent (events.proto), as the body of an EventNotify: a chat line of a group leader (party or raid) or a whisper to a bot.
+// Channel is 1 party, 2 raid, 3 whisper. Guids are character guid counters; RecipientGuid is the whispered player, else 0.
+struct ChatEvent
+{
+    uint64 PlayerGuid = 0;
+    uint32 Channel = 0;
+    std::string Text;
+    uint64 RecipientGuid = 0;
+};
+
+std::string EncodeEventNotifyChat(std::string_view hookName, ChatEvent const& event);
 
 // Body of an EventRequest carrying a CommandRequestPayload.
 std::string EncodeEventRequestCommand(uint64 messageId, std::string_view hookName, std::string_view commandText,

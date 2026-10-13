@@ -159,6 +159,12 @@ class TC_GAME_API ModuleMgr
 
         void DispatchItemLooted(std::string_view hook, ModuleWire::ItemLootedEvent const& event);
 
+        // True when a running module subscribes to `hook` (lets a caller skip building an event nobody wants).
+        bool HasSubscriber(std::string_view hook);
+
+        // Delivers PlayerScript.OnChat to subscribed modules. Same non-blocking rules as DispatchNotify.
+        void DispatchChat(std::string_view hook, ModuleWire::ChatEvent const& event);
+
         // Offers a chat command (without its leading '.') to the modules subscribed to CommandScript,
         // in module id order. The first success wins. A reply with success=false and no text means
         // "not mine" and the next module is asked. The caller must not hold locks that session events need.

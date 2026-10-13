@@ -45,6 +45,7 @@ std::vector<std::string> const SupportedTier1Hooks = {
     "WorldScript.OnShutdown",
     "CommandScript",
     "PlayerScript.OnLootItem",
+    "PlayerScript.OnChat",
 };
 
 // How long a module gets to exit after Shutdown before it is terminated.
@@ -621,6 +622,38 @@ void ModuleMgr::DispatchItemLooted(std::string_view hook, ModuleWire::ItemLooted
     for (auto const& [id, session] : targets)
     {
         if (session->NotifyItemLooted(hook, event))
+            continue;
+
+        std::lock_guard<std::mutex> lock(_mutex);
+        auto it = _modules.find(id);
+        if (it != _modules.end() && ++it->second.DroppedEvents == 1)
+            TC_LOG_WARN("modules", "'{}' is not keeping up with its events; notifications are being dropped (first: {}).",
+                        it->second.Name, hook);
+    }
+}
+
+bool ModuleMgr::HasSubscriber(std::string_view hook)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    for (auto const& [id, d] : _modules)
+        if (d.Session && d.Session->Subscribes(hook))
+            return true;
+    return false;
+}
+
+void ModuleMgr::DispatchChat(std::string_view hook, ModuleWire::ChatEvent const& event)
+{
+    std::vector<std::pair<ModuleId, std::shared_ptr<ModuleSession>>> targets;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (auto const& [id, d] : _modules)
+            if (d.Session && d.Session->Subscribes(hook))
+                targets.emplace_back(id, d.Session);
+    }
+
+    for (auto const& [id, session] : targets)
+    {
+        if (session->NotifyChat(hook, event))
             continue;
 
         std::lock_guard<std::mutex> lock(_mutex);

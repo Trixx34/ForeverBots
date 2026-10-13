@@ -2093,6 +2093,24 @@ void ScriptMgr::OnPlayerChat(Player* player, uint32 type, uint32 lang, std::stri
 void ScriptMgr::OnPlayerChat(Player* player, uint32 type, uint32 lang, std::string& msg, Group* group)
 {
     FOREACH_SCRIPT(PlayerScript)->OnChat(player, type, lang, msg, group);
+
+    // Modules (PlayerScript.OnChat): only the lines a group leader says to a group that has a bot in it (party or raid chat). Other
+    // chat is never offered to a module.
+    if (group && (type == CHAT_MSG_PARTY_LEADER || type == CHAT_MSG_RAID_LEADER) && sModuleMgr->HasSubscriber("PlayerScript.OnChat"))
+    {
+        bool hasBot = false;
+        for (GroupReference const& ref : group->GetMembers())
+            if (Player const* member = ref.GetSource())
+                hasBot = hasBot || (member->GetSession() && member->GetSession()->IsBot());
+        if (hasBot)
+        {
+            ModuleWire::ChatEvent event;
+            event.PlayerGuid = player->GetGUID().GetCounter();
+            event.Channel = type == CHAT_MSG_PARTY_LEADER ? 1 : 2;
+            event.Text = msg;
+            sModuleMgr->DispatchChat("PlayerScript.OnChat", event);
+        }
+    }
 }
 
 void ScriptMgr::OnPlayerChat(Player* player, uint32 type, uint32 lang, std::string& msg, Guild* guild)
@@ -2112,6 +2130,18 @@ void ScriptMgr::OnPlayerChatSent(Player* player, uint32 type, uint32 lang, std::
 
 void ScriptMgr::OnPlayerChatSent(Player* player, uint32 type, uint32 lang, std::string const& msg, Player* receiver)
 {
+    // Modules (PlayerScript.OnChat): a whisper to a bot.
+    if (type == CHAT_MSG_WHISPER && receiver && receiver->GetSession() && receiver->GetSession()->IsBot() &&
+        sModuleMgr->HasSubscriber("PlayerScript.OnChat"))
+    {
+        ModuleWire::ChatEvent event;
+        event.PlayerGuid = player->GetGUID().GetCounter();
+        event.Channel = 3;
+        event.Text = msg;
+        event.RecipientGuid = receiver->GetGUID().GetCounter();
+        sModuleMgr->DispatchChat("PlayerScript.OnChat", event);
+    }
+
     FOREACH_SCRIPT(PlayerScript)->OnChatSent(player, type, lang, msg, receiver);
 }
 

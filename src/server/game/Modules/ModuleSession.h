@@ -116,6 +116,9 @@ class ModuleSession
         // Queues a PlayerItemLooted EventNotify for a subscribed hook. Same rules as NotifyEvent.
         bool NotifyItemLooted(std::string_view hook, ModuleWire::ItemLootedEvent const& event);
 
+        // Queues a PlayerChat EventNotify for a subscribed hook. Same rules as NotifyEvent.
+        bool NotifyChat(std::string_view hook, ModuleWire::ChatEvent const& event);
+
         // Queues a ModuleConfig with the module's current config (sent again after a config reload). Thread-safe.
         // Returns false if the session is not accepted or the frame could not be queued.
         bool SendConfig(std::vector<ModuleWire::ConfigEntry> const& config);

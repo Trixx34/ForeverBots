@@ -205,6 +205,21 @@ std::string EncodeEventNotify(std::string_view hookName, NotifyKind kind, uint64
     return out;
 }
 
+std::string EncodeEventNotifyChat(std::string_view hookName, ChatEvent const& event)
+{
+    std::string payload;
+    AppendVarintField(payload, 1, event.PlayerGuid);
+    AppendVarintField(payload, 2, event.Channel);
+    AppendBytesField(payload, 3, event.Text);
+    if (event.RecipientGuid != 0)
+        AppendVarintField(payload, 4, event.RecipientGuid);
+
+    std::string out;
+    AppendBytesField(out, 1, hookName);
+    AppendBytesField(out, static_cast<uint32>(NotifyKind::PlayerChat), payload);
+    return out;
+}
+
 std::string EncodeEventNotifyItemLooted(std::string_view hookName, ItemLootedEvent const& event)
 {
     std::string payload;

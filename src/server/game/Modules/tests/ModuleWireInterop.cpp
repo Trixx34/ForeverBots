@@ -68,7 +68,7 @@ int main()
         CHECK(ModuleWire::Decode(env.Payload, core));
         CHECK(core.ModuleName == "minimal-module");
         CHECK(core.ModuleVersion == "0.1.0");
-        CHECK(core.ProtocolVersion == "1");
+        CHECK(core.ProtocolVersion == "5");
         CHECK(core.Tier1Hooks.size() == 2);
         CHECK(core.Tier1Hooks.size() == 2 && core.Tier1Hooks[0] == "WorldScript.OnStartup");
         CHECK(core.Tier1Hooks.size() == 2 && core.Tier1Hooks[1] == "CommandScript");
@@ -218,8 +218,29 @@ int main()
                 case ModuleWire::NotifyKind::WorldShutdown:
                     CHECK(sdk.event_notify().event_payload_case() == forever_module::EventNotify::kWorldShutdown);
                     break;
+                case ModuleWire::NotifyKind::PlayerChat:
+                    break; // has its own body, checked below
             }
         }
+    }
+
+    // core -> SDK: PlayerChat notify.
+    {
+        ModuleWire::ChatEvent chat;
+        chat.PlayerGuid = 55;
+        chat.Channel = 3;
+        chat.Text = "follow";
+        chat.RecipientGuid = 66;
+        std::string bytes = ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::EventNotify,
+                                                       ModuleWire::EncodeEventNotifyChat("PlayerScript.OnChat", chat));
+        forever_module::Envelope sdk;
+        CHECK(sdk.ParseFromString(bytes));
+        CHECK(sdk.event_notify().hook_name() == "PlayerScript.OnChat");
+        CHECK(sdk.event_notify().event_payload_case() == forever_module::EventNotify::kPlayerChat);
+        CHECK(sdk.event_notify().player_chat().player_guid() == 55);
+        CHECK(sdk.event_notify().player_chat().channel() == 3);
+        CHECK(sdk.event_notify().player_chat().text() == "follow");
+        CHECK(sdk.event_notify().player_chat().recipient_guid() == 66);
     }
 
     // core -> SDK: EventRequest carrying a command, with the envelope message id set.
