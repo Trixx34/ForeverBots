@@ -4,6 +4,7 @@
 #include "CellImpl.h"
 #include "CreatureData.h"
 #include "Group.h"
+#include "Log.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "ObjectGuid.h"
@@ -16,6 +17,7 @@
 #include "SpellMgr.h"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <unordered_map>
 #include <vector>
@@ -95,15 +97,26 @@ std::unordered_map<uint32, std::vector<VendorSpot>> const& VendorsByMap()
     if (!built)
     {
         built = true;
+        auto const started = std::chrono::steady_clock::now();
+        size_t spawns = 0;
         for (auto const& spawnEntry : sObjectMgr->GetAllCreatureData())
         {
             CreatureData const& spawn = spawnEntry.second;
+            ++spawns;
             CreatureTemplate const* templ = sObjectMgr->GetCreatureTemplate(spawn.id);
             if (!templ || (templ->npcflag & UNIT_NPC_FLAG_VENDOR_MASK) == 0)
                 continue;
             vendors[spawn.mapId].push_back({ spawn.spawnPoint.GetPositionX(), spawn.spawnPoint.GetPositionY(),
                                              spawn.spawnPoint.GetPositionZ() });
         }
+
+        // One scan of every creature spawn, inside the first snapshot: its cost is logged, since it is a stall of one world update.
+        size_t vendorCount = 0;
+        for (auto const& onMap : vendors)
+            vendorCount += onMap.second.size();
+        TC_LOG_INFO("server.worldserver", "Bots: vendor index built from {} creature spawns in {} ms: {} vendors on {} maps.", spawns,
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count(), vendorCount,
+            vendors.size());
     }
     return vendors;
 }
