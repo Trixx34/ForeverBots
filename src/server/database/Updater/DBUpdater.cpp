@@ -30,9 +30,12 @@
 #include <iterator>
 #include "StringFormat.h"
 #include <boost/filesystem/operations.hpp>
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 #include <random>
+#include <string_view>
 
 std::string DBUpdaterUtil::GetCorrectedMySQLExecutable()
 {
@@ -67,6 +70,64 @@ std::string& DBUpdaterUtil::corrected_path()
 {
     static std::string path;
     return path;
+}
+
+namespace
+{
+// Classic 1.60 fork: some sql/custom files name the default schema (UPDATE world.creature_template ..., DELETE FROM world.smart_scripts ...).
+// For a database with another name (forever_world on a shared server) that schema prefix is rewritten to the configured name in the
+// temporary copy that is applied; the file and its hash stay the same, so no update is applied again on servers using the default names.
+std::string QualifyDefaultSchema(std::string const& sql, std::string const& defaultName, std::string const& database)
+{
+    static constexpr std::string_view keywords[] = { "UPDATE", "FROM", "INTO", "JOIN", "TABLE" };
+    auto const isSpace = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+
+    std::string out;
+    out.reserve(sql.size());
+    std::size_t copied = 0;
+    for (std::size_t pos = sql.find(defaultName); pos != std::string::npos; pos = sql.find(defaultName, pos + defaultName.size()))
+    {
+        // `world`.table or world.table
+        std::size_t begin = pos, end = pos + defaultName.size();
+        if (begin > 0 && sql[begin - 1] == '`' && end < sql.size() && sql[end] == '`')
+            --begin, ++end;
+        if (end >= sql.size() || sql[end] != '.' || begin == 0 || !isSpace(sql[begin - 1]))
+            continue;
+
+        // preceded by one of the keywords
+        std::size_t wordEnd = begin;
+        while (wordEnd > 0 && isSpace(sql[wordEnd - 1]))
+            --wordEnd;
+        std::size_t wordBegin = wordEnd;
+        while (wordBegin > 0 && std::isalpha(static_cast<unsigned char>(sql[wordBegin - 1])))
+            --wordBegin;
+        std::string_view const word(sql.data() + wordBegin, wordEnd - wordBegin);
+        bool const isKeyword = std::any_of(std::begin(keywords), std::end(keywords), [&](std::string_view keyword)
+        {
+            return word.size() == keyword.size() && std::equal(word.begin(), word.end(), keyword.begin(),
+                [](char a, char b) { return std::toupper(static_cast<unsigned char>(a)) == b; });
+        });
+        if (!isKeyword)
+            continue;
+
+        out.append(sql, copied, begin - copied);
+        out.append("`").append(database).append("`");
+        copied = end;
+    }
+    out.append(sql, copied, std::string::npos);
+    return out;
+}
+
+std::string GetDefaultDatabaseName(std::string const& tableName)
+{
+    if (tableName == "Auth")
+        return "auth";
+    if (tableName == "Character")
+        return "characters";
+    if (tableName == "Hotfixes")
+        return "hotfixes";
+    return "world";
+}
 }
 
 // Auth Database
@@ -378,7 +439,12 @@ void DBUpdater<T>::ApplyFile(DatabaseWorkerPool<T>& pool, Path const& path)
             TC_LOG_FATAL("sql.updates", "Failed to prepare the update file \"{}\" (temporary copy \"{}\")!", path.generic_string(), temp.generic_string());
             throw UpdateException("update failed");
         }
-        out << in.rdbuf();
+        std::string const& database = pool.GetConnectionInfo()->database;
+        std::string const defaultName = GetDefaultDatabaseName(DBUpdater<T>::GetTableName());
+        if (database == defaultName)
+            out << in.rdbuf();
+        else
+            out << QualifyDefaultSchema(std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()), defaultName, database);
         out << "\n\nREPLACE INTO `updates_apply_check` (`name`, `token`) VALUES ('" << name << "', " << token << ");\n";
     }
 

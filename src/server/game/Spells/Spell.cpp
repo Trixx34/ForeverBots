@@ -24,6 +24,7 @@
 #include "BattlePetMgr.h"
 #include "CellImpl.h"
 #include "CharmInfo.h"
+#include "ClassicOpcodes.h"
 #include "CollectionMgr.h"
 #include "CombatLogPackets.h"
 #include "Common.h"
@@ -4257,6 +4258,8 @@ void Spell::_handle_immediate_phase()
 
 void Spell::_handle_finish_phase()
 {
+    SpendPendingComboPoints();
+
     if (Unit* unitCaster = m_caster->ToUnit())
         if (m_spellInfo->HasEffect(SPELL_EFFECT_ADD_EXTRA_ATTACKS))
             unitCaster->SetLastExtraAttackSpell(m_spellInfo->Id);
@@ -4407,6 +4410,8 @@ void Spell::finish(SpellCastResult result)
     if (m_spellState == SPELL_STATE_FINISHED)
         return;
     m_spellState = SPELL_STATE_FINISHED;
+
+    SpendPendingComboPoints();                              // a finisher that never reached its finish phase still pays
 
     if (m_scriptResult && (m_scriptWaitsForSpellHit || result != SPELL_CAST_OK))
         m_scriptResult.SetResult(result);
@@ -5431,6 +5436,11 @@ void Spell::SendResurrectRequest(Player* target)
     resurrectRequest.Name = sentName;
     resurrectRequest.Sickness = m_caster->IsUnit() && m_caster->ToUnit()->IsSpiritHealer(); // "you'll be afflicted with resurrection sickness"
     resurrectRequest.UseTimer = !m_spellInfo->HasAttribute(SPELL_ATTR3_NO_RES_TIMER);
+    // Classic 70291: a player's resurrection is accepted at once and carries no sickness. That client reads the two flag bits of this
+    // packet at a different alignment than retail, so a set UseTimer showed a 10 second wait with resurrection sickness and a greyed
+    // Accept; both bits clear reads as "no timer, no sickness" at any alignment.
+    if (ClassicOpcodes::IsBuild70291OrLater() && !resurrectRequest.Sickness)
+        resurrectRequest.UseTimer = false;
     if (Pet* pet = target->GetPet())
         if (CharmInfo* charmInfo = pet->GetCharmInfo())
             resurrectRequest.PetNumber = charmInfo->GetPetNumber();
@@ -5566,8 +5576,32 @@ void Spell::TakePower()
             continue;
         }
 
+        // a finisher's damage, durations and procs read the caster's combo points while its effects run (SpellEffectInfo::CalcValue),
+        // so the points are spent after the effects (SpendPendingComboPoints), not here
+        if (cost.Power == POWER_COMBO_POINTS && cost.Amount > 0 && unitCaster->IsPlayer())
+        {
+            m_comboPointsPending += cost.Amount;
+            continue;
+        }
+
         unitCaster->ModifyPower(cost.Power, -cost.Amount);
+
+        // Classic 1.60 (vanilla): paying mana starts the five second rule (Player::GetPowerRegen, ClassicManaRegen.h)
+        if (cost.Power == POWER_MANA && cost.Amount > 0)
+            if (Player* manaPlayer = unitCaster->ToPlayer())
+                manaPlayer->InterruptPowerRegen(POWER_MANA);
     }
+}
+
+void Spell::SpendPendingComboPoints()
+{
+    if (!m_comboPointsPending)
+        return;
+
+    int32 const points = m_comboPointsPending;
+    m_comboPointsPending = 0;
+    if (Unit* unitCaster = m_caster->ToUnit())
+        unitCaster->ModifyPower(POWER_COMBO_POINTS, -points);
 }
 
 void Spell::RefundPower()
@@ -5602,6 +5636,13 @@ void Spell::RefundPower()
         if (cost.Power == POWER_HEALTH)
         {
             unitCaster->ModifyHealth(cost.Amount);
+            continue;
+        }
+
+        // combo points not spent yet: nothing to give back
+        if (cost.Power == POWER_COMBO_POINTS && m_comboPointsPending)
+        {
+            m_comboPointsPending = 0;
             continue;
         }
 

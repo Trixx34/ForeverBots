@@ -6920,10 +6920,13 @@ void Unit::SendEnergizeSpellLog(Unit* victim, uint32 spellID, int32 damage, int3
 
 void Unit::EnergizeBySpell(Unit* victim, SpellInfo const* spellInfo, int32 damage, Powers powerType)
 {
-    if (Player* player = victim->ToPlayer())
-        if (PowerTypeEntry const* powerTypeEntry = sDB2Manager.GetPowerTypeEntry(powerType))
-            if (powerTypeEntry->GetFlags().HasFlag(PowerTypeFlags::UseRegenInterrupt))
-                player->InterruptPowerRegen(powerType);
+    // Classic 1.60 (vanilla): only paying mana starts the five second rule (Spell::TakePower); receiving it does not (Judgement of
+    // Wisdom, Spiritual Attunement, Life Tap...), or a gain every few seconds would keep the window open. Other powers keep the retail rule.
+    if (powerType != POWER_MANA)
+        if (Player* player = victim->ToPlayer())
+            if (PowerTypeEntry const* powerTypeEntry = sDB2Manager.GetPowerTypeEntry(powerType))
+                if (powerTypeEntry->GetFlags().HasFlag(PowerTypeFlags::UseRegenInterrupt))
+                    player->InterruptPowerRegen(powerType);
 
     int32 gain = victim->ModifyPower(powerType, damage, false);
     int32 overEnergize = damage - gain;
@@ -11461,6 +11464,8 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
     if (attacker && !attacker->IsInMap(victim))
         attacker = nullptr;
 
+    sScriptMgr->OnUnitDeath(victim, attacker);
+
     // find player: owner of controlled `this` or `this` itself maybe
     Player* player = nullptr;
     if (attacker)
@@ -11529,7 +11534,45 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
             if (InstanceScript const* instance = creature->GetInstanceScript())
                 dungeonEncounter = instance->GetBossDungeonEncounter(creature);
 
-            if (creature->GetMap()->IsDungeon())
+            if (dungeonEncounter && !tappers.empty() && sWorld->getBoolConfig(CONFIG_LOOT_SHARED_ENCOUNTER_LOOT))
+            {
+                // vanilla boss loot: the whole loot table on one corpse, looted under the group's loot method
+                Group* group = nullptr;
+                Player* looter = tappers[0];
+                for (Player* tapper : tappers)
+                {
+                    if (Group* tapperGroup = tapper->GetGroup())
+                    {
+                        group = tapperGroup;
+                        looter = tapper;
+                        break;
+                    }
+                }
+
+                if (group)
+                    if (Player* groupLooter = ObjectAccessor::GetPlayer(*creature, group->GetLooterGuid()))
+                        looter = groupLooter;
+
+                Loot* loot = new Loot(creature->GetMap(), creature->GetGUID(), LOOT_CORPSE, group);
+                loot->SetDungeonEncounterId(dungeonEncounter->ID);
+
+                if (uint32 lootid = creature->GetLootId())
+                    loot->FillLoot(lootid, LootTemplates_Creature, looter, !group, false, creature->GetLootMode(), ItemBonusMgr::GetContextForPlayer(creature->GetMap()->GetMapDifficulty(), looter));
+
+                if (creature->GetLootMode() > 0)
+                    loot->generateMoneyLoot(creature->GetCreatureDifficulty()->GoldMin, creature->GetCreatureDifficulty()->GoldMax);
+
+                if (group)
+                    loot->NotifyLootList(creature->GetMap());
+
+                creature->m_personalLoot.clear();   // GetLootForPlayer only reads m_loot while there is no personal loot
+                creature->m_loot.reset(loot);
+
+                // Update round robin looter only if the creature had loot
+                if (group && !loot->isLooted())
+                    group->UpdateLooterGuid(creature);
+            }
+            else if (creature->GetMap()->IsDungeon())
             {
                 if (dungeonEncounter)
                 {
@@ -12714,7 +12757,8 @@ float Unit::MeleeSpellMissChance(Unit const* victim, WeaponAttackType attType, S
     else
         missChance -= victim->GetTotalAuraModifier(SPELL_AURA_MOD_ATTACKER_MELEE_HIT_CHANCE);
 
-    return std::max(missChance, 0.f);
+    // Classic 1.60 (vanilla, VMaNGOS): the miss chance is limited to 0..60%
+    return std::clamp(missChance, 0.f, 60.f);
 }
 
 void Unit::OnPhaseChange()

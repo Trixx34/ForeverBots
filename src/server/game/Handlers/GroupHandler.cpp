@@ -63,7 +63,17 @@ void WorldSession::SendPartyResult(PartyOperation operation, const std::string& 
 void WorldSession::HandlePartyInviteOpcode(WorldPackets::Party::PartyInviteClient& packet)
 {
     Player* invitingPlayer = GetPlayer();
-    Player* invitedPlayer = ObjectAccessor::FindPlayerByName(packet.TargetName);
+    // The unit menu / portrait Invite can send the target by guid (empty name) or as "Name-Realm"; typed /invite sends the plain name.
+    Player* invitedPlayer = nullptr;
+    if (!packet.TargetGUID.IsEmpty() && packet.TargetGUID.IsPlayer())
+        invitedPlayer = ObjectAccessor::FindPlayer(packet.TargetGUID);
+    if (!invitedPlayer && !packet.TargetName.empty())
+    {
+        invitedPlayer = ObjectAccessor::FindPlayerByName(packet.TargetName);
+        if (!invitedPlayer)
+            if (size_t const dash = packet.TargetName.find('-'); dash != std::string::npos && dash > 0)
+                invitedPlayer = ObjectAccessor::FindPlayerByName(std::string_view(packet.TargetName).substr(0, dash));
+    }
 
     // no player
     if (!invitedPlayer)
@@ -362,10 +372,8 @@ void WorldSession::HandleLeaveGroupOpcode(WorldPackets::Party::LeaveGroup& packe
     }
 }
 
-void WorldSession::HandleSetLootMethodOpcode(WorldPackets::Party::SetLootMethod& /*packet*/)
+void WorldSession::HandleSetLootMethodOpcode(WorldPackets::Party::SetLootMethod& packet)
 {
-    // not allowed to change
-    /*
     Group* group = GetPlayer()->GetGroup(packet.PartyIndex);
     if (!group)
         return;
@@ -379,8 +387,10 @@ void WorldSession::HandleSetLootMethodOpcode(WorldPackets::Party::SetLootMethod&
     switch (packet.LootMethod)
     {
         case FREE_FOR_ALL:
+        case ROUND_ROBIN:
         case MASTER_LOOT:
         case GROUP_LOOT:
+        case NEED_BEFORE_GREED:
         case PERSONAL_LOOT:
             break;
         default:
@@ -395,10 +405,9 @@ void WorldSession::HandleSetLootMethodOpcode(WorldPackets::Party::SetLootMethod&
 
     // everything's fine, do it
     group->SetLootMethod(static_cast<LootMethod>(packet.LootMethod));
-    group->SetMasterLooterGuid(packet.LootMasterGUID);
+    group->SetMasterLooterGuid(packet.LootMethod == MASTER_LOOT ? packet.LootMasterGUID : ObjectGuid::Empty);
     group->SetLootThreshold(static_cast<ItemQualities>(packet.LootThreshold));
     group->SendUpdate();
-    */
 }
 
 void WorldSession::HandleMinimapPingOpcode(WorldPackets::Party::MinimapPingClient& packet)
