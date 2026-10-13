@@ -81,6 +81,15 @@ uint64 PlayerRef(ObjectGuid guid)
     return forever_module::MakeUnitRef(uint8(HighGuid::Player), 0, guid.GetCounter());
 }
 
+// The flags that make a unit impossible for a player to attack, whatever its faction: the ones WorldObject::IsValidAttackTarget
+// rejects first. The full function is not used here: its visibility and reputation (at war) checks rejected the creatures the bots
+// are meant to fight in the fourth 500-bot sim run, which saw no fights at all.
+bool CannotBeAttackedByPlayers(Unit const& unit)
+{
+    return unit.IsImmuneToPC() || unit.IsUninteractible() ||
+           unit.HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NON_ATTACKABLE_2 | UNIT_FLAG_NOT_ATTACKABLE_1 | UNIT_FLAG_ON_TAXI);
+}
+
 // Where the vendors of each map stand: the spawn position of every creature whose template has a vendor flag. Built on the
 // first call, since the spawn table is loaded at world start. Only the world thread reads it.
 struct VendorSpot
@@ -319,7 +328,7 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
         near.max_health = ClampToUint32(unit->GetMaxHealth());
         // Hostile means the bot can attack it: a trainer immune to player characters, or an uninteractible unit, is hostile by
         // faction but cannot be attacked, and a module that picked it as a target would never get a hit in.
-        near.is_hostile = bot.IsHostileTo(unit) && bot.IsValidAttackTarget(unit);
+        near.is_hostile = bot.IsHostileTo(unit) && !CannotBeAttackedByPlayers(*unit);
         near.level = unit->GetLevel();
         near.elite = unit->IsCreature() && unit->ToCreature()->IsElite() ? 1 : 0;
         near.casting = unit->IsNonMeleeSpellCast(false) ? 1 : 0;
