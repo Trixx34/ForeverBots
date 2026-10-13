@@ -166,6 +166,7 @@ enum class ActionKind : uint8
     StoreSet = 4,
     StoreDelete = 5,
     StoreList = 6,
+    ShareQuestItem = 7,
 };
 
 struct ActionRequestMsg
@@ -173,10 +174,12 @@ struct ActionRequestMsg
     uint64 MessageId = 0;
     ActionKind Kind = ActionKind::None;
     uint64 PlayerGuid = 0;
-    // SellItem
+    // SellItem (ItemEntry and Count also carry ShareQuestItem's item and count)
     uint64 ItemGuid = 0;
     uint32 ItemEntry = 0;
     uint32 Count = 0;
+    // ShareQuestItem: how far from the looter a party member may be (0 = the default)
+    uint32 RangeYards = 0;
     // SendPlayerMessage
     std::string Text;
     // Store: Key for get, set and delete; the prefix for list; Value for set
@@ -191,6 +194,8 @@ struct ActionReplyMsg
     bool Success = false;
     std::string Reason;
     uint64 CopperGained = 0;
+    // ShareQuestItem: how many party members were given the item
+    uint32 Recipients = 0;
     // Store
     bool Found = false;
     std::string Value;

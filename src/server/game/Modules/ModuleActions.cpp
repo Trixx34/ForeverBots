@@ -4,19 +4,78 @@
 
 #include "ModuleActions.h"
 #include "Chat.h"
+#include "Group.h"
 #include "Item.h"
 #include "ItemTemplate.h"
 #include "Log.h"
 #include "ModuleStore.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "WorldSession.h"
+
+#include <algorithm>
 
 namespace
 {
 
 // Longest text a module may send a player. Chat lines are short; this only guards against abuse.
 constexpr size_t MaxMessageBytes = 255;
+
+// Quest group loot: the range a party member may be from the looter when the module sets none, and the most it may set.
+constexpr uint32 DefaultShareRangeYards = 100;
+constexpr uint32 MaxShareRangeYards = 200;
+
+// Gives a copy of a quest item the looter just looted to each party member who still needs it. The looter keeps their own. A member
+// is skipped when on another map, out of range, with no quest that needs the item, or with no room in the bags; none of that is an
+// error. The module names the item, the core finds who gets it and gives it, so a module cannot give out items to anyone it likes.
+void ShareQuestItem(Player* looter, ModuleWire::ActionRequestMsg const& request, ModuleWire::ActionReplyMsg& reply)
+{
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(request.ItemEntry);
+    if (!proto || proto->GetClass() != ITEM_CLASS_QUEST)
+    {
+        reply.Reason = "item is not a quest item";
+        return;
+    }
+    if (request.Count == 0 || request.Count > proto->GetMaxStackSize())
+    {
+        reply.Reason = "count must be from 1 to the item's stack size";
+        return;
+    }
+
+    Group* group = looter->GetGroup();
+    if (!group)
+    {
+        reply.Reason = "player is not in a group";
+        return;
+    }
+
+    uint32 const range = request.RangeYards ? std::min(request.RangeYards, MaxShareRangeYards) : DefaultShareRangeYards;
+    uint32 given = 0;
+    for (GroupReference const& ref : group->GetMembers())
+    {
+        Player* member = ref.GetSource();
+        if (!member || member == looter || !member->IsInWorld() || member->GetMap() != looter->GetMap())
+            continue;
+        if (!looter->IsWithinDist(member, float(range)) || !member->HasQuestForItem(request.ItemEntry))
+            continue;
+
+        ItemPosCountVec dest;
+        if (member->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, request.ItemEntry, request.Count) != EQUIP_ERR_OK)
+            continue;
+        Item* item = member->StoreNewItem(dest, request.ItemEntry, true);
+        if (!item)
+            continue;
+
+        member->SendNewItem(item, request.Count, true, false);
+        ++given;
+    }
+
+    reply.Recipients = given;
+    reply.Success = true;
+    TC_LOG_DEBUG("modules.actions", "shared quest item {} x{} from player {} with {} party member(s)",
+                 request.ItemEntry, request.Count, looter->GetGUID().ToString(), given);
+}
 
 void SellItem(Player* player, ModuleWire::ActionRequestMsg const& request, ModuleWire::ActionReplyMsg& reply)
 {
@@ -160,6 +219,10 @@ void ExecuteModuleAction(ModuleWire::ActionRequestMsg const& request, ModuleWire
     {
         case ModuleWire::ActionKind::SellItem:
             SellItem(player, request, reply);
+            return;
+
+        case ModuleWire::ActionKind::ShareQuestItem:
+            ShareQuestItem(player, request, reply);
             return;
 
         case ModuleWire::ActionKind::SendPlayerMessage:

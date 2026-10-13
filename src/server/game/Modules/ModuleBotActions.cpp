@@ -1,23 +1,33 @@
 #include "ModuleBotActions.h"
+#include "BotMgr.h"
 #include "Cell.h"
 #include "CellImpl.h"
 #include "Creature.h"
 #include "DB2Structure.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "Group.h"
+#include "GroupMgr.h"
 #include "Item.h"
 #include "ItemTemplate.h"
+#include "Loot.h"
+#include "LootPackets.h"
 #include "Map.h"
 #include "MotionMaster.h"
+#include "Opcodes.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Trainer.h"
+#include "World.h"
+#include "WorldPacket.h"
+#include "WorldSession.h"
 
 #include <algorithm>
 #include <list>
+#include <vector>
 
 using forever_module::ActionType;
 using forever_module::BotAction;
@@ -66,6 +76,22 @@ Unit* ResolveHostileTarget(Player& bot, uint64 ref, std::string& reason)
         return nullptr;
     }
     return target;
+}
+
+// Why Unit::Attack refused an attack, for the log. The checks follow the ones Unit::Attack makes before it starts an attack.
+std::string AttackRefusalReason(Player& bot, Unit* target)
+{
+    if (!bot.IsAlive())
+        return "bot is dead";
+    if (!target->IsInWorld() || !target->IsAlive())
+        return "target is dead or not in the world";
+    if (bot.IsMounted())
+        return "bot is mounted";
+    if (target->IsPlayer() && target->ToPlayer()->IsGameMaster())
+        return "target is a game master";
+    if (target->IsCreature() && target->ToCreature()->IsEvadingAttacks())
+        return "target is evading attacks";
+    return "the core refused the attack for no known reason";
 }
 
 // Maps a cast result to the status a module sees in the next snapshot.
@@ -263,6 +289,205 @@ BotActionStatus LearnFromTrainer(Player& bot, std::string& reason)
     return BotActionStatus::kApplied;
 }
 
+// Party actions (M8). A bot invites only other bots the module controls, so the module's parties are its own; an invite
+// never reaches a player on a real account. The steps follow the core's own invite and accept handlers (GroupHandler.cpp).
+BotActionStatus InviteToParty(Player& bot, uint64 targetRef, std::string& reason)
+{
+    if (forever_module::UnitRefType(targetRef) != uint8(HighGuid::Player))
+    {
+        reason = "party invite target is not a player";
+        return BotActionStatus::kInvalidTarget;
+    }
+    uint32 const counter = forever_module::UnitRefCounter(targetRef);
+    Player* target = ObjectAccessor::FindPlayerByLowGUID(counter);
+    if (!target || target == &bot || !target->IsInWorld() || !sBotMgr->Exists(counter))
+    {
+        reason = "party invite target is not a bot on this realm";
+        return BotActionStatus::kInvalidTarget;
+    }
+    if (target->GetGroup() || target->GetGroupInvite())
+    {
+        reason = "party invite target is already in a party or invited";
+        return BotActionStatus::kRefused;
+    }
+    if (!sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_GROUP) && bot.GetTeam() != target->GetTeam())
+    {
+        reason = "party invite target is on the other team";
+        return BotActionStatus::kRefused;
+    }
+
+    // A bot already in a party, or leading a pending one, invites into it. Only its leader does.
+    Group* group = bot.GetGroup();
+    if (!group)
+        group = bot.GetGroupInvite();
+    if (group && !group->IsLeader(bot.GetGUID()) && !group->IsAssistant(bot.GetGUID()))
+    {
+        reason = "bot is not the party leader";
+        return BotActionStatus::kRefused;
+    }
+    if (group && group->IsFull())
+    {
+        reason = "party is full";
+        return BotActionStatus::kRefused;
+    }
+
+    bool const fresh = group == nullptr;
+    if (fresh)
+    {
+        // The party is not saved until a second member joins, so a failed invite just drops it.
+        group = new Group();
+        if (!group->AddLeaderInvite(&bot))
+        {
+            delete group;
+            reason = "could not start a party";
+            return BotActionStatus::kRefused;
+        }
+    }
+    if (!group->AddInvite(target))
+    {
+        if (fresh)
+        {
+            group->RemoveAllInvites();
+            delete group;
+        }
+        reason = "could not invite the bot";
+        return BotActionStatus::kRefused;
+    }
+    return BotActionStatus::kApplied;
+}
+
+// Accepts the bot's pending party invite. The first accept forms the party, as the core's accept handler does.
+BotActionStatus AcceptPartyInvite(Player& bot, std::string& reason)
+{
+    Group* group = bot.GetGroupInvite();
+    if (!group)
+    {
+        reason = "bot has no pending party invite";
+        return BotActionStatus::kRefused;
+    }
+
+    group->RemoveInvite(&bot);
+    if (group->GetLeaderGUID() == bot.GetGUID())
+    {
+        reason = "bot leads the party it was invited to";
+        return BotActionStatus::kRefused;
+    }
+    if (group->IsFull())
+    {
+        reason = "party is full";
+        return BotActionStatus::kRefused;
+    }
+
+    if (!group->IsCreated())
+    {
+        // The leader may be zoning; the invite is dropped rather than left dangling.
+        Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+        if (!leader)
+        {
+            group->RemoveAllInvites();
+            reason = "party leader is offline";
+            return BotActionStatus::kRefused;
+        }
+        group->RemoveInvite(leader);
+        group->Create(leader);
+        sGroupMgr->AddGroup(group);
+    }
+    if (!group->AddMember(&bot))
+    {
+        reason = "could not join the party";
+        return BotActionStatus::kRefused;
+    }
+    group->BroadcastGroupUpdate();
+    return BotActionStatus::kApplied;
+}
+
+// Leaves the bot's party, or declines its pending invite when it is in none (the core's own uninvite path).
+BotActionStatus LeaveParty(Player& bot, std::string& reason)
+{
+    if (bot.GetGroup())
+    {
+        bot.RemoveFromGroup(GROUP_REMOVEMETHOD_LEAVE);
+        return BotActionStatus::kApplied;
+    }
+    if (bot.GetGroupInvite())
+    {
+        bot.UninviteFromGroup();
+        return BotActionStatus::kApplied;
+    }
+    reason = "bot is not in a party";
+    return BotActionStatus::kRefused;
+}
+
+// Loots a corpse the way the client does: through the bot's own session handlers (open the loot, take each item, take the money,
+// release it), so the loot rights, the group rules and the bag space are the core's, not a copy of them here. The distance is the one
+// the loot handler uses for a corpse. A corpse that is empty, or whose items do not all fit, is not an error: the bot took what it could.
+constexpr float kLootDistanceYards = 30.0f;
+
+BotActionStatus LootCorpse(Player& bot, uint64 targetRef, std::string& reason)
+{
+    Unit* unit = ResolveUnit(bot, targetRef);
+    Creature* corpse = unit ? unit->ToCreature() : nullptr;
+    if (!corpse)
+    {
+        reason = "loot target is not a creature on this bot's map";
+        return BotActionStatus::kInvalidTarget;
+    }
+    if (corpse->IsAlive())
+    {
+        reason = "loot target is alive";
+        return BotActionStatus::kInvalidTarget;
+    }
+    if (!bot.IsAlive())
+    {
+        reason = "bot is dead";
+        return BotActionStatus::kRefused;
+    }
+    if (!bot.IsWithinDist(corpse, kLootDistanceYards))
+    {
+        reason = "corpse is more than 30 yards away";
+        return BotActionStatus::kOutOfRange;
+    }
+    if (!bot.isAllowedToLoot(corpse))
+    {
+        reason = "bot has no right to loot this corpse";
+        return BotActionStatus::kRefused;
+    }
+
+    WorldSession* session = bot.GetSession();
+    if (!session)
+    {
+        reason = "bot has no session";
+        return BotActionStatus::kRefused;
+    }
+
+    // Open the loot. Every corpse that is lootable within range joins the bot's loot view, as for a player.
+    WorldPackets::Loot::LootUnit open{ WorldPacket(CMSG_LOOT_UNIT) };
+    open.Unit = corpse->GetGUID();
+    session->HandleLootOpcode(open);
+    if (bot.GetAELootView().empty())
+        return BotActionStatus::kApplied; // nothing to take
+
+    // Take every item of every loot in the view, then the money.
+    WorldPackets::Loot::LootItem take{ WorldPacket(CMSG_LOOT_ITEM) };
+    for (std::pair<ObjectGuid const, Loot*> const& view : bot.GetAELootView())
+        for (::LootItem const& item : view.second->items)
+            if (take.Loot.size() < 100)
+                take.Loot.push_back({ view.first, uint8(item.LootListId) });
+    if (!take.Loot.empty())
+        session->HandleAutostoreLootItemOpcode(take);
+
+    WorldPackets::Loot::LootMoney money{ WorldPacket(CMSG_LOOT_MONEY) };
+    session->HandleLootMoneyOpcode(money);
+
+    // Release each loot. The view changes as they are released, so the list is copied first.
+    std::vector<Loot*> opened;
+    for (std::pair<ObjectGuid const, Loot*> const& view : bot.GetAELootView())
+        opened.push_back(view.second);
+    for (Loot* loot : opened)
+        session->DoLootRelease(loot);
+    return BotActionStatus::kApplied;
+}
+
 BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
 {
     switch (action.type)
@@ -296,9 +521,12 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
             Unit* target = ResolveHostileTarget(bot, action.target_guid, reason);
             if (!target)
                 return BotActionStatus::kInvalidTarget;
+            // Already meleeing this target: Unit::Attack refuses a repeat, but the bot is attacking as asked.
+            if (bot.GetVictim() == target && bot.HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+                return BotActionStatus::kApplied;
             if (!bot.Attack(target, true))
             {
-                reason = "attack was refused";
+                reason = "attack refused: " + AttackRefusalReason(bot, target);
                 return BotActionStatus::kRefused;
             }
             return BotActionStatus::kApplied;
@@ -356,6 +584,27 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
             }
             bot.SetStandState(UNIT_STAND_STATE_SIT);
             return BotActionStatus::kApplied;
+        }
+
+        case ActionType::kLoot:
+            return LootCorpse(bot, action.target_guid, reason);
+
+        case ActionType::kGroup:
+        {
+            // Forming and changing a party is out of combat only, the same as the trainer and vendor actions.
+            if (bot.IsInCombat())
+            {
+                reason = "bot is in combat";
+                return BotActionStatus::kRefused;
+            }
+            switch (action.spell_id)
+            {
+                case 1: return InviteToParty(bot, action.target_guid, reason);
+                case 2: return AcceptPartyInvite(bot, reason);
+                case 3: return LeaveParty(bot, reason);
+            }
+            reason = "unknown party action " + std::to_string(action.spell_id);
+            return BotActionStatus::kRefused;
         }
 
         case ActionType::kCastSpell:

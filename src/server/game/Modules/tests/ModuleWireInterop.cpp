@@ -311,12 +311,34 @@ int main()
         CHECK(core2.Text == "sold for 60 copper");
     }
 
+    // SDK -> core: ShareQuestItem action request.
+    {
+        forever_module::ActionRequest msg;
+        msg.set_message_id(33);
+        forever_module::ShareQuestItemAction* share = msg.mutable_share_quest_item();
+        share->set_player_guid(42);
+        share->set_item_entry(3000);
+        share->set_count(1);
+        share->set_range_yards(80);
+        std::string bytes;
+        CHECK(msg.SerializeToString(&bytes));
+        ModuleWire::ActionRequestMsg core;
+        CHECK(ModuleWire::Decode(bytes, core));
+        CHECK(core.MessageId == 33);
+        CHECK(core.Kind == ModuleWire::ActionKind::ShareQuestItem);
+        CHECK(core.PlayerGuid == 42);
+        CHECK(core.ItemEntry == 3000);
+        CHECK(core.Count == 1);
+        CHECK(core.RangeYards == 80);
+    }
+
     // Core -> SDK: ActionReply inside an Envelope, parsed by the SDK's protobuf.
     {
         ModuleWire::ActionReplyMsg reply;
         reply.MessageId = 31;
         reply.Success = true;
         reply.CopperGained = 60;
+        reply.Recipients = 2;
         std::string bytes = ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::ActionReply, ModuleWire::Encode(reply), 31);
 
         forever_module::Envelope sdk;
@@ -326,6 +348,7 @@ int main()
         CHECK(sdk.action_reply().message_id() == 31);
         CHECK(sdk.action_reply().success());
         CHECK(sdk.action_reply().copper_gained() == 60);
+        CHECK(sdk.action_reply().recipients() == 2);
         CHECK(!sdk.action_reply().has_reason());
 
         ModuleWire::ActionReplyMsg failed;

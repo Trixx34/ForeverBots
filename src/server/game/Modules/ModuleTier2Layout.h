@@ -24,7 +24,7 @@ namespace forever_module {
 
 // Explicit layout version, checked by the module when it attaches to the region. Lets a mismatch
 // be detected from the shared memory itself, independent of the Tier 1 handshake.
-inline constexpr std::uint32_t kTier2LayoutVersion = 4;
+inline constexpr std::uint32_t kTier2LayoutVersion = 7;
 
 // Small, fixed cap -- see doc/module-system/07-phase5-reference-module-design.md, this value is
 // still open pending real measurement from a spell-casting test module.
@@ -95,6 +95,21 @@ struct BotSnapshot {
     std::uint32_t level = 0;
     std::uint8_t power_type = 0;
     std::uint32_t nearby_count = 0;
+    // Layout 5: the bot's party (M8). group_role is 0 for no party, 1 for a member, 2 for the leader. group_leader_guid is the
+    // unit reference of the party leader (0 with no party). group_invite_from is the unit reference of the leader whose invite
+    // the bot has not answered (0 when none). group_size is the number of members in the bot's party.
+    std::uint8_t group_role = 0;
+    std::uint32_t group_size = 0;
+    std::uint64_t group_leader_guid = 0;
+    std::uint64_t group_invite_from = 0;
+    // Layout 6: the nearest vendor to the bot on its own map (M6), from the core's creature spawns. vendor_valid is 0 when
+    // the map has no vendor. The position is in the bot's map, so a walk to it stays on that map.
+    float vendor_x = 0.0f;
+    float vendor_y = 0.0f;
+    float vendor_z = 0.0f;
+    std::uint8_t vendor_valid = 0;
+    // Layout 7: the map the bot is on (M7 hubs). A module picks the hubs of its bot's map from this.
+    std::uint32_t map_id = 0;
     // NearbyUnit entries for this bot live in the region's flexible nearby-units area,
     // offset-addressed using Tier2RegionHeader::max_nearby_units; Tier2Session exposes them through NearbyOf().
 };
@@ -117,6 +132,10 @@ enum class ActionType : std::uint32_t {
     kVendor = 6, // services at an NPC within interaction range (M3). spell_id is a bitmask: 1 sell grey items to a vendor,
                  // 2 repair at a repairman, 4 equip the best gear in the bags. Refused in combat.
     kTrain = 7,  // learn every spell the trainer in interaction range teaches this bot now (M4). Refused in combat.
+    kGroup = 8,  // party actions (M8). spell_id 1 invites the bot named by target_guid, 2 accepts the bot's pending invite,
+                 // 3 leaves the bot's party. Refused in combat.
+    kLoot = 9,   // loot the corpse named by target_guid: every item the bot may take, and the money (M7). The corpse must be
+                 // dead, within 30 yards, and one the bot has the right to loot; an empty or partly looted corpse is not an error.
 };
 
 // A unit as one 64-bit value (BotAction::target_guid, NearbyUnit::guid). See MakeUnitRef.

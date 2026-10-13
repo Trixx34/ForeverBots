@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <iterator>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -107,6 +108,7 @@ void ModuleMgr::LoadModules()
     _config.Tier2MaxNearbyUnits = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxNearbyUnits", 16));
     _config.Tier2MaxActions = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxActions", 3000));
     _config.Tier2MaxTickInterval = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxTickInterval", 100));
+    _config.Tier2NearbyRefreshTicks = static_cast<uint32>(std::clamp<int32>(sConfigMgr->GetIntDefault("Modules.Tier2.NearbyRefreshTicks", 0), 0, 16));
 
     std::string const root = sConfigMgr->GetStringDefault("Modules.Dir", "modules_runtime");
 
@@ -861,13 +863,19 @@ void ModuleMgr::OnWorldTick(uint64 tick)
             }
 
             std::vector<ModuleSnapshotBot> bots;
+            // Auto: one refresh tick per 400 bots, so a bot's nearby list is at most that many ticks old.
+            uint32 const refreshEvery = _config.Tier2NearbyRefreshTicks != 0
+                                            ? _config.Tier2NearbyRefreshTicks
+                                            : std::max<uint32>(1, static_cast<uint32>((owned.size() + 399) / 400));
             for (uint64 guid : owned)
             {
                 Player* bot = sBotMgr->GetOnlinePlayer(guid);
                 if (!bot)
                     continue;
 
-                ModuleSnapshotBot entry = BuildSnapshotBot(*bot, region->GetBounds().MaxNearbyUnits);
+                // Staggered by guid: each bot refreshes on one tick in refreshEvery, so the cost is spread over the ticks.
+                bool const refresh = refreshEvery <= 1 || (tick + guid) % refreshEvery == 0;
+                ModuleSnapshotBot entry = BuildSnapshotBot(*bot, region->GetBounds().MaxNearbyUnits, refresh, _nearbyCache[guid]);
                 if (auto result = _actionResults.find(guid); result != _actionResults.end())
                 {
                     entry.Bot.last_action_type = result->second.Type;
@@ -877,6 +885,10 @@ void ModuleMgr::OnWorldTick(uint64 tick)
                 }
                 bots.push_back(std::move(entry));
             }
+            // Forget the nearby cache of bots this module no longer controls.
+            for (auto it = _nearbyCache.begin(); it != _nearbyCache.end();)
+                it = std::find(owned.begin(), owned.end(), it->first) == owned.end() ? _nearbyCache.erase(it) : std::next(it);
+
             region->PublishSnapshot(tick, bots);
         }
 

@@ -2,17 +2,24 @@
 #include "Cell.h"
 #include "DB2Structure.h"
 #include "CellImpl.h"
+#include "CreatureData.h"
+#include "Group.h"
+#include "Log.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "ObjectGuid.h"
+#include "ObjectMgr.h"
 #include "Player.h"
+#include "SpawnData.h"
 #include "SharedDefines.h"
 #include "SpellHistory.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
+#include <unordered_map>
 #include <vector>
 
 using forever_module::BotSnapshot;
@@ -66,6 +73,153 @@ void FillCooldowns(Player& bot, SpellCooldown (&slots)[forever_module::kMaxTrack
         slots[i] = { active[i].SpellId, active[i].Remaining };
 }
 
+// A player's unit reference, for a party leader. The leader need not be in the bot's view for the reference to be valid.
+uint64 PlayerRef(ObjectGuid guid)
+{
+    if (guid.GetCounter() > forever_module::kUnitRefCounterMask)
+        return 0;
+    return forever_module::MakeUnitRef(uint8(HighGuid::Player), 0, guid.GetCounter());
+}
+
+// The flags that make a unit impossible for a player to attack, whatever its faction: the ones WorldObject::IsValidAttackTarget
+// rejects first. The full function is not used here: its visibility and reputation (at war) checks rejected the creatures the bots
+// are meant to fight in the fourth 500-bot sim run, which saw no fights at all.
+bool CannotBeAttackedByPlayers(Unit const& unit)
+{
+    return unit.IsImmuneToPC() || unit.IsUninteractible() ||
+           unit.HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NON_ATTACKABLE_2 | UNIT_FLAG_NOT_ATTACKABLE_1 | UNIT_FLAG_ON_TAXI);
+}
+
+// Whether the bot may pick this unit as a target (the snapshot's is_hostile). Hostile units, and neutral creatures ("yellow"): a
+// neutral creature can be attacked but does not attack first, and most starter-zone creatures are neutral, so a bot that waited for
+// hostile units would never start a fight. Neutral units that are not for fighting are left out: critters, and creatures with an
+// NPC role (vendor, trainer, quest giver and the like). Units a player cannot attack are never included.
+bool CanBeFought(Player const& bot, Unit const& unit)
+{
+    if (CannotBeAttackedByPlayers(unit))
+        return false;
+    if (bot.IsHostileTo(&unit))
+        return true;
+    if (!unit.IsCreature() || bot.IsFriendlyTo(&unit))
+        return false;
+    Creature const* creature = unit.ToCreature();
+    return creature->GetCreatureTemplate()->type != CREATURE_TYPE_CRITTER && creature->GetNpcFlags() == UNIT_NPC_FLAG_NONE;
+}
+
+// Where the vendors of each map stand: the spawn position of every creature whose template has a vendor flag. Built on the
+// first call, since the spawn table is loaded at world start. Only the world thread reads it.
+struct VendorSpot
+{
+    float X;
+    float Y;
+    float Z;
+};
+
+std::unordered_map<uint32, std::vector<VendorSpot>> const& VendorsByMap()
+{
+    static std::unordered_map<uint32, std::vector<VendorSpot>> vendors;
+    static bool built = false;
+    if (!built)
+    {
+        built = true;
+        auto const started = std::chrono::steady_clock::now();
+        size_t spawns = 0;
+        for (auto const& spawnEntry : sObjectMgr->GetAllCreatureData())
+        {
+            CreatureData const& spawn = spawnEntry.second;
+            ++spawns;
+            CreatureTemplate const* templ = sObjectMgr->GetCreatureTemplate(spawn.id);
+            if (!templ || (templ->npcflag & UNIT_NPC_FLAG_VENDOR_MASK) == 0)
+                continue;
+            vendors[spawn.mapId].push_back({ spawn.spawnPoint.GetPositionX(), spawn.spawnPoint.GetPositionY(),
+                                             spawn.spawnPoint.GetPositionZ() });
+        }
+
+        // One scan of every creature spawn, inside the first snapshot: its cost is logged, since it is a stall of one world update.
+        size_t vendorCount = 0;
+        for (auto const& onMap : vendors)
+            vendorCount += onMap.second.size();
+        TC_LOG_INFO("server.worldserver", "Bots: vendor index built from {} creature spawns in {} ms: {} vendors on {} maps.", spawns,
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count(), vendorCount,
+            vendors.size());
+    }
+    return vendors;
+}
+
+// The nearest vendor to a bot on its map, looked up again only when the bot has moved this far from the last lookup.
+constexpr float kVendorLookupMoveYards = 100.0f;
+
+struct VendorLookup
+{
+    bool Made = false;      // a lookup has been made for this bot
+    uint32 MapId = 0;
+    float X = 0.0f;
+    float Y = 0.0f;
+    bool Found = false;     // the map has a vendor
+    VendorSpot Spot{};
+};
+
+// Fills the nearest-vendor fields of the snapshot entry (layout 6, M6). The position is 2D for the distance: vendors sit at
+// different heights in the same town, and the walk is on the ground.
+void FillNearestVendor(Player& bot, BotSnapshot& entry)
+{
+    static std::unordered_map<uint64, VendorLookup> lookups; // bot counter -> its last lookup
+    VendorLookup& last = lookups[bot.GetGUID().GetCounter()];
+
+    float const x = bot.GetPositionX();
+    float const y = bot.GetPositionY();
+    uint32 const mapId = bot.GetMapId();
+    float const dx = x - last.X;
+    float const dy = y - last.Y;
+    bool const fresh = last.Made && last.MapId == mapId && dx * dx + dy * dy <= kVendorLookupMoveYards * kVendorLookupMoveYards;
+    if (!fresh)
+    {
+        last = VendorLookup{};
+        last.Made = true;
+        last.MapId = mapId;
+        last.X = x;
+        last.Y = y;
+        auto const& vendors = VendorsByMap();
+        auto const onMap = vendors.find(mapId);
+        if (onMap != vendors.end())
+        {
+            float bestSq = std::numeric_limits<float>::max();
+            for (VendorSpot const& spot : onMap->second)
+            {
+                float const sx = spot.X - x;
+                float const sy = spot.Y - y;
+                if (sx * sx + sy * sy < bestSq)
+                {
+                    bestSq = sx * sx + sy * sy;
+                    last.Spot = spot;
+                    last.Found = true;
+                }
+            }
+        }
+    }
+
+    if (last.Found)
+    {
+        entry.vendor_x = last.Spot.X;
+        entry.vendor_y = last.Spot.Y;
+        entry.vendor_z = last.Spot.Z;
+        entry.vendor_valid = 1;
+    }
+}
+
+// The bot's party and any invite it has not answered (layout 5, M8).
+void FillParty(Player& bot, BotSnapshot& entry)
+{
+    if (Group* group = bot.GetGroup())
+    {
+        entry.group_role = group->IsLeader(bot.GetGUID()) ? 2 : 1;
+        entry.group_size = group->GetMembersCount();
+        entry.group_leader_guid = PlayerRef(group->GetLeaderGUID());
+    }
+    if (Group* invite = bot.GetGroupInvite())
+        entry.group_invite_from = PlayerRef(invite->GetLeaderGUID());
+}
+
 } // namespace
 
 bool EncodeUnitRef(Unit const& unit, uint64& ref)
@@ -92,7 +246,7 @@ bool EncodeUnitRef(Unit const& unit, uint64& ref)
     }
 }
 
-ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby)
+ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNearby, std::vector<NearbyUnit>& cachedNearby)
 {
     ModuleSnapshotBot result;
 
@@ -110,6 +264,7 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby)
     entry.power = ClampToUint32(int64(bot.GetPower(powerType)));
     entry.max_power = ClampToUint32(int64(bot.GetMaxPower(powerType)));
     entry.level = bot.GetLevel();
+    entry.map_id = bot.GetMapId(); // layout 7: the map, for a module's hubs (M7)
 
     FillCooldowns(bot, entry.spell_cooldowns);
 
@@ -121,29 +276,64 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby)
         entry.target_distance = bot.GetDistance(victim);
     }
 
+    FillParty(bot, entry);
+    FillNearestVendor(bot, entry);
+
     if (maxNearby == 0)
         return result;
 
-    // Every unit in range, then the closest maxNearby of them that can be packed.
+    // Between refreshes the bot's own entry is current, and its nearby units are the ones from the last refresh.
+    if (!refreshNearby && !cachedNearby.empty())
+    {
+        result.Nearby = cachedNearby;
+        if (result.Nearby.size() > maxNearby)
+            result.Nearby.resize(maxNearby);
+        return result;
+    }
+
+    // Every unit in range, split into players and creatures, each closest first.
     std::list<Unit*> inRange;
     Trinity::AnyUnitInObjectRangeCheck check(&bot, NearbyRange);
     Trinity::UnitListSearcher<Trinity::AnyUnitInObjectRangeCheck> searcher(&bot, inRange, check);
     Cell::VisitAllObjects(&bot, searcher, NearbyRange);
 
-    std::vector<Unit*> units;
+    std::vector<Unit*> players;
+    std::vector<Unit*> creatures;
     for (Unit* unit : inRange)
-        if (unit != &bot)
-            units.push_back(unit);
-    std::sort(units.begin(), units.end(), [&bot](Unit* a, Unit* b)
+    {
+        if (unit == &bot)
+            continue;
+        (unit->IsPlayer() ? players : creatures).push_back(unit);
+    }
+    auto closerFirst = [&bot](Unit* a, Unit* b)
     {
         return bot.GetExactDist2dSq(a) < bot.GetExactDist2dSq(b);
-    });
+    };
+    std::sort(players.begin(), players.end(), closerFirst);
+    std::sort(creatures.begin(), creatures.end(), closerFirst);
 
-    for (Unit* unit : units)
+    // The closest few players, then creatures, then any players that are left if there is still room.
+    std::vector<Unit*> chosen;
+    size_t const playerSlots = std::min<size_t>(kNearbyPlayerSlots, maxNearby);
+    for (Unit* player : players)
     {
-        if (result.Nearby.size() >= maxNearby)
+        if (chosen.size() >= playerSlots)
             break;
+        chosen.push_back(player);
+    }
+    size_t const leadingPlayers = chosen.size();
+    for (Unit* creature : creatures)
+    {
+        if (chosen.size() >= maxNearby)
+            break;
+        chosen.push_back(creature);
+    }
+    for (size_t i = leadingPlayers; i < players.size() && chosen.size() < maxNearby; ++i)
+        chosen.push_back(players[i]);
+    std::sort(chosen.begin(), chosen.end(), closerFirst);
 
+    for (Unit* unit : chosen)
+    {
         NearbyUnit near;
         if (!EncodeUnitRef(*unit, near.guid))
             continue;
@@ -152,11 +342,15 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby)
         near.pos_z = unit->GetPositionZ();
         near.health = ClampToUint32(unit->GetHealth());
         near.max_health = ClampToUint32(unit->GetMaxHealth());
-        near.is_hostile = bot.IsHostileTo(unit);
+        // is_hostile means the bot may fight it: hostile by faction or a neutral creature, and not one a player cannot attack (a
+        // trainer immune to player characters is hostile by faction, but a bot that picked it would never land a hit).
+        near.is_hostile = CanBeFought(bot, *unit);
         near.level = unit->GetLevel();
         near.elite = unit->IsCreature() && unit->ToCreature()->IsElite() ? 1 : 0;
         near.casting = unit->IsNonMeleeSpellCast(false) ? 1 : 0;
         result.Nearby.push_back(near);
     }
+
+    cachedNearby = result.Nearby;
     return result;
 }

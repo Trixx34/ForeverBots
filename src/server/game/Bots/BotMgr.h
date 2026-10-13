@@ -105,6 +105,7 @@ class TC_GAME_API BotMgr
         void PollCreates(); // runs the save callbacks of characters that finished committing
         void FinishCreate(uint64 guid, bool success);
         void FinishLogin(BotInfo& bot);
+        void SpreadBot(Player& bot); // puts a bot that is in the world onto its spread point around its race's start
         void FailLogin(BotInfo& bot, char const* reason);
         void LogoutBot(BotInfo& bot, char const* reason);
 
@@ -117,6 +118,9 @@ class TC_GAME_API BotMgr
 
         uint32 _uptimeMs = 0;
         uint32 _loginMaxPerTick = 5;
+        // Spread around each race's start (Bot.Spread.*): spacing between bots, and the largest distance from the start.
+        float _spreadSpacing = 3.0f;
+        float _spreadMaxRadius = 200.0f;
         uint32 _loginTimeoutMs = 60000;
         uint32 _reloginDelayMs = 2000; // lets the previous logout save reach the database before the next load
         bool _registryLoaded = false;
