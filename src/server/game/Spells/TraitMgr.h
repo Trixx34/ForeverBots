@@ -19,6 +19,7 @@
 #define TRINITY_TRAIT_MGR_H
 
 #include "Define.h"
+#include <string>
 #include <map>
 #include <variant>
 #include <vector>
@@ -95,6 +96,13 @@ LearnResult ValidateConfigForCommit(WorldPackets::Traits::TraitConfig& traitConf
 bool CanApplyTraitNode(UF::TraitConfig const& traitConfig, UF::TraitEntry const& traitEntry);
 std::vector<TraitDefinitionEffectPointsEntry const*> const* GetTraitDefinitionEffectPointModifiers(int32 traitDefinitionId);
 void InitializeStarterBuildTraitConfig(WorldPackets::Traits::TraitConfig& traitConfig, PlayerDataAccessor player);
+
+// Spends the unspent talent points of a Classic character, as a player filling out one tree would (bots, which have no one to click).
+// A class's trees ("tabs", told apart by the currencies their nodes cost) are put in a fixed order, preferredTab first; the points go
+// to the first tab's talents from the top row down, one rank at a time, as far as the validation (tier gates, points owned, level)
+// allows, then to the next tab. Ranks already in the config are kept. Returns how many ranks were added; `summary` says how the tabs
+// were told apart and how the points went, for the log.
+int32 AutoSpendClassicTalents(WorldPackets::Traits::TraitConfig& traitConfig, PlayerDataAccessor player, uint32 preferredTab, std::string& summary);
 }
 
 #endif // TRINITY_TRAIT_MGR_H

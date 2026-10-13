@@ -1769,6 +1769,12 @@ Bot.Limit.MaxDbQueue = 5000
 #        1 = a bot learns the spells its class trainers teach as soon as it can use them (level-up and login), without visiting a
 #            trainer or paying. 0 = only what the core grants by itself.
 #
+#    Bot.Learn.Talents
+#        Default:     1
+#        1 = a bot spends its talent points on level-up and login (from level 10): one tab filled from its top row down, then the
+#            next tab. Bot.Talents.Tab.<classId> (0, 1 or 2) picks the first tab for a class; the server log shows how the tabs
+#            were numbered ("spent talents: ... [sub .. cur ..: N nodes, M ranks]").
+#
 #    Bot.Learn.CombatSkills
 #        Default:     1
 #        1 = a bot's weapon skills, Unarmed, Thrown, Wands and Defense are set to 5 per level (what a player who trained and used them
@@ -1776,6 +1782,7 @@ Bot.Limit.MaxDbQueue = 5000
 
 Bot.Learn.TrainerSpells = 1
 Bot.Learn.CombatSkills = 1
+Bot.Learn.Talents = 1
 
 #    Bot.Dump.Abilities
 #        Default:     0
