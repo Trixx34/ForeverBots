@@ -796,6 +796,8 @@ void BotMgr::OnBotLevelChanged(Player& bot)
 {
     if (g_dumpingAbilities)
         return;
+    if (sBotMgr->IsActiveAlt(bot.GetGUID().GetCounter()))
+        return; // a player's own character is not given free trainer spells, skills or talents
 
     static bool const learnSpells = sConfigMgr->GetBoolDefault("Bot.Learn.TrainerSpells", true);
     static bool const raiseSkills = sConfigMgr->GetBoolDefault("Bot.Learn.CombatSkills", true);
@@ -855,7 +857,7 @@ void BotMgr::FinishLogin(BotInfo& bot)
     {
         if (bot.HasStart)
             player->TeleportTo(bot.StartMap, bot.StartX, bot.StartY, bot.StartZ, player->GetOrientation());
-        else
+        else if (!bot.Alt)
             SpreadBot(*player);
         OnBotLevelChanged(*player);
         bot.Level = player->GetLevel();
@@ -900,6 +902,57 @@ void BotMgr::LogoutBot(BotInfo& bot, char const* reason)
     bot.NotBeforeMs = _uptimeMs + _reloginDelayMs;
 
     TC_LOG_INFO("server.worldserver", "BotMgr: bot {} (guid {}) logged out ({}).", bot.Name, bot.Guid, reason);
+}
+
+bool BotMgr::StartAlt(uint64 guid, uint32 accountId, std::string const& accountName, std::string const& name, uint8 race, uint8 classId, uint8 gender,
+                     uint8 level, std::string& error)
+{
+    auto [itr, inserted] = _bots.try_emplace(guid);
+    BotInfo& bot = itr->second;
+    if (!inserted && (!bot.Alt || bot.State != BOT_OFFLINE))
+    {
+        error = bot.Alt ? "already logged in as a bot" : "this character is a bot already";
+        return false;
+    }
+
+    bot.Guid = guid;
+    bot.AccountId = accountId;
+    bot.AccountName = accountName;
+    bot.Name = name;
+    bot.Race = race;
+    bot.Class = classId;
+    bot.Gender = gender;
+    bot.Level = level;
+    bot.Horde = Player::TeamForRace(race) == HORDE;
+    bot.Alt = true;
+    bot.LogoutRequested = false;
+    bot.LoginRequested = false;
+    bot.HasStart = false;
+    bot.State = BOT_QUEUED;
+    _loginQueue.push_back(guid);
+    return true;
+}
+
+bool BotMgr::StopAlt(uint64 guid)
+{
+    auto itr = _bots.find(guid);
+    if (itr == _bots.end() || !itr->second.Alt)
+        return false;
+    return RequestLogout(guid, "LOGOUT_ALT");
+}
+
+bool BotMgr::IsActiveAlt(uint64 guid) const
+{
+    auto itr = _bots.find(guid);
+    return itr != _bots.end() && itr->second.Alt && itr->second.State != BOT_OFFLINE;
+}
+
+uint32 BotMgr::ActiveAltsOf(uint32 accountId) const
+{
+    uint32 count = 0;
+    for (auto const& [guid, bot] : _bots)
+        count += bot.Alt && bot.AccountId == accountId && bot.State != BOT_OFFLINE;
+    return count;
 }
 
 bool BotMgr::Exists(uint64 guid) const

@@ -788,6 +788,7 @@ ModuleWire::ControlResponseMsg ModuleMgr::ExecuteControlRequest(ModuleId module,
         TC_LOG_INFO("modules", "module {} spawned bot {}.", module, guid);
         response.Granted = true;
         response.BotGuid = guid;
+        backend->Describe(guid, response.Race, response.ClassId);
         return response;
     }
 
@@ -805,6 +806,7 @@ ModuleWire::ControlResponseMsg ModuleMgr::ExecuteControlRequest(ModuleId module,
             response.Granted = true;
             response.BotGuid = request.BotGuid;
             backend->Activate(request.BotGuid);
+            backend->Describe(request.BotGuid, response.Race, response.ClassId);
             break;
         case ModuleBotOwnership::Claim::OwnedByOther:
         {
@@ -836,8 +838,15 @@ void ModuleMgr::RunPendingControls()
     {
         if (pending.Release)
         {
-            std::lock_guard<std::mutex> lock(_mutex);
-            _owners.Release(pending.Request.BotGuid, pending.Module);
+            std::shared_ptr<ModuleBotBackend> backend;
+            bool owned = false;
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                owned = _owners.Release(pending.Request.BotGuid, pending.Module);
+                backend = _botBackend;
+            }
+            if (backend && owned)
+                backend->Deactivate(pending.Request.BotGuid); // an alt logs out when its owner lets it go
             continue;
         }
 

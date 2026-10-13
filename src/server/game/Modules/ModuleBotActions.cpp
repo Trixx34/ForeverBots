@@ -463,6 +463,11 @@ BotActionStatus AutoGearAction(Player& bot, uint32 flags, std::string& reason)
         reason = "bot is in combat";
         return BotActionStatus::kRefused;
     }
+    if (sBotMgr->IsActiveAlt(bot.GetGUID().GetCounter()))
+    {
+        reason = "an alt is a player's own character and is not dressed";
+        return BotActionStatus::kRefused;
+    }
 
     bool const tank = (flags & 1) != 0;
     std::vector<int32> const preferred = PreferredStats(bot.GetClass());
@@ -1166,7 +1171,10 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
                 return BotActionStatus::kRefused;
             }
 
-            uint32 const services = action.spell_id;
+            uint32 services = action.spell_id;
+            // An alt is a player's own character: its gear is the player's to change, so the equip service is left out.
+            if (sBotMgr->IsActiveAlt(bot.GetGUID().GetCounter()))
+                services &= ~uint32(kServiceEquipBit);
             if (services & (kServiceSellBit | kServiceRepairBit))
             {
                 Creature* npc = NearestServiceNpc(bot, UNIT_NPC_FLAG_VENDOR_MASK | UNIT_NPC_FLAG_REPAIR);

@@ -682,6 +682,18 @@ bool Decode(std::string_view bytes, ControlRequestMsg& out)
                         case 6: out.SpawnParams.MapId = v; break;
                     }
                 }
+                else if (sf == 10 && sw == WireLengthDelimited)
+                {
+                    std::string_view name;
+                    if (!s.ReadBytes(name))
+                        return false;
+                    out.SpawnParams.AltName.assign(name.data(), name.size());
+                }
+                else if (sf == 11 && sw == WireVarint)
+                {
+                    if (!s.ReadVarint(out.SpawnParams.OwnerGuid))
+                        return false;
+                }
                 else if (!s.Skip(sw))
                     return false;
             }
@@ -719,6 +731,10 @@ std::string Encode(ControlResponseMsg const& msg)
     AppendVarintField(out, 2, msg.BotGuid);
     if (!msg.Reason.empty())
         AppendBytesField(out, 3, msg.Reason);
+    if (msg.Race != 0)
+        AppendVarintField(out, 4, msg.Race);
+    if (msg.ClassId != 0)
+        AppendVarintField(out, 5, msg.ClassId);
     return out;
 }
 

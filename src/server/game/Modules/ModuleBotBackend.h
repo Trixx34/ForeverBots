@@ -27,6 +27,12 @@ class ModuleBotBackend
 
         // Brings a bot that a module now controls into the world (logs it in if it is offline).
         virtual void Activate(uint64 botGuid) = 0;
+
+        // The module released a bot it controlled (ReleaseControl). A backend may log out the bots whose owner asked for them (alts).
+        virtual void Deactivate(uint64 botGuid) { (void)botGuid; }
+
+        // Race and class of a bot, for the reply to a control request. False when unknown.
+        virtual bool Describe(uint64 botGuid, uint32& race, uint32& classId) const { (void)botGuid; (void)race; (void)classId; return false; }
 };
 
 #endif // TRINITYCORE_MODULE_BOT_BACKEND_H

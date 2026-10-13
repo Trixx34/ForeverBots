@@ -46,6 +46,7 @@ struct BotInfo
     WorldSession* Session = nullptr;   // owned by BotMgr; never in World's session list
     bool LoginRequested = false;       // login asked for while the character was being created
     bool LogoutRequested = false;      // logout asked for while the character was logging in
+    bool Alt = false;                  // a character of a player's own account, logged in as a bot (Bot.Alt.Enabled)
     uint32 NotBeforeMs = 0;            // no login before this uptime (the previous logout save must land first)
     uint32 LoginStartedMs = 0;
     bool HasStart = false;             // placed at a given spot on login (a scenario), not spread around the race's start
@@ -100,6 +101,17 @@ class TC_GAME_API BotMgr
 
         // Logs out every bot (worldserver shutdown).
         void LogoutAll(char const* reason);
+
+        // Logs the existing character `guid` of a player's account in as a bot (an alt). The BotInfo is created here, so the module can take control of it.
+        // Returns false with the reason in error when it is already a bot or online.
+        bool StartAlt(uint64 guid, uint32 accountId, std::string const& accountName, std::string const& name, uint8 race, uint8 classId, uint8 gender,
+                      uint8 level, std::string& error);
+        // Logs an alt out (it stays remembered as an alt). False if the guid is not an alt.
+        bool StopAlt(uint64 guid);
+        // An alt that is queued, logging in or online: it must not log in as a player meanwhile.
+        bool IsActiveAlt(uint64 guid) const;
+        // How many alts of this account are queued, logging in or online.
+        uint32 ActiveAltsOf(uint32 accountId) const;
 
         bool Exists(uint64 guid) const;
         bool GetBot(uint64 guid, BotInfo& out) const;

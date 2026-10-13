@@ -453,6 +453,8 @@ int main()
         req->mutable_spawn_params()->set_pos_x(-16.5f);
         req->mutable_spawn_params()->set_pos_y(-383.0f);
         req->mutable_spawn_params()->set_pos_z(61.8f);
+        req->mutable_spawn_params()->set_alt_name("Thrall");
+        req->mutable_spawn_params()->set_owner_guid(77);
         std::string bytes;
         CHECK(sdk.SerializeToString(&bytes));
 
@@ -467,6 +469,7 @@ int main()
         CHECK(core.SpawnParams.Level == 80 && core.SpawnParams.Team == 1);
         CHECK(core.SpawnParams.Place && core.SpawnParams.MapId == 36);
         CHECK(core.SpawnParams.X == -16.5f && core.SpawnParams.Y == -383.0f && core.SpawnParams.Z == 61.8f);
+        CHECK(core.SpawnParams.AltName == "Thrall" && core.SpawnParams.OwnerGuid == 77);
 
         forever_module::Envelope release;
         release.mutable_release_control()->set_bot_guid(5005);
@@ -485,6 +488,8 @@ int main()
         ModuleWire::ControlResponseMsg granted;
         granted.Granted = true;
         granted.BotGuid = 5005;
+        granted.Race = 2;
+        granted.ClassId = 7;
         std::string bytes = ModuleWire::EncodeEnvelope(ModuleWire::PayloadKind::ControlResponse, ModuleWire::Encode(granted), 41);
         forever_module::Envelope sdk;
         CHECK(sdk.ParseFromString(bytes));
@@ -492,6 +497,7 @@ int main()
         CHECK(sdk.message_id() == 41);
         CHECK(sdk.control_response().granted());
         CHECK(sdk.control_response().bot_guid() == 5005);
+        CHECK(sdk.control_response().race() == 2 && sdk.control_response().class_id() == 7);
         CHECK(!sdk.control_response().has_reason());
 
         ModuleWire::ControlResponseMsg refused;

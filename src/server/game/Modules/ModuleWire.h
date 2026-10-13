@@ -236,6 +236,8 @@ struct SpawnParamsMsg
     float X = 0.0f;
     float Y = 0.0f;
     float Z = 0.0f;
+    std::string AltName;       // an alt: log in the character with this name instead of creating one (fields 10, 11)
+    uint64 OwnerGuid = 0;      // the player whose account owns the alt
 };
 
 struct ControlRequestMsg
@@ -248,6 +250,8 @@ struct ControlResponseMsg
 {
     bool Granted = false;
     uint64 BotGuid = 0;
+    uint32 Race = 0;           // of the granted bot (0 when unknown)
+    uint32 ClassId = 0;
     std::string Reason;
 };
 

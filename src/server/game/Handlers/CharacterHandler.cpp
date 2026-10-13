@@ -17,6 +17,7 @@
 
 #include "WorldSession.h"
 #include "AccountMgr.h"
+#include "BotMgr.h"
 #include "ArenaTeam.h"
 #include "ArenaTeamMgr.h"
 #include "ArtifactPackets.h"
@@ -1306,6 +1307,14 @@ void WorldSession::HandlePlayerLoginOpcode(WorldPackets::Character::PlayerLogin&
     {
         TC_LOG_ERROR("network", "Account ({}) can't login with that character ({}).", GetAccountId(), playerLogin.Guid.ToString());
         KickPlayer("WorldSession::HandlePlayerLoginOpcode Trying to login with a character of another account");
+        return;
+    }
+
+    // A character that is logged in as a bot (an alt) cannot log in as a player at the same time.
+    if (sBotMgr->IsActiveAlt(playerLogin.Guid.GetCounter()))
+    {
+        TC_LOG_ERROR("network", "Account ({}) tried to log in with {}, which is playing as a bot.", GetAccountId(), playerLogin.Guid.ToString());
+        KickPlayer("WorldSession::HandlePlayerLoginOpcode character is logged in as a bot");
         return;
     }
 
