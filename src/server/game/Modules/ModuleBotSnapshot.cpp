@@ -304,7 +304,9 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
         near.pos_z = unit->GetPositionZ();
         near.health = ClampToUint32(unit->GetHealth());
         near.max_health = ClampToUint32(unit->GetMaxHealth());
-        near.is_hostile = bot.IsHostileTo(unit);
+        // Hostile means the bot can attack it: a trainer immune to player characters, or an uninteractible unit, is hostile by
+        // faction but cannot be attacked, and a module that picked it as a target would never get a hit in.
+        near.is_hostile = bot.IsHostileTo(unit) && bot.IsValidAttackTarget(unit);
         near.level = unit->GetLevel();
         near.elite = unit->IsCreature() && unit->ToCreature()->IsElite() ? 1 : 0;
         near.casting = unit->IsNonMeleeSpellCast(false) ? 1 : 0;
