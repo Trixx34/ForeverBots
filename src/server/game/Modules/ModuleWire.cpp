@@ -483,6 +483,38 @@ bool Decode(std::string_view bytes, ActionRequestMsg& out)
                     return false;
             }
         }
+        else if (field == 17 && wire == WireLengthDelimited)
+        {
+            // LogAction (17): level=1 (varint), text=2.
+            std::string_view logBytes;
+            if (!r.ReadBytes(logBytes))
+                return false;
+            out.Kind = ActionKind::Log;
+
+            Reader a(logBytes);
+            while (!a.AtEnd())
+            {
+                uint32 af = 0, aw = 0;
+                if (!a.ReadTag(af, aw))
+                    return false;
+                if (af == 1 && aw == WireVarint)
+                {
+                    uint64 level = 0;
+                    if (!a.ReadVarint(level))
+                        return false;
+                    out.LogLevel = static_cast<uint32>(level);
+                }
+                else if (af == 2 && aw == WireLengthDelimited)
+                {
+                    std::string_view text;
+                    if (!a.ReadBytes(text))
+                        return false;
+                    out.Text.assign(text);
+                }
+                else if (!a.Skip(aw))
+                    return false;
+            }
+        }
         else if (field == 16 && wire == WireLengthDelimited)
         {
             // ShareQuestItemAction (16): player_guid=1, item_entry=2, count=3, range_yards=4.

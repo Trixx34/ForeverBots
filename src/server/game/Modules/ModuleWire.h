@@ -167,6 +167,7 @@ enum class ActionKind : uint8
     StoreDelete = 5,
     StoreList = 6,
     ShareQuestItem = 7,
+    Log = 8,
 };
 
 struct ActionRequestMsg
@@ -180,8 +181,10 @@ struct ActionRequestMsg
     uint32 Count = 0;
     // ShareQuestItem: how far from the looter a party member may be (0 = the default)
     uint32 RangeYards = 0;
-    // SendPlayerMessage
+    // SendPlayerMessage, and Log's text
     std::string Text;
+    // Log: 0 info, 1 warning, 2 error
+    uint32 LogLevel = 0;
     // Store: Key for get, set and delete; the prefix for list; Value for set
     std::string Key;
     std::string Value;

@@ -204,6 +204,21 @@ void ExecuteModuleAction(ModuleWire::ActionRequestMsg const& request, ModuleWire
                 ExecuteStoreAction(moduleName, request, reply);
             return;
 
+        case ModuleWire::ActionKind::Log:
+            if (request.Text.empty() || request.Text.size() > MaxMessageBytes)
+            {
+                reply.Reason = "log text must be 1 to 255 bytes";
+                return;
+            }
+            switch (request.LogLevel)
+            {
+                case 0: TC_LOG_INFO("server.worldserver", "[{}] {}", moduleName, request.Text); break;
+                case 1: TC_LOG_WARN("server.worldserver", "[{}] {}", moduleName, request.Text); break;
+                default: TC_LOG_ERROR("server.worldserver", "[{}] {}", moduleName, request.Text); break;
+            }
+            reply.Success = true;
+            return;
+
         default:
             break;
     }
@@ -235,6 +250,7 @@ void ExecuteModuleAction(ModuleWire::ActionRequestMsg const& request, ModuleWire
             reply.Success = true;
             return;
 
+        case ModuleWire::ActionKind::Log:
         case ModuleWire::ActionKind::None:
             break;
     }

@@ -332,6 +332,23 @@ int main()
         CHECK(core.RangeYards == 80);
     }
 
+    // SDK -> core: Log action request.
+    {
+        forever_module::ActionRequest msg;
+        msg.set_message_id(34);
+        forever_module::LogAction* log = msg.mutable_log();
+        log->set_level(1);
+        log->set_text("42 items sold in the last 10 minutes. Total value 1g 20s 5c.");
+        std::string bytes;
+        CHECK(msg.SerializeToString(&bytes));
+        ModuleWire::ActionRequestMsg core;
+        CHECK(ModuleWire::Decode(bytes, core));
+        CHECK(core.MessageId == 34);
+        CHECK(core.Kind == ModuleWire::ActionKind::Log);
+        CHECK(core.LogLevel == 1);
+        CHECK(core.Text == "42 items sold in the last 10 minutes. Total value 1g 20s 5c.");
+    }
+
     // Core -> SDK: ActionReply inside an Envelope, parsed by the SDK's protobuf.
     {
         ModuleWire::ActionReplyMsg reply;
