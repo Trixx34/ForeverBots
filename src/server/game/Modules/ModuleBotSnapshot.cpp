@@ -90,6 +90,22 @@ bool CannotBeAttackedByPlayers(Unit const& unit)
            unit.HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NON_ATTACKABLE_2 | UNIT_FLAG_NOT_ATTACKABLE_1 | UNIT_FLAG_ON_TAXI);
 }
 
+// Whether the bot may pick this unit as a target (the snapshot's is_hostile). Hostile units, and neutral creatures ("yellow"): a
+// neutral creature can be attacked but does not attack first, and most starter-zone creatures are neutral, so a bot that waited for
+// hostile units would never start a fight. Neutral units that are not for fighting are left out: critters, and creatures with an
+// NPC role (vendor, trainer, quest giver and the like). Units a player cannot attack are never included.
+bool CanBeFought(Player const& bot, Unit const& unit)
+{
+    if (CannotBeAttackedByPlayers(unit))
+        return false;
+    if (bot.IsHostileTo(&unit))
+        return true;
+    if (!unit.IsCreature() || bot.IsFriendlyTo(&unit))
+        return false;
+    Creature const* creature = unit.ToCreature();
+    return creature->GetCreatureTemplate()->type != CREATURE_TYPE_CRITTER && creature->GetNpcFlags() == UNIT_NPC_FLAG_NONE;
+}
+
 // Where the vendors of each map stand: the spawn position of every creature whose template has a vendor flag. Built on the
 // first call, since the spawn table is loaded at world start. Only the world thread reads it.
 struct VendorSpot
@@ -326,9 +342,9 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
         near.pos_z = unit->GetPositionZ();
         near.health = ClampToUint32(unit->GetHealth());
         near.max_health = ClampToUint32(unit->GetMaxHealth());
-        // Hostile means the bot can attack it: a trainer immune to player characters, or an uninteractible unit, is hostile by
-        // faction but cannot be attacked, and a module that picked it as a target would never get a hit in.
-        near.is_hostile = bot.IsHostileTo(unit) && !CannotBeAttackedByPlayers(*unit);
+        // is_hostile means the bot may fight it: hostile by faction or a neutral creature, and not one a player cannot attack (a
+        // trainer immune to player characters is hostile by faction, but a bot that picked it would never land a hit).
+        near.is_hostile = CanBeFought(bot, *unit);
         near.level = unit->GetLevel();
         near.elite = unit->IsCreature() && unit->ToCreature()->IsElite() ? 1 : 0;
         near.casting = unit->IsNonMeleeSpellCast(false) ? 1 : 0;
