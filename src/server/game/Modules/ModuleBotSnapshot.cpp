@@ -1,5 +1,7 @@
 #include "ModuleBotSnapshot.h"
 #include "Cell.h"
+#include "Corpse.h"
+#include "GameTime.h"
 #include "DB2Structure.h"
 #include "CellImpl.h"
 #include "CreatureData.h"
@@ -299,6 +301,44 @@ void FillParty(Player& bot, BotSnapshot& entry)
         entry.group_invite_from = PlayerRef(invite->GetLeaderGUID());
 }
 
+// Death state (layout 11). A ghost has health 1, so a module must test life_state and not health.
+void FillLifeState(Player& bot, BotSnapshot& entry)
+{
+    entry.resurrect_from = PlayerRef(bot.GetResurrectRequester());
+    if (bot.IsAlive())
+        return;
+
+    bool const ghost = bot.HasPlayerFlag(PLAYER_FLAGS_GHOST);
+    entry.life_state = ghost ? 2 : 1;
+    if (!ghost)
+    {
+        // Not released: the corpse is the bot's own body.
+        entry.corpse_valid = 1;
+        entry.corpse_map = bot.GetMapId();
+        entry.corpse_x = bot.GetPositionX();
+        entry.corpse_y = bot.GetPositionY();
+        entry.corpse_z = bot.GetPositionZ();
+        return;
+    }
+
+    if (bot.HasCorpse())
+    {
+        WorldLocation const& where = bot.GetCorpseLocation();
+        entry.corpse_valid = 1;
+        entry.corpse_map = where.GetMapId();
+        entry.corpse_x = where.GetPositionX();
+        entry.corpse_y = where.GetPositionY();
+        entry.corpse_z = where.GetPositionZ();
+    }
+    if (Corpse* corpse = bot.GetCorpse())
+    {
+        int64 const readyAt = int64(corpse->GetGhostTime()) +
+            int64(bot.GetCorpseReclaimDelay(corpse->GetType() == CORPSE_RESURRECTABLE_PVP));
+        int64 const left = readyAt - int64(GameTime::GetGameTime());
+        entry.reclaim_wait_ms = left > 0 ? uint32(std::min<int64>(left * 1000, std::numeric_limits<uint32>::max())) : 0;
+    }
+}
+
 } // namespace
 
 bool EncodeUnitRef(Unit const& unit, uint64& ref)
@@ -371,6 +411,7 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
     }
 
     FillParty(bot, entry);
+    FillLifeState(bot, entry);
     FillNearestVendor(bot, entry);
     entry.durability_pct = LowestDurabilityPct(bot);
 
@@ -386,19 +427,27 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
         return result;
     }
 
-    // Every unit in range, split into players and creatures, each closest first.
+    // Every unit in range, split into players and creatures, each closest first. Dead creatures are kept (a boss's corpse is how a
+    // scenario sees the boss die); dead players are not.
     std::list<Unit*> inRange;
-    Trinity::AnyUnitInObjectRangeCheck check(&bot, NearbyRange);
+    Trinity::AnyUnitInObjectRangeCheck check(&bot, NearbyRange, true, false);
     Trinity::UnitListSearcher<Trinity::AnyUnitInObjectRangeCheck> searcher(&bot, inRange, check);
     Cell::VisitAllObjects(&bot, searcher, NearbyRange);
 
     std::vector<Unit*> players;
     std::vector<Unit*> creatures;
+    std::vector<Unit*> corpses;
     for (Unit* unit : inRange)
     {
         if (unit == &bot)
             continue;
-        (unit->IsPlayer() ? players : creatures).push_back(unit);
+        if (unit->IsPlayer())
+        {
+            if (unit->IsAlive())
+                players.push_back(unit);
+        }
+        else
+            (unit->IsAlive() ? creatures : corpses).push_back(unit);
     }
     auto closerFirst = [&bot](Unit* a, Unit* b)
     {
@@ -406,8 +455,10 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
     };
     std::sort(players.begin(), players.end(), closerFirst);
     std::sort(creatures.begin(), creatures.end(), closerFirst);
+    std::sort(corpses.begin(), corpses.end(), closerFirst);
 
-    // The closest few players, then creatures, then any players that are left if there is still room.
+    // The closest few players, then living creatures, then corpses, then any players that are left if there is still room. Corpses
+    // come after the living so that they never take a slot a live target needs.
     std::vector<Unit*> chosen;
     size_t const playerSlots = std::min<size_t>(kNearbyPlayerSlots, maxNearby);
     for (Unit* player : players)
@@ -422,6 +473,12 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
         if (chosen.size() >= maxNearby)
             break;
         chosen.push_back(creature);
+    }
+    for (Unit* corpse : corpses)
+    {
+        if (chosen.size() >= maxNearby)
+            break;
+        chosen.push_back(corpse);
     }
     for (size_t i = leadingPlayers; i < players.size() && chosen.size() < maxNearby; ++i)
         chosen.push_back(players[i]);

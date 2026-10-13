@@ -128,6 +128,21 @@ int main()
     publishActions(8, {}, 0);
     CHECK(region->ReadNewActions(actions));
     CHECK(actions.Tick == 8);
+
+    // The layout-11 death actions round-trip.
+    forever_module::BotAction release; release.bot_guid = 42; release.type = forever_module::ActionType::kReleaseSpirit;
+    forever_module::BotAction revive; revive.bot_guid = 42; revive.type = forever_module::ActionType::kResurrect;
+    revive.target_guid = forever_module::MakeUnitRef(2, 0, 7);
+    forever_module::BotAction reclaim; reclaim.bot_guid = 42; reclaim.type = forever_module::ActionType::kReclaimCorpse;
+    publishActions(9, {release, revive, reclaim}, 3);
+    CHECK(region->ReadNewActions(actions));
+    CHECK(actions.Actions.size() == 3);
+    if (actions.Actions.size() == 3)
+    {
+        CHECK(actions.Actions[0].type == forever_module::ActionType::kReleaseSpirit);
+        CHECK(actions.Actions[1].type == forever_module::ActionType::kResurrect && actions.Actions[1].target_guid == forever_module::MakeUnitRef(2, 0, 7));
+        CHECK(actions.Actions[2].type == forever_module::ActionType::kReclaimCorpse);
+    }
     CHECK(actions.Actions.empty());
 
     // A claimed count above MaxActions is clamped to what the region holds (8 here).

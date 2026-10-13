@@ -2,6 +2,10 @@
 #include "ModuleBotSnapshot.h"
 #include "BotMgr.h"
 #include "Cell.h"
+#include "Corpse.h"
+#include "GameTime.h"
+#include "InstanceScript.h"
+#include "MiscPackets.h"
 #include "MapManager.h"
 #include "Config.h"
 #include "CellImpl.h"
@@ -982,6 +986,133 @@ BotActionStatus LootCorpse(Player& bot, uint64 targetRef, std::string& reason)
     return BotActionStatus::kApplied;
 }
 
+// Release the spirit (layout 11): the checks of WorldSession::HandleRepopRequest, which returns silently, plus the combat refusal.
+BotActionStatus ReleaseSpiritAction(Player& bot, std::string& reason)
+{
+    if (bot.IsAlive())
+    {
+        reason = "bot is alive";
+        return BotActionStatus::kRefused;
+    }
+    if (bot.HasPlayerFlag(PLAYER_FLAGS_GHOST))
+    {
+        reason = "spirit is already released";
+        return BotActionStatus::kRefused;
+    }
+    if (bot.IsInCombat())
+    {
+        reason = "bot is in combat";
+        return BotActionStatus::kRefused;
+    }
+    if (bot.IsBeingTeleported())
+    {
+        reason = "bot is being teleported";
+        return BotActionStatus::kRefused;
+    }
+    if (bot.HasAuraType(SPELL_AURA_PREVENT_RESURRECTION))
+    {
+        reason = "an aura prevents resurrection";
+        return BotActionStatus::kRefused;
+    }
+    WorldSession* session = bot.GetSession();
+    if (!session)
+    {
+        reason = "bot has no session";
+        return BotActionStatus::kRefused;
+    }
+    WorldPackets::Misc::RepopRequest request{ WorldPacket(CMSG_REPOP_REQUEST) };
+    session->HandleRepopRequest(request);
+    return BotActionStatus::kApplied;
+}
+
+// Answer a resurrect offer (layout 11): spell_id 0 accepts, 1 declines. The checks of WorldSession::HandleResurrectResponse.
+BotActionStatus ResurrectResponseAction(Player& bot, BotAction const& action, std::string& reason)
+{
+    if (bot.IsAlive())
+    {
+        reason = "bot is alive";
+        return BotActionStatus::kRefused;
+    }
+    Unit* caster = ResolveUnit(bot, action.target_guid);
+    if (!caster || !caster->IsPlayer() || !bot.IsResurrectRequestedBy(caster->GetGUID()))
+    {
+        reason = "no resurrect pending from that player";
+        return BotActionStatus::kInvalidTarget;
+    }
+    bool const decline = action.spell_id != 0;
+    if (!decline)
+    {
+        if (InstanceScript* instance = caster->ToPlayer()->GetInstanceScript())
+            if (instance->IsEncounterInProgress() && !instance->GetCombatResurrectionCharges())
+            {
+                reason = "encounter in progress and no combat resurrection charge";
+                return BotActionStatus::kRefused;
+            }
+    }
+    WorldSession* session = bot.GetSession();
+    if (!session)
+    {
+        reason = "bot has no session";
+        return BotActionStatus::kRefused;
+    }
+    WorldPackets::Misc::ResurrectResponse response{ WorldPacket(CMSG_RESURRECT_RESPONSE) };
+    response.Resurrecter = caster->GetGUID();
+    response.Response = decline ? 1 : 0;
+    session->HandleResurrectResponse(response);
+    return BotActionStatus::kApplied;
+}
+
+// Reclaim the corpse (layout 11): the checks of WorldSession::HandleReclaimCorpse, which returns silently.
+BotActionStatus ReclaimCorpseAction(Player& bot, std::string& reason)
+{
+    if (bot.IsAlive())
+    {
+        reason = "bot is alive";
+        return BotActionStatus::kRefused;
+    }
+    if (!bot.HasPlayerFlag(PLAYER_FLAGS_GHOST))
+    {
+        reason = "spirit is not released";
+        return BotActionStatus::kRefused;
+    }
+    if (bot.InArena())
+    {
+        reason = "no corpse reclaim in an arena";
+        return BotActionStatus::kRefused;
+    }
+    Corpse* corpse = bot.GetCorpse();
+    if (!corpse)
+    {
+        reason = "bot has no corpse in the world";
+        return BotActionStatus::kRefused;
+    }
+    if (time_t(corpse->GetGhostTime() + bot.GetCorpseReclaimDelay(corpse->GetType() == CORPSE_RESURRECTABLE_PVP)) >
+        time_t(GameTime::GetGameTime()))
+    {
+        reason = "corpse reclaim delay not over";
+        return BotActionStatus::kBusy;
+    }
+    if (!corpse->IsWithinDistInMap(&bot, CORPSE_RECLAIM_RADIUS, true))
+    {
+        reason = "corpse is out of reclaim range or on another map";
+        return BotActionStatus::kOutOfRange;
+    }
+    if (sConfigMgr->GetBoolDefault("Classic.Hardcore", false))
+    {
+        reason = "hardcore realm: death is permanent";
+        return BotActionStatus::kRefused;
+    }
+    WorldSession* session = bot.GetSession();
+    if (!session)
+    {
+        reason = "bot has no session";
+        return BotActionStatus::kRefused;
+    }
+    WorldPackets::Misc::ReclaimCorpse request{ WorldPacket(CMSG_RECLAIM_CORPSE) };
+    session->HandleReclaimCorpse(request);
+    return BotActionStatus::kApplied;
+}
+
 BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
 {
     switch (action.type)
@@ -1083,6 +1214,15 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
 
         case ActionType::kLoot:
             return LootCorpse(bot, action.target_guid, reason);
+
+        case ActionType::kReleaseSpirit:
+            return ReleaseSpiritAction(bot, reason);
+
+        case ActionType::kResurrect:
+            return ResurrectResponseAction(bot, action, reason);
+
+        case ActionType::kReclaimCorpse:
+            return ReclaimCorpseAction(bot, reason);
 
         case ActionType::kQuest:
             return QuestAction(bot, action.spell_id, reason);
