@@ -25,6 +25,8 @@
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "Trainer.h"
+#include "TraitMgr.h"
+#include "TraitPackets.h"
 #include "Util.h"
 #include "World.h"
 #include "WorldSession.h"
@@ -714,6 +716,33 @@ void BotMgr::SpreadBot(Player& bot)
     }
 }
 
+// Spends a bot's unspent talent points (Bot.Learn.Talents). Class defaults for the tab are guesses at the usual leveling spec (the tabs
+// are numbered in the order of their currencies, which the log line shows); Bot.Talents.Tab.<classId> overrides one.
+static void SpendTalents(Player& bot)
+{
+    static bool const enabled = sConfigMgr->GetBoolDefault("Bot.Learn.Talents", true);
+    if (!enabled || !bot.IsInWorld() || bot.IsInCombat() || bot.GetLevel() < 10)
+        return;
+
+    UF::TraitConfig const* active = bot.GetTraitConfig(bot.m_activePlayerData->ActiveCombatTraitConfigID);
+    if (!active)
+        return;
+
+    static constexpr std::array<uint32, 12> defaultTab = { 0, 0, 2, 0, 1, 2, 0, 0, 2, 0, 0, 1 }; // by class id: warrior Arms, paladin Ret, ...
+    uint32 const classId = bot.GetClass();
+    uint32 const tab = sConfigMgr->GetIntDefault(("Bot.Talents.Tab." + std::to_string(classId)).c_str(),
+        classId < defaultTab.size() ? int32(defaultTab[classId]) : 0);
+
+    WorldPackets::Traits::TraitConfig config(*active);
+    std::string summary;
+    int32 const added = TraitMgr::AutoSpendClassicTalents(config, &bot, tab, summary);
+    if (!added)
+        return;
+
+    bot.UpdateTraitConfig(std::move(config), 0, false);
+    TC_LOG_INFO("server.worldserver", "BotMgr: {} (class {}, level {}) spent talents: {}", bot.GetName(), classId, uint32(bot.GetLevel()), summary);
+}
+
 // Level-up and login: trainer spells and combat skills, which a bot would otherwise only get by visiting trainers and weapon masters
 // and by using its weapons for hours. A trainer's own checks (class, level, required spells) decide what is taught; ranks need the
 // previous rank, so the passes repeat until one teaches nothing.
@@ -765,6 +794,8 @@ void BotMgr::OnBotLevelChanged(Player& bot)
             }
         }
     }
+
+    SpendTalents(bot);
 
     if (taught || raised)
         TC_LOG_INFO("server.worldserver", "BotMgr: {} (level {}) learned {} trainer spell(s), raised {} skill(s).", bot.GetName(),

@@ -16,6 +16,7 @@
  */
 
 #include "TraitMgr.h"
+#include "StringFormat.h"
 #include "DB2Stores.h"
 #include "FlatSet.h"
 #include "IteratorPair.h"
@@ -1123,5 +1124,127 @@ void InitializeStarterBuildTraitConfig(WorldPackets::Traits::TraitConfig& traitC
             TakeCurrencyCost(newEntry, currencies);
         }
     }
+}
+int32 AutoSpendClassicTalents(WorldPackets::Traits::TraitConfig& traitConfig, PlayerDataAccessor player, uint32 preferredTab, std::string& summary)
+{
+    std::vector<Tree const*> const* trees = GetTreesForConfig(traitConfig);
+    if (!trees)
+    {
+        summary = "no talent trees for the config";
+        return 0;
+    }
+
+    // The currencies a node's purchase costs, from the node, its entry and its groups, except the points every tab shares.
+    constexpr int32 SharedTalentCurrencyID = 3820;
+    auto tabOf = [](Node const& node, NodeEntry const& entry)
+    {
+        std::vector<int32> key;
+        auto add = [&key](std::vector<TraitCostEntry const*> const& costs)
+        {
+            for (TraitCostEntry const* cost : costs)
+                if (cost->TraitCurrencyID && cost->TraitCurrencyID != SharedTalentCurrencyID)
+                    key.push_back(cost->TraitCurrencyID);
+        };
+        add(node.Costs);
+        add(entry.Costs);
+        for (NodeGroup const* group : node.Groups)
+            add(group->Costs);
+        std::ranges::sort(key);
+        key.erase(std::unique(key.begin(), key.end()), key.end());
+        key.insert(key.begin(), node.Data->TraitSubTreeID);
+        return key;
+    };
+
+    struct Candidate
+    {
+        Node const* Owner;
+        NodeEntry const* Entry;
+        std::vector<int32> Tab;
+        size_t TabRank = 0;
+    };
+    std::vector<Candidate> candidates;
+    std::vector<std::vector<int32>> tabs;
+    for (Tree const* tree : *trees)
+    {
+        for (Node const* node : tree->Nodes)
+        {
+            if (node->Entries.size() != 1 || !node->Entries[0].Data || node->Entries[0].Data->MaxRanks <= 0)
+                continue;
+            Candidate& candidate = candidates.emplace_back();
+            candidate.Owner = node;
+            candidate.Entry = &node->Entries[0];
+            candidate.Tab = tabOf(*node, node->Entries[0]);
+            if (std::ranges::find(tabs, candidate.Tab) == tabs.end())
+                tabs.push_back(candidate.Tab);
+        }
+    }
+    std::ranges::sort(tabs);
+    for (Candidate& candidate : candidates)
+    {
+        size_t const index = size_t(std::ranges::find(tabs, candidate.Tab) - tabs.begin());
+        // The preferred tab first, the others in their order.
+        candidate.TabRank = index == preferredTab ? 0 : index + 1;
+    }
+    std::ranges::stable_sort(candidates, [](Candidate const& a, Candidate const& b)
+    {
+        if (a.TabRank != b.TabRank)
+            return a.TabRank < b.TabRank;
+        if (a.Owner->Data->PosY != b.Owner->Data->PosY)
+            return a.Owner->Data->PosY < b.Owner->Data->PosY;
+        return a.Owner->Data->PosX < b.Owner->Data->PosX;
+    });
+
+    auto findEntry = [&traitConfig](Candidate const& candidate)
+    {
+        return std::ranges::find_if(traitConfig.Entries, [&candidate](WorldPackets::Traits::TraitEntry const& e)
+        {
+            return e.TraitNodeID == int32(candidate.Owner->Data->ID) && e.TraitNodeEntryID == int32(candidate.Entry->Data->ID);
+        });
+    };
+
+    int32 placedRanks = 0;
+    for (bool placed = true; placed; )
+    {
+        placed = false;
+        for (Candidate const& candidate : candidates)
+        {
+            auto itr = findEntry(candidate);
+            bool const added = itr == traitConfig.Entries.end();
+            if (added)
+            {
+                WorldPackets::Traits::TraitEntry& entry = traitConfig.Entries.emplace_back();
+                entry.TraitNodeID = candidate.Owner->Data->ID;
+                entry.TraitNodeEntryID = candidate.Entry->Data->ID;
+                itr = std::prev(traitConfig.Entries.end());
+            }
+            if (itr->Rank + itr->GrantedRanks < candidate.Entry->Data->MaxRanks)
+            {
+                ++itr->Rank;
+                if (ValidateConfig(traitConfig, player) == LearnResult::Ok)
+                {
+                    ++placedRanks;
+                    placed = true;
+                    break; // restart from the top: the preferred tab's next rank may have just opened
+                }
+                --itr->Rank;
+            }
+            if (added && !itr->Rank && !itr->GrantedRanks)
+                traitConfig.Entries.erase(itr);
+        }
+    }
+    ValidateConfig(traitConfig, player);
+
+    summary = Trinity::StringFormat("{} tab(s), preferred {}; {} rank(s) added; talents per tab:", tabs.size(), preferredTab, placedRanks);
+    for (std::vector<int32> const& tab : tabs)
+    {
+        size_t nodes = std::ranges::count(candidates, tab, &Candidate::Tab);
+        int32 ranks = 0;
+        for (Candidate const& candidate : candidates)
+            if (candidate.Tab == tab)
+                if (auto itr = findEntry(candidate); itr != traitConfig.Entries.end())
+                    ranks += itr->Rank;
+        summary += Trinity::StringFormat(" [sub {} cur {}: {} nodes, {} ranks]", tab[0], tab.size() > 1 ? tab[1] : 0, nodes, ranks);
+    }
+    return placedRanks;
 }
 }
