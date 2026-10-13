@@ -1556,6 +1556,9 @@ bool World::SetInitialWorldSettings()
     sObjectMgr->LoadCreatureClassicLevels();
     sObjectMgr->LoadItemClassicBlock();
 
+    TC_LOG_INFO("server.loading", "Loading Shop products...");                 // must be after LoadItemTemplates
+    sObjectMgr->LoadShop();
+
     TC_LOG_INFO("server.loading", "Loading Equipment templates...");           // must be after LoadCreatureTemplates
     sObjectMgr->LoadEquipmentTemplates();
 

@@ -4516,6 +4516,35 @@ Classic.ClientMainGroupInsertIndex = 315
 
 Classic.OfficialFeatureFlags = 1
 
+#    Classic.Shop.Enabled
+#        Description: In-game Store: shop points, products from world.shop_* (.shop reload), the Gold Market, character
+#                     services, realm transfers and the character screen boost. 0 answers like the official server
+#                     (the store has nothing for sale).
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+
+Classic.Shop.Enabled = 0
+
+#    Classic.Shop.GoldMarketFee
+#        Description: Percent of the price in shop points kept back from the seller when a Gold Market listing sells.
+#        Default:     10
+
+Classic.Shop.GoldMarketFee = 10
+
+#    Classic.Shop.BoostGold
+#        Description: Gold mailed with a character boost (character screen boost button), with the world.shop_boost_item gear.
+#        Default:     250
+
+Classic.Shop.BoostGold = 250
+
+#    Classic.Shop.VasTest
+#        Description: Testing only: always send the Hardcore Character Transfer token to the character screen, even when
+#                     the realm's transfer rules (auth.character_transfer_rule) and the account's characters would not.
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+
+Classic.Shop.VasTest = 0
+
 #
 #    Discord.Channel.Enable
 #        Description: In-game chat channel of the Discord bot (contrib/discord_bot): players join it at login (unless they left

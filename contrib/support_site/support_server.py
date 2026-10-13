@@ -11,6 +11,9 @@ Usage:
                                                               issue a 1 hour test token and print the URL (desktop browser test)
 Account page (/account): Battle.net account, game accounts, characters on every realm, and the authenticator (TOTP, any
 authenticator app). bnetserver asks for its code at login; secured accounts get the +4 backpack slots in game.
+Shop (/shop): shop points, premium status, selling gold on the Gold Market (premium accounts; ".shop goldlist" through RA).
+Shop admin (/staff/shop, staff level >= shop_admin_level): products and tabs of the in-game Store, Gold Market listings,
+accounts (points, premium, Gold Market bans), the service fee. Product changes are pushed with ".shop reload" on every realm.
 
 Needs: pip install pymysql segno
 """
@@ -79,7 +82,118 @@ ICONS = {
     'undo': '<path d="M3 7v6h6"/><path d="M3.5 13A9 9 0 1 0 6 6.3L3 9"/>',
     'search': '<circle cx="11" cy="11" r="7"/><path d="m20.5 20.5-4.5-4.5"/>',
     'lock': '<rect x="4.5" y="10.5" width="15" height="10.5" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>',
+    'coin': '<circle cx="12" cy="12" r="9.5"/><path d="M14.8 8.6c-.6-.8-1.6-1.2-2.8-1.2-1.7 0-2.9.9-2.9 2.2 0 3 6 1.6 6 4.6 0 1.3-1.3 2.3-3.1 2.3-1.3 0-2.4-.5-3-1.4M12 5.5v2M12 16.5v2"/>',
+    'store': '<path d="M3.5 9 5 4h14l1.5 5"/><path d="M3.5 9a2.8 2.8 0 0 0 5.7 0 2.8 2.8 0 0 0 5.6 0 2.8 2.8 0 0 0 5.7 0"/><path d="M5 11.5V20h14v-8.5"/><path d="M10 20v-5h4v5"/>',
 }
+
+# ---------------------------------------------------------------- in-game Store (worldserver TokenHandler.cpp, tables world.shop_*,
+# auth.account_shop_points / shop_config, characters.shop_gold_listing; ".shop" console commands through RA)
+
+SHOP_ACTIONS = {1: 'Item', 2: 'Gold', 3: 'Spell / mount', 4: 'Service', 5: 'Profession', 6: 'Level', 7: 'Title', 8: 'Reputation', 9: 'Realm transfer', 10: 'Character boost token'}
+SHOP_ACTION_HINTS = {     # labels of the two values in the product editor ('' = not used)
+    1: ('Item ID', 'Amount'), 2: ('Gold', ''), 3: ('Spell ID (mount, pet, ...)', ''), 4: ('Service', ''),
+    5: ('Profession', 'Skill level'), 6: ('Level', ''), 7: ('Title ID', ''), 8: ('Faction ID', 'Standing (42000 = exalted)'), 9: ('', ''), 10: ('Boost type (6 = level 60)', ''),
+}
+SHOP_SERVICES = {1: 'Name change', 2: 'Appearance change', 3: 'Race change', 4: 'Faction change'}
+PROFESSIONS = {171: 'Alchemy', 164: 'Blacksmithing', 333: 'Enchanting', 202: 'Engineering', 182: 'Herbalism', 165: 'Leatherworking',
+               186: 'Mining', 393: 'Skinning', 197: 'Tailoring', 185: 'Cooking', 129: 'First Aid', 356: 'Fishing'}
+# "new product" presets of the GM shop page: (label, group hint, name, description, icon, [(action, param1, param2)])
+SHOP_PRESETS = {
+    'item': ('Item', 'Item', '', 134400, [(1, 0, 1)]),
+    'gold': ('Gold', '100 Gold', 'Gold for this character.', 133784, [(2, 1000000, 0)]),
+    'rename': ('Name change', 'Name Change', 'Change this character\'s name on the character screen.', 136243, [(4, 1, 0)]),
+    'customize': ('Appearance change', 'Appearance Change', 'Change this character\'s appearance on the character screen.', 136243, [(4, 2, 0)]),
+    'race': ('Race change', 'Race Change', 'Change this character\'s race on the character screen.', 136243, [(4, 3, 0)]),
+    'faction': ('Faction change', 'Faction Change', 'Change this character\'s faction on the character screen.', 136243, [(4, 4, 0)]),
+    'level': ('Level boost', 'Level 60', 'Raise this character to level 60. Visit your class trainer for new spells.', 136243, [(6, 60, 0)]),
+    'profession': ('Max profession', 'Max Alchemy', 'Alchemy at 300 with every recipe.', 136240, [(5, 171, 300)]),
+    'mount': ('Mount / spell', 'Mount', 'A mount for this character.', 132261, [(3, 0, 0)]),
+    'title': ('Title', 'Title', 'A title for this character.', 133784, [(7, 0, 0)]),
+    'reputation': ('Reputation', 'Exalted', 'Exalted with a faction.', 133784, [(8, 0, 42000)]),
+    'boost': ('Character boost', 'Level 60 Boost', 'A level 60 boost for any character, used on the character screen.', 136243, [(10, 6, 0)]),
+}
+GOLD_MARKET_MAX_GOLD = 200000
+GOLD_MARKET_MIN_PRICE = 2
+
+
+def shop_account(account_id):
+    row = query_one(auth_db(), 'SELECT Points, Premium, GoldMarketBanned, GoldMarketBanReason FROM account_shop_points WHERE AccountID = %s', (account_id,))
+    return row or {'Points': 0, 'Premium': 0, 'GoldMarketBanned': 0, 'GoldMarketBanReason': ''}
+
+
+def shop_setting(name, default):
+    row = query_one(auth_db(), 'SELECT Value FROM shop_config WHERE Name = %s', (name,))
+    return row['Value'] if row else default
+
+
+def gold_fee_percent():
+    try:
+        return max(0, min(100, int(shop_setting('GoldMarketFee', '10'))))
+    except ValueError:
+        return 10
+
+
+def gold_fee(price, percent):
+    """Same rule as the worldserver (TokenHandler.cpp): percent of the price, at least 1 point while the percent is not 0."""
+    fee = price * percent // 100
+    return max(fee, 1) if percent else 0
+
+
+def realm_online(realm_id):
+    """realmlist.flag 0x2 = offline (bnetserver keeps it up to date); a refused connection costs 2 s on Windows, so skip those."""
+    row = query_one(auth_db(), 'SELECT flag FROM realmlist WHERE id = %s', (realm_id,))
+    return bool(row) and not (int(row['flag']) & 2)
+
+
+def shop_reload_all():
+    """The worldservers cache the products: ".shop reload" on every running realm, all at once. Returns the realms that failed
+    (offline realms load the new products when they start)."""
+    failed = []
+
+    def reload(realm_id):
+        try:
+            if not ra_command(realm_id, 'shop reload').startswith('OK'):
+                failed.append(realm_name(realm_id))
+        except OSError:
+            failed.append(realm_name(realm_id))
+
+    threads = [threading.Thread(target=reload, args=(r,)) for r in CFG['realms'] if ra_available(r)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return failed
+
+
+def shop_action_text(action, p1, p2):
+    if action == 1:
+        return 'Item %d x%d' % (p1, p2)
+    if action == 2:
+        return '%s gold' % '{:,}'.format(p1 // 10000)
+    if action == 3:
+        return 'Spell %d' % p1
+    if action == 4:
+        return SHOP_SERVICES.get(p1, 'Service %d' % p1)
+    if action == 5:
+        return 'Max %s (%d)' % (PROFESSIONS.get(p1, 'skill %d' % p1), p2 or 300)
+    if action == 6:
+        return 'Level %d' % p1
+    if action == 7:
+        return 'Title %d' % p1
+    if action == 8:
+        return 'Reputation %d: %d' % (p1, p2)
+    if action == 9:
+        return 'Realm transfer'
+    if action == 10:
+        return 'Boost token (type %d)' % p1
+    return 'Action %d' % action
+
+
+def to_int(value, default=0):
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
 
 # ---------------------------------------------------------------- authenticator (TOTP, RFC 6238: 6 digits, 30 s, SHA-1, like the
 # Battle.net and Google authenticator apps); bnetserver checks the same secret with Trinity::Crypto::TOTP
@@ -257,10 +371,37 @@ def connect(database):
                            charset='utf8mb4', autocommit=True, cursorclass=pymysql.cursors.DictCursor)
 
 
+# open connections kept for reuse (a new connection costs ~35 ms on Windows; a page runs dozens of queries)
+DB_POOL = {}
+DB_POOL_LOCK = threading.Lock()
+
+
+def run_sql(database, sql, args, fetch):
+    with DB_POOL_LOCK:
+        conn = DB_POOL.setdefault(database, []).pop() if DB_POOL.get(database) else None
+    try:
+        if conn is None:
+            conn = connect(database)
+        else:
+            conn.ping(reconnect=True)
+        with conn.cursor() as cur:
+            cur.execute(sql, args)
+            result = cur.fetchall() if fetch else cur.lastrowid
+    except Exception:
+        if conn is not None:
+            conn.close()
+        raise
+    with DB_POOL_LOCK:
+        pool = DB_POOL.setdefault(database, [])
+        if len(pool) < 8:
+            pool.append(conn)
+        else:
+            conn.close()
+    return result
+
+
 def query(database, sql, args=()):
-    with connect(database) as conn, conn.cursor() as cur:
-        cur.execute(sql, args)
-        return cur.fetchall()
+    return run_sql(database, sql, args, True)
 
 
 def query_one(database, sql, args=()):
@@ -269,9 +410,7 @@ def query_one(database, sql, args=()):
 
 
 def execute(database, sql, args=()):
-    with connect(database) as conn, conn.cursor() as cur:
-        cur.execute(sql, args)
-        return cur.lastrowid
+    return run_sql(database, sql, args, False)
 
 
 def auth_db():
@@ -311,7 +450,7 @@ def staff_level(account_id, realm_id):
 def ra_available(realm_id):
     ra = CFG.get('ra') or {}
     rc = realm_cfg(realm_id) or {}
-    return bool(ra.get('user') and rc.get('ra_port'))
+    return bool(ra.get('user') and rc.get('ra_port')) and realm_online(realm_id)
 
 
 def ra_command(realm_id, command):
@@ -356,6 +495,7 @@ def start_session(token_row):
         'expires': token_row['expires'],
         'csrf': secrets.token_urlsafe(24),
         'staff': staff_level(token_row['accountId'], token_row['realmId']) >= int(CFG.get('staff_min_level', 2)),
+        'level': staff_level(token_row['accountId'], token_row['realmId']),
     }
     with SESSIONS_LOCK:
         now = time.time()
@@ -436,6 +576,10 @@ def faction(race):
 
 def alert(kind, text):
     return '<div class="alert %s">%s<div class="t">%s</div></div>' % (kind, icon('check' if kind == 'ok' else 'alert'), text)
+
+
+def kv_rows(rows):
+    return ''.join('<div class="kv"><span class="muted">%s</span><span>%s</span></div>' % (k, v) for k, v in rows)
 
 
 def panel(title, body, sub='', right='', flush=False, cls=''):
@@ -539,12 +683,15 @@ class Handler(BaseHTTPRequestHandler):
         if s:
             answered = query_one(auth_db(), "SELECT COUNT(*) AS n FROM support_tickets WHERE battlenetAccountId = %s AND status = 'answered'",
                                  (s['bnet'],))['n']
-            items = [('/', 'home', 'Home', 0), ('/account', 'user', 'Account', 0), ('/unstuck', 'pin', 'Unstuck', 0), ('/ticket/new?category=bug', 'bug', 'Report a bug', 0),
-                     ('/ticket/new', 'help', 'Get help', 0), ('/tickets', 'tickets', 'My tickets', answered), ('/faq', 'book', 'FAQ', 0)]
+            items = [('/', 'home', 'Home', 0), ('/account', 'user', 'Account', 0), ('/shop', 'coin', 'Shop', 0), ('/unstuck', 'pin', 'Unstuck', 0),
+                     ('/ticket/new?category=bug', 'bug', 'Report a bug', 0), ('/ticket/new', 'help', 'Get help', 0), ('/tickets', 'tickets', 'My tickets', answered),
+                     ('/faq', 'book', 'FAQ', 0)]
             if s['staff']:
                 waiting = query_one(auth_db(), "SELECT COUNT(*) AS n FROM support_tickets WHERE status = 'open'")['n']
                 items.append(None)
                 items.append(('/staff', 'shield', 'Staff', waiting))
+                if self.is_shop_admin():
+                    items.append(('/staff/shop', 'store', 'Shop admin', 0))
             items.append(None)
             char = self.current_character()
             foot = ('<div class="side-foot"><div class="row"><span class="dot"></span>%s</div>%s</div>') % (
@@ -558,7 +705,8 @@ class Handler(BaseHTTPRequestHandler):
                 links.append('<div class="sep"></div>')
                 continue
             href, ic, label, count = item
-            active = current == href or (href == '/tickets' and current == '/ticket') or (href == '/armory' and current.startswith('/armory'))
+            active = current == href or (href == '/tickets' and current == '/ticket') or (href == '/armory' and current.startswith('/armory')) or \
+                (href == '/staff/shop' and current.startswith('/staff/shop'))
             links.append('<a href="%s" class="%s" title="%s">%s<span class="lbl">%s</span>%s</a>' % (
                 esc(href), 'on' if active else '', esc(label), icon(ic), esc(label), '<span class="count">%d</span>' % count if count else ''))
         nav = '<nav class="nav">%s</nav>' % ''.join(links)
@@ -1240,6 +1388,603 @@ class Handler(BaseHTTPRequestHandler):
         self.page('Staff', panel('Tickets', self.ticket_rows(tickets, True), right=tabs, flush=True),
                   'Every ticket from every player. Oldest waiting first, so nobody is forgotten.')
 
+    # shop (player): points, premium, selling gold on the Gold Market
+
+    def shop_page(self, note=''):
+        s = self.session
+        acc = shop_account(s['account'])
+        percent = gold_fee_percent()
+        max_listings = int(CFG.get('gold_market_max_listings', 10))
+        cdb = characters_db(s['realm'])
+
+        status = kv_rows([
+            ('Shop points', '<span class="big-num">%s</span>' % '{:,}'.format(acc['Points'])),
+            ('Premium', '<span class="tag green">Premium</span>' if acc['Premium'] else '<span class="tag">Not premium</span>'),
+            ('Realm', esc(realm_name(s['realm']))),
+        ])
+        status += '<p class="muted small">Spend points in the in-game Shop (the Shop button in the main menu or on the character screen). %s</p>' % (
+            CFG.get('shop_points_text') or 'Points come from supporting the server.')
+
+        listings = query(cdb, 'SELECT l.ID, l.Gold, l.Price, UNIX_TIMESTAMP(l.Created) AS created, c.name FROM shop_gold_listing l '
+                              'LEFT JOIN characters c ON c.guid = l.SellerGuid WHERE l.SellerAccount = %s ORDER BY l.Gold DESC', (s['account'],))
+        if listings:
+            rows = ''.join(
+                '<tr><td class="num"><b>%s</b> gold</td><td class="num">%d</td><td class="num">%d</td><td>%s</td><td class="hide-sm">%s</td>'
+                '<td><form method="post" action="/shop/gold/cancel" class="inline">%s<input type="hidden" name="id" value="%d">'
+                '<button class="btn sm ghost" type="submit">Cancel</button></form></td></tr>' % (
+                    '{:,}'.format(l['Gold']), l['Price'], l['Price'] - gold_fee(l['Price'], percent), esc(l['name'] or '?'), esc(fmt_ago(l['created'])),
+                    self.csrf_field(), l['ID']) for l in listings)
+            mine = ('<div class="tbl-wrap"><table class="tbl"><thead><tr><th class="num">Gold</th><th class="num">Price</th><th class="num">You get</th>'
+                    '<th>Character</th><th class="hide-sm">Listed</th><th></th></tr></thead><tbody>%s</tbody></table></div>') % rows
+        else:
+            mine = '<div class="empty">You have no gold listed.</div>'
+
+        if acc['GoldMarketBanned']:
+            sell = alert('bad', 'You may not sell gold on the Gold Market.%s' % (
+                ' Reason: %s' % esc(acc['GoldMarketBanReason']) if acc['GoldMarketBanReason'] else ''))
+        elif not acc['Premium']:
+            sell = ('<p>Selling gold is for <b>premium</b> accounts. Your account becomes premium with any point purchase.</p>'
+                    '<p class="muted">Other players buy your gold in the in-game Shop with their points; you get the points, minus the service fee.</p>')
+        elif not ra_available(s['realm']):
+            sell = alert('info', 'Selling gold is not available on this realm right now.')
+        elif len(listings) >= max_listings:
+            sell = alert('info', 'You have %d listings, the most you can have at once. Cancel one or wait until one sells.' % len(listings))
+        else:
+            chars = query(cdb, 'SELECT guid, name, class, money FROM characters WHERE account = %s AND deleteInfos_Account IS NULL ORDER BY name',
+                          (s['account'],))
+            options = ''.join('<option value="%d"%s>%s (%s gold)</option>' % (
+                c['guid'], ' selected' if c['guid'] == s['char'] else '', esc(c['name']), '{:,}'.format(int(c['money']) // 10000)) for c in chars)
+            sell = (
+                '<form method="post" action="/shop/gold/list">%s'
+                '<div class="field"><span>Character (the gold is taken from it right away)</span><select name="guid" required>%s</select></div>'
+                '<div class="form-row"><div class="field"><span>Gold</span><input type="number" name="gold" min="1" max="%d" step="1" required></div>'
+                '<div class="field"><span>Price in points (at least %d)</span><input type="number" id="gm-price" name="price" min="%d" step="1" required></div></div>'
+                '<div class="calc">You get <b id="gm-net">-</b> when it sells. Service fee: %d%%, at least 1 point.</div>'
+                '<div class="actions"><button class="btn primary" type="submit">%sList gold</button>'
+                '<span class="muted small">Cancel any time: the gold comes back by mail.</span></div></form>'
+                '<script>(function(){var f=document.getElementById("gm-price"),o=document.getElementById("gm-net"),p=%d;'
+                'function u(){var v=parseInt(f.value,10)||0,fee=Math.floor(v*p/100);if(p&&fee<1)fee=1;'
+                'o.textContent=v>=%d?(v-fee)+" points (fee "+fee+")":"-";}f.addEventListener("input",u);u();})();</script>') % (
+                self.csrf_field(), options, GOLD_MARKET_MAX_GOLD, GOLD_MARKET_MIN_PRICE, GOLD_MARKET_MIN_PRICE, percent, icon('coin', 'i sm'),
+                percent, GOLD_MARKET_MIN_PRICE) if chars else '<div class="empty">No characters on this realm.</div>'
+
+        # realm transfers of this account (bought in the in-game Shop at the character screen)
+        realm_names = {r['id']: r['name'] for r in query(auth_db(), 'SELECT id, name FROM realmlist')}
+        transfers = query(auth_db(), 'SELECT Name, SourceRealm, TargetRealm, Status, Message, UNIX_TIMESTAMP(Created) AS created FROM character_transfer '
+                                     'WHERE AccountID = %s ORDER BY ID DESC LIMIT 20', (s['account'],))
+        if transfers:
+            trs = ''.join('<tr><td><b>%s</b></td><td>%s &rarr; %s</td><td>%s</td><td class="hide-sm">%s</td></tr>' % (
+                esc(t['Name']), esc(realm_names.get(t['SourceRealm'], t['SourceRealm'])), esc(realm_names.get(t['TargetRealm'], t['TargetRealm'])),
+                '<span class="tag green">Done</span>' if t['Status'] == 1 else
+                ('<span class="tag red">Failed</span> <span class="muted small">%s - a GM will help</span>' % esc(t['Message']) if t['Status'] == 2 else
+                 '<span class="tag amber">On its way</span>'), esc(fmt_ago(t['created']))) for t in transfers)
+            moves = ('<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Character</th><th>Realms</th><th>Status</th><th class="hide-sm">When</th></tr>'
+                     '</thead><tbody>%s</tbody></table></div>') % trs
+        else:
+            moves = '<div class="empty">No realm transfers. Buy one in the Shop on the character screen (Services).</div>'
+
+        body = note + '<div class="cols"><div class="stack">%s%s</div><div class="stack">%s%s</div></div>' % (
+            panel('Sell gold', sell, sub='Gold Market'),
+            panel('My listings', mine, sub='%d of %d' % (len(listings), max_listings), flush=True),
+            panel('Shop account', status, right='<span class="tag green">Premium</span>' if acc['Premium'] else ''),
+            panel('My realm transfers', moves, flush=True))
+        self.page('Shop', body, 'Your shop points, and gold you sell to other players for points.')
+
+    def shop_gold_list(self):
+        s = self.session
+        acc = shop_account(s['account'])
+        if not acc['Premium'] or acc['GoldMarketBanned'] or not ra_available(s['realm']):
+            return self.shop_page(alert('bad', 'Your account can not sell gold.'))
+        if not rate_ok(self.client_address[0], 'goldlist', 10):
+            return self.shop_page(alert('bad', 'Too many tries. Wait a minute and try again.'))
+        guid, gold, price = to_int(self.form.get('guid')), to_int(self.form.get('gold')), to_int(self.form.get('price'))
+        char = query_one(characters_db(s['realm']), 'SELECT guid, name, money FROM characters WHERE guid = %s AND account = %s AND deleteInfos_Account IS NULL',
+                         (guid, s['account']))
+        if not char:
+            return self.shop_page(alert('bad', 'Please pick one of your characters.'))
+        if not 1 <= gold <= GOLD_MARKET_MAX_GOLD:
+            return self.shop_page(alert('bad', 'The gold must be between 1 and %s.' % '{:,}'.format(GOLD_MARKET_MAX_GOLD)))
+        if price < GOLD_MARKET_MIN_PRICE:
+            return self.shop_page(alert('bad', 'The price must be at least %d points (the service fee is at least 1 point).' % GOLD_MARKET_MIN_PRICE))
+        count = query_one(characters_db(s['realm']), 'SELECT COUNT(*) AS n FROM shop_gold_listing WHERE SellerAccount = %s', (s['account'],))['n']
+        if count >= int(CFG.get('gold_market_max_listings', 10)):
+            return self.shop_page(alert('bad', 'You already have the most listings you can have at once.'))
+        out = ra_command(s['realm'], 'shop goldlist %s %d %d' % (char['name'], gold, price))
+        log('gold market list', char['name'], gold, price, '->', out)
+        if out.startswith('OK'):
+            return self.shop_page(alert('ok', '%s gold of %s is on the Gold Market for %d points.' % ('{:,}'.format(gold), esc(char['name']), price)))
+        self.shop_page(alert('bad', 'That did not work: %s.' % esc(out.replace('ERROR', '').strip() or 'unknown error')))
+
+    def shop_gold_cancel(self):
+        s = self.session
+        listing = query_one(characters_db(s['realm']), 'SELECT ID, Gold FROM shop_gold_listing WHERE ID = %s AND SellerAccount = %s',
+                            (to_int(self.form.get('id')), s['account']))
+        if not listing or not ra_available(s['realm']):
+            return self.shop_page(alert('bad', 'That listing is gone (sold already?).'))
+        out = ra_command(s['realm'], 'shop goldcancel %d' % listing['ID'])
+        log('gold market cancel', listing['ID'], '->', out)
+        if out.startswith('OK'):
+            return self.shop_page(alert('ok', 'Listing cancelled. %s gold was sent back to the character by mail.' % '{:,}'.format(listing['Gold'])))
+        self.shop_page(alert('bad', 'That did not work: %s.' % esc(out.replace('ERROR', '').strip() or 'unknown error')))
+
+    # shop admin (GM): products, tabs, Gold Market, accounts (points, premium, bans), settings
+
+    def is_shop_admin(self):
+        s = self.session
+        return bool(s and s['staff'] and s.get('level', 0) >= int(CFG.get('shop_admin_level', 3)))
+
+    def shop_admin_page(self, tab, body, note=''):
+        tabs = (('products', 'Products'), ('market', 'Gold Market'), ('transfers', 'Transfers'), ('accounts', 'Accounts'), ('settings', 'Settings'))
+        nav = '<div class="seg">%s</div>' % ''.join('<a href="/staff/shop?tab=%s" class="%s">%s</a>' % (k, 'on' if k == tab else '', l) for k, l in tabs)
+        self.page('Shop admin', note + '<div class="actions" style="margin:0 0 16px">%s</div>' % nav + body,
+                  'Products of the in-game Shop, the Gold Market and shop accounts. Changes to products reach the game at once.')
+
+    def staff_shop(self, note=''):
+        if not self.is_shop_admin():
+            return self.page('Not found', '<p class="muted">That page does not exist.</p>', status=404)
+        tab = self.query.get('tab', 'products')
+        if tab == 'market':
+            return self.shop_admin_market(note)
+        if tab == 'accounts':
+            return self.shop_admin_accounts(note)
+        if tab == 'settings':
+            return self.shop_admin_settings(note)
+        if tab == 'transfers':
+            return self.shop_admin_transfers(note)
+        return self.shop_admin_products(note)
+
+    # realm transfers (worldserver TokenHandler.cpp: auth.character_transfer written by the source realm, loaded by the target realm
+    # within a minute; auth.character_transfer_rule = allowed source -> target pairs)
+
+    def shop_admin_transfers(self, note=''):
+        realms = query(auth_db(), 'SELECT id, name, flag FROM realmlist ORDER BY id')
+        names = {r['id']: r['name'] for r in realms}
+        rules = {(r['SourceRealm'], r['TargetRealm']): r['DeadOnly'] for r in query(auth_db(), 'SELECT * FROM character_transfer_rule')}
+
+        head = ''.join('<th class="num">%s</th>' % esc(r['name']) for r in realms)
+        rows = ''
+        for s in realms:
+            cells = ''
+            for t in realms:
+                if s['id'] == t['id']:
+                    cells += '<td class="num muted">-</td>'
+                    continue
+                key = '%d_%d' % (s['id'], t['id'])
+                allowed = (s['id'], t['id']) in rules
+                cells += ('<td class="num"><label class="pick" title="Allowed"><input type="checkbox" name="allow_%s" value="1"%s> Allow</label><br>'
+                          '<label class="pick small" title="Only characters that died"><input type="checkbox" name="dead_%s" value="1"%s> Dead only</label></td>') % (
+                    key, ' checked' if allowed else '', key, ' checked' if rules.get((s['id'], t['id'])) else '')
+            rows += '<tr><td><b>%s</b></td>%s</tr>' % (esc(s['name']), cells)
+        grid = ('<form method="post" action="/staff/shop/transfers/rules">%s<div class="tbl-wrap"><table class="tbl"><thead><tr><th>From \\ To</th>%s</tr>'
+                '</thead><tbody>%s</tbody></table></div><div class="panel-b"><p class="muted small">Only ticked transfers are possible. "Dead only": the '
+                'character must have died (released ghost, or lying dead) - for Hardcore.</p><div class="actions"><button class="btn primary" type="submit">'
+                'Save rules</button></div></div></form>') % (self.csrf_field(), head, rows)
+
+        status = self.query.get('status', '')
+        where, args = ('WHERE Status = %s', (int(status),)) if status in ('0', '1', '2') else ('', ())
+        transfers = query(auth_db(), 'SELECT ID, AccountID, SourceRealm, TargetRealm, Name, Status, Message, UNIX_TIMESTAMP(Created) AS created, '
+                                     'UNIX_TIMESTAMP(Finished) AS finished FROM character_transfer ' + where + ' ORDER BY ID DESC LIMIT 200', args)
+        counts = {r['Status']: r['n'] for r in query(auth_db(), 'SELECT Status, COUNT(*) AS n FROM character_transfer GROUP BY Status')}
+        filters = '<div class="seg">%s</div>' % ''.join('<a href="/staff/shop?tab=transfers&status=%s" class="%s">%s<span class="n">%d</span></a>' % (
+            k, 'on' if k == status else '', l, sum(counts.values()) if k == '' else counts.get(int(k), 0))
+            for k, l in (('', 'All'), ('0', 'Waiting'), ('2', 'Failed'), ('1', 'Done')))
+        trs = ''
+        for t in transfers:
+            if t['Status'] == 1:
+                state = '<span class="tag green">Done</span>'
+            elif t['Status'] == 2:
+                state = '<span class="tag red">Failed</span> <span class="muted small">%s</span>' % esc(t['Message'])
+            else:
+                state = '<span class="tag amber">Waiting</span>'
+            actions = ''
+            if t['Status'] in (0, 2):
+                actions = ('<form method="post" action="/staff/shop/transfers/action" class="inline">%s<input type="hidden" name="id" value="%d">'
+                           '%s<button class="btn sm ghost" type="submit" name="do" value="return" title="Load the character back on the realm it came from">'
+                           'Return</button></form>') % (
+                    self.csrf_field(), t['ID'], '<button class="btn sm" type="submit" name="do" value="retry">Retry</button> ' if t['Status'] == 2 else '')
+            trs += '<tr><td class="num">%d</td><td><b>%s</b></td><td><a href="/staff/shop?tab=accounts&id=%d">%s</a></td><td>%s &rarr; %s</td>' \
+                   '<td>%s</td><td class="hide-sm">%s</td><td>%s</td></tr>' % (
+                       t['ID'], esc(t['Name']), t['AccountID'], esc(self.account_label(t['AccountID'])), esc(names.get(t['SourceRealm'], t['SourceRealm'])),
+                       esc(names.get(t['TargetRealm'], t['TargetRealm'])), state, esc(fmt_ago(t['created'])), actions)
+        history = ('<div class="tbl-wrap"><table class="tbl"><thead><tr><th class="num">#</th><th>Character</th><th>Account</th><th>Realms</th>'
+                   '<th>Status</th><th class="hide-sm">When</th><th></th></tr></thead><tbody>%s</tbody></table></div>') % trs \
+            if transfers else '<div class="empty">No transfers.</div>'
+        body = '<div class="stack">%s%s</div>' % (
+            panel('Allowed transfers', grid, flush=True),
+            panel('Transfers', history, sub='The target realm loads a character within a minute of the purchase (or when it starts).',
+                  right=filters, flush=True))
+        self.shop_admin_page('transfers', body, note)
+
+    def staff_shop_transfer_rules(self):
+        if not self.is_shop_admin():
+            return self.redirect('/')
+        realms = [r['id'] for r in query(auth_db(), 'SELECT id FROM realmlist')]
+        execute(auth_db(), 'DELETE FROM character_transfer_rule')
+        saved = 0
+        for s in realms:
+            for t in realms:
+                if s != t and self.form.get('allow_%d_%d' % (s, t)):
+                    execute(auth_db(), 'INSERT INTO character_transfer_rule (SourceRealm, TargetRealm, DeadOnly) VALUES (%s, %s, %s)',
+                            (s, t, 1 if self.form.get('dead_%d_%d' % (s, t)) else 0))
+                    saved += 1
+        log('shop admin: transfer rules saved,', saved, 'allowed, by account', self.session['account'])
+        self.query = {'tab': 'transfers'}
+        self.staff_shop(alert('ok', 'Transfer rules saved: %d allowed.' % saved))
+
+    def staff_shop_transfer_action(self):
+        if not self.is_shop_admin():
+            return self.redirect('/')
+        tid, action = to_int(self.form.get('id')), self.form.get('do')
+        transfer = query_one(auth_db(), 'SELECT ID, Name, SourceRealm, TargetRealm, Status FROM character_transfer WHERE ID = %s', (tid,))
+        self.query = {'tab': 'transfers'}
+        if not transfer or transfer['Status'] == 1:
+            return self.staff_shop(alert('bad', 'That transfer is finished already.'))
+        if action == 'retry':
+            execute(auth_db(), "UPDATE character_transfer SET Status = 0, Message = '', Finished = NULL WHERE ID = %s AND Status = 2", (tid,))
+            text = '%s will be loaded on the target realm again (within a minute while it runs).' % esc(transfer['Name'])
+        else:
+            # the source realm loads its own dump back like any arriving transfer
+            execute(auth_db(), "UPDATE character_transfer SET TargetRealm = SourceRealm, Status = 0, Message = 'returned by a GM', Finished = NULL "
+                               "WHERE ID = %s AND Status <> 1", (tid,))
+            text = '%s goes back to %s (within a minute while that realm runs).' % (esc(transfer['Name']), esc(realm_name(transfer['SourceRealm'])))
+        log('shop admin: transfer', tid, action, 'by account', self.session['account'])
+        self.staff_shop(alert('ok', text))
+
+    def shop_admin_products(self, note=''):
+        wdb = world_db()
+        groups = query(wdb, 'SELECT ID, Name, IconFileDataID, Ordering FROM shop_group ORDER BY Ordering, ID')
+        products = query(wdb, 'SELECT ID, GroupID, Name, Price, NormalPrice, Enabled FROM shop_product ORDER BY GroupID, Ordering, ID')
+        actions = {}
+        for a in query(wdb, 'SELECT ProductID, Action, Param1, Param2 FROM shop_product_action ORDER BY ProductID, `Index`'):
+            actions.setdefault(a['ProductID'], []).append(shop_action_text(a['Action'], a['Param1'], a['Param2']))
+        group_names = {g['ID']: g['Name'] for g in groups}
+
+        rows = ''.join(
+            '<tr><td>%s</td><td><a href="/staff/shop/product?id=%d"><b>%s</b></a></td><td class="num">%d%s</td><td class="hide-sm">%s</td><td>%s</td></tr>' % (
+                esc(group_names.get(p['GroupID'], '?')), p['ID'], esc(p['Name']), p['Price'],
+                ' <span class="muted"><s>%d</s></span>' % p['NormalPrice'] if p['NormalPrice'] > p['Price'] else '',
+                esc(', '.join(actions.get(p['ID'], [])) or 'nothing'),
+                '<span class="tag green">On sale</span>' if p['Enabled'] else '<span class="tag">Off</span>') for p in products)
+        table = ('<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Tab</th><th>Product</th><th class="num">Points</th><th class="hide-sm">Gives</th>'
+                 '<th>Status</th></tr></thead><tbody>%s</tbody></table></div>') % rows if products else '<div class="empty">No products yet.</div>'
+        presets = ''.join('<option value="%s">%s</option>' % (k, esc(v[0])) for k, v in SHOP_PRESETS.items())
+        new_form = ('<form method="get" action="/staff/shop/product" class="actions" style="margin:0"><select name="preset" style="width:auto">%s</select>'
+                    '<button class="btn primary" type="submit">%sNew product</button></form>') % (presets, icon('plus', 'i sm'))
+
+        group_rows = ''.join(
+            '<tr><td colspan="4"><form method="post" action="/staff/shop/group/save" class="form-row" style="align-items:end">%s'
+            '<input type="hidden" name="id" value="%d"><div class="field"><span>Name</span><input type="text" name="name" value="%s" maxlength="255" required></div>'
+            '<div class="field"><span>Icon (FileDataID)</span><input type="number" name="icon" value="%d"></div>'
+            '<div class="field"><span>Order</span><input type="number" name="ordering" value="%d"></div>'
+            '<div class="field"><span>&nbsp;</span><div class="actions" style="margin:0"><button class="btn sm" type="submit">Save</button>'
+            '<a class="btn sm danger" href="/staff/shop/confirm?what=group&id=%d">Delete</a></div></div></form></td></tr>' % (
+                self.csrf_field(), g['ID'], esc(g['Name']), g['IconFileDataID'], g['Ordering'], g['ID']) for g in groups)
+        add_group = ('<tr><td colspan="4"><form method="post" action="/staff/shop/group/save" class="form-row" style="align-items:end">%s'
+                     '<input type="hidden" name="id" value="0"><div class="field"><span>New tab</span><input type="text" name="name" maxlength="255" required></div>'
+                     '<div class="field"><span>Icon (FileDataID)</span><input type="number" name="icon" value="134400"></div>'
+                     '<div class="field"><span>Order</span><input type="number" name="ordering" value="%d"></div>'
+                     '<div class="field"><span>&nbsp;</span><div class="actions" style="margin:0"><button class="btn sm primary" type="submit">Add tab</button></div></div>'
+                     '</form></td></tr>') % (self.csrf_field(), len(groups) + 1)
+        groups_table = '<div class="tbl-wrap"><table class="tbl"><tbody>%s%s</tbody></table></div>' % (group_rows, add_group)
+
+        body = '<div class="stack">%s%s</div>' % (
+            panel('Products', table, sub='%d' % len(products), right=new_form, flush=True),
+            panel('Tabs', groups_table, sub='The "Gold Market" tab is added by the server when gold is listed.', flush=True))
+        self.shop_admin_page('products', body, note)
+
+    def staff_shop_product(self, note='', values=None):
+        if not self.is_shop_admin():
+            return self.page('Not found', '<p class="muted">That page does not exist.</p>', status=404)
+        wdb = world_db()
+        groups = query(wdb, 'SELECT ID, Name FROM shop_group ORDER BY Ordering, ID')
+        if not groups:
+            return self.staff_shop(alert('bad', 'Add a tab first.'))
+        pid = to_int(self.query.get('id'))
+        if values is None:
+            product = query_one(wdb, 'SELECT * FROM shop_product WHERE ID = %s', (pid,)) if pid else None
+            if product:
+                acts = [(a['Action'], a['Param1'], a['Param2']) for a in
+                        query(wdb, 'SELECT Action, Param1, Param2 FROM shop_product_action WHERE ProductID = %s ORDER BY `Index`', (pid,))]
+                values = dict(product, actions=acts)
+            else:
+                label, name, desc, ic, acts = SHOP_PRESETS.get(self.query.get('preset', 'item'), SHOP_PRESETS['item'])
+                values = {'ID': 0, 'GroupID': groups[0]['ID'], 'Name': name, 'Description': desc, 'IconFileDataID': ic, 'Price': 10, 'NormalPrice': 0,
+                          'Ordering': 0, 'Enabled': 1, 'actions': acts}
+        acts = list(values['actions']) + [(0, 0, 0)] * (6 - len(values['actions']))
+
+        group_opts = ''.join('<option value="%d"%s>%s</option>' % (g['ID'], ' selected' if g['ID'] == values['GroupID'] else '', esc(g['Name'])) for g in groups)
+
+        def options(items, current):
+            return ''.join('<option value="%d"%s>%s</option>' % (k, ' selected' if k == current else '', esc(v)) for k, v in items)
+
+        # one row per thing the product gives; the labels and controls follow the type (script below), every control is in the form
+        act_rows = ''
+        for i, (a, p1, p2) in enumerate(acts[:max(6, len(acts))]):
+            label1, label2 = SHOP_ACTION_HINTS.get(a, ('', ''))
+            act_rows += (
+                '<tr class="act-row"><td><select name="a%d" class="act-type">%s</select></td>'
+                '<td><span class="cap c1">%s</span><input type="number" name="p1_%d" class="v-num" value="%d">'
+                '<select name="svc_%d" class="v-svc">%s</select><select name="prof_%d" class="v-prof">%s</select></td>'
+                '<td><span class="cap c2">%s</span><input type="number" name="p2_%d" class="v2" value="%d"></td></tr>') % (
+                i, '<option value="0">Nothing</option>' + options(SHOP_ACTIONS.items(), a), esc(label1), i, p1 // 10000 if a == 2 else p1,
+                i, options(SHOP_SERVICES.items(), p1), i, options(PROFESSIONS.items(), p1), esc(label2), i, p2 or (300 if a == 5 else 0))
+        script = ('<script>(function(){var L=%s;function u(r){var a=r.querySelector(".act-type").value,l=L[a]||["",""];'
+                  'r.querySelector(".c1").textContent=l[0];r.querySelector(".c2").textContent=l[1];'
+                  'r.querySelector(".v-num").style.display=(a=="0"||a=="4"||a=="5"||a=="9")?"none":"";'
+                  'r.querySelector(".v-svc").style.display=a=="4"?"":"none";r.querySelector(".v-prof").style.display=a=="5"?"":"none";'
+                  'r.querySelector(".v2").style.display=l[1]?"":"none";}'
+                  'var rows=document.querySelectorAll(".act-row");for(var i=0;i<rows.length;++i){(function(r){u(r);'
+                  'r.querySelector(".act-type").addEventListener("change",function(){u(r);});})(rows[i]);}})();</script>') % json.dumps(
+            {str(k): list(v) for k, v in SHOP_ACTION_HINTS.items()})
+        hints = ''.join('<li><b>%s</b>: %s</li>' % (SHOP_ACTIONS[k], esc(' / '.join(h for h in v if h))) for k, v in SHOP_ACTION_HINTS.items())
+
+        form = (
+            '<form method="post" action="/staff/shop/product/save">%s<input type="hidden" name="id" value="%d">'
+            '<div class="form-row"><div class="field"><span>Name</span><input type="text" name="name" value="%s" maxlength="255" required></div>'
+            '<div class="field"><span>Tab</span><select name="group">%s</select></div></div>'
+            '<div class="field"><span>Description</span><textarea name="description" maxlength="8000" style="min-height:70px">%s</textarea></div>'
+            '<div class="form-row"><div class="field"><span>Price (points)</span><input type="number" name="price" min="0" value="%d" required></div>'
+            '<div class="field"><span>Was (crossed out, 0 = none)</span><input type="number" name="normal" min="0" value="%d"></div>'
+            '<div class="field"><span>Icon (FileDataID)</span><input type="number" name="icon" value="%d"></div>'
+            '<div class="field"><span>Order in the tab</span><input type="number" name="ordering" value="%d"></div></div>'
+            '<div class="field"><label class="pick"><input type="checkbox" name="enabled" value="1"%s> On sale</label></div>'
+            '<div class="tbl-wrap"><table class="tbl acts"><thead><tr><th>Gives</th><th>Value</th><th></th></tr></thead>'
+            '<tbody>%s</tbody></table></div>'
+            '<div class="actions"><button class="btn primary" type="submit">Save</button><a class="btn ghost" href="/staff/shop">Back</a>%s</div></form>%s') % (
+            self.csrf_field(), values['ID'], esc(values['Name']), group_opts, esc(values['Description']), values['Price'], values['NormalPrice'],
+            values['IconFileDataID'], values['Ordering'], ' checked' if values['Enabled'] else '', act_rows,
+            '<a class="btn danger" href="/staff/shop/confirm?what=product&id=%d">Delete</a>' % values['ID'] if values['ID'] else '', script)
+        help_text = ('<ul class="perks">%s</ul><p class="muted small">Anything but items is applied to the character the player is logged in with, '
+                     'so those products can only be bought in game. Items are mailed. A profession is only raised when the character already has it.</p>'
+                     '<p class="muted small">Icons are FileDataIDs (wowhead shows them on an icon\'s page).</p>') % hints
+        self.page('Edit product' if values['ID'] else 'New product', note + '<div class="cols"><div class="stack">%s</div><div class="stack">%s</div></div>' % (
+            panel('Product', form), panel('What a product can give', help_text)), section='Support')
+
+    def staff_shop_confirm(self):
+        """Are you sure? page before deleting a product or a tab (the in-game browser has no confirm dialogs)."""
+        if not self.is_shop_admin():
+            return self.page('Not found', '<p class="muted">That page does not exist.</p>', status=404)
+        what, oid = self.query.get('what'), to_int(self.query.get('id'))
+        table, action, back = {'product': ('shop_product', '/staff/shop/product/delete', '/staff/shop/product?id=%d' % oid),
+                               'group': ('shop_group', '/staff/shop/group/delete', '/staff/shop')}.get(what, (None, None, None))
+        row = query_one(world_db(), 'SELECT Name FROM %s WHERE ID = %%s' % table, (oid,)) if table else None
+        if not row:
+            return self.staff_shop(alert('bad', 'That is gone already.'))
+        body = ('<p>Delete the %s <b>%s</b>? This can not be undone.%s</p><form method="post" action="%s">%s<input type="hidden" name="id" value="%d">'
+                '<div class="actions"><button class="btn danger" type="submit">Yes, delete</button><a class="btn ghost" href="%s">Go back</a></div></form>') % (
+            'product' if what == 'product' else 'tab', esc(row['Name']),
+            ' Players who bought it keep what they got.' if what == 'product' else '', action, self.csrf_field(), oid, back)
+        self.page('Delete', panel('Are you sure?', body))
+
+    def staff_shop_product_save(self):
+        if not self.is_shop_admin():
+            return self.redirect('/')
+        f = self.form
+        values = {'ID': to_int(f.get('id')), 'GroupID': to_int(f.get('group')), 'Name': f.get('name', '').strip()[:255],
+                  'Description': f.get('description', '').strip()[:8000], 'IconFileDataID': to_int(f.get('icon')), 'Price': max(0, to_int(f.get('price'))),
+                  'NormalPrice': max(0, to_int(f.get('normal'))), 'Ordering': to_int(f.get('ordering')), 'Enabled': 1 if f.get('enabled') else 0,
+                  'actions': []}
+        for i in range(12):
+            a = to_int(f.get('a%d' % i))
+            if a not in SHOP_ACTIONS:
+                continue
+            p1, p2 = to_int(f.get('p1_%d' % i)), to_int(f.get('p2_%d' % i))
+            if a == 2:
+                p1 *= 10000                     # entered in gold, stored in copper
+            elif a == 4:
+                p1 = to_int(f.get('svc_%d' % i))
+            elif a == 5:
+                p1, p2 = to_int(f.get('prof_%d' % i)), p2 or 300
+            if not SHOP_ACTION_HINTS[a][1]:
+                p2 = 0
+            if a == 1:
+                p2 = max(1, p2)
+            values['actions'].append((a, p1, p2))
+        wdb = world_db()
+        if not values['Name']:
+            return self.staff_shop_product(alert('bad', 'The product needs a name.'), values)
+        if not query_one(wdb, 'SELECT ID FROM shop_group WHERE ID = %s', (values['GroupID'],)):
+            return self.staff_shop_product(alert('bad', 'Pick a tab.'), values)
+        if not values['actions']:
+            return self.staff_shop_product(alert('bad', 'The product must give something.'), values)
+        # actions are checked by the worldserver when it loads them (invalid ones are logged and skipped)
+        pid = values['ID']
+        if not pid:
+            pid = int(query_one(wdb, 'SELECT COALESCE(MAX(ID), 0) + 1 AS id FROM shop_product')['id'])
+        execute(wdb, 'REPLACE INTO shop_product (ID, GroupID, Name, Description, IconFileDataID, Price, NormalPrice, Ordering, Enabled) '
+                     'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)',
+                (pid, values['GroupID'], values['Name'], values['Description'], values['IconFileDataID'], values['Price'], values['NormalPrice'],
+                 values['Ordering'], values['Enabled']))
+        execute(wdb, 'DELETE FROM shop_product_action WHERE ProductID = %s', (pid,))
+        for i, (a, p1, p2) in enumerate(values['actions']):
+            execute(wdb, 'INSERT INTO shop_product_action (ProductID, `Index`, Action, Param1, Param2) VALUES (%s, %s, %s, %s, %s)', (pid, i, a, p1, p2))
+        log('shop admin: product', pid, values['Name'], 'saved by account', self.session['account'])
+        self.after_shop_change('Saved "%s".' % esc(values['Name']))
+
+    def after_shop_change(self, text):
+        failed = shop_reload_all()
+        note = alert('ok', text + ' It is in the game now.') if not failed else alert(
+            'info', text + ' Not reloaded on: %s (no console access); it shows there after a restart.' % esc(', '.join(failed)))
+        self.query = {'tab': 'products'}
+        self.staff_shop(note)
+
+    def staff_shop_product_delete(self):
+        if not self.is_shop_admin():
+            return self.redirect('/')
+        pid = to_int(self.form.get('id'))
+        execute(world_db(), 'DELETE FROM shop_product_action WHERE ProductID = %s', (pid,))
+        execute(world_db(), 'DELETE FROM shop_product WHERE ID = %s', (pid,))
+        log('shop admin: product', pid, 'deleted by account', self.session['account'])
+        self.after_shop_change('Product deleted.')
+
+    def staff_shop_group_save(self):
+        if not self.is_shop_admin():
+            return self.redirect('/')
+        gid, name = to_int(self.form.get('id')), self.form.get('name', '').strip()[:255]
+        if not name:
+            return self.staff_shop(alert('bad', 'The tab needs a name.'))
+        if not gid:
+            gid = int(query_one(world_db(), 'SELECT COALESCE(MAX(ID), 0) + 1 AS id FROM shop_group')['id'])
+        execute(world_db(), 'REPLACE INTO shop_group (ID, Name, IconFileDataID, Ordering) VALUES (%s, %s, %s, %s)',
+                (gid, name, to_int(self.form.get('icon')), to_int(self.form.get('ordering'))))
+        self.after_shop_change('Tab "%s" saved.' % esc(name))
+
+    def staff_shop_group_delete(self):
+        if not self.is_shop_admin():
+            return self.redirect('/')
+        gid = to_int(self.form.get('id'))
+        if query_one(world_db(), 'SELECT COUNT(*) AS n FROM shop_product WHERE GroupID = %s', (gid,))['n']:
+            return self.staff_shop(alert('bad', 'That tab still has products. Move or delete them first.'))
+        execute(world_db(), 'DELETE FROM shop_group WHERE ID = %s', (gid,))
+        self.after_shop_change('Tab deleted.')
+
+    def account_label(self, account_id):
+        row = query_one(auth_db(), 'SELECT a.username, b.email FROM account a LEFT JOIN battlenet_accounts b ON b.id = a.battlenet_account WHERE a.id = %s',
+                        (account_id,))
+        if not row:
+            return 'account %d' % account_id
+        return '%s (#%d)' % (row['email'] or row['username'], account_id)
+
+    def shop_admin_market(self, note=''):
+        percent = gold_fee_percent()
+        search = self.query.get('q', '').strip()
+        rows = []
+        for realm_id in CFG['realms']:
+            try:
+                for l in query(characters_db(realm_id), 'SELECT l.ID, l.SellerAccount, l.Gold, l.Price, UNIX_TIMESTAMP(l.Created) AS created, c.name '
+                                                        'FROM shop_gold_listing l LEFT JOIN characters c ON c.guid = l.SellerGuid ORDER BY l.Gold DESC'):
+                    l['realm'] = realm_id
+                    rows.append(l)
+            except pymysql.MySQLError:
+                continue
+        labels = {a: self.account_label(a) for a in {r['SellerAccount'] for r in rows} if a}
+        if search:
+            rows = [r for r in rows if search.lower() in (r['name'] or '').lower() or search.lower() in labels.get(r['SellerAccount'], '').lower()
+                    or search == str(r['SellerAccount'])]
+        total_gold = sum(r['Gold'] for r in rows)
+        trs = ''.join(
+            '<tr><td class="num"><b>%s</b></td><td class="num">%d</td><td>%s</td><td>%s</td><td class="hide-sm">%s</td><td class="hide-sm">%s</td>'
+            '<td><form method="post" action="/staff/shop/listing/remove" class="inline">%s<input type="hidden" name="realm" value="%s">'
+            '<input type="hidden" name="id" value="%d"><button class="btn sm danger" type="submit" title="Gold is mailed back to the seller">Remove</button></form></td></tr>' % (
+                '{:,}'.format(r['Gold']), r['Price'], esc(r['name'] or 'server'),
+                '<a href="/staff/shop?tab=accounts&id=%d">%s</a>' % (r['SellerAccount'], esc(labels[r['SellerAccount']])) if r['SellerAccount'] else
+                '<span class="muted">server</span>', esc(realm_name(r['realm'])), esc(fmt_ago(r['created'])), self.csrf_field(), esc(r['realm']), r['ID'])
+            for r in rows)
+        table = ('<div class="tbl-wrap"><table class="tbl"><thead><tr><th class="num">Gold</th><th class="num">Points</th><th>Character</th><th>Account</th>'
+                 '<th class="hide-sm">Realm</th><th class="hide-sm">Listed</th><th></th></tr></thead><tbody>%s</tbody></table></div>') % trs \
+            if rows else '<div class="empty">No gold listed.</div>'
+        find = ('<form method="get" action="/staff/shop" class="actions" style="margin:0"><input type="hidden" name="tab" value="market">'
+                '<input type="search" name="q" value="%s" placeholder="Character, account or e-mail" style="width:220px"><button class="btn sm" type="submit">Find</button></form>') % esc(search)
+        body = panel('Listings', table, sub='%d listings, %s gold, fee %d%%' % (len(rows), '{:,}'.format(total_gold), percent), right=find, flush=True)
+        self.shop_admin_page('market', body, note)
+
+    def staff_shop_listing_remove(self):
+        if not self.is_shop_admin():
+            return self.redirect('/')
+        realm_id, lid = self.form.get('realm', ''), to_int(self.form.get('id'))
+        if not realm_cfg(realm_id) or not ra_available(realm_id):
+            return self.staff_shop(alert('bad', 'No console access to that realm.'))
+        out = ra_command(realm_id, 'shop goldcancel %d' % lid)
+        log('shop admin: listing', realm_id, lid, 'removed by account', self.session['account'], '->', out)
+        self.query['tab'] = 'market'
+        self.staff_shop(alert('ok', 'Listing removed, the gold was mailed back to the seller.') if out.startswith('OK') else
+                        alert('bad', 'That did not work: %s.' % esc(out)))
+
+    def shop_admin_accounts(self, note=''):
+        aid = to_int(self.query.get('id'))
+        search = self.query.get('q', '').strip()
+        if aid:
+            if not query_one(auth_db(), 'SELECT id FROM account WHERE id = %s', (aid,)):
+                return self.shop_admin_page('accounts', alert('bad', 'No such account.'), note)
+            acc = shop_account(aid)
+            listings = 0
+            for realm_id in CFG['realms']:
+                try:
+                    listings += query_one(characters_db(realm_id), 'SELECT COUNT(*) AS n FROM shop_gold_listing WHERE SellerAccount = %s', (aid,))['n']
+                except pymysql.MySQLError:
+                    pass
+            bought = query(auth_db(), 'SELECT ProductID, Price, UNIX_TIMESTAMP(Time) AS t FROM shop_purchase_log WHERE AccountID = %s ORDER BY ID DESC LIMIT 15', (aid,))
+            log_rows = ''.join('<tr><td>%d</td><td class="num">%d</td><td>%s</td></tr>' % (b['ProductID'], b['Price'], esc(fmt_ago(b['t']))) for b in bought)
+            history = ('<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Product</th><th class="num">Points</th><th>When</th></tr></thead><tbody>%s</tbody>'
+                       '</table></div>') % log_rows if bought else '<div class="empty">No purchases.</div>'
+            form = (
+                '<form method="post" action="/staff/shop/account/save">%s<input type="hidden" name="id" value="%d">%s'
+                '<div class="form-row"><div class="field"><span>Add points (negative to take)</span><input type="number" name="delta" value="0"></div></div>'
+                '<div class="field"><label class="pick"><input type="checkbox" name="premium" value="1"%s> Premium (may sell gold)</label></div>'
+                '<div class="field"><label class="pick"><input type="checkbox" name="banned" value="1"%s> Banned from the Gold Market</label></div>'
+                '<div class="field"><span>Ban reason (shown to the player)</span><input type="text" name="reason" value="%s" maxlength="255"></div>'
+                '<div class="field"><label class="pick"><input type="checkbox" name="remove" value="1"> Remove all their listings now (gold is mailed back)</label></div>'
+                '<div class="actions"><button class="btn primary" type="submit">Save</button><a class="btn ghost" href="/staff/shop?tab=accounts">Back</a></div></form>') % (
+                self.csrf_field(), aid, kv_rows([('Points', '<span class="big-num">%s</span>' % '{:,}'.format(acc['Points'])),
+                                                 ('Gold listed', '%d listings' % listings)]),
+                ' checked' if acc['Premium'] else '', ' checked' if acc['GoldMarketBanned'] else '', esc(acc['GoldMarketBanReason']))
+            body = '<div class="cols"><div class="stack">%s</div><div class="stack">%s</div></div>' % (
+                panel(esc(self.account_label(aid)), form), panel('Recent purchases', history, flush=True))
+            return self.shop_admin_page('accounts', body, note)
+
+        if search:
+            like = '%' + search + '%'
+            found = query(auth_db(), 'SELECT a.id FROM account a LEFT JOIN battlenet_accounts b ON b.id = a.battlenet_account '
+                                     'WHERE a.id = %s OR a.username LIKE %s OR b.email LIKE %s ORDER BY a.id LIMIT 50', (to_int(search, -1), like, like))
+            title = 'Search: %s' % esc(search)
+        else:
+            found = query(auth_db(), 'SELECT AccountID AS id FROM account_shop_points WHERE Premium <> 0 OR GoldMarketBanned <> 0 OR Points <> 0 '
+                                     'ORDER BY AccountID LIMIT 200')
+            title = 'Accounts with points, premium or a ban'
+        trs = ''
+        for f in found:
+            acc = shop_account(f['id'])
+            trs += '<tr><td><a href="/staff/shop?tab=accounts&id=%d"><b>%s</b></a></td><td class="num">%s</td><td>%s%s</td></tr>' % (
+                f['id'], esc(self.account_label(f['id'])), '{:,}'.format(acc['Points']),
+                '<span class="tag green">Premium</span> ' if acc['Premium'] else '', '<span class="tag red">Banned</span>' if acc['GoldMarketBanned'] else '')
+        table = ('<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Account</th><th class="num">Points</th><th>Status</th></tr></thead><tbody>%s</tbody>'
+                 '</table></div>') % trs if found else '<div class="empty">Nothing found.</div>'
+        find = ('<form method="get" action="/staff/shop" class="actions" style="margin:0"><input type="hidden" name="tab" value="accounts">'
+                '<input type="search" name="q" value="%s" placeholder="Account id, name or e-mail" style="width:220px"><button class="btn sm" type="submit">Find</button></form>') % esc(search)
+        self.shop_admin_page('accounts', panel(title, table, right=find, flush=True), note)
+
+    def staff_shop_account_save(self):
+        if not self.is_shop_admin():
+            return self.redirect('/')
+        f = self.form
+        aid = to_int(f.get('id'))
+        if not query_one(auth_db(), 'SELECT id FROM account WHERE id = %s', (aid,)):
+            return self.staff_shop(alert('bad', 'No such account.'))
+        acc = shop_account(aid)
+        points = max(0, acc['Points'] + to_int(f.get('delta')))
+        execute(auth_db(), 'INSERT INTO account_shop_points (AccountID, Points, Premium, GoldMarketBanned, GoldMarketBanReason) VALUES (%s, %s, %s, %s, %s) '
+                           'ON DUPLICATE KEY UPDATE Points = VALUES(Points), Premium = VALUES(Premium), GoldMarketBanned = VALUES(GoldMarketBanned), '
+                           'GoldMarketBanReason = VALUES(GoldMarketBanReason)',
+                (aid, points, 1 if f.get('premium') else 0, 1 if f.get('banned') else 0, f.get('reason', '').strip()[:255]))
+        removed = 0
+        if f.get('remove'):
+            for realm_id in CFG['realms']:
+                if not ra_available(realm_id):
+                    continue
+                for l in query(characters_db(realm_id), 'SELECT ID FROM shop_gold_listing WHERE SellerAccount = %s', (aid,)):
+                    if ra_command(realm_id, 'shop goldcancel %d' % l['ID']).startswith('OK'):
+                        removed += 1
+        log('shop admin: account', aid, 'points', points, 'premium', bool(f.get('premium')), 'banned', bool(f.get('banned')), 'removed', removed,
+            'by account', self.session['account'])
+        self.query.update({'tab': 'accounts', 'id': str(aid)})
+        self.staff_shop(alert('ok', 'Saved. Points: %s.%s' % ('{:,}'.format(points), ' %d listings removed.' % removed if removed else '')))
+
+    def shop_admin_settings(self, note=''):
+        form = ('<form method="post" action="/staff/shop/settings">%s<div class="form-row"><div class="field"><span>Gold Market service fee (%%)</span>'
+                '<input type="number" name="fee" min="0" max="100" value="%d"></div></div>'
+                '<p class="muted small">Kept back from the seller when gold sells; at least 1 point while it is not 0. Used from the next sale on.</p>'
+                '<div class="actions"><button class="btn primary" type="submit">Save</button></div></form>') % (self.csrf_field(), gold_fee_percent())
+        self.shop_admin_page('settings', panel('Gold Market', form), note)
+
+    def staff_shop_settings(self):
+        if not self.is_shop_admin():
+            return self.redirect('/')
+        fee = max(0, min(100, to_int(self.form.get('fee'), 10)))
+        execute(auth_db(), "REPLACE INTO shop_config (Name, Value) VALUES ('GoldMarketFee', %s)", (str(fee),))
+        log('shop admin: fee', fee, 'by account', self.session['account'])
+        self.query['tab'] = 'settings'
+        self.staff_shop(alert('ok', 'The service fee is now %d%%.' % fee))
+
 
 # URLs the client itself opens (GlobalStrings VISITABLE_URL50/6/7 hotfix) -> page
 DIRECT_ENTRY = {
@@ -1265,6 +2010,21 @@ ROUTES = {
     ('POST', '/ticket/reply'): Handler.ticket_reply,
     ('POST', '/ticket/status'): Handler.ticket_status,
     ('GET', '/staff'): Handler.staff,
+    ('GET', '/shop'): Handler.shop_page,
+    ('POST', '/shop/gold/list'): Handler.shop_gold_list,
+    ('POST', '/shop/gold/cancel'): Handler.shop_gold_cancel,
+    ('GET', '/staff/shop'): Handler.staff_shop,
+    ('GET', '/staff/shop/product'): Handler.staff_shop_product,
+    ('GET', '/staff/shop/confirm'): Handler.staff_shop_confirm,
+    ('POST', '/staff/shop/product/save'): Handler.staff_shop_product_save,
+    ('POST', '/staff/shop/product/delete'): Handler.staff_shop_product_delete,
+    ('POST', '/staff/shop/group/save'): Handler.staff_shop_group_save,
+    ('POST', '/staff/shop/group/delete'): Handler.staff_shop_group_delete,
+    ('POST', '/staff/shop/listing/remove'): Handler.staff_shop_listing_remove,
+    ('POST', '/staff/shop/account/save'): Handler.staff_shop_account_save,
+    ('POST', '/staff/shop/settings'): Handler.staff_shop_settings,
+    ('POST', '/staff/shop/transfers/rules'): Handler.staff_shop_transfer_rules,
+    ('POST', '/staff/shop/transfers/action'): Handler.staff_shop_transfer_action,
 }
 
 

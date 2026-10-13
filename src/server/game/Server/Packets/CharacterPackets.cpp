@@ -245,7 +245,9 @@ ByteBuffer& operator<<(ByteBuffer& data, EnumCharactersResult::CharacterInfoBasi
     for (EnumCharactersResult::CharacterInfoBasic::VisualItemInfo const& visualItem : charInfo.VisualItems)
         data << visualItem;
 
-    data << int32(charInfo.SaveVersion);
+    // Classic 1.60: the client wants a character to be logged in once before a character service while this is below 49
+    // (GetServiceCharacterInfo().characterServiceRequiresLogin, 70058 0x2402F4F: "Please log into the game with this character")
+    data << int32(std::max<uint32>(charInfo.SaveVersion, 49));
     data << charInfo.CreateTime;
     data << charInfo.LastActiveTime;
     data << int32(charInfo.LastLoginVersion);
@@ -539,23 +541,30 @@ void CharacterRenameRequest::Read()
 {
     RenameInfo = std::make_shared<CharacterRenameInfo>();
 
+    // Classic 1.60: 6 bit surname length after the name length, surname after the name (captured: 01e00e180108 | 14 20 | "Hunty" "fd")
     _worldPacket >> RenameInfo->Guid;
     _worldPacket >> SizedString::BitsSize<6>(RenameInfo->NewName);
+    _worldPacket >> SizedString::BitsSize<6>(RenameInfo->NewSurname);
 
     _worldPacket >> SizedString::Data(RenameInfo->NewName);
+    _worldPacket >> SizedString::Data(RenameInfo->NewSurname);
 }
 
 WorldPacket const* CharacterRenameResult::Write()
 {
+    // Classic 1.60: 6 bit surname length after the name length, surname after the name (like the request; without it the
+    // client shows "rename failed" for a successful rename)
     _worldPacket << uint32(Result);
     _worldPacket << OptionalInit(Guid);
     _worldPacket << SizedString::BitsSize<6>(Name);
+    _worldPacket << SizedString::BitsSize<6>(Surname);
     _worldPacket.FlushBits();
 
     if (Guid)
         _worldPacket << *Guid;
 
     _worldPacket << SizedString::Data(Name);
+    _worldPacket << SizedString::Data(Surname);
 
     return &_worldPacket;
 }
@@ -570,8 +579,14 @@ void CharCustomize::Read()
     for (ChrCustomizationChoice& customization : CustomizeInfo->Customizations)
         _worldPacket >> customization;
 
+    // Classic 1.60: 6 bit name length, 3 unknown bits, 6 bit surname length (like CheckCharacterNameAvailability), surname after
+    // the name (captured: ... | 14 04 | "Hello" "ff")
     _worldPacket >> SizedString::BitsSize<6>(CustomizeInfo->CharName);
+    _worldPacket.ReadBits(3);
+    _worldPacket >> SizedString::BitsSize<6>(CustomizeInfo->CharSurname);
+    _worldPacket.ResetBitPos();
     _worldPacket >> SizedString::Data(CustomizeInfo->CharName);
+    _worldPacket >> SizedString::Data(CustomizeInfo->CharSurname);
 
     SortCustomizations(CustomizeInfo->Customizations);
 }
@@ -582,6 +597,7 @@ CharCustomizeSuccess::CharCustomizeSuccess(CharCustomizeInfo const* info)
     CharGUID = info->CharGUID;
     SexID = info->SexID;
     CharName = info->CharName;
+    CharSurname = info->CharSurname;
 }
 
 WorldPacket const* CharCustomizeSuccess::Write()
@@ -592,10 +608,13 @@ WorldPacket const* CharCustomizeSuccess::Write()
     for (ChrCustomizationChoice customization : Customizations)
         _worldPacket << customization;
 
+    // Classic 1.60: surname length and data after the name, as in SMSG_CHARACTER_RENAME_RESULT (not captured yet)
     _worldPacket << SizedString::BitsSize<6>(CharName);
+    _worldPacket << SizedString::BitsSize<6>(CharSurname);
     _worldPacket.FlushBits();
 
     _worldPacket << SizedString::Data(CharName);
+    _worldPacket << SizedString::Data(CharSurname);
 
     return &_worldPacket;
 }
@@ -612,14 +631,20 @@ void CharRaceOrFactionChange::Read()
 {
     RaceOrFactionChangeInfo = std::make_shared<CharRaceOrFactionChangeInfo>();
 
+    // Classic 1.60: 3 unknown bits and a 6 bit surname length after the name length, surname after the name
+    // (captured: 8a 02 | guid | 01 08 5f | 07000000 | "Hello" "ff" | 7 customizations)
     _worldPacket >> Bits<1>(RaceOrFactionChangeInfo->FactionChange);
     _worldPacket >> SizedString::BitsSize<6>(RaceOrFactionChangeInfo->Name);
+    _worldPacket.ReadBits(3);
+    _worldPacket >> SizedString::BitsSize<6>(RaceOrFactionChangeInfo->Surname);
+    _worldPacket.ResetBitPos();
     _worldPacket >> RaceOrFactionChangeInfo->Guid;
     _worldPacket >> RaceOrFactionChangeInfo->SexID;
     _worldPacket >> RaceOrFactionChangeInfo->RaceID;
     _worldPacket >> RaceOrFactionChangeInfo->InitialRaceID;
     _worldPacket >> Size<uint32>(RaceOrFactionChangeInfo->Customizations);
     _worldPacket >> SizedString::Data(RaceOrFactionChangeInfo->Name);
+    _worldPacket >> SizedString::Data(RaceOrFactionChangeInfo->Surname);
     for (ChrCustomizationChoice& customization : RaceOrFactionChangeInfo->Customizations)
         _worldPacket >> customization;
 
@@ -635,11 +660,15 @@ WorldPacket const* CharFactionChangeResult::Write()
 
     if (Display)
     {
+        // Classic 1.60: surname length and data after the name, as in SMSG_CHARACTER_RENAME_RESULT (not captured yet)
         _worldPacket << SizedString::BitsSize<6>(Display->Name);
+        _worldPacket << SizedString::BitsSize<6>(Display->Surname);
+        _worldPacket.FlushBits();
         _worldPacket << uint8(Display->SexID);
         _worldPacket << uint8(Display->RaceID);
         _worldPacket << Size<uint32>(*Display->Customizations);
         _worldPacket << SizedString::Data(Display->Name);
+        _worldPacket << SizedString::Data(Display->Surname);
         for (ChrCustomizationChoice customization : *Display->Customizations)
             _worldPacket << customization;
     }

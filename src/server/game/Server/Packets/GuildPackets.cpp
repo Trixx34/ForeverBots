@@ -17,6 +17,7 @@
 
 #include "GuildPackets.h"
 #include "CharacterCache.h"
+#include "ClassicOpcodes.h"
 #include "PacketOperators.h"
 
 namespace WorldPackets::Guild
@@ -92,6 +93,10 @@ ByteBuffer& operator<<(ByteBuffer& data, GuildRosterMemberData const& rosterMemb
     data << rosterMemberData.DungeonScore;
     data << uint64(rosterMemberData.GuildClubMemberID);
     data << uint8(rosterMemberData.RaceID);
+    // Classic 1.60.1.70291+: a new u64 after RaceID (member reader 70291 0xA36700, meaning unknown); without it the client reads
+    // the rest 8 bytes off and fails BC_ASSERT(n < N) (n 402, N 257) on the surname length as soon as a roster arrives
+    if (ClassicOpcodes::IsBuild70291OrLater())
+        data << uint64(0);
     data << int32(rosterMemberData.TimerunningSeasonID);
 
     // Classic 1.60 (member reader rva 0x8F5C10 in 70058): the surname (9 bit length) follows the name
