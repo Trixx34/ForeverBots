@@ -92,7 +92,7 @@ bool EncodeUnitRef(Unit const& unit, uint64& ref)
     }
 }
 
-ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby)
+ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNearby, std::vector<NearbyUnit>& cachedNearby)
 {
     ModuleSnapshotBot result;
 
@@ -124,26 +124,58 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby)
     if (maxNearby == 0)
         return result;
 
-    // Every unit in range, then the closest maxNearby of them that can be packed.
+    // Between refreshes the bot's own entry is current, and its nearby units are the ones from the last refresh.
+    if (!refreshNearby && !cachedNearby.empty())
+    {
+        result.Nearby = cachedNearby;
+        if (result.Nearby.size() > maxNearby)
+            result.Nearby.resize(maxNearby);
+        return result;
+    }
+
+    // Every unit in range, split into players and creatures, each closest first.
     std::list<Unit*> inRange;
     Trinity::AnyUnitInObjectRangeCheck check(&bot, NearbyRange);
     Trinity::UnitListSearcher<Trinity::AnyUnitInObjectRangeCheck> searcher(&bot, inRange, check);
     Cell::VisitAllObjects(&bot, searcher, NearbyRange);
 
-    std::vector<Unit*> units;
+    std::vector<Unit*> players;
+    std::vector<Unit*> creatures;
     for (Unit* unit : inRange)
-        if (unit != &bot)
-            units.push_back(unit);
-    std::sort(units.begin(), units.end(), [&bot](Unit* a, Unit* b)
+    {
+        if (unit == &bot)
+            continue;
+        (unit->IsPlayer() ? players : creatures).push_back(unit);
+    }
+    auto closerFirst = [&bot](Unit* a, Unit* b)
     {
         return bot.GetExactDist2dSq(a) < bot.GetExactDist2dSq(b);
-    });
+    };
+    std::sort(players.begin(), players.end(), closerFirst);
+    std::sort(creatures.begin(), creatures.end(), closerFirst);
 
-    for (Unit* unit : units)
+    // The closest few players, then creatures, then any players that are left if there is still room.
+    std::vector<Unit*> chosen;
+    size_t const playerSlots = std::min<size_t>(kNearbyPlayerSlots, maxNearby);
+    for (Unit* player : players)
     {
-        if (result.Nearby.size() >= maxNearby)
+        if (chosen.size() >= playerSlots)
             break;
+        chosen.push_back(player);
+    }
+    size_t const leadingPlayers = chosen.size();
+    for (Unit* creature : creatures)
+    {
+        if (chosen.size() >= maxNearby)
+            break;
+        chosen.push_back(creature);
+    }
+    for (size_t i = leadingPlayers; i < players.size() && chosen.size() < maxNearby; ++i)
+        chosen.push_back(players[i]);
+    std::sort(chosen.begin(), chosen.end(), closerFirst);
 
+    for (Unit* unit : chosen)
+    {
         NearbyUnit near;
         if (!EncodeUnitRef(*unit, near.guid))
             continue;
@@ -158,5 +190,7 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby)
         near.casting = unit->IsNonMeleeSpellCast(false) ? 1 : 0;
         result.Nearby.push_back(near);
     }
+
+    cachedNearby = result.Nearby;
     return result;
 }

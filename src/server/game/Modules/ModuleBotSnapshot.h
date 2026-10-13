@@ -12,6 +12,8 @@
 #include "Define.h"
 #include "ModuleTier2.h"
 
+#include <vector>
+
 class Player;
 class Unit;
 
@@ -19,7 +21,13 @@ class Unit;
 // a counter above 32 bits, an entry above 24 bits, or a type other than player or creature.
 bool EncodeUnitRef(Unit const& unit, uint64& ref);
 
-// The snapshot entry for one bot, with up to `maxNearby` units near it, closest first.
-ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby);
+// Players the nearby list keeps before creatures. A bot fights creatures; a few players keep following possible. Without
+// this cap, a crowd of bots fills every slot with other bots and no creature is ever seen (the 1500-bot run).
+constexpr uint32 kNearbyPlayerSlots = 2;
+
+// The snapshot entry for one bot, with up to `maxNearby` units near it. Creatures come first, closest first, and at most
+// kNearbyPlayerSlots players are listed ahead of them. When refreshNearby is false the nearby units are the last ones
+// stored in cachedNearby, so the range query runs for only some of the bots on each tick.
+ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNearby, std::vector<NearbyUnit>& cachedNearby);
 
 #endif // TRINITYCORE_MODULE_BOT_SNAPSHOT_H

@@ -195,6 +195,9 @@ class TC_GAME_API ModuleMgr
             uint32 Tier2MaxNearbyUnits = 16;
             uint32 Tier2MaxActions = 256;
             uint32 Tier2MaxTickInterval = 100;
+            // Each bot's nearby units are queried on one tick in this many, staggered by guid, so the world thread pays for a
+            // fraction of the range queries per tick. 1 queries every bot every tick.
+            uint32 Tier2NearbyRefreshTicks = 1;
             bool AutoApprove = false;
         };
 
@@ -212,6 +215,8 @@ class TC_GAME_API ModuleMgr
             uint32 Sequence = 0;
         };
         std::unordered_map<uint64, ActionResult> _actionResults;
+        // The last nearby units of each controlled bot (world thread only), reused between refreshes.
+        std::unordered_map<uint64, std::vector<forever_module::NearbyUnit>> _nearbyCache;
         void RecordActionResult(uint64 botGuid, forever_module::BotAction const& action, forever_module::BotActionStatus status);
         void LoadApprovalStore(); // called with _mutex held, or before any module threads exist
         std::string ApprovalStorePath() const;

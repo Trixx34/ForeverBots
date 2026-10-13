@@ -1720,6 +1720,14 @@ Modules.Tier2.MaxNearbyUnits = 16
 
 Modules.Tier2.MaxActions = 3000
 
+#    Modules.Tier2.NearbyRefreshTicks
+#        Default:     1
+#        Each bot's nearby units are queried on one tick in this many, staggered by guid. 1 queries every bot every tick.
+#        At 1500 bots, 4 cuts the range queries to a quarter of the cost per tick, at the price of a nearby list up to three
+#        ticks old.
+
+Modules.Tier2.NearbyRefreshTicks = 1
+
 #    Modules.Tier2.MaxTickInterval
 #        Default:     100
 #        Largest snapshot cadence, in server ticks, that a module may ask for. Requests above this are capped.
@@ -1764,6 +1772,19 @@ Bot.Limit.MaxDbQueue = 5000
 #        Example: Bot.Run.StopTime = 06:00
 
 Bot.Run.StopTime =
+
+#    Bot.Spread.SpacingYards
+#        Default:     3
+#        Distance between neighbouring bots when they are spread around their race's start. Each login moves the bot onto
+#        its spiral slot (see Bot.Spread.MaxRadiusYards). 0 leaves bots where they are.
+
+Bot.Spread.SpacingYards = 3
+
+#    Bot.Spread.MaxRadiusYards
+#        Default:     100
+#        The largest distance from the race start a spread bot is placed. Bots beyond this radius share the ring.
+
+Bot.Spread.MaxRadiusYards = 100
 
 #    Bot.Login.TimeoutMs
 #        Default:     60000

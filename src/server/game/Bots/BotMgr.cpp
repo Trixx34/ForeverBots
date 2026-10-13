@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <ctime>
 #include <map>
 #include <memory>
@@ -109,6 +110,12 @@ int32 ParseClockSeconds(std::string const& text)
     return hours * 3600 + minutes * 60 + seconds;
 }
 
+// Bots stand on a sunflower spiral around their race's start: slot s is at radius spacing * sqrt(s) and angle s times the
+// golden angle, so neighbouring slots are a fixed distance apart and no two bots share a point. A bot's slot comes from its
+// guid, so it is the same after every restart.
+constexpr uint32 kSpreadSlots = 2000;
+constexpr float kGoldenAngle = 2.39996323f;
+
 int32 LocalSecondsOfDay()
 {
     time_t const now = time(nullptr);
@@ -132,6 +139,8 @@ void BotMgr::LoadRegistry()
     _loginMaxPerTick = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Login.MaxPerTick", 5)));
     _loginTimeoutMs = uint32(std::max<int32>(1000, sConfigMgr->GetIntDefault("Bot.Login.TimeoutMs", 60000)));
     _reloginDelayMs = uint32(std::max<int32>(0, sConfigMgr->GetIntDefault("Bot.Relogin.DelayMs", 2000)));
+    _spreadSpacing = std::max(0.0f, sConfigMgr->GetFloatDefault("Bot.Spread.SpacingYards", 3.0f));
+    _spreadMaxRadius = std::max(0.0f, sConfigMgr->GetFloatDefault("Bot.Spread.MaxRadiusYards", 100.0f));
     _loginPerSecond = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Login.MaxPerSecond", 10)));
     _limitMaxBots = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Limit.MaxBots", 1500)));
     _limitMaxWorldDiffMs = uint32(std::max<int32>(10, sConfigMgr->GetIntDefault("Bot.Limit.MaxWorldDiffMs", 250)));
@@ -578,11 +587,37 @@ void BotMgr::StartLogin(BotInfo& bot)
     _loggingIn.push_back(bot.Guid);
 }
 
+// Moves a bot that is in the world onto its spread point, so bots do not all stand on the race start. This runs at each
+// login, once the bot is on its map: the ground height is read from the map there, which it cannot be before.
+void BotMgr::SpreadBot(Player& bot)
+{
+    if (_spreadSpacing <= 0.0f)
+        return;
+
+    PlayerInfo const* info = sObjectMgr->GetPlayerInfo(bot.GetRace(), bot.GetClass());
+    if (!info)
+        return;
+
+    WorldLocation const& start = info->createPosition.Loc;
+    if (start.GetMapId() != bot.GetMapId())
+        return; // a bot somewhere else keeps its place
+
+    uint32 const slot = uint32(bot.GetGUID().GetCounter() % kSpreadSlots);
+    float const radius = std::min(_spreadSpacing * std::sqrt(float(slot) + 0.5f), _spreadMaxRadius);
+    float const angle = float(slot) * kGoldenAngle;
+    float const x = start.GetPositionX() + radius * std::cos(angle);
+    float const y = start.GetPositionY() + radius * std::sin(angle);
+    float z = start.GetPositionZ();
+    bot.UpdateGroundPositionZ(x, y, z);
+    bot.TeleportTo(start.GetMapId(), x, y, z, bot.GetOrientation());
+}
+
 void BotMgr::FinishLogin(BotInfo& bot)
 {
     bot.State = BOT_ONLINE;
     if (Player* player = bot.Session->GetPlayer())
     {
+        SpreadBot(*player);
         bot.Level = player->GetLevel();
         TC_LOG_INFO("server.worldserver", "BotMgr: bot {} (guid {}) is in the world.", bot.Name, bot.Guid);
     }
