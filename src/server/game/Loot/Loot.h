@@ -276,6 +276,7 @@ private:
     Map*        m_map;
     RollVoteMap m_rollVoteMap;
     bool        m_isStarted;
+    bool        m_botsVoted = false;                        // the bots in this roll have been asked (BotLootRoll)
     LootItem*   m_lootItem;
     Loot*       m_loot;
     RollMask    m_voteMask;

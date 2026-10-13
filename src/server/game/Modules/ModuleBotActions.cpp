@@ -1,5 +1,6 @@
 #include "ModuleBotActions.h"
 #include "ModuleBotSnapshot.h"
+#include <cmath>
 #include "BotMgr.h"
 #include "Cell.h"
 #include "Corpse.h"
@@ -1118,6 +1119,203 @@ BotActionStatus ReclaimCorpseAction(Player& bot, std::string& reason)
     return BotActionStatus::kApplied;
 }
 
+// ---- Chat orders (kSummon, kRevive, kMount) ----
+
+// The player an order names, when it is in the bot's own group (a bot obeys only its group; the module checks the leader).
+Player* GroupSpeaker(Player& bot, uint64 ref, std::string& reason)
+{
+    Unit* unit = ResolveUnit(bot, ref);
+    Player* speaker = unit ? unit->ToPlayer() : nullptr;
+    if (!speaker || speaker == &bot)
+    {
+        reason = "no such player";
+        return nullptr;
+    }
+    if (!bot.IsInSameGroupWith(speaker))
+    {
+        reason = "not in the bot's group";
+        return nullptr;
+    }
+    return speaker;
+}
+
+// Puts the bot next to the speaker, on a spiral by the index (so several bots do not share one point). The rules of the foreverbots summon.
+BotActionStatus MoveToSpeaker(Player& bot, Player& speaker, uint32 index, std::string& reason)
+{
+    if (!speaker.IsAlive())
+    {
+        reason = "the speaker is dead";
+        return BotActionStatus::kRefused;
+    }
+    if (speaker.IsInCombat())
+    {
+        reason = "the speaker is in combat";
+        return BotActionStatus::kRefused;
+    }
+    if (bot.IsInCombat())
+    {
+        reason = "bot is in combat";
+        return BotActionStatus::kRefused;
+    }
+    bool const sameMap = bot.GetMapId() == speaker.GetMapId() && bot.GetInstanceId() == speaker.GetInstanceId();
+    if (!sameMap)
+    {
+        Map const* botMap = bot.GetMap();
+        Map const* speakerMap = speaker.GetMap();
+        if ((botMap && botMap->Instanceable()) || (speakerMap && speakerMap->Instanceable()))
+        {
+            reason = "an instance is involved on another map";
+            return BotActionStatus::kRefused;
+        }
+    }
+    else if (bot.GetExactDist2d(&speaker) < 5.0f)
+    {
+        reason = "already beside the speaker";
+        return BotActionStatus::kRefused;
+    }
+
+    float const angle = float(index) * 2.4f;
+    float const radius = 2.5f + 0.9f * float(index);
+    float const x = speaker.GetPositionX() + std::cos(angle) * radius;
+    float const y = speaker.GetPositionY() + std::sin(angle) * radius;
+    float z = speaker.GetPositionZ();
+    if (sameMap)
+    {
+        float const ground = speaker.GetMap()->GetHeight(speaker.GetPhaseShift(), x, y, z + 2.0f);
+        if (ground > INVALID_HEIGHT)
+            z = ground;
+    }
+    if (!bot.TeleportTo(speaker.GetMapId(), x, y, z, speaker.GetOrientation()))
+    {
+        reason = "the teleport was refused";
+        return BotActionStatus::kRefused;
+    }
+    return BotActionStatus::kApplied;
+}
+
+BotActionStatus SummonAction(Player& bot, BotAction const& action, std::string& reason)
+{
+    static bool const allowed = sConfigMgr->GetBoolDefault("Bot.Chat.Orders.Enabled", false);
+    if (!allowed)
+    {
+        reason = "Bot.Chat.Orders.Enabled is off";
+        return BotActionStatus::kRefused;
+    }
+    if (!bot.IsAlive())
+    {
+        reason = "bot is dead";
+        return BotActionStatus::kRefused;
+    }
+    Player* speaker = GroupSpeaker(bot, action.target_guid, reason);
+    if (!speaker)
+        return BotActionStatus::kInvalidTarget;
+    return MoveToSpeaker(bot, *speaker, uint32(std::max(0.0f, action.dest_x)), reason);
+}
+
+BotActionStatus ReviveAction(Player& bot, BotAction const& action, std::string& reason)
+{
+    static bool const allowed = sConfigMgr->GetBoolDefault("Bot.Chat.Orders.Enabled", false);
+    static bool const sickness = sConfigMgr->GetBoolDefault("Bot.Chat.Orders.ReviveSickness", true);
+    if (!allowed)
+    {
+        reason = "Bot.Chat.Orders.Enabled is off";
+        return BotActionStatus::kRefused;
+    }
+    if (sConfigMgr->GetBoolDefault("Classic.Hardcore", false))
+    {
+        reason = "hardcore realm: death is permanent";
+        return BotActionStatus::kRefused;
+    }
+    if (bot.IsAlive())
+    {
+        reason = "bot is not dead";
+        return BotActionStatus::kRefused;
+    }
+    Player* speaker = GroupSpeaker(bot, action.target_guid, reason);
+    if (!speaker)
+        return BotActionStatus::kInvalidTarget;
+    if (!speaker->IsAlive() || speaker->IsInCombat())
+    {
+        reason = "the speaker is dead or in combat";
+        return BotActionStatus::kRefused;
+    }
+    bot.ResurrectPlayer(0.35f, sickness);
+    bot.SpawnCorpseBones();
+    std::string moveReason;
+    BotActionStatus const moved = MoveToSpeaker(bot, *speaker, uint32(std::max(0.0f, action.dest_x)), moveReason);
+    if (moved != BotActionStatus::kApplied)
+        reason = "revived where it fell: " + moveReason; // the resurrect itself happened
+    return BotActionStatus::kApplied;
+}
+
+BotActionStatus MountAction(Player& bot, BotAction const& action, std::string& reason)
+{
+    static bool const allowed = sConfigMgr->GetBoolDefault("Bot.Chat.Orders.Enabled", false);
+    if (!allowed)
+    {
+        reason = "Bot.Chat.Orders.Enabled is off";
+        return BotActionStatus::kRefused;
+    }
+    if (!bot.IsAlive())
+    {
+        reason = "bot is dead";
+        return BotActionStatus::kRefused;
+    }
+    if (action.spell_id == 0)
+    {
+        if (!bot.IsMounted())
+        {
+            reason = "bot is not mounted";
+            return BotActionStatus::kRefused;
+        }
+        bot.RemoveAurasByType(SPELL_AURA_MOUNTED);
+        return BotActionStatus::kApplied;
+    }
+    if (bot.IsInCombat())
+    {
+        reason = "bot is in combat";
+        return BotActionStatus::kRefused;
+    }
+    if (bot.IsMounted())
+    {
+        reason = "bot is already mounted";
+        return BotActionStatus::kRefused;
+    }
+
+    // The fastest learned ground mount: a spell with a mounted aura and a mounted speed effect, flying mounts left out.
+    uint32 bestSpell = 0;
+    int32 bestSpeed = -1;
+    for (auto const& [spellId, playerSpell] : bot.GetSpellMap())
+    {
+        if (playerSpell.state == PLAYERSPELL_REMOVED || playerSpell.disabled)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId, DIFFICULTY_NONE);
+        if (!info || !info->HasAura(SPELL_AURA_MOUNTED) || info->HasAura(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED))
+            continue;
+        int32 speed = 0;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+            if (effect.ApplyAuraName == SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED)
+                speed = std::max(speed, int32(effect.CalcValue(&bot)));
+        if (speed > bestSpeed || (speed == bestSpeed && spellId < bestSpell))
+        {
+            bestSpell = spellId;
+            bestSpeed = speed;
+        }
+    }
+    if (bestSpell == 0)
+    {
+        reason = "bot has no mount";
+        return BotActionStatus::kRefused;
+    }
+    SpellCastResult const result = bot.CastSpell(&bot, bestSpell, false);
+    if (result != SPELL_CAST_OK)
+    {
+        reason = "cast of mount " + std::to_string(bestSpell) + " returned result " + std::to_string(int32(result));
+        return StatusForCast(result);
+    }
+    return BotActionStatus::kApplied;
+}
+
 BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string& reason)
 {
     switch (action.type)
@@ -1171,10 +1369,7 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
                 return BotActionStatus::kRefused;
             }
 
-            uint32 services = action.spell_id;
-            // An alt is a player's own character: its gear is the player's to change, so the equip service is left out.
-            if (sBotMgr->IsActiveAlt(bot.GetGUID().GetCounter()))
-                services &= ~uint32(kServiceEquipBit);
+            uint32 const services = action.spell_id;
             if (services & (kServiceSellBit | kServiceRepairBit))
             {
                 Creature* npc = NearestServiceNpc(bot, UNIT_NPC_FLAG_VENDOR_MASK | UNIT_NPC_FLAG_REPAIR);
@@ -1225,6 +1420,15 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
 
         case ActionType::kReleaseSpirit:
             return ReleaseSpiritAction(bot, reason);
+
+        case ActionType::kSummon:
+            return SummonAction(bot, action, reason);
+
+        case ActionType::kRevive:
+            return ReviveAction(bot, action, reason);
+
+        case ActionType::kMount:
+            return MountAction(bot, action, reason);
 
         case ActionType::kResurrect:
             return ResurrectResponseAction(bot, action, reason);

@@ -16,6 +16,7 @@
  */
 
 #include "Loot.h"
+#include "BotLootRoll.h"
 #include "DB2Stores.h"
 #include "DatabaseEnv.h"
 #include "GameTime.h"
@@ -564,6 +565,21 @@ bool LootRoll::PlayerVote(Player* player, RollVote vote)
 // check if we can found a winner for this roll or if timer is expired
 bool LootRoll::UpdateRoll()
 {
+    // Bots and alts have no roll window: they vote on the first update after the roll started (Bot.Loot.Roll.Enabled).
+    if (!m_botsVoted && m_isStarted && m_lootItem)
+    {
+        m_botsVoted = true;
+        ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(m_lootItem->itemid);
+        std::vector<ObjectGuid> voters;
+        for (auto const& [guid, vote] : m_rollVoteMap)
+            if (vote.Vote == RollVote::NotEmitedYet)
+                voters.push_back(guid);
+        for (ObjectGuid const& guid : voters)
+            if (Player* voter = ObjectAccessor::GetPlayer(m_map, guid))
+                if (Optional<RollVote> choice = BotLootRoll::ChooseVote(voter, itemTemplate, uint32(m_voteMask)))
+                    PlayerVote(voter, *choice);
+    }
+
     RollVoteMap::const_iterator winnerItr = m_rollVoteMap.end();
 
     if (AllPlayerVoted(winnerItr) || m_endTime <= GameTime::Now())

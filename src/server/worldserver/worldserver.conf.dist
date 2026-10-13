@@ -1794,12 +1794,31 @@ Bot.Limit.MaxDbQueue = 5000
 #        Default:     0
 #        1 = a module may log a character of a player's own account in as a bot (an alt), when that player asks for it (the bots module's
 #            `.bots alt add <name>`). The player must be online with another character, the alt must be offline, and it must be on the
-#            same account. An alt is a player's own character: it gets no free trainer spells, skills or talents, no auto gear and no
-#            equip service, and it cannot log in as a player while it is a bot. It logs out when the module lets it go.
+#            same account. An alt is a player's own character: it gets no free trainer spells, skills or talents and no auto gear (it still
+#            equips better gear from its bags and rolls on upgrades), and it cannot log in as a player while it is a bot. It logs out when the module lets it go.
 #
 #    Bot.Alt.MaxPerAccount
 #        Default:     4
 #        The most alts one account may have as bots at once.
+#
+#    Bot.Chat.Orders.Enabled
+#        Default:     0
+#        1 = a module may summon the bots of a group to a group member (kSummon), resurrect a dead bot and bring it there (kRevive), and
+#            mount or dismount a bot (kMount). The bots module's summon, revive, mount and dismount chat orders use them. A summon is refused
+#            while the bot or the speaker fights, or when an instance is involved on another map; a revive is refused on a hardcore realm.
+#
+#    Bot.Chat.Orders.ReviveSickness
+#        Default:     1
+#        1 = a bot resurrected by a revive order gets resurrection sickness.
+#
+#    Bot.Loot.Roll.Enabled
+#        Default:     1
+#        1 = a bot or alt in a group votes on a group loot roll the moment it starts: Need for a usable upgrade (an item level above what
+#            it wears in that slot), Pass when its bags are full or the item is no upgrade. 0 = bots never vote (the roll waits for the timeout).
+#
+#    Bot.Loot.Roll.GreedOnOther
+#        Default:     0
+#        1 = a bot votes Greed instead of Pass on an item that is no upgrade (it sells the item).
 #
 #    Bot.Learn.TrainerSpells
 #        Default:     1
@@ -1824,6 +1843,12 @@ Bot.AutoGear.MaxQuality = 2
 
 Bot.Alt.Enabled = 0
 Bot.Alt.MaxPerAccount = 4
+
+Bot.Chat.Orders.Enabled = 0
+Bot.Chat.Orders.ReviveSickness = 1
+
+Bot.Loot.Roll.Enabled = 1
+Bot.Loot.Roll.GreedOnOther = 0
 
 Bot.Learn.TrainerSpells = 1
 Bot.Learn.CombatSkills = 1
