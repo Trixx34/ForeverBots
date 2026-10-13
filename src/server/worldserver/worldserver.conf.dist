@@ -1764,6 +1764,14 @@ Bot.Limit.MaxWorldDiffMs = 250
 
 Bot.Limit.MaxDbQueue = 5000
 
+#    Bot.Actions.Teleport
+#        Default:     0
+#        1 = a module may teleport the bots it controls to any map position (kTeleport). For scenarios and tests only.
+#
+#    Bot.Actions.Grant
+#        Default:     0
+#        1 = a module may add items to the bags of the bots it controls (kGrant). For scenarios and tests only.
+#
 #    Bot.Learn.TrainerSpells
 #        Default:     1
 #        1 = a bot learns the spells its class trainers teach as soon as it can use them (level-up and login), without visiting a
@@ -1779,6 +1787,9 @@ Bot.Limit.MaxDbQueue = 5000
 #        Default:     1
 #        1 = a bot's weapon skills, Unarmed, Thrown, Wands and Defense are set to 5 per level (what a player who trained and used them
 #            has) and the weapon proficiencies are learned. 0 = leave them as the core sets them.
+
+Bot.Actions.Teleport = 0
+Bot.Actions.Grant = 0
 
 Bot.Learn.TrainerSpells = 1
 Bot.Learn.CombatSkills = 1

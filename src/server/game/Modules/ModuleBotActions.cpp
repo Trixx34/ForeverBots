@@ -1,6 +1,8 @@
 #include "ModuleBotActions.h"
 #include "BotMgr.h"
 #include "Cell.h"
+#include "MapManager.h"
+#include "Config.h"
 #include "CellImpl.h"
 #include "Creature.h"
 #include "DB2Structure.h"
@@ -385,6 +387,64 @@ BotActionStatus QuestAction(Player& bot, uint32 code, std::string& reason)
     return BotActionStatus::kApplied;
 }
 
+// kTeleport (scenarios): spell_id is the map, dest the position. Off unless Bot.Actions.Teleport is on; refused in combat.
+BotActionStatus TeleportAction(Player& bot, BotAction const& action, std::string& reason)
+{
+    static bool const allowed = sConfigMgr->GetBoolDefault("Bot.Actions.Teleport", false);
+    if (!allowed)
+    {
+        reason = "Bot.Actions.Teleport is off";
+        return BotActionStatus::kRefused;
+    }
+    if (bot.IsInCombat())
+    {
+        reason = "bot is in combat";
+        return BotActionStatus::kRefused;
+    }
+    uint32 const mapId = action.spell_id;
+    if (!MapManager::IsValidMapCoord(mapId, action.dest_x, action.dest_y, action.dest_z))
+    {
+        reason = "not a valid map position";
+        return BotActionStatus::kRefused;
+    }
+    if (!bot.TeleportTo(mapId, action.dest_x, action.dest_y, action.dest_z, bot.GetOrientation()))
+    {
+        reason = "the teleport was refused (instance full, locked or not allowed)";
+        return BotActionStatus::kRefused;
+    }
+    return BotActionStatus::kApplied;
+}
+
+// kGrant (scenarios): spell_id is an item entry, dest_x the count. Off unless Bot.Actions.Grant is on.
+BotActionStatus GrantAction(Player& bot, BotAction const& action, std::string& reason)
+{
+    static bool const allowed = sConfigMgr->GetBoolDefault("Bot.Actions.Grant", false);
+    if (!allowed)
+    {
+        reason = "Bot.Actions.Grant is off";
+        return BotActionStatus::kRefused;
+    }
+    uint32 const entry = action.spell_id;
+    if (!sObjectMgr->GetItemTemplate(entry))
+    {
+        reason = "unknown item";
+        return BotActionStatus::kRefused;
+    }
+    uint32 const count = action.dest_x >= 1.0f ? uint32(action.dest_x) : 1u;
+    ItemPosCountVec destination;
+    if (bot.CanStoreNewItem(NULL_BAG, NULL_SLOT, destination, entry, count) != EQUIP_ERR_OK)
+    {
+        reason = "the bot's bags cannot hold the item";
+        return BotActionStatus::kRefused;
+    }
+    if (!bot.StoreNewItem(destination, entry, true))
+    {
+        reason = "the item could not be created";
+        return BotActionStatus::kRefused;
+    }
+    return BotActionStatus::kApplied;
+}
+
 BotActionStatus LearnFromTrainer(Player& bot, std::string& reason)
 {
     Creature* trainer = NearestServiceNpc(bot, UNIT_NPC_FLAG_TRAINER);
@@ -715,6 +775,12 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
 
         case ActionType::kQuest:
             return QuestAction(bot, action.spell_id, reason);
+
+        case ActionType::kTeleport:
+            return TeleportAction(bot, action, reason);
+
+        case ActionType::kGrant:
+            return GrantAction(bot, action, reason);
 
         case ActionType::kGroup:
         {
