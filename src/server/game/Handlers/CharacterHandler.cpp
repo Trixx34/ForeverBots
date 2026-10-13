@@ -57,6 +57,7 @@
 #include "Pet.h"
 #include "PhaseShift.h"
 #include "PhasingHandler.h"
+#include "ModuleMgr.h"
 #include "Player.h"
 #include "PlayerDump.h"
 #include "QueryHolder.h"
@@ -1366,6 +1367,10 @@ void WorldSession::HandleLoadScreenOpcode(WorldPackets::Character::LoadingScreen
             for (std::string const& line : sWorld->GetMotd())
                 if (!line.empty())
                     handler.SendSysMessage(line);
+
+            // Which modules are running (Modules.LoginMessage), one line, so players know what the server adds.
+            if (std::string const modulesLine = sModuleMgr->RunningModulesLine(); !modulesLine.empty())
+                handler.SendSysMessage(modulesLine);
         }
 
         // Classic 1.60 (client 70291): "Played in the WoW: Forever Beta", earned at login on the official beta (sniff 70291), gives

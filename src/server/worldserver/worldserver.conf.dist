@@ -1643,6 +1643,14 @@ HotSwap.ReCompilerBuildType = ""
 
 Modules.Enabled = 0
 
+#    Modules.LoginMessage
+#        Description: Tells each player at login which modules are running ("This server is running modules: ..."), after the message of
+#                     the day. Only modules that are running now are listed; nothing is sent when none is.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+Modules.LoginMessage = 1
+
 #    Modules.Dir
 #        Description: Directory scanned for built module executables + module.json manifests
 #                     (populated by the modules/ build-time discovery step, see

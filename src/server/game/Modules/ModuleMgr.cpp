@@ -1258,3 +1258,22 @@ ModuleMgr::CommandRouteResult ModuleMgr::RouteCommand(std::string_view commandTe
         return CommandRouteResult::TimedOut;
     return CommandRouteResult::NotRouted;
 }
+
+std::string ModuleMgr::RunningModulesLine()
+{
+    if (!sConfigMgr->GetBoolDefault("Modules.LoginMessage", true))
+        return {};
+
+    std::string names;
+    for (ModuleSnapshot const& module : GetSnapshots())
+    {
+        if (module.Status != ModuleStatus::Running)
+            continue;
+        if (!names.empty())
+            names += ", ";
+        names += module.Name;
+        if (!module.Version.empty())
+            names += " " + module.Version;
+    }
+    return names.empty() ? std::string() : "This server is running modules: " + names;
+}

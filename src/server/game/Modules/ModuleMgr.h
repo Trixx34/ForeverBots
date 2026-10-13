@@ -178,6 +178,10 @@ class TC_GAME_API ModuleMgr
         // Snapshot of every known module, sorted by name.
         std::vector<ModuleSnapshot> GetSnapshots();
 
+        // "This server is running modules: a 1.0, b 2.1" for the modules that are running now, or an empty string when none is (sent to
+        // players at login, see WorldSession::HandleLoadScreenOpcode). Off when Modules.LoginMessage = 0.
+        std::string RunningModulesLine();
+
         // Operator approval (`module approve <name>`): records the module's current capabilities in
         // approved_modules.json. Reads the manifest from Modules.Dir. Takes effect at the next load.
         // Returns false with an explanation in message on any failure.
