@@ -470,6 +470,38 @@ bool Decode(std::string_view bytes, ActionRequestMsg& out)
                     return false;
             }
         }
+        else if (field == 16 && wire == WireLengthDelimited)
+        {
+            // ShareQuestItemAction (16): player_guid=1, item_entry=2, count=3, range_yards=4.
+            std::string_view shareBytes;
+            if (!r.ReadBytes(shareBytes))
+                return false;
+            out.Kind = ActionKind::ShareQuestItem;
+
+            Reader a(shareBytes);
+            while (!a.AtEnd())
+            {
+                uint32 af = 0, aw = 0;
+                if (!a.ReadTag(af, aw))
+                    return false;
+                if (aw == WireVarint && af >= 1 && af <= 4)
+                {
+                    uint64 value = 0;
+                    if (!a.ReadVarint(value))
+                        return false;
+                    if (af == 1)
+                        out.PlayerGuid = value;
+                    else if (af == 2)
+                        out.ItemEntry = static_cast<uint32>(value);
+                    else if (af == 3)
+                        out.Count = static_cast<uint32>(value);
+                    else
+                        out.RangeYards = static_cast<uint32>(value);
+                }
+                else if (!a.Skip(aw))
+                    return false;
+            }
+        }
         else if ((field == 10 || field == 11) && wire == WireLengthDelimited)
         {
             // SellItemAction (10): player_guid=1, item_guid=2, item_entry=3, count=4.
@@ -629,6 +661,8 @@ std::string Encode(ActionReplyMsg const& msg)
         AppendBytesField(out, 6, msg.Value);
     for (std::string const& key : msg.Keys)
         AppendBytesField(out, 7, key);
+    if (msg.Recipients)
+        AppendVarintField(out, 8, msg.Recipients);
     return out;
 }
 
