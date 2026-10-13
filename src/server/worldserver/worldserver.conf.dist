@@ -1772,6 +1772,16 @@ Bot.Limit.MaxDbQueue = 5000
 #        Default:     0
 #        1 = a module may add items to the bags of the bots it controls (kGrant). For scenarios and tests only.
 #
+#    Bot.Actions.AutoGear
+#        Default:     1
+#        1 = a module may dress the bots it controls for their level (kAutoGear): for each slot the best item their class can use, of
+#            common to Bot.AutoGear.MaxQuality quality, is created and equipped. The module decides when (its AutoGearing setting, or
+#            the .autogear command).
+#
+#    Bot.AutoGear.MaxQuality
+#        Default:     2
+#        The highest item quality auto gear hands out: 1 common, 2 uncommon (green), 3 rare (blue).
+#
 #    Bot.Learn.TrainerSpells
 #        Default:     1
 #        1 = a bot learns the spells its class trainers teach as soon as it can use them (level-up and login), without visiting a
@@ -1790,6 +1800,8 @@ Bot.Limit.MaxDbQueue = 5000
 
 Bot.Actions.Teleport = 0
 Bot.Actions.Grant = 0
+Bot.Actions.AutoGear = 1
+Bot.AutoGear.MaxQuality = 2
 
 Bot.Learn.TrainerSpells = 1
 Bot.Learn.CombatSkills = 1

@@ -12,6 +12,7 @@
 #include "GroupMgr.h"
 #include "Item.h"
 #include "ItemTemplate.h"
+#include "Log.h"
 #include "Loot.h"
 #include "LootPackets.h"
 #include "Map.h"
@@ -30,6 +31,9 @@
 
 #include <algorithm>
 #include <list>
+#include <cctype>
+#include <limits>
+#include <map>
 #include <vector>
 
 using forever_module::ActionType;
@@ -260,6 +264,187 @@ uint32 EquipBestGear(Player& bot)
             ++equipped;
     }
     return equipped;
+}
+
+// ---- kAutoGear (scenarios, doc 19): dress a bot for its level ----
+
+// The gear the core may hand out: weapons and armour of common to Bot.AutoGear.MaxQuality (default 2, uncommon), with a slot, no
+// quest-bound items and no unfinished-looking names (test, deprecated or placeholder items). Built once.
+std::vector<ItemTemplate const*> const& GearCandidates()
+{
+    static std::vector<ItemTemplate const*> const candidates = []
+    {
+        std::vector<ItemTemplate const*> out;
+        uint32 const maxQuality = uint32(std::max(1, sConfigMgr->GetIntDefault("Bot.AutoGear.MaxQuality", 2)));
+        for (auto const& [id, proto] : sObjectMgr->GetItemTemplateStore())
+        {
+            if (proto.GetClass() != ITEM_CLASS_WEAPON && proto.GetClass() != ITEM_CLASS_ARMOR)
+                continue;
+            if (proto.GetQuality() < kQualityCommon || proto.GetQuality() > maxQuality || proto.GetBonding() == BIND_QUEST)
+                continue;
+            if (proto.GetInventoryType() == INVTYPE_BODY || EquipSlotFor(proto.GetInventoryType()) == NULL_SLOT)
+                continue;
+            std::string name = proto.GetName(DEFAULT_LOCALE) ? proto.GetName(DEFAULT_LOCALE) : "";
+            std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+            if (name.empty() || name.find("deprecated") != std::string::npos || name.find("test") == 0 ||
+                name.find("unused") != std::string::npos || name.find("[ph]") != std::string::npos || name.rfind("zz", 0) == 0)
+                continue;
+            out.push_back(&proto);
+        }
+        return out;
+    }();
+    return candidates;
+}
+
+// What a class wants from its gear, as item-mod stats: the stats it uses, in no order.
+std::vector<int32> PreferredStats(uint8 classId)
+{
+    switch (classId)
+    {
+        case CLASS_WARRIOR:
+        case CLASS_PALADIN: return { ITEM_MOD_STRENGTH, ITEM_MOD_STAMINA };
+        case CLASS_HUNTER: return { ITEM_MOD_AGILITY, ITEM_MOD_STAMINA };
+        case CLASS_ROGUE: return { ITEM_MOD_AGILITY, ITEM_MOD_STRENGTH, ITEM_MOD_STAMINA };
+        default: return { ITEM_MOD_INTELLECT, ITEM_MOD_SPIRIT, ITEM_MOD_STAMINA }; // priest, shaman, mage, warlock, druid
+    }
+}
+
+// Higher is better: the item level first, then how well its stats suit the class (a stat the class does not use counts against it).
+int32 GearScore(std::vector<int32> const& preferred, ItemTemplate const& item)
+{
+    int32 stats = 0;
+    for (uint32 i = 0; i < MAX_ITEM_PROTO_STATS; ++i)
+    {
+        int32 const stat = item.GetStatModifierBonusStat(i);
+        int32 const amount = item.GetStatPercentEditor(i);
+        if (amount <= 0)
+            continue;
+        bool const wanted = std::find(preferred.begin(), preferred.end(), stat) != preferred.end();
+        bool const primary = stat == ITEM_MOD_STRENGTH || stat == ITEM_MOD_AGILITY || stat == ITEM_MOD_INTELLECT || stat == ITEM_MOD_SPIRIT;
+        stats += wanted ? amount : (primary ? -3 * amount : 0);
+    }
+    return int32(item.GetBaseItemLevel()) * 10 + stats;
+}
+
+struct GearPick
+{
+    ItemTemplate const* Item = nullptr;
+    int32 Score = std::numeric_limits<int32>::min();
+};
+
+void Consider(GearPick& pick, ItemTemplate const& item, int32 score)
+{
+    if (!pick.Item || score > pick.Score)
+        pick = { &item, score };
+}
+
+// Creates the item in the bags and moves it into `slot`, unless the slot already holds an item of at least this item level.
+bool GiveAndEquip(Player& bot, ItemTemplate const& item, uint8 slot)
+{
+    Item* current = bot.GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+    if (current && current->GetTemplate()->GetBaseItemLevel() >= item.GetBaseItemLevel())
+        return false;
+
+    ItemPosCountVec destination;
+    if (bot.CanStoreNewItem(NULL_BAG, NULL_SLOT, destination, item.GetId(), 1) != EQUIP_ERR_OK)
+        return false;
+    Item* created = bot.StoreNewItem(destination, item.GetId(), true);
+    if (!created)
+        return false;
+
+    uint16 target = uint16(INVENTORY_SLOT_BAG_0) << 8 | slot;
+    uint16 equipDestination = target;
+    if (bot.CanEquipItem(slot, equipDestination, created, true) != EQUIP_ERR_OK)
+        return false; // stays in the bags
+    bot.SwapItem(uint16(created->GetBagSlot()) << 8 | created->GetSlot(), target);
+    return bot.GetItemByPos(INVENTORY_SLOT_BAG_0, slot) == created;
+}
+
+// spell_id bit 1: a tank (one-hand weapon and shield).
+BotActionStatus AutoGearAction(Player& bot, uint32 flags, std::string& reason)
+{
+    static bool const allowed = sConfigMgr->GetBoolDefault("Bot.Actions.AutoGear", true);
+    if (!allowed)
+    {
+        reason = "Bot.Actions.AutoGear is off";
+        return BotActionStatus::kRefused;
+    }
+    if (bot.IsInCombat())
+    {
+        reason = "bot is in combat";
+        return BotActionStatus::kRefused;
+    }
+
+    bool const tank = (flags & 1) != 0;
+    std::vector<int32> const preferred = PreferredStats(bot.GetClass());
+    std::map<uint8, GearPick> bySlot;          // armour and ranged, by equipment slot
+    GearPick twoHand, shield, holdable;
+    std::vector<std::pair<int32, ItemTemplate const*>> oneHand;   // main-hand weapons (one-hand, main hand)
+    std::vector<std::pair<int32, ItemTemplate const*>> offHand;    // off-hand weapons (off hand only, and one-hand for dual wield)
+
+    for (ItemTemplate const* item : GearCandidates())
+    {
+        if (item->GetBaseRequiredLevel() > int32(bot.GetLevel()) || bot.CanUseItem(item) != EQUIP_ERR_OK)
+            continue;
+        int32 const score = GearScore(preferred, *item);
+        switch (item->GetInventoryType())
+        {
+            case INVTYPE_WEAPON:
+                oneHand.emplace_back(score, item);
+                offHand.emplace_back(score, item);
+                break;
+            case INVTYPE_WEAPONMAINHAND: oneHand.emplace_back(score, item); break;
+            case INVTYPE_WEAPONOFFHAND: offHand.emplace_back(score, item); break;
+            case INVTYPE_2HWEAPON: Consider(twoHand, *item, score); break;
+            case INVTYPE_SHIELD: Consider(shield, *item, score); break;
+            case INVTYPE_HOLDABLE: Consider(holdable, *item, score); break;
+            default: Consider(bySlot[EquipSlotFor(item->GetInventoryType())], *item, score); break;
+        }
+    }
+
+    auto const best = [](std::vector<std::pair<int32, ItemTemplate const*>> const& list, ItemTemplate const* not_this) -> GearPick
+    {
+        GearPick pick;
+        for (auto const& [score, item] : list)
+            if (item != not_this)
+                Consider(pick, *item, score);
+        return pick;
+    };
+
+    // The weapons: a tank takes one hand and a shield; a dual-wielder two one-handers; otherwise a two-hander when it is at least as
+    // good as the best one-hander, else one hand and a shield or a held item.
+    GearPick main, off;
+    GearPick const mainOne = best(oneHand, nullptr);
+    if (tank && mainOne.Item && shield.Item)
+    {
+        main = mainOne;
+        off = shield;
+    }
+    else if (bot.CanDualWield() && mainOne.Item && best(offHand, mainOne.Item).Item)
+    {
+        main = mainOne;
+        off = best(offHand, mainOne.Item);
+    }
+    else if (twoHand.Item && (!mainOne.Item || twoHand.Score >= mainOne.Score))
+        main = twoHand;
+    else
+    {
+        main = mainOne;
+        off = shield.Item ? shield : holdable;
+    }
+
+    uint32 equipped = 0;
+    if (main.Item && GiveAndEquip(bot, *main.Item, EQUIPMENT_SLOT_MAINHAND))
+        ++equipped;
+    if (off.Item && (!main.Item || main.Item->GetInventoryType() != INVTYPE_2HWEAPON) && GiveAndEquip(bot, *off.Item, EQUIPMENT_SLOT_OFFHAND))
+        ++equipped;
+    for (auto const& [slot, pick] : bySlot)
+        if (pick.Item && GiveAndEquip(bot, *pick.Item, slot))
+            ++equipped;
+
+    TC_LOG_INFO("server.worldserver", "BotMgr: autogear {} (class {}, level {}): {} item(s) equipped.", bot.GetName(), uint32(bot.GetClass()),
+        uint32(bot.GetLevel()), equipped);
+    return BotActionStatus::kApplied;
 }
 
 // Learns every spell the trainer in range teaches this bot now: lowest level first, so each rank comes before the next. The
@@ -781,6 +966,9 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
 
         case ActionType::kGrant:
             return GrantAction(bot, action, reason);
+
+        case ActionType::kAutoGear:
+            return AutoGearAction(bot, action.spell_id, reason);
 
         case ActionType::kGroup:
         {
