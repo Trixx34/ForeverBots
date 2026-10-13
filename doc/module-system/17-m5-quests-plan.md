@@ -48,6 +48,63 @@ With the columns, the next step is one export per race start: the quests that st
 and ender (name, map, position), their objectives (kind, target, count) and their rewards. That list is the first data file the module
 reads, and the test set for the accept and hand-in actions.
 
+### Export queries (columns confirmed on the sim)
+
+Run on `forever_sim_world`, read-only. Quest level comes from `quest_template_classic_level` (`QuestLevel`, 0 = unset). `QuestSortID`
+below 0 is a class or profession sort; the filters keep quests with a level of 1 to 10, or no level and a giver under that range.
+
+    -- 1. The quests: id, title, level, chain links, race/class limits, rewards.
+    SELECT q.ID, q.LogTitle, c.QuestLevel, a.MaxLevel, q.AllowableRaces, a.AllowableClasses,
+           a.PrevQuestID, a.NextQuestID, q.RewardNextQuest, a.ExclusiveGroup, a.BreadcrumbForQuestId,
+           q.StartItem, q.RewardItem1, q.RewardAmount1, q.RewardChoiceItemID1, q.RewardChoiceItemID2, q.RewardChoiceItemID3,
+           q.RewardXPDifficulty, q.RewardMoneyDifficulty, q.Flags, a.SpecialFlags
+    FROM quest_template q
+    LEFT JOIN quest_template_addon a ON a.ID = q.ID
+    LEFT JOIN quest_template_classic_level c ON c.ID = q.ID
+    WHERE c.QuestLevel BETWEEN 1 AND 10 AND q.QuestSortID >= 0
+    ORDER BY c.QuestLevel, q.ID;
+
+    -- 2. The objectives (Type 0 = kill creature, 1 = item to collect, 2 = go to location/object, others: ignore at first).
+    SELECT o.QuestID, o.`Order`, o.StorageIndex, o.Type, o.ObjectID, o.Amount, o.Flags, o.Description
+    FROM quest_objectives o
+    JOIN quest_template_classic_level c ON c.ID = o.QuestID
+    WHERE c.QuestLevel BETWEEN 1 AND 10
+    ORDER BY o.QuestID, o.`Order`;
+
+    -- 3. Givers and enders with name, map and position (first spawn of each creature).
+    SELECT s.quest AS QuestID, 'start' AS Role, s.id AS Creature, t.name AS Name, cr.map AS Map,
+           ROUND(cr.position_x,1) AS X, ROUND(cr.position_y,1) AS Y, ROUND(cr.position_z,1) AS Z
+    FROM creature_queststarter s
+    JOIN creature_template t ON t.entry = s.id
+    JOIN creature cr ON cr.id = s.id
+    JOIN quest_template_classic_level c ON c.ID = s.quest AND c.QuestLevel BETWEEN 1 AND 10
+    UNION ALL
+    SELECT e.quest, 'end', e.id, t.name, cr.map, ROUND(cr.position_x,1), ROUND(cr.position_y,1), ROUND(cr.position_z,1)
+    FROM creature_questender e
+    JOIN creature_template t ON t.entry = e.id
+    JOIN creature cr ON cr.id = e.id
+    JOIN quest_template_classic_level c ON c.ID = e.quest AND c.QuestLevel BETWEEN 1 AND 10
+    ORDER BY QuestID, Role;
+
+    -- 4. Kill and collect targets: where the creatures spawn (needed to walk to them).
+    SELECT o.QuestID, o.ObjectID AS Creature, t.name, cr.map, ROUND(AVG(cr.position_x),1) AS X, ROUND(AVG(cr.position_y),1) AS Y,
+           COUNT(*) AS Spawns
+    FROM quest_objectives o
+    JOIN creature_template t ON t.entry = o.ObjectID
+    JOIN creature cr ON cr.id = o.ObjectID
+    JOIN quest_template_classic_level c ON c.ID = o.QuestID AND c.QuestLevel BETWEEN 1 AND 10
+    WHERE o.Type = 0
+    GROUP BY o.QuestID, o.ObjectID, t.name, cr.map;
+
+    -- 5. Collect objectives: which creature drops the item.
+    SELECT o.QuestID, o.ObjectID AS Item, lt.Entry AS Creature
+    FROM quest_objectives o
+    JOIN creature_loot_template lt ON lt.Item = o.ObjectID
+    JOIN quest_template_classic_level c ON c.ID = o.QuestID AND c.QuestLevel BETWEEN 1 AND 10
+    WHERE o.Type = 1;
+
+Results of 1 to 3 are enough to choose the accept/hand-in actions; 4 and 5 are for the objective walking. Send each as a text table.
+
 ## Order of work
 
 1. Column listing, then the starter quest export (data).
