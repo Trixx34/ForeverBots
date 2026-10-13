@@ -226,6 +226,7 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
     entry.power = ClampToUint32(int64(bot.GetPower(powerType)));
     entry.max_power = ClampToUint32(int64(bot.GetMaxPower(powerType)));
     entry.level = bot.GetLevel();
+    entry.map_id = bot.GetMapId(); // layout 7: the map, for a module's hubs (M7)
 
     FillCooldowns(bot, entry.spell_cooldowns);
 
