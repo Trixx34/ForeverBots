@@ -28,6 +28,6 @@ constexpr uint32 kNearbyPlayerSlots = 4;
 // The snapshot entry for one bot, with up to `maxNearby` units near it. Creatures come first, closest first, and at most
 // kNearbyPlayerSlots players are listed ahead of them. When refreshNearby is false the nearby units are the last ones
 // stored in cachedNearby, so the range query runs for only some of the bots on each tick.
-ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNearby, std::vector<NearbyUnit>& cachedNearby);
+ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNearby, std::vector<forever_module::NearbyUnit>& cachedNearby);
 
 #endif // TRINITYCORE_MODULE_BOT_SNAPSHOT_H
