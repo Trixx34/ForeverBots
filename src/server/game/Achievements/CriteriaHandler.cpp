@@ -707,7 +707,7 @@ void CriteriaHandler::UpdateCriteria(Criteria const* criteria, uint64 miscValue1
             break;
         case CriteriaType::ReputationGained:
         {
-            int32 reputation = referencePlayer->GetReputationMgr().GetReputation(criteria->Entry->Asset.FactionID);
+            int32 reputation = referencePlayer->GetReputation(criteria->Entry->Asset.FactionID);
             if (reputation > 0)
                 SetCriteriaProgress(criteria, reputation, referencePlayer);
             break;
@@ -2066,7 +2066,7 @@ bool CriteriaHandler::ModifierSatisfied(ModifierTreeEntry const* modifier, uint6
         case ModifierTreeType::PlayerInGuildParty: // 61 NYI
             return false;
         case ModifierTreeType::PlayerGuildReputationEqualOrGreaterThan: // 62
-            if (referencePlayer->GetReputationMgr().GetReputation(1168) < int32(reqValue))
+            if (referencePlayer->GetReputation(1168) < int32(reqValue))
                 return false;
             break;
         case ModifierTreeType::PlayerInRatedBattleground: // 63
@@ -2119,7 +2119,7 @@ bool CriteriaHandler::ModifierSatisfied(ModifierTreeEntry const* modifier, uint6
             break;
         }
         case ModifierTreeType::TillersReputationGreaterThan: // 75
-            if (referencePlayer->GetReputationMgr().GetReputation(1272) < int32(reqValue))
+            if (referencePlayer->GetReputation(1272) < int32(reqValue))
                 return false;
             break;
         case ModifierTreeType::BattlePetAchievementPointsEqualOrGreaterThan: // 76
@@ -2194,7 +2194,7 @@ bool CriteriaHandler::ModifierSatisfied(ModifierTreeEntry const* modifier, uint6
                 return false;
             break;
         case ModifierTreeType::ExaltedWithFaction: // 85
-            if (referencePlayer->GetReputationMgr().GetReputation(reqValue) < 42000)
+            if (referencePlayer->GetReputation(reqValue) < 42000)
                 return false;
             break;
         case ModifierTreeType::EarnedAchievementOnAccount: // 86
@@ -2203,7 +2203,7 @@ bool CriteriaHandler::ModifierSatisfied(ModifierTreeEntry const* modifier, uint6
                 return false;
             break;
         case ModifierTreeType::OrderOfTheCloudSerpentReputationGreaterThan: // 88
-            if (referencePlayer->GetReputationMgr().GetReputation(1271) < int32(reqValue))
+            if (referencePlayer->GetReputation(1271) < int32(reqValue))
                 return false;
             break;
         case ModifierTreeType::BattlePetQuality: // 89 NYI
@@ -2234,7 +2234,7 @@ bool CriteriaHandler::ModifierSatisfied(ModifierTreeEntry const* modifier, uint6
             break;
         }
         case ModifierTreeType::ReputationWithFactionIsEqualOrGreaterThan: // 95
-            if (referencePlayer->GetReputationMgr().GetReputation(reqValue) < int32(secondaryAsset))
+            if (referencePlayer->GetReputation(reqValue) < int32(secondaryAsset))
                 return false;
             break;
         case ModifierTreeType::ItemClassAndSubclass: // 96
