@@ -1721,12 +1721,11 @@ Modules.Tier2.MaxNearbyUnits = 16
 Modules.Tier2.MaxActions = 3000
 
 #    Modules.Tier2.NearbyRefreshTicks
-#        Default:     1
-#        Each bot's nearby units are queried on one tick in this many, staggered by guid. 1 queries every bot every tick.
-#        At 1500 bots, 4 cuts the range queries to a quarter of the cost per tick, at the price of a nearby list up to three
-#        ticks old.
+#        Default:     0 (auto)
+#        Each bot's nearby units are queried on one tick in this many, staggered by guid. 0 picks one in ceil(bots / 400):
+#        1 up to 400 bots, 4 at 1500. A nearby list is at most that many ticks old. 1 queries every bot every tick.
 
-Modules.Tier2.NearbyRefreshTicks = 1
+Modules.Tier2.NearbyRefreshTicks = 0
 
 #    Modules.Tier2.MaxTickInterval
 #        Default:     100
@@ -1775,16 +1774,17 @@ Bot.Run.StopTime =
 
 #    Bot.Spread.SpacingYards
 #        Default:     3
-#        Distance between neighbouring bots when they are spread around their race's start. Each login moves the bot onto
-#        its spiral slot (see Bot.Spread.MaxRadiusYards). 0 leaves bots where they are.
+#        Distance between neighbouring bots when they are spread around their race's start. A bot still on its create spot
+#        is moved onto its spiral slot at its first login (see Bot.Spread.MaxRadiusYards). 0 leaves bots where they are.
 
 Bot.Spread.SpacingYards = 3
 
 #    Bot.Spread.MaxRadiusYards
 #        Default:     100
-#        The largest distance from the race start a spread bot is placed. Bots beyond this radius share the ring.
+#        The largest distance from the race start a spread bot is placed. Each candidate point needs ground at about the
+#        start's height and a clear line of sight from the start. A bot that has moved since creation keeps its position.
 
-Bot.Spread.MaxRadiusYards = 100
+Bot.Spread.MaxRadiusYards = 200
 
 #    Bot.Login.TimeoutMs
 #        Default:     60000

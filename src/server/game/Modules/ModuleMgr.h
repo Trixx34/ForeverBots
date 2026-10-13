@@ -196,8 +196,8 @@ class TC_GAME_API ModuleMgr
             uint32 Tier2MaxActions = 256;
             uint32 Tier2MaxTickInterval = 100;
             // Each bot's nearby units are queried on one tick in this many, staggered by guid, so the world thread pays for a
-            // fraction of the range queries per tick. 1 queries every bot every tick.
-            uint32 Tier2NearbyRefreshTicks = 1;
+            // fraction of the range queries per tick. 0 (auto) picks one tick in ceil(bots / 400): 1 up to 400 bots, 4 at 1500.
+            uint32 Tier2NearbyRefreshTicks = 0;
             bool AutoApprove = false;
         };
 

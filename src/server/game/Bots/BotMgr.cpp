@@ -112,9 +112,16 @@ int32 ParseClockSeconds(std::string const& text)
 
 // Bots stand on a sunflower spiral around their race's start: slot s is at radius spacing * sqrt(s) and angle s times the
 // golden angle, so neighbouring slots are a fixed distance apart and no two bots share a point. A bot's slot comes from its
-// guid, so it is the same after every restart.
-constexpr uint32 kSpreadSlots = 2000;
+// guid, so it is the same after every restart. 4096 slots keep 1500 bots apart with no slot shared, and the largest radius
+// (spacing * 64) is the only cap the spiral needs.
+constexpr uint32 kSpreadSlots = 4096;
 constexpr float kGoldenAngle = 2.39996323f;
+// A bot is spread only while it is still within this distance of its race's create spot. A bot that has moved keeps its place.
+constexpr float kCreateSpotYards = 1.0f;
+// Candidate points tried for a slot before a bot is left where it is: each turns the angle and pulls the radius in.
+constexpr uint32 kSpreadAttempts = 8;
+// The ground under a candidate may differ from the start's height by at most this much (a ledge is not a place to stand).
+constexpr float kSpreadMaxDropYards = 4.0f;
 
 int32 LocalSecondsOfDay()
 {
@@ -140,7 +147,7 @@ void BotMgr::LoadRegistry()
     _loginTimeoutMs = uint32(std::max<int32>(1000, sConfigMgr->GetIntDefault("Bot.Login.TimeoutMs", 60000)));
     _reloginDelayMs = uint32(std::max<int32>(0, sConfigMgr->GetIntDefault("Bot.Relogin.DelayMs", 2000)));
     _spreadSpacing = std::max(0.0f, sConfigMgr->GetFloatDefault("Bot.Spread.SpacingYards", 3.0f));
-    _spreadMaxRadius = std::max(0.0f, sConfigMgr->GetFloatDefault("Bot.Spread.MaxRadiusYards", 100.0f));
+    _spreadMaxRadius = std::max(0.0f, sConfigMgr->GetFloatDefault("Bot.Spread.MaxRadiusYards", 200.0f));
     _loginPerSecond = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Login.MaxPerSecond", 10)));
     _limitMaxBots = uint32(std::max<int32>(1, sConfigMgr->GetIntDefault("Bot.Limit.MaxBots", 1500)));
     _limitMaxWorldDiffMs = uint32(std::max<int32>(10, sConfigMgr->GetIntDefault("Bot.Limit.MaxWorldDiffMs", 250)));
@@ -587,8 +594,10 @@ void BotMgr::StartLogin(BotInfo& bot)
     _loggingIn.push_back(bot.Guid);
 }
 
-// Moves a bot that is in the world onto its spread point, so bots do not all stand on the race start. This runs at each
-// login, once the bot is on its map: the ground height is read from the map there, which it cannot be before.
+// Moves a bot onto its spread point, so bots do not all stand on the race start. Only a bot still on its create spot is
+// moved: once it has moved (or been moved), its saved position is kept. A candidate point must have ground at about the
+// start's height and a clear line of sight from the start (no wall or ledge in between); otherwise the next candidate is
+// tried, and if none fits the bot stays where it is.
 void BotMgr::SpreadBot(Player& bot)
 {
     if (_spreadSpacing <= 0.0f)
@@ -601,15 +610,27 @@ void BotMgr::SpreadBot(Player& bot)
     WorldLocation const& start = info->createPosition.Loc;
     if (start.GetMapId() != bot.GetMapId())
         return; // a bot somewhere else keeps its place
+    if (bot.GetExactDist2d(&start) > kCreateSpotYards)
+        return; // it has moved since it was created
 
     uint32 const slot = uint32(bot.GetGUID().GetCounter() % kSpreadSlots);
     float const radius = std::min(_spreadSpacing * std::sqrt(float(slot) + 0.5f), _spreadMaxRadius);
-    float const angle = float(slot) * kGoldenAngle;
-    float const x = start.GetPositionX() + radius * std::cos(angle);
-    float const y = start.GetPositionY() + radius * std::sin(angle);
-    float z = start.GetPositionZ();
-    bot.UpdateGroundPositionZ(x, y, z);
-    bot.TeleportTo(start.GetMapId(), x, y, z, bot.GetOrientation());
+    for (uint32 attempt = 0; attempt < kSpreadAttempts; ++attempt)
+    {
+        float const turned = radius * (1.0f - 0.1f * float(attempt));
+        float const angle = float(slot) * kGoldenAngle + 0.8f * float(attempt);
+        float const x = start.GetPositionX() + turned * std::cos(angle);
+        float const y = start.GetPositionY() + turned * std::sin(angle);
+
+        float const ground = bot.GetMapHeight(x, y, start.GetPositionZ());
+        if (ground <= INVALID_HEIGHT || std::fabs(ground - start.GetPositionZ()) > kSpreadMaxDropYards)
+            continue;
+        if (!bot.IsWithinLOS(x, y, ground))
+            continue;
+
+        bot.TeleportTo(start.GetMapId(), x, y, ground, bot.GetOrientation());
+        return;
+    }
 }
 
 void BotMgr::FinishLogin(BotInfo& bot)

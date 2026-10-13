@@ -23,7 +23,7 @@ bool EncodeUnitRef(Unit const& unit, uint64& ref);
 
 // Players the nearby list keeps before creatures. A bot fights creatures; a few players keep following possible. Without
 // this cap, a crowd of bots fills every slot with other bots and no creature is ever seen (the 1500-bot run).
-constexpr uint32 kNearbyPlayerSlots = 2;
+constexpr uint32 kNearbyPlayerSlots = 4;
 
 // The snapshot entry for one bot, with up to `maxNearby` units near it. Creatures come first, closest first, and at most
 // kNearbyPlayerSlots players are listed ahead of them. When refreshNearby is false the nearby units are the last ones

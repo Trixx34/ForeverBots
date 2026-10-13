@@ -120,7 +120,7 @@ class TC_GAME_API BotMgr
         uint32 _loginMaxPerTick = 5;
         // Spread around each race's start (Bot.Spread.*): spacing between bots, and the largest distance from the start.
         float _spreadSpacing = 3.0f;
-        float _spreadMaxRadius = 100.0f;
+        float _spreadMaxRadius = 200.0f;
         uint32 _loginTimeoutMs = 60000;
         uint32 _reloginDelayMs = 2000; // lets the previous logout save reach the database before the next load
         bool _registryLoaded = false;
