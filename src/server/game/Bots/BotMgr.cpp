@@ -13,6 +13,9 @@
 #include "Log.h"
 #include "ModuleMgr.h"
 #include "Map.h"
+#include "MovementPackets.h"
+#include "WorldPacket.h"
+#include "Opcodes.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -540,6 +543,37 @@ void BotMgr::Update(uint32 diff)
     PollLogins();
     CheckStopTime();
     ProcessLogins(diff);
+    PumpTeleports();
+}
+
+// A teleport to another map (or an acknowledged one on the same map) waits for the client: SMSG_SUSPEND_TOKEN is answered by
+// CMSG_SUSPEND_TOKEN_RESPONSE, SMSG_NEW_WORLD by CMSG_MOVE_WORLDPORT_ACK, SMSG_MOVE_TELEPORT by CMSG_MOVE_TELEPORT_ACK. A bot has no client
+// and its packets are dropped, so without this a bot sent into a dungeon is taken off its old map and never arrives. Each step is
+// called here as the session would on receiving the answer, once per world update.
+void BotMgr::PumpTeleports()
+{
+    for (auto& [guid, bot] : _bots)
+    {
+        if (bot.State != BOT_ONLINE || !bot.Session)
+            continue;
+        Player* player = bot.Session->GetPlayer();
+        if (!player)
+            continue;
+
+        if (player->GetTeleportState() == TeleportState::WaitingForSuspendTokenResponse)
+        {
+            WorldPackets::Movement::SuspendTokenResponse response{ WorldPacket(CMSG_SUSPEND_TOKEN_RESPONSE) };
+            bot.Session->HandleSuspendTokenResponse(response);
+        }
+        if (player->GetTeleportState() == TeleportState::WaitingForWorldPortAck)
+            bot.Session->HandleMoveWorldportAck();
+        if (player->GetTeleportState() == TeleportState::WaitingForTeleportAck)
+        {
+            WorldPackets::Movement::MoveTeleportAck ack{ WorldPacket(CMSG_MOVE_TELEPORT_ACK) };
+            ack.MoverGUID = player->GetGUID();
+            bot.Session->HandleMoveTeleportAck(ack);
+        }
+    }
 }
 
 bool BotMgr::AcceptSpawn(std::string& reason)

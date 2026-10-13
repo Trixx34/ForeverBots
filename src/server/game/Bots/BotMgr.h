@@ -115,6 +115,7 @@ class TC_GAME_API BotMgr
         void CheckStopTime();
         void PollLogins(); // advances the logins in flight: finishes or fails them
         void PollCreates(); // runs the save callbacks of characters that finished committing
+        void PumpTeleports(); // answers the teleport steps a client would (suspend token, world port, teleport ack) for the bots
         void FinishCreate(uint64 guid, bool success);
         void FinishLogin(BotInfo& bot);
         void SpreadBot(Player& bot); // puts a bot that is in the world onto its spread point around its race's start
