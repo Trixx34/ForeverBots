@@ -338,10 +338,11 @@ uint64 BotMgr::CreateBot(uint8 raceId, uint8 classId, uint8 level, std::string& 
     bot.State = BOT_CREATING;
     _bots[guid] = std::move(bot);
 
+    size_t const knownSpells = player->GetSpellMap().size();
     player.reset();
     session.reset();
 
-    TC_LOG_INFO("server.worldserver", "BotMgr: created bot {} (guid {}, race {}, class {}, level {}).", username, guid, raceId, classId, level);
+    TC_LOG_INFO("server.worldserver", "BotMgr: created bot {} (guid {}, race {}, class {}, level {}, {} spells known).", username, guid, raceId, classId, level, knownSpells);
     return guid;
 }
 
