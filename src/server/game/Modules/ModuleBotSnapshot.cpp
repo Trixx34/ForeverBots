@@ -2,11 +2,14 @@
 #include "Cell.h"
 #include "DB2Structure.h"
 #include "CellImpl.h"
+#include "CreatureData.h"
 #include "Group.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "ObjectGuid.h"
+#include "ObjectMgr.h"
 #include "Player.h"
+#include "SpawnData.h"
 #include "SharedDefines.h"
 #include "SpellHistory.h"
 #include "SpellInfo.h"
@@ -14,6 +17,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <unordered_map>
 #include <vector>
 
 using forever_module::BotSnapshot;
@@ -73,6 +77,93 @@ uint64 PlayerRef(ObjectGuid guid)
     if (guid.GetCounter() > forever_module::kUnitRefCounterMask)
         return 0;
     return forever_module::MakeUnitRef(uint8(HighGuid::Player), 0, guid.GetCounter());
+}
+
+// Where the vendors of each map stand: the spawn position of every creature whose template has a vendor flag. Built on the
+// first call, since the spawn table is loaded at world start. Only the world thread reads it.
+struct VendorSpot
+{
+    float X;
+    float Y;
+    float Z;
+};
+
+std::unordered_map<uint32, std::vector<VendorSpot>> const& VendorsByMap()
+{
+    static std::unordered_map<uint32, std::vector<VendorSpot>> vendors;
+    static bool built = false;
+    if (!built)
+    {
+        built = true;
+        for (auto const& [spawnId, spawn] : sObjectMgr->GetAllCreatureData())
+        {
+            CreatureTemplate const* templ = sObjectMgr->GetCreatureTemplate(spawn.id);
+            if (!templ || (templ->npcflag & UNIT_NPC_FLAG_VENDOR_MASK) == 0)
+                continue;
+            vendors[spawn.mapId].push_back({ spawn.spawnPoint.GetPositionX(), spawn.spawnPoint.GetPositionY(),
+                                             spawn.spawnPoint.GetPositionZ() });
+        }
+    }
+    return vendors;
+}
+
+// The nearest vendor to a bot on its map, looked up again only when the bot has moved this far from the last lookup.
+constexpr float kVendorLookupMoveYards = 100.0f;
+
+struct VendorLookup
+{
+    bool Made = false;      // a lookup has been made for this bot
+    uint32 MapId = 0;
+    float X = 0.0f;
+    float Y = 0.0f;
+    bool Found = false;     // the map has a vendor
+    VendorSpot Spot{};
+};
+
+// Fills the nearest-vendor fields of the snapshot entry (layout 6, M6). The position is 2D for the distance: vendors sit at
+// different heights in the same town, and the walk is on the ground.
+void FillNearestVendor(Player& bot, BotSnapshot& entry)
+{
+    static std::unordered_map<uint64, VendorLookup> lookups; // bot counter -> its last lookup
+    VendorLookup& last = lookups[bot.GetGUID().GetCounter()];
+
+    float const x = bot.GetPositionX();
+    float const y = bot.GetPositionY();
+    uint32 const mapId = bot.GetMapId();
+    float const dx = x - last.X;
+    float const dy = y - last.Y;
+    bool const fresh = last.Made && last.MapId == mapId && dx * dx + dy * dy <= kVendorLookupMoveYards * kVendorLookupMoveYards;
+    if (!fresh)
+    {
+        last = VendorLookup{};
+        last.Made = true;
+        last.MapId = mapId;
+        last.X = x;
+        last.Y = y;
+        if (auto const vendors = VendorsByMap(); auto const onMap = vendors.find(mapId); onMap != vendors.end())
+        {
+            float bestSq = std::numeric_limits<float>::max();
+            for (VendorSpot const& spot : onMap->second)
+            {
+                float const sx = spot.X - x;
+                float const sy = spot.Y - y;
+                if (sx * sx + sy * sy < bestSq)
+                {
+                    bestSq = sx * sx + sy * sy;
+                    last.Spot = spot;
+                    last.Found = true;
+                }
+            }
+        }
+    }
+
+    if (last.Found)
+    {
+        entry.vendor_x = last.Spot.X;
+        entry.vendor_y = last.Spot.Y;
+        entry.vendor_z = last.Spot.Z;
+        entry.vendor_valid = 1;
+    }
 }
 
 // The bot's party and any invite it has not answered (layout 5, M8).
@@ -144,6 +235,7 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
     }
 
     FillParty(bot, entry);
+    FillNearestVendor(bot, entry);
 
     if (maxNearby == 0)
         return result;
