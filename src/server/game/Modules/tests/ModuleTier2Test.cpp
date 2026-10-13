@@ -4,11 +4,15 @@
 
 #include "ModuleTier2.h"
 
+#include <vector>
+
 #include <boost/interprocess/mapped_region.hpp>
 #include <boost/interprocess/shared_memory_object.hpp>
 
 #include <cstdio>
+#include <cstring>
 #include <string>
+#include <vector>
 
 namespace bi = boost::interprocess;
 
@@ -75,6 +79,95 @@ int main()
     auto const* snapshot = reinterpret_cast<forever_module::WorldTickSnapshotHeader const*>(
         base + forever_module::Tier2SnapshotBufferOffset(4, 2, header->published_snapshot_buffer.load()));
     CHECK(snapshot->tick_number == 6);
+
+    // Actions: the module writes into the buffer the core is not reading, then publishes the tick and the index,
+    // the way the SDK's Tier2Session::PublishActions does. The core reads only what is new.
+    bi::shared_memory_object shmRw(bi::open_only, name.c_str(), bi::read_write);
+    bi::mapped_region rw(shmRw, bi::read_write);
+    auto* rwBase = static_cast<std::byte*>(rw.get_address());
+    auto* rwHeader = static_cast<forever_module::Tier2RegionHeader*>(rw.get_address());
+
+    auto publishActions = [&](std::uint64_t actionTick, std::vector<forever_module::BotAction> const& actions,
+                              std::uint32_t claimedCount)
+    {
+        std::uint8_t const target = rwHeader->published_action_buffer.load() ^ 1;
+        auto* queue = reinterpret_cast<forever_module::ActionQueueHeader*>(
+            rwBase + forever_module::Tier2ActionBufferOffset(4, 2, 8, target));
+        queue->tick_number = actionTick;
+        queue->action_count = claimedCount;
+        if (!actions.empty())
+            std::memcpy(static_cast<void*>(queue + 1), actions.data(), actions.size() * sizeof(forever_module::BotAction));
+        rwHeader->published_action_tick.store(actionTick);
+        rwHeader->published_action_buffer.store(target);
+    };
+
+    forever_module::BotAction move;
+    move.bot_guid = 42;
+    move.type = forever_module::ActionType::kMoveTo;
+    move.dest_x = 1.0f;
+    forever_module::BotAction stop;
+    stop.bot_guid = 42;
+    stop.type = forever_module::ActionType::kStop;
+
+    ModuleActionSet actions;
+    CHECK(!region->ReadNewActions(actions)); // nothing published yet
+
+    publishActions(7, {move, stop}, 2);
+    CHECK(region->ReadNewActions(actions));
+    CHECK(actions.Tick == 7);
+    CHECK(actions.Actions.size() == 2);
+    if (actions.Actions.size() == 2)
+    {
+        CHECK(actions.Actions[0].bot_guid == 42 && actions.Actions[0].type == forever_module::ActionType::kMoveTo);
+        CHECK(actions.Actions[0].dest_x == 1.0f);
+        CHECK(actions.Actions[1].type == forever_module::ActionType::kStop);
+    }
+    CHECK(!region->ReadNewActions(actions)); // the same set is not returned twice
+
+    // An empty set is still new (it tells the core the module now wants nothing).
+    publishActions(8, {}, 0);
+    CHECK(region->ReadNewActions(actions));
+    CHECK(actions.Tick == 8);
+    CHECK(actions.Actions.empty());
+
+    // A claimed count above MaxActions is clamped to what the region holds (8 here).
+    std::vector<forever_module::BotAction> full(8, stop);
+    publishActions(9, full, 9);
+    CHECK(region->ReadNewActions(actions));
+    CHECK(actions.Actions.size() == 8);
+
+    // Snapshot contents: a bot with one nearby unit, then five bots against MaxBots = 4 (the fifth is dropped).
+    forever_module::BotSnapshot botEntry;
+    botEntry.guid = 42;
+    botEntry.health = 500;
+    botEntry.max_health = 1000;
+    forever_module::NearbyUnit nearbyEntry;
+    nearbyEntry.guid = forever_module::MakeUnitRef(8, 1234, 7);
+    nearbyEntry.is_hostile = true;
+    std::vector<ModuleSnapshotBot> withBot(1);
+    withBot[0].Bot = botEntry;
+    withBot[0].Nearby = { nearbyEntry };
+    region->PublishSnapshot(9, withBot);
+
+    uint8_t const contentBuffer = header->published_snapshot_buffer.load();
+    auto const* contentSnap = reinterpret_cast<forever_module::WorldTickSnapshotHeader const*>(
+        base + forever_module::Tier2SnapshotBufferOffset(4, 2, contentBuffer));
+    CHECK(contentSnap->tick_number == 9);
+    CHECK(contentSnap->bot_count == 1);
+    auto const* botSlots = reinterpret_cast<forever_module::BotSnapshot const*>(contentSnap + 1);
+    CHECK(botSlots[0].guid == 42);
+    CHECK(botSlots[0].health == 500);
+    CHECK(botSlots[0].nearby_count == 1);
+    auto const* nearbySlots = reinterpret_cast<forever_module::NearbyUnit const*>(botSlots + 4);
+    CHECK(nearbySlots[0].guid == forever_module::MakeUnitRef(8, 1234, 7));
+    CHECK(nearbySlots[0].is_hostile);
+
+    std::vector<ModuleSnapshotBot> tooMany(5, withBot[0]);
+    region->PublishSnapshot(10, tooMany);
+    uint8_t const clampBuffer = header->published_snapshot_buffer.load();
+    auto const* clampSnap = reinterpret_cast<forever_module::WorldTickSnapshotHeader const*>(
+        base + forever_module::Tier2SnapshotBufferOffset(4, 2, clampBuffer));
+    CHECK(clampSnap->bot_count == 4);
 
     // Removing the region drops the name, so a later module attach fails.
     region.reset();

@@ -7,6 +7,7 @@
 #include "Item.h"
 #include "ItemTemplate.h"
 #include "Log.h"
+#include "ModuleStore.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "WorldSession.h"
@@ -82,9 +83,71 @@ void SellItem(Player* player, ModuleWire::ActionRequestMsg const& request, Modul
 
 } // namespace
 
-void ExecuteModuleAction(ModuleWire::ActionRequestMsg const& request, ModuleWire::ActionReplyMsg& reply)
+namespace
+{
+
+// Module store actions (doc 15). They need the module, not a player.
+void ExecuteStoreAction(std::string const& moduleName, ModuleWire::ActionRequestMsg const& request, ModuleWire::ActionReplyMsg& reply)
+{
+    std::string error;
+    switch (request.Kind)
+    {
+        case ModuleWire::ActionKind::StoreGet:
+        {
+            bool found = false;
+            std::string value;
+            error = ModuleStore::Get(moduleName, request.Key, found, value);
+            reply.Found = found;
+            reply.Value = std::move(value);
+            break;
+        }
+        case ModuleWire::ActionKind::StoreSet:
+            error = ModuleStore::Set(moduleName, request.Key, request.Value);
+            break;
+        case ModuleWire::ActionKind::StoreDelete:
+        {
+            bool existed = false;
+            error = ModuleStore::Delete(moduleName, request.Key, existed);
+            reply.Found = existed;
+            break;
+        }
+        case ModuleWire::ActionKind::StoreList:
+            error = ModuleStore::List(moduleName, request.Key, reply.Keys);
+            break;
+        default:
+            error = "not a store action";
+            break;
+    }
+
+    if (!error.empty())
+    {
+        reply.Reason = error;
+        return;
+    }
+    reply.Success = true;
+}
+
+} // namespace
+
+void ExecuteModuleAction(ModuleWire::ActionRequestMsg const& request, ModuleWire::ActionReplyMsg& reply, std::string const& moduleName)
 {
     reply.MessageId = request.MessageId;
+
+    switch (request.Kind)
+    {
+        case ModuleWire::ActionKind::StoreGet:
+        case ModuleWire::ActionKind::StoreSet:
+        case ModuleWire::ActionKind::StoreDelete:
+        case ModuleWire::ActionKind::StoreList:
+            if (moduleName.empty())
+                reply.Reason = "module is no longer loaded";
+            else
+                ExecuteStoreAction(moduleName, request, reply);
+            return;
+
+        default:
+            break;
+    }
 
     Player* player = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(request.PlayerGuid));
     if (!player || !player->GetSession())

@@ -162,6 +162,10 @@ enum class ActionKind : uint8
     None = 0,
     SellItem = 1,
     SendPlayerMessage = 2,
+    StoreGet = 3,
+    StoreSet = 4,
+    StoreDelete = 5,
+    StoreList = 6,
 };
 
 struct ActionRequestMsg
@@ -175,6 +179,9 @@ struct ActionRequestMsg
     uint32 Count = 0;
     // SendPlayerMessage
     std::string Text;
+    // Store: Key for get, set and delete; the prefix for list; Value for set
+    std::string Key;
+    std::string Value;
 };
 
 // Core -> module reply to an ActionRequest.
@@ -184,6 +191,10 @@ struct ActionReplyMsg
     bool Success = false;
     std::string Reason;
     uint64 CopperGained = 0;
+    // Store
+    bool Found = false;
+    std::string Value;
+    std::vector<std::string> Keys;
 };
 
 bool Decode(std::string_view bytes, ActionRequestMsg& out);

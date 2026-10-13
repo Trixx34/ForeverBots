@@ -76,6 +76,7 @@
 #include "MapUtils.h"
 #include "Metric.h"
 #include "MiscPackets.h"
+#include "BotMgr.h"
 #include "ModuleMgr.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -579,6 +580,7 @@ void World::LoadConfigSettings(bool reload)
         }
         sLog->LoadFromConfig();
         sMetric->LoadFromConfigs();
+        sModuleMgr->ResendConfig();
     }
 
     m_defaultDbcLocale = LocaleConstant(sConfigMgr->GetIntDefault("DBC.Locale"sv, 0));
@@ -2476,6 +2478,11 @@ void World::Update(uint32 diff)
     {
         TC_METRIC_TIMER("world_update_time", TC_METRIC_TAG("type", "Update world scripts"));
         sScriptMgr->OnWorldUpdate(diff);
+    }
+
+    {
+        TC_METRIC_TIMER("world_update_time", TC_METRIC_TAG("type", "Update bots"));
+        sBotMgr->Update(diff);
     }
 
     {

@@ -6,7 +6,11 @@
 #include "Config.h"
 #include "Log.h"
 #include "ModuleActions.h"
+#include "ModuleBotActions.h"
+#include "ModuleBotSnapshot.h"
+#include "ModuleConfig.h"
 #include "ModuleTier2.h"
+#include "BotMgr.h"
 #include "ModuleManifestInfo.h"
 
 #include <optional>
@@ -14,6 +18,7 @@
 #include <boost/process/v1.hpp>
 
 #include <algorithm>
+#include <iterator>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -98,9 +103,9 @@ void ModuleMgr::LoadModules()
     _config.RestartBackoffMs = static_cast<uint64>(sConfigMgr->GetIntDefault("Modules.RestartBackoffMs", 1000));
     _config.CommandRequestTimeoutMs = static_cast<uint64>(sConfigMgr->GetIntDefault("Modules.CommandRequestTimeoutMs", 200));
     _config.AutoApprove = sConfigMgr->GetBoolDefault("Modules.AutoApproveLocal", false);
-    _config.Tier2MaxBots = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxBots", 64));
+    _config.Tier2MaxBots = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxBots", 1500));
     _config.Tier2MaxNearbyUnits = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxNearbyUnits", 16));
-    _config.Tier2MaxActions = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxActions", 256));
+    _config.Tier2MaxActions = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxActions", 3000));
     _config.Tier2MaxTickInterval = static_cast<uint32>(sConfigMgr->GetIntDefault("Modules.Tier2.MaxTickInterval", 100));
 
     std::string const root = sConfigMgr->GetStringDefault("Modules.Dir", "modules_runtime");
@@ -246,6 +251,31 @@ void ModuleMgr::ProcessModuleDirectory(std::string const& root, std::string cons
     SpawnModule(id);
 }
 
+// Keys the operator wrote as Module.<name>.<Key> (in a .conf file under the config directory, see worldserver.conf.dist).
+// The prefix is stripped, so the module sees its own key names. See doc/module-system/03, Config delivery.
+static std::vector<ModuleWire::ConfigEntry> LoadModuleConfig(std::string const& moduleName)
+{
+    return ModuleConfigFor(moduleName, sConfigMgr->GetKeysByString("Module." + moduleName + "."),
+                           [](std::string const& key) { return sConfigMgr->GetStringDefault(key, "", true); });
+}
+
+void ModuleMgr::ResendConfig()
+{
+    std::vector<std::pair<std::string, std::shared_ptr<ModuleSession>>> accepted;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (auto const& entry : _modules)
+            if (entry.second.Session && entry.second.Session->IsAccepted())
+                accepted.emplace_back(entry.second.Name, entry.second.Session);
+    }
+
+    for (auto const& [name, session] : accepted)
+    {
+        if (!session->SendConfig(LoadModuleConfig(name)))
+            TC_LOG_WARN("modules", "'{}': could not queue the reloaded config; it keeps the previous one.", name);
+    }
+}
+
 bool ModuleMgr::SpawnModule(ModuleId id)
 {
     ModuleSession::Settings settings;
@@ -269,15 +299,15 @@ bool ModuleMgr::SpawnModule(ModuleId id)
     {
         return NegotiateTier2(id, request, response, reason);
     };
-    // Module config from modules.d/<name>.conf is not wired up yet; the module gets an empty config.
+    settings.Config = LoadModuleConfig(name);
 
     auto session = std::make_shared<ModuleSession>(settings, id, [this, id](ModuleSession::Event event, std::string const& detail)
     {
         OnSessionEvent(id, event, detail);
     });
-    session->SetActionHandler([this, weak = std::weak_ptr<ModuleSession>(session)](ModuleWire::ActionRequestMsg const& request)
+    session->SetActionHandler([this, id, weak = std::weak_ptr<ModuleSession>(session)](ModuleWire::ActionRequestMsg const& request)
     {
-        EnqueueAction(weak, request);
+        EnqueueAction(id, weak, request);
     });
     session->SetControlHandlers(
         [this, id, weak = std::weak_ptr<ModuleSession>(session)](uint64 messageId, ModuleWire::ControlRequestMsg const& request)
@@ -596,13 +626,13 @@ void ModuleMgr::DispatchItemLooted(std::string_view hook, ModuleWire::ItemLooted
     }
 }
 
-void ModuleMgr::EnqueueAction(std::weak_ptr<ModuleSession> session, ModuleWire::ActionRequestMsg request)
+void ModuleMgr::EnqueueAction(ModuleId module, std::weak_ptr<ModuleSession> session, ModuleWire::ActionRequestMsg request)
 {
     {
         std::lock_guard<std::mutex> lock(_actionMutex);
         if (_pendingActions.size() < MaxPendingActions)
         {
-            _pendingActions.push_back(PendingAction{ std::move(session), std::move(request) });
+            _pendingActions.push_back(PendingAction{ module, std::move(session), std::move(request) });
             return;
         }
     }
@@ -716,6 +746,7 @@ ModuleWire::ControlResponseMsg ModuleMgr::ExecuteControlRequest(ModuleId module,
             response.Reason = "bot was spawned but its ownership could not be recorded";
             return response;
         }
+        backend->Activate(guid);
         TC_LOG_INFO("modules", "module {} spawned bot {}.", module, guid);
         response.Granted = true;
         response.BotGuid = guid;
@@ -735,6 +766,7 @@ ModuleWire::ControlResponseMsg ModuleMgr::ExecuteControlRequest(ModuleId module,
         case ModuleBotOwnership::Claim::Granted:
             response.Granted = true;
             response.BotGuid = request.BotGuid;
+            backend->Activate(request.BotGuid);
             break;
         case ModuleBotOwnership::Claim::OwnedByOther:
         {
@@ -791,8 +823,16 @@ void ModuleMgr::RunPendingActions()
 
     for (PendingAction& action : batch)
     {
+        // The module's name decides which store rows an action may touch. Empty if the module has been unloaded.
+        std::string moduleName;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (auto it = _modules.find(action.Module); it != _modules.end())
+                moduleName = it->second.Name;
+        }
+
         ModuleWire::ActionReplyMsg reply;
-        ExecuteModuleAction(action.Request, reply);
+        ExecuteModuleAction(action.Request, reply, moduleName);
         if (std::shared_ptr<ModuleSession> target = action.Session.lock())
             target->SendActionReply(reply);
     }
@@ -801,20 +841,102 @@ void ModuleMgr::RunPendingActions()
 void ModuleMgr::OnWorldTick(uint64 tick)
 {
     // Runs on the world thread (doc 04 §4). Copy the regions out under the lock; publishing needs no lock.
-    std::vector<std::shared_ptr<ModuleTier2Region>> regions;
+    std::vector<std::pair<ModuleId, std::shared_ptr<ModuleTier2Region>>> regions;
     {
         std::lock_guard<std::mutex> lock(_mutex);
         for (auto const& entry : _modules)
             if (entry.second.Tier2 && entry.second.Session && entry.second.Session->IsAccepted())
-                regions.push_back(entry.second.Tier2);
+                regions.emplace_back(entry.first, entry.second.Tier2);
     }
 
-    for (std::shared_ptr<ModuleTier2Region> const& region : regions)
+    for (auto const& [id, region] : regions)
+    {
         if (region->SnapshotDue(tick))
-            region->PublishSnapshot(tick);
+        {
+            // Only the bots this module controls. The list is copied under the lock; the bots are read without it.
+            std::vector<uint64> owned;
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                owned = _owners.BotsOf(id);
+            }
+
+            std::vector<ModuleSnapshotBot> bots;
+            for (uint64 guid : owned)
+            {
+                Player* bot = sBotMgr->GetOnlinePlayer(guid);
+                if (!bot)
+                    continue;
+
+                ModuleSnapshotBot entry = BuildSnapshotBot(*bot, region->GetBounds().MaxNearbyUnits);
+                if (auto result = _actionResults.find(guid); result != _actionResults.end())
+                {
+                    entry.Bot.last_action_type = result->second.Type;
+                    entry.Bot.last_action_status = result->second.Status;
+                    entry.Bot.last_action_spell = result->second.Spell;
+                    entry.Bot.last_action_sequence = result->second.Sequence;
+                }
+                bots.push_back(std::move(entry));
+            }
+            region->PublishSnapshot(tick, bots);
+        }
+
+        ModuleActionSet actions;
+        if (region->ReadNewActions(actions))
+            ApplyModuleActions(id, actions);
+    }
 
     RunPendingControls();
     RunPendingActions();
+
+    // Results are kept only while some module owns the bot; a bot nobody controls has nothing to report to.
+    std::lock_guard<std::mutex> lock(_mutex);
+    for (auto it = _actionResults.begin(); it != _actionResults.end();)
+    {
+        uint32 owner = 0;
+        it = _owners.Owner(it->first, owner) ? std::next(it) : _actionResults.erase(it);
+    }
+}
+
+void ModuleMgr::RecordActionResult(uint64 botGuid, forever_module::BotAction const& action, forever_module::BotActionStatus status)
+{
+    ActionResult& result = _actionResults[botGuid];
+    result.Status = status;
+    result.Type = uint8(action.type);
+    result.Spell = action.type == forever_module::ActionType::kCastSpell ? action.spell_id : 0;
+    ++result.Sequence;
+}
+
+void ModuleMgr::ApplyModuleActions(ModuleId module, ModuleActionSet const& actions)
+{
+    for (forever_module::BotAction const& action : actions.Actions)
+    {
+        uint32 owner = 0;
+        bool owned = false;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            owned = _owners.Owner(action.bot_guid, owner) && owner == module;
+        }
+        if (!owned)
+        {
+            TC_LOG_DEBUG("modules", "module {} sent an action for bot {}, which it does not control; dropped.", module, action.bot_guid);
+            RecordActionResult(action.bot_guid, action, forever_module::BotActionStatus::kRefused);
+            continue;
+        }
+
+        Player* bot = sBotMgr->GetOnlinePlayer(action.bot_guid);
+        if (!bot)
+        {
+            TC_LOG_DEBUG("modules", "module {} sent an action for bot {}, which is not online; dropped.", module, action.bot_guid);
+            RecordActionResult(action.bot_guid, action, forever_module::BotActionStatus::kNotOnline);
+            continue;
+        }
+
+        std::string reason;
+        forever_module::BotActionStatus const status = ApplyBotAction(*bot, action, reason);
+        RecordActionResult(action.bot_guid, action, status);
+        if (status != forever_module::BotActionStatus::kApplied)
+            TC_LOG_DEBUG("modules", "module {}: action on bot {} refused ({}): {}.", module, action.bot_guid, int(status), reason);
+    }
 }
 
 void ModuleMgr::Unload()

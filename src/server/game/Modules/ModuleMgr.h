@@ -2,8 +2,8 @@
  * Module System — core-side module host.
  * See doc/module-system/04-phase2-module-host-design.md for the design. Implemented: discovery,
  * spawn (boost::process), the Tier 1 handshake and heartbeat, and the restart policy (§5).
- * Not yet implemented: resource limits, Tier 2 bot actions and snapshot contents. Bot control is wired; the
- * bot backend (ModuleBotBackend) is installed by the bot implementation.
+ * Not yet implemented: resource limits. Bot control, Tier 2 snapshots with bot data, and Tier 2 bot actions are
+ * wired; the bot backend (ModuleBotBackend) is installed by the bot implementation.
  */
 
 #ifndef TRINITYCORE_MODULEMGR_H
@@ -14,6 +14,7 @@
 #include "ModuleBotBackend.h"
 #include "ModuleBotOwnership.h"
 #include "ModuleSession.h"
+#include "ModuleTier2Layout.h"
 
 #include <atomic>
 #include <chrono>
@@ -34,11 +35,12 @@ class child;
 using ModuleId = uint32;
 
 class ModuleTier2Region;
+struct ModuleActionSet;
 
 // Wire protocol this core speaks (Tier 1 schema + Tier 2 layout). Must equal kProtocolVersion in
 // forever-module-sdk's include/forever_module/protocol_version.h. Exact match only, no compat
 // shims in v1 (doc/module-system/02-phase0-decisions.md §3, doc/module-system/11-sdk-scope.md).
-inline constexpr char const* kModuleProtocolVersion = "1";
+inline constexpr char const* kModuleProtocolVersion = "4";
 
 enum class ModuleStatus : uint8
 {
@@ -120,8 +122,8 @@ class TC_GAME_API ModuleMgr
         // the protocol version, requires approval (see below), then spawns the module and runs its
         // handshake. Starts the supervisor thread that performs restarts. No-op until Modules.Enabled = 1.
         //
-        // Approval: the approval store (doc 06) is not implemented yet, so modules are only spawned
-        // when Modules.AutoApproveLocal = 1 (local development). Otherwise they stay PendingApproval.
+        // Approval: a module is spawned only when approved_modules.json records its current capabilities (doc 06),
+        // or when Modules.AutoApproveLocal = 1 (local development, not for production). Otherwise it stays PendingApproval.
         void LoadModules();
 
         // Called once per server tick from World::Update, the same way sBotMgr->Update(diff) is
@@ -166,6 +168,10 @@ class TC_GAME_API ModuleMgr
         // is sent ControlRevoked. Call from the world thread.
         void RevokeBot(uint64 botGuid, std::string const& reason);
 
+        // Sends every accepted module its current config again. Called after a successful config reload, on the world
+        // thread. Modules treat each delivery as the full config (doc 03, Config delivery).
+        void ResendConfig();
+
         // Snapshot of every known module, sorted by name.
         std::vector<ModuleSnapshot> GetSnapshots();
 
@@ -173,9 +179,6 @@ class TC_GAME_API ModuleMgr
         // approved_modules.json. Reads the manifest from Modules.Dir. Takes effect at the next load.
         // Returns false with an explanation in message on any failure.
         bool ApproveModule(std::string const& name, std::string& message);
-
-        // TODO (doc 04 §6): RequestControl/ReleaseControl/bot ownership map — needs Tier 1 event
-        // routing before there's anything meaningful to implement here.
 
     private:
         // Settings read from worldserver.conf in LoadModules().
@@ -196,6 +199,20 @@ class TC_GAME_API ModuleMgr
         };
 
         void ProcessModuleDirectory(std::string const& root, std::string const& name);
+        // Applies the actions a module published, for the bots that module controls and that are online.
+        // Called on the world thread with no lock held.
+        void ApplyModuleActions(ModuleId module, ModuleActionSet const& actions);
+
+        // What the last action applied to each bot gave (world thread only). Copied into the bot's snapshot entry.
+        struct ActionResult
+        {
+            forever_module::BotActionStatus Status = forever_module::BotActionStatus::kNone;
+            uint8 Type = 0;   // ActionType
+            uint32 Spell = 0;
+            uint32 Sequence = 0;
+        };
+        std::unordered_map<uint64, ActionResult> _actionResults;
+        void RecordActionResult(uint64 botGuid, forever_module::BotAction const& action, forever_module::BotActionStatus status);
         void LoadApprovalStore(); // called with _mutex held, or before any module threads exist
         std::string ApprovalStorePath() const;
         // Starts one attempt: listen, spawn the process, start the session. Callers must not hold _mutex.
@@ -222,10 +239,11 @@ class TC_GAME_API ModuleMgr
         // runs on the world thread from OnWorldTick and sends the replies.
         struct PendingAction
         {
+            ModuleId Module = 0;
             std::weak_ptr<ModuleSession> Session;
             ModuleWire::ActionRequestMsg Request;
         };
-        void EnqueueAction(std::weak_ptr<ModuleSession> session, ModuleWire::ActionRequestMsg request);
+        void EnqueueAction(ModuleId module, std::weak_ptr<ModuleSession> session, ModuleWire::ActionRequestMsg request);
         void RunPendingActions();
 
         // Failure bookkeeping. Callers must hold _mutex.

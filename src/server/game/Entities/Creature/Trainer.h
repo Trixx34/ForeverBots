@@ -70,6 +70,9 @@ namespace Trainer
         void SendSpells(Creature const* npc, Player* player, LocaleConstant locale) const;
         void TeachSpell(Creature const* npc, Player* player, uint32 spellId) const;
 
+        // Every spell this trainer teaches, for a bot that learns them itself (ModuleBotActions, kTrain).
+        std::vector<Spell> const& Spells() const { return _spells; }
+
     private:
         Spell const* GetSpell(uint32 spellId) const;
         bool CanTeachSpell(Player const* player, Spell const* trainerSpell) const;

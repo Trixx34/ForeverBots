@@ -41,6 +41,9 @@ class ModuleBotOwnership
         std::vector<uint64> DropModule(uint32 module);
 
         uint32 OwnedCount(uint32 module) const;
+
+        // Guids of the bots the module controls, ascending.
+        std::vector<uint64> BotsOf(uint32 module) const;
         bool Owner(uint64 botGuid, uint32& owner) const;
 
     private:

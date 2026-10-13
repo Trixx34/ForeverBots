@@ -24,6 +24,9 @@ class ModuleBotBackend
 
         // Creates a bot from the spawn parameters. Returns its guid, or 0 with the reason in `reason`.
         virtual uint64 Spawn(ModuleWire::SpawnParamsMsg const& params, std::string& reason) = 0;
+
+        // Brings a bot that a module now controls into the world (logs it in if it is offline).
+        virtual void Activate(uint64 botGuid) = 0;
 };
 
 #endif // TRINITYCORE_MODULE_BOT_BACKEND_H

@@ -8,6 +8,8 @@
 #include <boost/interprocess/mapped_region.hpp>
 #include <boost/interprocess/shared_memory_object.hpp>
 
+#include <algorithm>
+#include <cstring>
 #include <new>
 
 using namespace forever_module;
@@ -68,14 +70,34 @@ bool ModuleTier2Region::SnapshotDue(uint64 tick) const
     return tick % interval == 0;
 }
 
-void ModuleTier2Region::PublishSnapshot(uint64 tick)
+void ModuleTier2Region::PublishSnapshot(uint64 tick, std::vector<ModuleSnapshotBot> const& bots)
 {
     // Write into the buffer the module is not reading, then publish it: tick first, then the index.
     uint8 const next = static_cast<uint8>(1 - _header->published_snapshot_buffer.load(std::memory_order_relaxed));
     auto* base = static_cast<std::byte*>(_mapping->get_address());
-    auto* snapshot = new (base + _snapshotOffset + next * _snapshotBytes) WorldTickSnapshotHeader();
+    std::byte* buffer = base + _snapshotOffset + next * _snapshotBytes;
+
+    uint32 const maxBots = _bounds.MaxBots;
+    uint32 const maxNearby = _bounds.MaxNearbyUnits;
+    uint32 const count = static_cast<uint32>(std::min<std::size_t>(bots.size(), maxBots));
+
+    auto* snapshot = new (buffer) WorldTickSnapshotHeader();
     snapshot->tick_number = tick;
-    snapshot->bot_count = 0;
+    snapshot->bot_count = count;
+
+    // Bot slots first, then maxNearby nearby slots per bot slot (the layout in ModuleTier2Layout.h).
+    auto* botSlots = reinterpret_cast<BotSnapshot*>(buffer + sizeof(WorldTickSnapshotHeader));
+    auto* nearbySlots = reinterpret_cast<NearbyUnit*>(botSlots + maxBots);
+    for (uint32 i = 0; i < count; ++i)
+    {
+        BotSnapshot entry = bots[i].Bot;
+        uint32 const nearby = static_cast<uint32>(std::min<std::size_t>(bots[i].Nearby.size(), maxNearby));
+        entry.nearby_count = nearby;
+        std::memcpy(static_cast<void*>(botSlots + i), &entry, sizeof(entry));
+        if (nearby > 0)
+            std::memcpy(static_cast<void*>(nearbySlots + std::size_t(i) * maxNearby), bots[i].Nearby.data(),
+                        nearby * sizeof(NearbyUnit));
+    }
 
     _header->published_snapshot_tick.store(tick, std::memory_order_release);
     _header->published_snapshot_buffer.store(next, std::memory_order_release);
@@ -89,4 +111,34 @@ uint64 ModuleTier2Region::PublishedSnapshotTick() const
 uint64 ModuleTier2Region::PublishedActionTick() const
 {
     return _header->published_action_tick.load(std::memory_order_acquire);
+}
+
+bool ModuleTier2Region::ReadNewActions(ModuleActionSet& out)
+{
+    auto const* base = static_cast<std::byte const*>(_mapping->get_address());
+
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
+        uint8 const buffer = _header->published_action_buffer.load(std::memory_order_acquire);
+        // The header tick is the cheap check for "nothing new", so an idle module costs one load per tick.
+        if (buffer == _seenActionBuffer && _header->published_action_tick.load(std::memory_order_acquire) == _seenActionTick)
+            return false;
+
+        auto const* queue = reinterpret_cast<ActionQueueHeader const*>(base + _actionOffset + buffer * _actionBytes);
+        uint32 const count = std::min(queue->action_count, _bounds.MaxActions);
+        ModuleActionSet copy;
+        copy.Tick = queue->tick_number;
+        copy.Actions.resize(count);
+        if (count > 0)
+            std::memcpy(copy.Actions.data(), reinterpret_cast<std::byte const*>(queue + 1), count * sizeof(forever_module::BotAction));
+
+        if (_header->published_action_buffer.load(std::memory_order_acquire) != buffer)
+            continue; // the module published again while we copied; read the new buffer
+
+        _seenActionBuffer = buffer;
+        _seenActionTick = copy.Tick;
+        out = std::move(copy);
+        return true;
+    }
+    return false; // the index kept flipping; the next tick tries again
 }
