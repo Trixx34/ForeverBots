@@ -10,6 +10,30 @@ Forever Launcher, press Play. No MySQL or compiling needed.
 
 **Server architecture and operations:** [Complete bnetserver and worldserver guide](doc/ServerGuide.md) — login flow, databases, networking, setup, administration, backups, and troubleshooting.
 
+### Bots and modules
+
+This fork can run optional **modules**: separate programs, each in its own git repository, that extend the server without changing
+core source. It also has a built-in **bot** system, controlled by a module.
+
+- **Module system.** The core starts each approved module as its own process and talks to it over a local socket (Tier 1: event hooks,
+  and actions such as selling an item, messaging a player, or sharing a quest item with the party) and, for bots, a shared-memory
+  region (Tier 2). Design and status: [doc/module-system/](doc/module-system/), start with `00-investigation.md`; what exists now is in
+  `14-implementation-status.md`. Modules are cloned into [modules/](modules/README.md) and configured with
+  `Module.<name>.<Key>` entries in `worldserver.conf.d/modules.d/<name>.conf`. The host is configured by the `Modules.*` keys in
+  `worldserver.conf`. The [forever-module-sdk](https://github.com/Trixx34/forever-module-sdk) is what a module is written against.
+- **Bots.** `BotMgr` creates bot accounts (`BOTnnnn`) and characters, logs them in without a client connection, and hands them to a
+  module. Each tick the module gets a snapshot of each bot (position, health, combat state, party, nearest vendor, nearby units) and
+  publishes actions (move, follow, attack, cast, rest, vendor, party, loot). The core re-checks every action. Limits and safety valves are in
+  `worldserver.conf`: `Bot.Login.MaxPerSecond`, `Bot.Limit.MaxBots`, `Bot.Limit.MaxWorldDiffMs`, `Bot.Limit.MaxDbQueue`,
+  `Bot.Run.StopTime` (a clean shutdown at a local time), `Bot.Spread.SpacingYards` and `Bot.Spread.MaxRadiusYards`, and the
+  `Modules.Tier2.*` keys (bots, nearby units, actions, nearby refresh).
+- **Modules in use.** [MOD-Forever-Bots](https://github.com/Trixx34/MOD-Forever-Bots) (bot AI),
+  [MOD-auto-vendor-trash](https://github.com/Trixx34/MOD-auto-vendor-trash) (sells looted grey items),
+  [MOD-quest-group-loot](https://github.com/Trixx34/MOD-quest-group-loot) (shares a looted quest item with the party members who need it).
+
+The core keeps a byte-identical copy of the SDK's Tier 2 layout header (`src/server/game/Modules/ModuleTier2Layout.h`); the layout
+version must match the module's SDK or the module is refused.
+
 ### Building from source
 
 Build the core as usual (see [Install](#install)), then:
