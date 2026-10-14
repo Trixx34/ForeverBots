@@ -261,7 +261,7 @@ R ConfigMgr::GetValueDefault(std::string_view const& name, T def, bool quiet) co
             }
 
             if (!quiet)
-                TC_LOG_WARN("server.loading", "Missing name {} in config file {}, recovered with environment '{}' value.", name, _filename, *envVar);
+                TC_LOG_WARN("server.loading", "Missing name {} in config file {}, recovered from the environment (value not logged).", name, _filename);
 
             return *castedVar;
         }
@@ -292,7 +292,7 @@ std::string ConfigMgr::GetValueDefault<std::string_view>(std::string_view const&
         if (Optional<std::string> envVar = EnvVarForIniKey(name))
         {
             if (!quiet)
-                TC_LOG_WARN("server.loading", "Missing name {} in config file {}, recovered with environment '{}' value.", name, _filename, *envVar);
+                TC_LOG_WARN("server.loading", "Missing name {} in config file {}, recovered from the environment (value not logged).", name, _filename);
 
             return *envVar;
         }
