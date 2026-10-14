@@ -1,0 +1,26 @@
+[Unit]
+Description=Forever sim MySQL 8.4 (127.0.0.1:3307, sim DBs only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=mysql
+Group=mysql
+# Separate instance from any system MySQL. Config and data live under /var/lib/forever-sim-mysql.
+# That folder is not yet in the layout; the owner must approve it. Bind is 127.0.0.1 only.
+ExecStart=/usr/sbin/mysqld --defaults-file=/etc/forever/sim-mysql.cnf
+KillSignal=SIGTERM
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/forever-sim-mysql /var/log/forever/sim
+
+[Install]
+WantedBy=multi-user.target

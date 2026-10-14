@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Start a timed bot soak run on the sim.
+# Run as root:  sudo bash start-sim-soak.sh [--bots 200] [--minutes 90] [--seed 20261014] [--dry-run]
+#
+#   --bots N       bots to reach (default 200). They are added in steps, see below.
+#   --minutes M    length of the run (default 90). The core shuts the sim down cleanly at the end
+#                  (Bot.Run.StopTime), so bots are saved and logged out.
+#   --seed S       seed for the random race/class picks (default 20261014): the same seed gives the same bots.
+#   --data-dir D   folder with starter_quests.txt and grind_spots.txt (default: the bots repo clone).
+#   --dry-run      print what would be written and the stop time, change nothing (works without root).
+#
+# What it changes (sim only, never prod):
+#   - /srv/forever/sim/conf/worldserver.conf.d/modules.d/forever-bots.conf  (the previous file is kept as .bak)
+#   - Bot.Run.StopTime in /srv/forever/sim/conf/worldserver.conf
+#   - copies the data files to /srv/forever/sim/modules_runtime/forever-bots/data
+#   - moves the old telemetry file aside, then restarts forever-sim
+#
+# Ramp: starts with 50 bots, adds 50 every 5 minutes, up to --bots.
+set -euo pipefail
+
+BOTS=200
+MINUTES=90
+SEED=20261014
+DATA_DIR=/srv/forever/build/clean/bots/data
+DRY=0
+
+while (( $# )); do
+  case "$1" in
+    --bots)     BOTS="${2:?--bots needs a number}"; shift ;;
+    --minutes)  MINUTES="${2:?--minutes needs a number}"; shift ;;
+    --seed)     SEED="${2:?--seed needs a number}"; shift ;;
+    --data-dir) DATA_DIR="${2:?--data-dir needs a folder}"; shift ;;
+    --dry-run)  DRY=1 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+[[ "$BOTS" =~ ^[0-9]+$ && "$MINUTES" =~ ^[0-9]+$ && "$SEED" =~ ^[0-9]+$ ]] || { echo "numbers only" >&2; exit 2; }
+(( BOTS >= 1 && BOTS <= 1500 )) || { echo "--bots must be 1..1500" >&2; exit 2; }
+(( MINUTES >= 5 )) || { echo "--minutes must be at least 5" >&2; exit 2; }
+
+SIM=/srv/forever/sim
+CONF=$SIM/conf/worldserver.conf
+MODCONF=$SIM/conf/worldserver.conf.d/modules.d/forever-bots.conf
+MODDIR=$SIM/modules_runtime/forever-bots
+LOGDIR=/var/log/forever/sim
+TELEMETRY=$LOGDIR/forever-bots-telemetry.csv
+
+END="$(date -d "+${MINUTES} minutes" +%H:%M)"
+INITIAL=$(( BOTS < 50 ? BOTS : 50 ))
+
+MODULE_SETTINGS="# Written by start-sim-soak.sh on $(date '+%Y-%m-%d %H:%M'): $BOTS bots, $MINUTES minutes, stop $END.
+Module.forever-bots.MaxBots = $BOTS
+Module.forever-bots.Race = random
+Module.forever-bots.Class = random
+Module.forever-bots.RandomSeed = $SEED
+Module.forever-bots.BotsInitial = $INITIAL
+Module.forever-bots.BotsStep = 50
+Module.forever-bots.BotsStepMinutes = 5
+Module.forever-bots.BotsCap = $BOTS
+Module.forever-bots.BotsStopTime = $END
+Module.forever-bots.TelemetryFile = $TELEMETRY
+Module.forever-bots.TelemetrySummarySec = 60
+Module.forever-bots.ScenarioResultFile = $LOGDIR/scenario-results.log
+Module.forever-bots.QuestFile = $MODDIR/data/starter_quests.txt
+Module.forever-bots.GrindFile = $MODDIR/data/grind_spots.txt
+Module.forever-bots.AutoGearing = 1
+Module.forever-bots.ServiceEverySec = 600
+Module.forever-bots.TrainEverySec = 600"
+
+if (( DRY )); then
+  echo "stop time: $END (in $MINUTES minutes)"
+  echo "--- $MODCONF would contain:"
+  echo "$MODULE_SETTINGS"
+  echo "--- $CONF: Bot.Run.StopTime = $END"
+  exit 0
+fi
+
+if [[ $EUID -ne 0 ]]; then
+  echo "run as root" >&2
+  exit 1
+fi
+
+for f in "$CONF" "$SIM/modules_runtime/forever-bots/forever-bots" "$DATA_DIR/starter_quests.txt" "$DATA_DIR/grind_spots.txt"; do
+  [[ -e "$f" ]] || { echo "missing: $f" >&2; exit 1; }
+done
+# This script runs as root; the data files may be written by a normal user, so never follow a link.
+for f in "$DATA_DIR/starter_quests.txt" "$DATA_DIR/grind_spots.txt"; do
+  [[ -f "$f" && ! -L "$f" ]] || { echo "not a regular file: $f" >&2; exit 1; }
+done
+grep -qE '^Modules\.Enabled *= *1' "$CONF" || { echo "Modules.Enabled is not 1 in $CONF" >&2; exit 1; }
+
+systemctl stop forever-sim
+
+# Data files for the module.
+install -d -o forever-sim -g forever-sim -m 0750 "$MODDIR/data"
+install -o forever-sim -g forever-sim -m 0640 "$DATA_DIR/starter_quests.txt" "$DATA_DIR/grind_spots.txt" "$MODDIR/data/"
+
+# Module settings.
+[[ -f "$MODCONF" ]] && cp -a "$MODCONF" "$MODCONF.bak"
+printf '%s\n' "$MODULE_SETTINGS" > "$MODCONF"
+chown forever-sim:forever-sim "$MODCONF"
+chmod 0640 "$MODCONF"
+
+# Core stop time.
+sed -i -E "s/^Bot\.Run\.StopTime *=.*/Bot.Run.StopTime = $END/" "$CONF"
+grep -E '^Bot\.Run\.StopTime' "$CONF"
+
+# Keep the last run's telemetry.
+if [[ -s "$TELEMETRY" ]]; then
+  mv "$TELEMETRY" "$TELEMETRY.$(date +%Y%m%d-%H%M%S)"
+fi
+
+systemctl start forever-sim
+
+echo
+echo "soak started: $BOTS bots, ends $END (about $MINUTES minutes). The sim shuts itself down at the end."
+echo "watch:   journalctl -u forever-sim -f"
+echo "report:  sudo python3 -I /srv/forever/build/clean/bots/tools/soak_report.py --telemetry $TELEMETRY --server-log $LOGDIR/Server.log --hours 1.5"

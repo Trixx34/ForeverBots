@@ -1,0 +1,43 @@
+[Unit]
+Description=Forever prod Battle.net server (login, realm list)
+After=network-online.target forever-prod.service
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=forever-prod
+Group=forever-prod
+UMask=0027
+WorkingDirectory=/var/log/forever/prod
+# DB login (TC_LOGIN_DATABASE_INFO) comes from here; the core reads it as an environment override.
+EnvironmentFile=/etc/forever/credentials/prod-db.env
+ExecStartPre=/bin/sh -c 'test -r /srv/forever/prod/conf/bnetserver.conf'
+ExecStartPre=/bin/sh -c 'test -r /srv/forever/prod/conf/bnetserver.fullchain.pem'
+ExecStartPre=/bin/sh -c 'test -r /srv/forever/prod/conf/bnetserver.key.pem'
+ExecStartPre=/bin/sh -c 'test -w /var/log/forever/prod'
+ExecStart=/srv/forever/prod/bin/bnetserver -c /srv/forever/prod/conf/bnetserver.conf
+KillSignal=SIGINT
+TimeoutStopSec=60
+# Restart policy: OFF until the owner approves the prod start window, same as forever-prod.
+Restart=no
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=forever-prod-bnet
+
+# Hardening. Binaries, config and certificates are read-only; the server writes only its log folder.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadOnlyPaths=/srv/forever/data /srv/forever/prod
+ReadWritePaths=/var/log/forever/prod
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

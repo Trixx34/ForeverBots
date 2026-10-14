@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# forever-sim-db <backup|reset-world|reset-hotfixes|reset-characters>
+# Works on the sim test databases only (forever_test_*). The names are fixed in this script.
+#   backup          dumps the four test databases to /srv/forever/backups/db
+#   reset-<name>    drops that one database so the server loads it fresh at the next start.
+#                   Refused unless forever-sim is stopped and a backup of that database
+#                   from the last 24 hours exists.
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+umask 027
+
+DIR=/srv/forever/backups/db
+DBS=(forever_test_auth forever_test_characters forever_test_world forever_test_hotfixes)
+
+backup() {
+  [[ -d "$DIR" ]] || { echo "missing $DIR (run setup-directories.sh)" >&2; exit 1; }
+  local db f
+  for db in "${DBS[@]}"; do
+    f="$DIR/sim-$db-$(date +%Y%m%d-%H%M).sql.gz"
+    if mysqldump --single-transaction --routines --triggers --set-gtid-purged=OFF "$db" | gzip > "$f"; then
+      chown forever-backup:forever-ops "$f"
+      chmod 0640 "$f"
+      echo "backed up $db -> $f ($(stat -c %s "$f") bytes)"
+    else
+      rm -f "$f"
+      echo "backup of $db FAILED" >&2
+      exit 1
+    fi
+  done
+}
+
+reset() {
+  local db="$1"
+  if systemctl is-active --quiet forever-sim; then
+    echo "refused: forever-sim is running (stop it first)" >&2
+    exit 1
+  fi
+  if ! find "$DIR" -maxdepth 1 -name "sim-$db-*.sql.gz" -size +1k -mmin -1440 2>/dev/null | grep -q .; then
+    echo "refused: no backup of $db from the last 24 hours (run: forever-sim-db backup)" >&2
+    exit 1
+  fi
+  mysql -e "DROP DATABASE IF EXISTS \`$db\`"
+  echo "dropped $db"
+}
+
+case "${1:-}" in
+  backup)           backup ;;
+  reset-world)      reset forever_test_world ;;
+  reset-hotfixes)   reset forever_test_hotfixes ;;
+  reset-characters) reset forever_test_characters ;;
+  *) echo "usage: forever-sim-db backup|reset-world|reset-hotfixes|reset-characters" >&2; exit 2 ;;
+esac

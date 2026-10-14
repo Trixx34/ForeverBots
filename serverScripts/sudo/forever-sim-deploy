@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# forever-sim-deploy <conf|modules|binaries>
+# Copies files from fixed staging folders into /srv/forever/sim, owned by forever-sim.
+# Symlinks in the staging folders are never followed or copied. Prod is never touched.
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+umask 027
+
+SIM=/srv/forever/sim
+OWNER=forever-sim:forever-sim
+
+command -v rsync >/dev/null || { echo "rsync is not installed" >&2; exit 1; }
+
+regular_file() { [[ -f "$1" && ! -L "$1" ]] || { echo "not a regular file: $1" >&2; exit 1; }; }
+regular_dir()  { [[ -d "$1" && ! -L "$1" ]] || { echo "not a directory: $1" >&2; exit 1; }; }
+
+case "${1:-}" in
+  conf)
+    src=/srv/forever/build/test-run/etc/worldserver.conf
+    regular_file "$src"
+    # DB logins belong in /etc/forever/credentials, never in the server config.
+    if grep -qE '^(Login|World|Character|Hotfix)DatabaseInfo' "$src"; then
+      echo "refused: $src contains a *DatabaseInfo line (credentials must come from the env file)" >&2
+      exit 1
+    fi
+    install -o forever-sim -g forever-sim -m 0640 "$src" "$SIM/conf/worldserver.conf"
+    d=/srv/forever/build/sim-staging/conf/worldserver.conf.d
+    if [[ -e "$d" ]]; then
+      regular_dir "$d"
+      rsync -rt --no-links --chown=$OWNER --chmod=D750,F640 "$d/" "$SIM/conf/worldserver.conf.d/"
+    fi
+    echo "deployed sim config"
+    ;;
+  modules)
+    d=/srv/forever/build/sim-staging/modules_runtime
+    regular_dir "$d"
+    # Module folders hold the executable (needs +x) and its manifest and data files.
+    rsync -rt --no-links --chown=$OWNER --chmod=D750,F750 "$d/" "$SIM/modules_runtime/"
+    echo "deployed sim modules"
+    ;;
+  binaries)
+    s=/srv/forever/build/prod-staging
+    regular_dir "$s"
+    regular_file "$s/bin/worldserver"
+    install -o forever-sim -g forever-sim -m 0750 "$s/bin/worldserver" "$SIM/bin/worldserver"
+    rsync -rt --no-links --chown=$OWNER --chmod=D750,F750 "$s/lib/" "$SIM/lib/"
+    rsync -rt --no-links --chown=$OWNER --chmod=D750,F750 "$s/bin/scripts/" "$SIM/bin/scripts/"
+    echo "deployed sim worldserver, libraries and script plugins"
+    ;;
+  *) echo "usage: forever-sim-deploy conf|modules|binaries" >&2; exit 2 ;;
+esac

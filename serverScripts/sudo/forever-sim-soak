@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# forever-sim-soak [--bots N] [--minutes M] [--seed S] [--dry-run]
+# Starts a timed bot run on the sim through the root-owned copy of start-sim-soak.sh.
+# Only these four options are passed on; --data-dir is not accepted here.
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+args=()
+while (( $# )); do
+  case "$1" in
+    --bots|--minutes|--seed)
+      [[ "${2:-}" =~ ^[0-9]{1,6}$ ]] || { echo "$1 needs a number" >&2; exit 2; }
+      args+=("$1" "$2"); shift ;;
+    --dry-run) args+=("$1") ;;
+    *) echo "usage: forever-sim-soak [--bots N] [--minutes M] [--seed S] [--dry-run]" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+exec /usr/bin/bash /usr/local/sbin/forever-agent/start-sim-soak.sh "${args[@]}"

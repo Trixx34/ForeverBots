@@ -1,0 +1,45 @@
+[Unit]
+Description=Forever sim worldserver (bot test world)
+After=network-online.target mysql.service
+Wants=network-online.target mysql.service
+# Restart loops are capped: 5 starts in 10 minutes, then the unit stays failed until someone looks at it.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=forever-sim
+Group=forever-sim
+UMask=0027
+WorkingDirectory=/srv/forever/sim/run
+# DB strings (TC_LOGIN_/TC_WORLD_/TC_CHARACTER_/TC_HOTFIX_DATABASE_INFO) come from here; the core reads them as environment overrides.
+EnvironmentFile=/etc/forever/credentials/sim-db.env
+ExecStartPre=/bin/sh -c 'test -r /srv/forever/sim/conf/worldserver.conf'
+ExecStartPre=/bin/sh -c 'test -r /srv/forever/data/dbc'
+ExecStartPre=/bin/sh -c 'test -w /var/log/forever/sim'
+ExecStart=/srv/forever/sim/bin/worldserver -c /srv/forever/sim/conf/worldserver.conf --config-dir /srv/forever/sim/conf/worldserver.conf.d
+# SIGINT is the worldserver's graceful shutdown signal.
+KillSignal=SIGINT
+TimeoutStopSec=120
+# Sim may restart on failure: it is a test world with no players.
+Restart=on-failure
+RestartSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=forever-sim
+
+# Hardening. Data, binaries and config are read-only; the server writes only its log folder.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadOnlyPaths=/srv/forever/data
+ReadWritePaths=/var/log/forever/sim /srv/forever/sim/run /srv/forever/sim/modules_runtime
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

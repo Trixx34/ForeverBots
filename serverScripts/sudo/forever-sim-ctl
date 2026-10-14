@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# forever-sim-ctl <start|stop|restart|reset-failed|status>
+# Controls forever-sim only. Prod units are never touched by this wrapper.
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+case "${1:-}" in
+  start|stop|restart|reset-failed) exec /usr/bin/systemctl "$1" forever-sim ;;
+  status) exec /usr/bin/systemctl status forever-sim --no-pager ;;
+  *) echo "usage: forever-sim-ctl start|stop|restart|reset-failed|status" >&2; exit 2 ;;
+esac
