@@ -1040,7 +1040,7 @@ BotActionStatus ResurrectResponseAction(Player& bot, BotAction const& action, st
         return BotActionStatus::kRefused;
     }
     Unit* caster = ResolveUnit(bot, action.target_guid);
-    if (!caster || !caster->IsPlayer() || !bot.IsResurrectRequestedBy(caster->GetGUID()))
+    if (!caster || !bot.IsResurrectRequestedBy(caster->GetGUID()))
     {
         reason = "no resurrect pending from that player";
         return BotActionStatus::kInvalidTarget;
@@ -1048,8 +1048,8 @@ BotActionStatus ResurrectResponseAction(Player& bot, BotAction const& action, st
     bool const decline = action.spell_id != 0;
     if (!decline)
     {
-        if (InstanceScript* instance = caster->ToPlayer()->GetInstanceScript())
-            if (instance->IsEncounterInProgress() && !instance->GetCombatResurrectionCharges())
+        if (Player* casterPlayer = caster->ToPlayer(); casterPlayer && casterPlayer->GetInstanceScript())
+            if (InstanceScript* instance = casterPlayer->GetInstanceScript(); instance->IsEncounterInProgress() && !instance->GetCombatResurrectionCharges())
             {
                 reason = "encounter in progress and no combat resurrection charge";
                 return BotActionStatus::kRefused;

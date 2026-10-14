@@ -1,4 +1,5 @@
 #include "ModuleBotSnapshot.h"
+#include "ObjectAccessor.h"
 #include "Cell.h"
 #include "Corpse.h"
 #include "GameTime.h"
@@ -304,7 +305,15 @@ void FillParty(Player& bot, BotSnapshot& entry)
 // Death state (layout 11). A ghost has health 1, so a module must test life_state and not health.
 void FillLifeState(Player& bot, BotSnapshot& entry)
 {
-    entry.resurrect_from = PlayerRef(bot.GetResurrectRequester());
+    // The unit whose resurrect offer is pending, as a unit reference a module can answer (a player, or a creature that offers it). Not a reference built
+    // from a bare guid: that named a player that does not exist when the offer came from a creature, and the module's answer was refused forever.
+    if (ObjectGuid const requester = bot.GetResurrectRequester(); !requester.IsEmpty())
+        if (Unit* caster = ObjectAccessor::GetUnit(bot, requester))
+        {
+            uint64 ref = 0;
+            if (EncodeUnitRef(*caster, ref))
+                entry.resurrect_from = ref;
+        }
     if (bot.IsAlive())
         return;
 
