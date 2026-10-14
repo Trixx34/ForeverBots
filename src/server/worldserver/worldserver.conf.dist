@@ -1068,12 +1068,30 @@ CastUnstuck = 1
 Instance.IgnoreLevel = 0
 
 #
+#    Instance.IgnoreAttunement
+#        Description: Ignore attunement item and quest requirements when entering instances
+#                     (access_requirement item and quest columns).
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+
+Instance.IgnoreAttunement = 0
+
+#
 #    Instance.IgnoreRaid
 #        Description: Ignore raid group requirement when entering instances.
 #        Default:     0 - (Disabled)
 #                     1 - (Enabled)
 
 Instance.IgnoreRaid = 0
+
+#
+#    Instance.CombatResurrectionLimit
+#        Description: Limit resurrections during a boss encounter to the encounter's combat
+#                     resurrection charges. Classic has no such limit.
+#        Default:     0 - (Disabled, resurrection works at any time)
+#                     1 - (Enabled)
+
+Instance.CombatResurrectionLimit = 0
 
 #
 #    Instance.UnloadDelay
@@ -4897,10 +4915,11 @@ Classic.OpcodeGroupShift = -1
 
 #    Classic.MainGroupInsertIndex
 #        Description: Client 70291+: first 70245 index (decimal) of the main server message group that moved up by one.
-#                     The official sniff narrows it to 147..173 (0x93..0xAD: party, ready check, pet battle messages).
-#        Default:     147
+#                     152 (0x98): the official 70338 sniff has the party update (0x97) unchanged; with a lower value the
+#                     party frame never appeared.
+#        Default:     152
 
-Classic.MainGroupInsertIndex = 147
+Classic.MainGroupInsertIndex = 152
 
 #    Classic.ClientMainGroupInsertIndex
 #        Description: Client 70291+: 70291 index (decimal) of the message added to the main client group; the client messages
@@ -4916,6 +4935,15 @@ Classic.ClientMainGroupInsertIndex = 315
 #                     0 - (Disabled)
 
 Classic.OfficialFeatureFlags = 1
+
+#    Classic.MountIndoorsRules
+#        Description: Vanilla mount rules: no mounting indoors (buildings, caves), walking indoors dismounts, and no mounting
+#                     in the Warsong Gulch start rooms while the doors are closed. The indoor test uses the WMO flags of
+#                     the vmaps (needs vmap.enableLOS).
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+Classic.MountIndoorsRules = 1
 
 #    Classic.Shop.Enabled
 #        Description: In-game Store: shop points, products from world.shop_* (.shop reload), the Gold Market, character

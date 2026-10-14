@@ -6976,6 +6976,11 @@ SpellCastResult Spell::CheckCast(bool strict, int32* param1 /*= nullptr*/, int32
                     SendMountResult(MountResult::Shapeshifted); // mount result gets sent before the cast result
                     return SPELL_FAILED_DONT_REPORT;
                 }
+
+                // Classic: no mounting indoors, nor in a closed battleground start room
+                if (!IsTriggered())
+                    if (Player const* player = unitCaster->ToPlayer(); player && player->IsMountRestrictedHere(true))
+                        return SPELL_FAILED_ONLY_OUTDOORS;
                 break;
             }
             case SPELL_AURA_RANGED_ATTACK_POWER_ATTACKER_BONUS:
@@ -7442,6 +7447,10 @@ void Spell::CheckDst()
 
 SpellCastResult Spell::CheckRange(bool strict) const
 {
+    // A trap picked its target by its own trigger radius; the effect spells of some traps have range 0
+    if (GameObject const* trap = m_caster->ToGameObject(); trap && trap->GetGoType() == GAMEOBJECT_TYPE_TRAP)
+        return SPELL_CAST_OK;
+
     // Don't check for instant cast spells
     if (!strict && m_casttime == 0)
         return SPELL_CAST_OK;
@@ -8541,6 +8550,10 @@ SpellEvent::~SpellEvent()
 {
     if (m_Spell->getState() != SPELL_STATE_FINISHED)
         m_Spell->cancel();
+
+    // events killed on logout or map change skip the handler that clears the spell mod owner's taking spell
+    if (Player* modOwner = m_Spell->GetCaster()->ToPlayer())
+        modOwner->SetSpellModTakingSpell(m_Spell.get(), false);
 
     if (!m_Spell->IsDeletable())
     {

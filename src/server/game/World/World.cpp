@@ -627,7 +627,9 @@ void World::LoadConfigSettings(bool reload)
         { .Name = "AllFlightPaths"sv, .DefaultValue = false, .Index = CONFIG_ALL_TAXI_PATHS },
         { .Name = "InstantFlightPaths"sv, .DefaultValue = false, .Index = CONFIG_INSTANT_TAXI },
         { .Name = "Instance.IgnoreLevel"sv, .DefaultValue = false, .Index = CONFIG_INSTANCE_IGNORE_LEVEL },
+        { .Name = "Instance.IgnoreAttunement"sv, .DefaultValue = false, .Index = CONFIG_INSTANCE_IGNORE_ATTUNEMENT },
         { .Name = "Instance.IgnoreRaid"sv, .DefaultValue = false, .Index = CONFIG_INSTANCE_IGNORE_RAID },
+        { .Name = "Instance.CombatResurrectionLimit"sv, .DefaultValue = false, .Index = CONFIG_INSTANCE_COMBAT_RES_LIMIT },
         { .Name = "CastUnstuck"sv, .DefaultValue = true, .Index = CONFIG_CAST_UNSTUCK },
         { .Name = "GM.AllowInvite"sv, .DefaultValue = false, .Index = CONFIG_ALLOW_GM_GROUP },
         { .Name = "GM.LowerSecurity"sv, .DefaultValue = false, .Index = CONFIG_GM_LOWER_SECURITY },
@@ -699,6 +701,7 @@ void World::LoadConfigSettings(bool reload)
         { .Name = "Loot.EnableAELoot"sv, .DefaultValue = true, .Index = CONFIG_ENABLE_AE_LOOT },
         { .Name = "Loot.SharedEncounterLoot"sv, .DefaultValue = true, .Index = CONFIG_LOOT_SHARED_ENCOUNTER_LOOT },
         { .Name = "Load.Locales"sv, .DefaultValue = true, .Index = CONFIG_LOAD_LOCALES },
+        { .Name = "Classic.MountIndoorsRules"sv, .DefaultValue = true, .Index = CONFIG_CLASSIC_MOUNT_INDOORS_RULES },
     } };
 
     static constexpr ConfigOptionLoadDefinitionArray<uint32, INT_CONFIG_VALUE_COUNT> ints =

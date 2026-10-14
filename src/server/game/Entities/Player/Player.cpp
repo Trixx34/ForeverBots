@@ -149,6 +149,8 @@
 #include "VehiclePackets.h"
 #include "Vignette.h"
 #include "VignettePackets.h"
+#include "VMapFactory.h"
+#include "VMapManager.h"
 #include "World.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
@@ -966,6 +968,18 @@ void Player::Update(uint32 p_time)
 
     UpdatePvPFlag(now);
 
+    // Classic 1.60: combo points are lost when their target dies or is gone
+    if (ObjectGuid comboTarget = GetClassicComboTarget(); !comboTarget.IsEmpty())
+    {
+        Unit* target = ObjectAccessor::GetUnit(*this, comboTarget);
+        if (!target || !target->IsAlive())
+        {
+            SetPower(POWER_COMBO_POINTS, 0);
+            if (!GetClassicComboTarget().IsEmpty())
+                SetClassicComboTarget(ObjectGuid::Empty);
+        }
+    }
+
     UpdateContestedPvP(p_time);
 
     UpdateDuelFlag(now);
@@ -973,6 +987,8 @@ void Player::Update(uint32 p_time)
     CheckDuelDistance(now);
 
     UpdateAfkReport(now);
+
+    UpdateTradeState();
 
     if (GetCombatManager().HasPvPCombat())
         if (Aura* aura = GetAura(SPELL_PVP_RULES_ENABLED))
@@ -1309,7 +1325,8 @@ bool Player::TeleportTo(TeleportLocation const& teleportLocation, TeleportToOpti
     if (duel && GetMapId() != teleportLocation.Location.GetMapId() && GetMap()->GetGameObject(m_playerData->DuelArbiter))
         DuelComplete(DUEL_FLED);
 
-    if (GetMapId() == teleportLocation.Location.GetMapId() && (!teleportLocation.InstanceId || GetInstanceId() == teleportLocation.InstanceId))
+    // a player out of the world (after a failed far teleport) still reports its old map id but is in no grid: take the far path
+    if (IsInWorld() && GetMapId() == teleportLocation.Location.GetMapId() && (!teleportLocation.InstanceId || GetInstanceId() == teleportLocation.InstanceId))
     {
         SetTeleportState(TeleportState::Initiated);
         //if teleport spell is cast in Unit::Update() func
@@ -6800,6 +6817,23 @@ void Player::UpdateIndoorsOutdoorsAuras()
 {
     if (sWorld->getBoolConfig(CONFIG_VMAP_INDOOR_CHECK))
         RemoveAurasWithAttribute(IsOutdoors() ? SPELL_ATTR0_ONLY_INDOORS : SPELL_ATTR0_ONLY_OUTDOORS);
+
+    // Classic: walking indoors dismounts
+    if (HasAuraType(SPELL_AURA_MOUNTED) && IsMountRestrictedHere(false))
+        RemoveAurasByType(SPELL_AURA_MOUNTED);
+}
+
+// Classic.MountIndoorsRules: the mount spells of the client data do not carry SPELL_ATTR0_ONLY_OUTDOORS
+bool Player::IsMountRestrictedHere(bool checkStartArea) const
+{
+    if (!sWorld->getBoolConfig(CONFIG_CLASSIC_MOUNT_INDOORS_RULES))
+        return false;
+
+    if (Battleground const* bg = GetBattleground(); bg && !bg->isArena())
+        return bg->IsMountRefused(this, checkStartArea);
+
+    // the indoor state comes from the wmo data of the vmaps
+    return !IsOutdoors() && VMAP::VMapFactory::createOrGetVMapManager()->isLineOfSightCalcEnabled();
 }
 
 void Player::UpdateTavernRestingState()
@@ -13881,6 +13915,33 @@ void Player::TradeCancel(bool sendback, TradeStatus status /*= TRADE_STATUS_CANC
     }
 }
 
+// cancels a trade whose partner is gone or out of range, a stale trade would block any new one until relog
+void Player::UpdateTradeState()
+{
+    if (!m_trade)
+        return;
+
+    Player* trader = m_trade->GetTrader();
+
+    // a partner on another map is updated by another thread, a new trade request or a logout clears that trade
+    if (trader->IsInWorld() && trader->GetMap() != GetMap())
+        return;
+
+    if (!trader->m_trade || trader->m_trade->GetTrader() != this)
+    {
+        // the partner is no longer in this trade, only our side is left
+        GetSession()->SendCancelTrade(TRADE_STATUS_CANCELLED);
+        delete m_trade;
+        m_trade = nullptr;
+        return;
+    }
+
+    if (!trader->IsInWorld())
+        TradeCancel(true);
+    else if (!IsWithinDistInMap(trader, TRADE_DISTANCE, false))
+        TradeCancel(true, TRADE_STATUS_TOO_FAR_AWAY);
+}
+
 void Player::UpdateSoulboundTradeItems()
 {
     // also checks for garbage data
@@ -16376,7 +16437,8 @@ bool Player::SatisfyQuestRace(Quest const* qInfo, bool msg) const
 bool Player::SatisfyQuestMinReputation(Quest const* qInfo, bool msg) const
 {
     uint32 fIdMin = qInfo->GetRequiredMinRepFaction();      //Min required rep
-    if (fIdMin && GetReputationMgr().GetReputation(fIdMin) < qInfo->GetRequiredMinRepValue())
+    // looked up as an entry: factions missing from the client data count as 0 standing without logging an error
+    if (fIdMin && GetReputationMgr().GetReputation(sFactionStore.LookupEntry(fIdMin)) < qInfo->GetRequiredMinRepValue())
     {
         if (msg)
         {
@@ -16393,7 +16455,7 @@ bool Player::SatisfyQuestMinReputation(Quest const* qInfo, bool msg) const
 bool Player::SatisfyQuestMaxReputation(Quest const* qInfo, bool msg) const
 {
     uint32 fIdMax = qInfo->GetRequiredMaxRepFaction();      //Max required rep
-    if (fIdMax && GetReputationMgr().GetReputation(fIdMax) >= qInfo->GetRequiredMaxRepValue())
+    if (fIdMax && GetReputationMgr().GetReputation(sFactionStore.LookupEntry(fIdMax)) >= qInfo->GetRequiredMaxRepValue())
     {
         if (msg)
         {
@@ -18947,6 +19009,8 @@ bool Player::LoadFromDB(ObjectGuid guid, CharacterDatabaseQueryHolder const& hol
     SetInventorySlotCount(fields.inventorySlots);
     SetBackpackAutoSortDisabled(fields.inventoryBagFlags.HasFlag(BagSlotFlags::DisableAutoSort));
     SetBackpackSellJunkDisabled(fields.inventoryBagFlags.HasFlag(BagSlotFlags::ExcludeJunkSell));
+    SetSortBagsRightToLeft(fields.inventoryBagFlags.HasFlag(BagSlotFlags::SortBagsRightToLeft));
+    SetInsertItemsLeftToRight(fields.inventoryBagFlags.HasFlag(BagSlotFlags::InsertItemsLeftToRight));
     for (uint32 bagIndex = 0; bagIndex < fields.bagSlotFlags.size(); ++bagIndex)
         ReplaceAllBagSlotFlags(bagIndex, fields.bagSlotFlags[bagIndex]);
     SetBankBagSlotCount(fields.bankSlots);
@@ -19264,7 +19328,11 @@ bool Player::LoadFromDB(ObjectGuid guid, CharacterDatabaseQueryHolder const& hol
         m_InstanceValid = false;
 
     if (player_at_bg)
+    {
+        // the loaded bgTeam does not set the ArenaFaction field the client uses for friend / foe
+        SetBGTeam(GetBGTeam());
         map->ToBattlegroundMap()->GetBG()->AddPlayer(this, m_bgData.queueId);
+    }
 
     // randomize first save time in range [CONFIG_INTERVAL_SAVE] around [CONFIG_INTERVAL_SAVE]
     // this must help in case next save after mass player load after server startup
@@ -20813,19 +20881,22 @@ bool Player::Satisfy(AccessRequirement const* ar, uint32 target_map, TransferAbo
                     LevelMax = ar->levelMax;
             }
 
-            if (ar->item)
+            if (!sWorld->getBoolConfig(CONFIG_INSTANCE_IGNORE_ATTUNEMENT))
             {
-                if (!HasItemCount(ar->item) &&
-                    (!ar->item2 || !HasItemCount(ar->item2)))
-                    missingItem = ar->item;
-            }
-            else if (ar->item2 && !HasItemCount(ar->item2))
-                missingItem = ar->item2;
+                if (ar->item)
+                {
+                    if (!HasItemCount(ar->item) &&
+                        (!ar->item2 || !HasItemCount(ar->item2)))
+                        missingItem = ar->item;
+                }
+                else if (ar->item2 && !HasItemCount(ar->item2))
+                    missingItem = ar->item2;
 
-            if (GetTeam() == ALLIANCE && ar->quest_A && !GetQuestRewardStatus(ar->quest_A))
-                missingQuest = ar->quest_A;
-            else if (GetTeam() == HORDE && ar->quest_H && !GetQuestRewardStatus(ar->quest_H))
-                missingQuest = ar->quest_H;
+                if (GetTeam() == ALLIANCE && ar->quest_A && !GetQuestRewardStatus(ar->quest_A))
+                    missingQuest = ar->quest_A;
+                else if (GetTeam() == HORDE && ar->quest_H && !GetQuestRewardStatus(ar->quest_H))
+                    missingQuest = ar->quest_H;
+            }
 
             Player* leader = this;
             ObjectGuid leaderGuid = group ? group->GetLeaderGUID() : GetGUID();
@@ -21186,6 +21257,10 @@ void Player::SaveToDB(LoginDatabaseTransaction loginTransaction, CharacterDataba
                 inventoryFlags |= BagSlotFlags::DisableAutoSort;
             if (m_activePlayerData->BackpackSellJunkDisabled)
                 inventoryFlags |= BagSlotFlags::ExcludeJunkSell;
+            if (m_activePlayerData->SortBagsRightToLeft)
+                inventoryFlags |= BagSlotFlags::SortBagsRightToLeft;
+            if (m_activePlayerData->InsertItemsLeftToRight)
+                inventoryFlags |= BagSlotFlags::InsertItemsLeftToRight;
             return AsUnderlyingType(inventoryFlags);
         }());
         for (uint32 bagSlotFlag : m_activePlayerData->BagSlotFlags)
@@ -21311,6 +21386,10 @@ void Player::SaveToDB(LoginDatabaseTransaction loginTransaction, CharacterDataba
                 inventoryFlags |= BagSlotFlags::DisableAutoSort;
             if (m_activePlayerData->BackpackSellJunkDisabled)
                 inventoryFlags |= BagSlotFlags::ExcludeJunkSell;
+            if (m_activePlayerData->SortBagsRightToLeft)
+                inventoryFlags |= BagSlotFlags::SortBagsRightToLeft;
+            if (m_activePlayerData->InsertItemsLeftToRight)
+                inventoryFlags |= BagSlotFlags::InsertItemsLeftToRight;
             return AsUnderlyingType(inventoryFlags);
         }());
         for (uint32 bagSlotFlag : m_activePlayerData->BagSlotFlags)
@@ -22315,6 +22394,8 @@ void Player::_SaveStoredAuraTeleportLocations(CharacterDatabaseTransaction trans
             stmt->setFloat(5, storedLocation.Loc.GetPositionZ());
             stmt->setFloat(6, storedLocation.Loc.GetOrientation());
             trans->Append(stmt);
+
+            storedLocation.State = StoredAuraTeleportLocation::UNCHANGED;
         }
 
         ++itr;
@@ -23091,6 +23172,9 @@ void Player::Whisper(std::string_view text, Language language, Player* target, b
 
     WorldPackets::Chat::Chat packet;
     packet.Initialize(CHAT_MSG_WHISPER, language, this, this, _text);
+    // send the names too, the receiver may not have the sender in its name cache
+    packet.SenderName = GetName();
+    packet.TargetName = GetName();
     target->SendDirectMessage(packet.Write());
 
     // rest stuff shouldn't happen in case of addon message
@@ -23098,6 +23182,8 @@ void Player::Whisper(std::string_view text, Language language, Player* target, b
         return;
 
     packet.Initialize(CHAT_MSG_WHISPER_INFORM, language, target, target, _text);
+    packet.SenderName = target->GetName();
+    packet.TargetName = target->GetName();
     SendDirectMessage(packet.Write());
 
     RecentAllies::OnWhisper(this, target);
@@ -29241,11 +29327,24 @@ void Player::_SaveTransmogOutfits(CharacterDatabaseTransaction trans)
 
 void Player::_SaveBGData(CharacterDatabaseTransaction trans)
 {
-    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_PLAYER_BGDATA);
-    stmt->setUInt64(0, GetGUID().GetCounter());
-    trans->Append(stmt);
+    bool const hasBgData = m_bgData.bgInstanceID != 0
+        || m_bgData.bgTeam != TEAM_OTHER
+        || m_bgData.joinPos.GetMapId() != MAPID_INVALID
+        || m_bgData.taxiPath[0] || m_bgData.taxiPath[1]
+        || m_bgData.mountSpell
+        || m_bgData.queueId != BATTLEGROUND_QUEUE_NONE;
+
+    // one statement per save: an all-empty row is never written, a row left by earlier data is removed
+    if (!hasBgData)
+    {
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_PLAYER_BGDATA);
+        stmt->setUInt64(0, GetGUID().GetCounter());
+        trans->Append(stmt);
+        return;
+    }
+
     /* guid, bgInstanceID, bgTeam, x, y, z, o, map, taxi[0], taxi[1], mountSpell */
-    stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_PLAYER_BGDATA);
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_PLAYER_BGDATA);
     stmt->setUInt64(0, GetGUID().GetCounter());
     stmt->setUInt32(1, m_bgData.bgInstanceID);
     stmt->setUInt16(2, m_bgData.bgTeam);
@@ -29593,6 +29692,11 @@ void Player::_SaveTalents(CharacterDatabaseTransaction trans)
     for (uint8 group = 0; group < MAX_SPECIALIZATIONS; ++group)
     {
         PlayerPvpTalentMap const& talents = GetPvpTalentMap(group);
+
+        // an empty row loads the same as no row
+        if (std::ranges::all_of(talents, [](uint32 talentId) { return talentId == 0; }))
+            continue;
+
         stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHAR_PVP_TALENT);
         stmt->setUInt64(0, GetGUID().GetCounter());
         stmt->setUInt32(1, talents[0]);

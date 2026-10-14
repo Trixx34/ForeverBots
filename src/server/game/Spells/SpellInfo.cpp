@@ -37,6 +37,7 @@
 #include "SpellMgr.h"
 #include "TraitMgr.h"
 #include "Vehicle.h"
+#include "World.h"
 #include <boost/container/small_vector.hpp>
 #include <G3D/g3dmath.h>
 #include <bit>
@@ -665,10 +666,18 @@ SpellEffectValue SpellEffectInfo::CalcValue(WorldObject const* caster /*= nullpt
     return std::clamp(value, MinValue, MaxValue);
 }
 
-// Classic 1.60: spells of players and of what they control (pets, totems, traps) use their base points as flat values
-bool SpellEffectInfo::UsesClassicFlatBasePoints(WorldObject const* caster)
+// Classic 1.60: spells of players and of what they control (pets, totems, traps) use their base points as flat values.
+// So do the legacy creature spells: SpellEffect.db2 still carries their vanilla flat values (Molten Giant Smash 18944:
+// 900 +-20%), reading them as a percentage of the expected creature spell damage made them hit for many times that.
+// Only the spells new to Forever carry percentages (Living Storm Shock 1259652: 10 -> 16..18), all in the modern id range.
+static constexpr uint32 CLASSIC_FIRST_SCALED_SPELL_ID = 1000000;
+
+bool SpellEffectInfo::UsesClassicFlatBasePoints(WorldObject const* caster) const
 {
-    return caster && caster->GetAffectingPlayer();
+    if (caster && caster->GetAffectingPlayer())
+        return true;
+
+    return _spellInfo->Id < CLASSIC_FIRST_SCALED_SPELL_ID;
 }
 
 SpellEffectValue SpellEffectInfo::CalcBaseValue(WorldObject const* caster, Unit const* target, uint32 itemId, int32 itemLevel) const
@@ -737,9 +746,9 @@ SpellEffectValue SpellEffectInfo::CalcBaseValue(WorldObject const* caster, Unit 
     {
         float value = BasePoints;
         ExpectedStatType stat = GetScalingExpectedStat();
-        // Classic 1.60: base points of player spells are flat vanilla values (Fireball rank 1: 18 +-22% = 14..22); only creature
-        // spells are a percentage of the expected stat (Living Storm Shock: 10 -> 16..18 on the official beta). Scaling Scorch made
-        // it hit for 7-8k.
+        // Classic 1.60: base points of player and legacy creature spells are flat vanilla values (Fireball rank 1: 18 +-22% =
+        // 14..22); only the new creature spells are a percentage of the expected stat (Living Storm Shock: 10 -> 16..18 on the
+        // official beta). Scaling Scorch made it hit for 7-8k.
         if (stat != ExpectedStatType::None && !UsesClassicFlatBasePoints(caster))
         {
             if (_spellInfo->HasAttribute(SPELL_ATTR0_SCALES_WITH_CREATURE_LEVEL))
@@ -1303,7 +1312,7 @@ std::array<SpellEffectInfo::StaticData, TOTAL_SPELL_EFFECTS> SpellEffectInfo::_d
     {EFFECT_IMPLICIT_TARGET_NONE,     TARGET_OBJECT_TYPE_NONE}, // 326 SPELL_EFFECT_326
     {EFFECT_IMPLICIT_TARGET_NONE,     TARGET_OBJECT_TYPE_NONE}, // 327 SPELL_EFFECT_327
     {EFFECT_IMPLICIT_TARGET_NONE,     TARGET_OBJECT_TYPE_NONE}, // 328 SPELL_EFFECT_328
-    {EFFECT_IMPLICIT_TARGET_NONE,     TARGET_OBJECT_TYPE_NONE}, // 329 SPELL_EFFECT_329
+    {EFFECT_IMPLICIT_TARGET_EXPLICIT, TARGET_OBJECT_TYPE_CORPSE_ALLY}, // 329 SPELL_EFFECT_RESURRECT_NEW
     {EFFECT_IMPLICIT_TARGET_NONE,     TARGET_OBJECT_TYPE_NONE}, // 330 SPELL_EFFECT_330
     {EFFECT_IMPLICIT_TARGET_NONE,     TARGET_OBJECT_TYPE_NONE}, // 331 SPELL_EFFECT_331
     {EFFECT_IMPLICIT_TARGET_NONE,     TARGET_OBJECT_TYPE_NONE}, // 332 SPELL_EFFECT_332
@@ -2560,10 +2569,10 @@ SpellCastResult SpellInfo::CheckTarget(WorldObject const* caster, WorldObject co
         return SPELL_FAILED_TARGET_AURASTATE;
 
     if (unitTarget->HasAuraType(SPELL_AURA_PREVENT_RESURRECTION) && !HasAttribute(SPELL_ATTR7_BYPASS_NO_RESURRECT_AURA))
-        if (HasEffect(SPELL_EFFECT_SELF_RESURRECT) || HasEffect(SPELL_EFFECT_RESURRECT))
+        if (HasEffect(SPELL_EFFECT_SELF_RESURRECT) || HasEffect(SPELL_EFFECT_RESURRECT) || HasEffect(SPELL_EFFECT_RESURRECT_NEW))
             return SPELL_FAILED_TARGET_CANNOT_BE_RESURRECTED;
 
-    if (HasAttribute(SPELL_ATTR8_ENFORCE_IN_COMBAT_RESSURECTION_LIMIT))
+    if (HasAttribute(SPELL_ATTR8_ENFORCE_IN_COMBAT_RESSURECTION_LIMIT) && sWorld->getBoolConfig(CONFIG_INSTANCE_COMBAT_RES_LIMIT))
         if (Map* map = caster->GetMap())
             if (InstanceMap* iMap = map->ToInstanceMap())
                 if (InstanceScript* instance = iMap->GetInstanceScript())
