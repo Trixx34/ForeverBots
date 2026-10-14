@@ -1125,7 +1125,7 @@ static bool FileAlreadyExists(LPCTSTR szFileName)
     ULONGLONG FileSize = 0;
 
     // The file open must succeed and also must be of non-zero size
-    if((pStream = FileStream_OpenFile(szFileName, 0)) != NULL)
+    if((pStream = FileStream_OpenFile(szFileName, STREAM_FLAG_READ_ONLY)) != NULL)
     {
         FileStream_GetSize(pStream, &FileSize);
         FileStream_Close(pStream);
@@ -1513,7 +1513,7 @@ DWORD CheckCascBuildFileExact(CASC_BUILD_FILE & BuildFile, LPCTSTR szLocalPath)
         if(!_tcsicmp(BuildTypes[i].szFileName, szFileType))
         {
             // We also try to open the file
-            if((pStream = FileStream_OpenFile(szLocalPath, 0)) != NULL)
+            if((pStream = FileStream_OpenFile(szLocalPath, STREAM_FLAG_READ_ONLY)) != NULL)
             {
                 CascStrCopy(BuildFile.szFullPath, _countof(BuildFile.szFullPath), szLocalPath);
                 BuildFile.szPlainName = GetPlainFileName(BuildFile.szFullPath);
