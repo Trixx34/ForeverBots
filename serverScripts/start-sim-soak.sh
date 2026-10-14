@@ -6,7 +6,7 @@
 #   --minutes M    length of the run (default 90). The core shuts the sim down cleanly at the end
 #                  (Bot.Run.StopTime), so bots are saved and logged out.
 #   --seed S       seed for the random race/class picks (default 20261014): the same seed gives the same bots.
-#   --data-dir D   folder with starter_quests.txt and grind_spots.txt (default: the bots repo clone).
+#   --data-dir D   folder with starter_quests.txt (or world_quests.txt) and grind_spots.txt, and rotations.txt if present (default: the bots repo clone).
 #   --dry-run      print what would be written and the stop time, change nothing (works without root).
 #
 # What it changes (sim only, never prod):
@@ -47,6 +47,17 @@ MODDIR=$SIM/modules_runtime/forever-bots
 LOGDIR=/var/log/forever/sim
 TELEMETRY=$LOGDIR/forever-bots-telemetry.csv
 
+# The whole-world quests and the rotations file are used when they are in the data folder (tools/prepare_soak.sh makes them);
+# without them the run keeps the starter quests and the built-in rotations.
+QUEST_NAME=starter_quests.txt
+[[ -f "$DATA_DIR/world_quests.txt" ]] && QUEST_NAME=world_quests.txt
+DATA_FILES=("$DATA_DIR/$QUEST_NAME" "$DATA_DIR/grind_spots.txt")
+ROTATION_LINE=""
+if [[ -f "$DATA_DIR/rotations.txt" ]]; then
+  DATA_FILES+=("$DATA_DIR/rotations.txt")
+  ROTATION_LINE="Module.forever-bots.RotationFile = $MODDIR/data/rotations.txt"
+fi
+
 END="$(date -d "+${MINUTES} minutes" +%H:%M)"
 INITIAL=$(( BOTS < 50 ? BOTS : 50 ))
 
@@ -63,8 +74,9 @@ Module.forever-bots.BotsStopTime = $END
 Module.forever-bots.TelemetryFile = $TELEMETRY
 Module.forever-bots.TelemetrySummarySec = 60
 Module.forever-bots.ScenarioResultFile = $LOGDIR/scenario-results.log
-Module.forever-bots.QuestFile = $MODDIR/data/starter_quests.txt
+Module.forever-bots.QuestFile = $MODDIR/data/$QUEST_NAME
 Module.forever-bots.GrindFile = $MODDIR/data/grind_spots.txt
+${ROTATION_LINE}
 Module.forever-bots.AutoGearing = 1
 Module.forever-bots.ServiceEverySec = 600
 Module.forever-bots.TrainEverySec = 600"
@@ -82,11 +94,11 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-for f in "$CONF" "$SIM/modules_runtime/forever-bots/forever-bots" "$DATA_DIR/starter_quests.txt" "$DATA_DIR/grind_spots.txt"; do
+for f in "$CONF" "$SIM/modules_runtime/forever-bots/forever-bots" "${DATA_FILES[@]}"; do
   [[ -e "$f" ]] || { echo "missing: $f" >&2; exit 1; }
 done
 # This script runs as root; the data files may be written by a normal user, so never follow a link.
-for f in "$DATA_DIR/starter_quests.txt" "$DATA_DIR/grind_spots.txt"; do
+for f in "${DATA_FILES[@]}"; do
   [[ -f "$f" && ! -L "$f" ]] || { echo "not a regular file: $f" >&2; exit 1; }
 done
 grep -qE '^Modules\.Enabled *= *1' "$CONF" || { echo "Modules.Enabled is not 1 in $CONF" >&2; exit 1; }
@@ -95,7 +107,7 @@ systemctl stop forever-sim
 
 # Data files for the module.
 install -d -o forever-sim -g forever-sim -m 0750 "$MODDIR/data"
-install -o forever-sim -g forever-sim -m 0640 "$DATA_DIR/starter_quests.txt" "$DATA_DIR/grind_spots.txt" "$MODDIR/data/"
+install -o forever-sim -g forever-sim -m 0640 "${DATA_FILES[@]}" "$MODDIR/data/"
 
 # Module settings.
 [[ -f "$MODCONF" ]] && cp -a "$MODCONF" "$MODCONF.bak"
