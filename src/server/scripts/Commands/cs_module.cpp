@@ -57,7 +57,7 @@ public:
     {
         std::string message;
         sModuleMgr->ApproveModule(moduleName, message);
-        handler->PSendSysMessage("{}", message);
+        handler->PSendSysMessage("%s", message);
         return true;
     }
 
@@ -71,7 +71,7 @@ public:
         }
 
         for (ModuleSnapshot const& m : modules)
-            handler->PSendSysMessage("{} {} [{}] {}", m.Name, m.Version, ModuleStatusName(m.Status), m.StatusReason);
+            handler->PSendSysMessage("%s %s [%s] %s", m.Name, m.Version, ModuleStatusName(m.Status), m.StatusReason);
         return true;
     }
 
@@ -86,20 +86,20 @@ public:
             for (std::string const& hook : m.Capabilities.Hooks)
                 hooks += (hooks.empty() ? "" : ", ") + hook;
 
-            handler->PSendSysMessage("Module {} version {}", m.Name, m.Version);
-            handler->PSendSysMessage("  status:      {} ({})", ModuleStatusName(m.Status), m.StatusReason);
-            handler->PSendSysMessage("  approved:    {}", m.ApprovedVersion.empty() ? std::string("never") : m.ApprovedVersion);
-            handler->PSendSysMessage("  tier 1 hooks: {}", hooks.empty() ? std::string("none") : hooks);
-            handler->PSendSysMessage("  tier 2:      {}", m.Capabilities.Tier2Participates ? "requested" : "no");
-            handler->PSendSysMessage("  process:     {}", m.ProcessRunning ? "pid " + std::to_string(m.ProcessId) : std::string("not running"));
-            handler->PSendSysMessage("  heartbeats:  {}", m.HeartbeatCount);
-            handler->PSendSysMessage("  restarts:    {}", m.RestartAttempts);
+            handler->PSendSysMessage("Module %s version %s", m.Name, m.Version);
+            handler->PSendSysMessage("  status:      %s (%s)", ModuleStatusName(m.Status), m.StatusReason);
+            handler->PSendSysMessage("  approved:    %s", m.ApprovedVersion.empty() ? std::string("never") : m.ApprovedVersion);
+            handler->PSendSysMessage("  tier 1 hooks: %s", hooks.empty() ? std::string("none") : hooks);
+            handler->PSendSysMessage("  tier 2:      %s", m.Capabilities.Tier2Participates ? "requested" : "no");
+            handler->PSendSysMessage("  process:     %s", m.ProcessRunning ? "pid " + std::to_string(m.ProcessId) : std::string("not running"));
+            handler->PSendSysMessage("  heartbeats:  %u", m.HeartbeatCount);
+            handler->PSendSysMessage("  restarts:    %u", m.RestartAttempts);
             if (!m.LastFailure.empty())
-                handler->PSendSysMessage("  last failure: {}", m.LastFailure);
+                handler->PSendSysMessage("  last failure: %s", m.LastFailure);
             return true;
         }
 
-        handler->PSendSysMessage("No module named '{}'.", moduleName);
+        handler->PSendSysMessage("No module named '%s'.", moduleName);
         return true;
     }
 };
