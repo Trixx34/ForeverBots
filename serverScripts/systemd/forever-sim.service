@@ -41,5 +41,10 @@ ReadOnlyPaths=/srv/forever/data
 ReadWritePaths=/var/log/forever/sim /srv/forever/sim/run /srv/forever/sim/modules_runtime
 LimitNOFILE=65536
 
+# The sim must never take memory from prod (same machine). A bot run that grows too big is stopped inside this limit instead of
+# the kernel picking another victim; if the whole machine runs out anyway, the sim is the first to go.
+MemoryMax=7G
+OOMScoreAdjust=500
+
 [Install]
 WantedBy=multi-user.target

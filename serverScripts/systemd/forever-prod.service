@@ -43,5 +43,8 @@ ReadOnlyPaths=/srv/forever/data
 ReadWritePaths=/var/log/forever/prod /srv/forever/prod/modules_runtime /srv/forever/prod/conf
 LimitNOFILE=65536
 
+# If the machine runs out of memory, the kernel should pick the sim or anything else before the live realm.
+OOMScoreAdjust=-500
+
 [Install]
 WantedBy=multi-user.target
