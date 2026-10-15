@@ -242,12 +242,32 @@ void BotMgr::LoadRegistry()
 namespace
 {
 
-// Set while DumpAbilities levels its probe, so BotMgr::OnBotLevelChanged leaves it alone and the dump shows what the core grants by itself.
+// Set while DumpAbilities levels its probe, so BotMgr::OnBotLevelChanged leaves it alone (the dump teaches the trainer spells itself, without
+// the skills and talents).
 bool g_dumpingAbilities = false;
 
+// Teaches a bot every trainer spell it qualifies for, for free (never tradeskill or pet trainers). Several passes, since learning one spell can
+// make the next rank available. Returns how many were taught. Used when a bot levels up, and by the ability dump so the dump shows the class
+// abilities a bot really has, not only the starter spells.
+uint32 TeachTrainerSpells(Player& bot)
+{
+    uint32 taught = 0;
+    for (int pass = 0; pass < 8; ++pass)
+    {
+        uint32 learned = 0;
+        for (auto const& [id, trainer] : sObjectMgr->GetTrainers())
+            if (trainer.GetType() != Trainer::Type::Tradeskill && trainer.GetType() != Trainer::Type::Pet)
+                learned += trainer.TeachAvailableSpellsFree(&bot);
+        taught += learned;
+        if (!learned)
+            break;
+    }
+    return taught;
+}
+
 // Logs the spells a new character of this race and class has at each level, as the core itself grants them: a Player::Create, then
-// GiveLevel up through the levels, on an unsaved player that is never in the world (the same calls CreateBot makes for a bot created above
-// level 1). Each line lists the spells gained at that level, with their names, so it shows what a bot can use. Only for finding out
+// GiveLevel up through the levels, then the free trainer spells (the same calls CreateBot and OnBotLevelChanged make for a bot), on an
+// unsaved player that is never in the world. Each line lists the spells gained at that level, with their names, so it shows what a bot can use. Only for finding out
 // what bots have (Bot.Dump.Abilities); it creates a second, temporary player per race and class.
 void DumpAbilities(WorldSession* session, WorldPackets::Character::CharacterCreateInfo const& createInfo)
 {
@@ -272,6 +292,7 @@ void DumpAbilities(WorldSession* session, WorldPackets::Character::CharacterCrea
             break;
         if (level > probe->GetLevel())
             probe->GiveLevel(level);
+        TeachTrainerSpells(*probe);
 
         std::vector<uint32> gained;
         for (auto const& entry : probe->GetSpellMap())
@@ -802,20 +823,7 @@ void BotMgr::OnBotLevelChanged(Player& bot)
     static bool const learnSpells = sConfigMgr->GetBoolDefault("Bot.Learn.TrainerSpells", true);
     static bool const raiseSkills = sConfigMgr->GetBoolDefault("Bot.Learn.CombatSkills", true);
 
-    uint32 taught = 0;
-    if (learnSpells)
-    {
-        for (int pass = 0; pass < 8; ++pass)
-        {
-            uint32 learned = 0;
-            for (auto const& [id, trainer] : sObjectMgr->GetTrainers())
-                if (trainer.GetType() != Trainer::Type::Tradeskill && trainer.GetType() != Trainer::Type::Pet)
-                    learned += trainer.TeachAvailableSpellsFree(&bot);
-            taught += learned;
-            if (!learned)
-                break;
-        }
-    }
+    uint32 taught = learnSpells ? TeachTrainerSpells(bot) : 0;
 
     uint32 raised = 0;
     if (raiseSkills)
