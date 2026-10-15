@@ -610,7 +610,10 @@ class Handler(BaseHTTPRequestHandler):
         self.query = {k: v[0] for k, v in parse_qs(url.query).items()}
         self.form = {}
         if method == 'POST':
-            length = min(int(self.headers.get('Content-Length') or 0), 64 * 1024)
+            try:
+                length = max(0, min(int(self.headers.get('Content-Length') or 0), 64 * 1024))   # a negative length would read until the client hangs up
+            except ValueError:
+                length = 0
             self.form = {k: v[0] for k, v in parse_qs(self.rfile.read(length).decode('utf-8', 'replace')).items()}
         self.cookies = SimpleCookie(self.headers.get('Cookie') or '')
         sid = self.cookies['fsid'].value if 'fsid' in self.cookies else ''
