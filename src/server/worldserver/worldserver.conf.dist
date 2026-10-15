@@ -1808,6 +1808,15 @@ Bot.Limit.MaxDbQueue = 5000
 #        Default:     2
 #        The highest item quality auto gear hands out: 1 common, 2 uncommon (green), 3 rare (blue).
 #
+#    Bot.Bags.Item
+#        Default:     3914 (Journeyman's Backpack)
+#        The bag a bot gets in each empty bag slot when it is created, and when it logs in with empty slots (never an alt, a player's own
+#        character). 0 = bots get no bags.
+#
+#    Bot.Bags.Count
+#        Default:     4
+#        How many bag slots are filled (0 to 4).
+#
 #    Bot.Alt.Enabled
 #        Default:     0
 #        1 = a module may log a character of a player's own account in as a bot (an alt), when that player asks for it (the bots module's
@@ -1858,6 +1867,9 @@ Bot.Actions.Teleport = 0
 Bot.Actions.Grant = 0
 Bot.Actions.AutoGear = 1
 Bot.AutoGear.MaxQuality = 2
+
+Bot.Bags.Item = 3914
+Bot.Bags.Count = 4
 
 Bot.Alt.Enabled = 0
 Bot.Alt.MaxPerAccount = 4

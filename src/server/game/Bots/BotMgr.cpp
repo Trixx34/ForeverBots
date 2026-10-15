@@ -265,6 +265,30 @@ uint32 TeachTrainerSpells(Player& bot)
     return taught;
 }
 
+// A full set of bags for a bot: Bot.Bags.Item (default 3914, Journeyman's Backpack) in each of the first Bot.Bags.Count (default 4, at most
+// 4) empty bag slots. A new character has one small backpack, and bots that bring home quest rewards and loot fill it within minutes (the soak
+// saw hundreds of thousands of "bags full" refusals). Returns how many bags were put on. Bot.Bags.Item = 0 turns it off.
+uint32 GiveBags(Player& bot)
+{
+    static uint32 const itemId = uint32(std::max<int64>(0, sConfigMgr->GetIntDefault("Bot.Bags.Item", 3914)));
+    static uint32 const wanted = uint32(std::clamp<int64>(sConfigMgr->GetIntDefault("Bot.Bags.Count", 4), 0, INVENTORY_SLOT_BAG_END - INVENTORY_SLOT_BAG_START));
+    if (!itemId)
+        return 0;
+
+    uint32 given = 0;
+    for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_START + wanted; ++slot)
+    {
+        if (bot.GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            continue;
+        uint16 dest = 0;
+        if (bot.CanEquipNewItem(slot, dest, itemId, false) != EQUIP_ERR_OK)
+            continue;
+        if (bot.EquipNewItem(dest, itemId, ItemContext::NONE, true))
+            ++given;
+    }
+    return given;
+}
+
 // Logs the spells a new character of this race and class has at each level, as the core itself grants them: a Player::Create, then
 // GiveLevel up through the levels, then the free trainer spells (the same calls CreateBot and OnBotLevelChanged make for a bot), on an
 // unsaved player that is never in the world. Each line lists the spells gained at that level, with their names, so it shows what a bot can use. Only for finding out
@@ -393,6 +417,7 @@ uint64 BotMgr::CreateBot(uint8 raceId, uint8 classId, uint8 level, std::string& 
     // Level up before the first save, so the character is stored at the requested level with its stats and spells.
     if (level > 1)
         player->GiveLevel(level);
+    GiveBags(*player);
 
     player->setCinematic(1);
     player->SetAtLoginFlag(AT_LOGIN_FIRST);
@@ -868,6 +893,9 @@ void BotMgr::FinishLogin(BotInfo& bot)
         else if (!bot.Alt)
             SpreadBot(*player);
         OnBotLevelChanged(*player);
+        if (!bot.Alt)       // a player's own character is not given free items
+            if (uint32 bags = GiveBags(*player))
+                TC_LOG_INFO("server.worldserver", "BotMgr: bot {} was given {} bag(s).", bot.Name, bags);
         bot.Level = player->GetLevel();
         TC_LOG_INFO("server.worldserver", "BotMgr: bot {} (guid {}) is in the world.", bot.Name, bot.Guid);
     }
