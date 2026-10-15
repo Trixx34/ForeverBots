@@ -782,7 +782,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.page('Support', alert('bad', 'We could not tell who you are. Log in to the game, then open Help again.'), status=403)
         return self.verify_form(candidates, target)
 
-    def login(self, row, target):
+    def login(self, row, target, verified=False):
+        # A session guessed from the visitor's address must not carry staff rights on that guess alone: anyone behind the same
+        # address could be signed in as the game master. Staff accounts always confirm with the code shown on their character's screen.
+        if not verified and staff_level(row['accountId'], row['realmId']) >= int(CFG.get('staff_min_level', 2)):
+            return self.send_code(row, target)
         sid = start_session(row)
         self.redirect(target, [('Set-Cookie', 'fsid=%s; Path=/; HttpOnly; Secure; SameSite=Lax' % sid)])
 
@@ -815,13 +819,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self.code_form(pid, pend, alert('bad', 'That code is not right. Check your game screen.'))
             with PENDING_LOCK:
                 PENDING.pop(pid, None)
-            return self.login(pend['row'], pend['target'])
+            return self.login(pend['row'], pend['target'], verified=True)
         try:
             choice = candidates[int(self.form.get('c', '-1'))]
         except (ValueError, IndexError):
             return self.verify_form(candidates, target) if candidates else self.redirect('/kb')
         if same_player(candidates):     # multiboxing on one battle.net account: one person, no code needed
             return self.login(choice, target)
+        self.send_code(choice, target)
+
+    def send_code(self, choice, target):
+        """Shows a 6-digit code on the character's screen (RA) and asks for it. The character must be online."""
+        ip = self.client_address[0]
+        if 'characterName' not in choice:           # a login token row names the character by guid only
+            char = query_one(characters_db(choice['realmId']), 'SELECT name FROM characters WHERE guid = %s AND online = 1', (choice['characterGuid'],))
+            if not char:
+                return self.page('Support', alert('bad', 'Log in to the game with your character, then open Help again.'), status=403)
+            choice = dict(choice, characterName=char['name'])
+        if not rate_ok(ip, 'code', 5):
+            return self.page('Support', alert('bad', 'Too many tries. Wait a minute and try again.'), status=429)
         code = '%06d' % secrets.randbelow(1000000)
         out = ra_command(choice['realmId'], 'send message %s Support website code: %s' % (choice['characterName'], code)) if ra_available(choice['realmId']) else None
         if out is None:
