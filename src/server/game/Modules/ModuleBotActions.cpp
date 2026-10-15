@@ -5,8 +5,12 @@
 #include "BotMgr.h"
 #include "Cell.h"
 #include "Corpse.h"
+#include "GameObject.h"
 #include "GameTime.h"
 #include "InstanceScript.h"
+#include "Loot.h"
+#include "LootPackets.h"
+#include "Map.h"
 #include "MiscPackets.h"
 #include "MapManager.h"
 #include "Config.h"
@@ -20,8 +24,6 @@
 #include "Item.h"
 #include "ItemTemplate.h"
 #include "Log.h"
-#include "Loot.h"
-#include "LootPackets.h"
 #include "Map.h"
 #include "MotionMaster.h"
 #include "Opcodes.h"
@@ -29,6 +31,7 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "QuestDef.h"
+#include "SpellEffects.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Trainer.h"
@@ -68,6 +71,16 @@ Unit* ResolveUnit(Player& bot, uint64 ref)
                                                                           forever_module::UnitRefEntry(ref),
                                                                           forever_module::UnitRefCounter(ref));
             return map->GetCreature(guid);
+        }
+
+        case HighGuid::GameObject:
+        {
+            Map* map = bot.GetMap();
+            if (!map)
+                return nullptr;
+            ObjectGuid const guid = ObjectGuid::Create<HighGuid::GameObject>(forever_module::UnitRefEntry(ref),
+                                                                           forever_module::UnitRefCounter(ref));
+            return map->GetGameObject(guid);
         }
 
         default:
@@ -1494,6 +1507,133 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
                 reason = "cast of spell " + std::to_string(castId) + " returned result " + std::to_string(int32(result));
             return StatusForCast(result);
         }
+
+        case ActionType::kCraft:
+        {
+            if (bot.IsInCombat())
+            {
+                reason = "bot is in combat";
+                return BotActionStatus::kRefused;
+            }
+
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(action.spell_id, DIFFICULTY_NONE);
+            if (!info)
+            {
+                reason = "unknown spell " + std::to_string(action.spell_id);
+                return BotActionStatus::kUnknownSpell;
+            }
+            if (!bot.HasSpell(action.spell_id))
+            {
+                reason = "bot does not know spell " + std::to_string(action.spell_id);
+                return BotActionStatus::kNotKnown;
+            }
+
+            // Check reagents before consuming anything.
+            for (uint32 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+            {
+                uint32 reagentEntry = info->Reagent[i];
+                int16 reagentCount = info->ReagentCount[i];
+                if (!reagentEntry || reagentCount <= 0)
+                    continue;
+                if (bot.GetItemCount(reagentEntry) < uint32(reagentCount))
+                {
+                    reason = "not enough reagents for spell " + std::to_string(action.spell_id);
+                    return BotActionStatus::kRefused;
+                }
+            }
+            // Consume reagents.
+            for (uint32 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+            {
+                uint32 reagentEntry = info->Reagent[i];
+                int16 reagentCount = info->ReagentCount[i];
+                if (!reagentEntry || reagentCount <= 0)
+                    continue;
+                bot.DestroyItemCount(reagentEntry, uint32(reagentCount), true);
+            }
+
+            // Find the item the spell creates (SPELL_EFFECT_CREATE_ITEM).
+            uint32 itemEntry = 0;
+            uint32 itemCount = 1;
+            for (uint32 i = 0; i < 3; ++i)
+            {
+                if (info->Effects[i].IsEffect(SPELL_EFFECT_CREATE_ITEM))
+                {
+                    itemEntry = info->Effects[i].ItemType;
+                    itemCount = info->Effects[i].BasePoints > 0 ? uint32(info->Effects[i].BasePoints) : 1u;
+                    break;
+                }
+            }
+            if (!itemEntry)
+            {
+                reason = "spell " + std::to_string(action.spell_id) + " creates no item";
+                return BotActionStatus::kRefused;
+            }
+
+            ItemPosCountVec dest;
+            if (bot.CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemEntry, itemCount) != EQUIP_ERR_OK)
+            {
+                reason = "not enough bag space for crafted item";
+                return BotActionStatus::kRefused;
+            }
+            Item* item = bot.StoreNewItem(dest, itemEntry, true);
+            if (!item)
+            {
+                reason = "could not add crafted item to bags";
+                return BotActionStatus::kRefused;
+            }
+            bot.SendNewItem(item, itemCount, true, false);
+
+            reason = "crafted item " + std::to_string(itemEntry);
+            return BotActionStatus::kApplied;
+        }
+
+        case ActionType::kGather:
+        {
+            if (bot.IsInCombat())
+            {
+                reason = "bot is in combat";
+                return BotActionStatus::kRefused;
+            }
+
+            Unit* target = ResolveUnit(bot, action.target_guid);
+            if (!target || target->GetTypeId() != TYPEID_GAMEOBJECT)
+            {
+                reason = "gather target is not a game object";
+                return BotActionStatus::kInvalidTarget;
+            }
+            GameObject* go = target->ToGameObject();
+
+            if (!bot.IsWithinDist(go, INTERACTION_DISTANCE))
+            {
+                reason = "gather target is out of interaction range";
+                return BotActionStatus::kOutOfRange;
+            }
+
+            // If a gathering spell is named, cast it on the node; otherwise use the game object's Use.
+            if (action.spell_id)
+            {
+                SpellInfo const* gatherSpell = sSpellMgr->GetSpellInfo(action.spell_id, DIFFICULTY_NONE);
+                if (!gatherSpell || !bot.HasSpell(action.spell_id))
+                {
+                    reason = "bot does not know gathering spell " + std::to_string(action.spell_id);
+                    return BotActionStatus::kNotKnown;
+                }
+                SpellCastResult const castResult = bot.CastSpell(go, action.spell_id, false);
+                if (castResult != SPELL_CAST_OK)
+                {
+                    reason = "gather spell cast returned " + std::to_string(int32(castResult));
+                    return StatusForCast(castResult);
+                }
+            }
+            else
+            {
+                go->Use(&bot);
+            }
+
+            reason = "gathered from " + go->GetName();
+            return BotActionStatus::kApplied;
+        }
+
     }
 
     reason = "unknown action type";
