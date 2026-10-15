@@ -5829,7 +5829,7 @@ bool Player::UpdateFishingSkill(int32 expansion)
         return false;
 
     // Classic 1.60 (vanilla, VMaNGOS UpdateFishingSkill): called on a catch only; 100% below 75 skill, then 2500 / (skill - 50)%
-    (void)GetFishingStepsNeededToLevelUp;
+    // (the retail GetFishingStepsNeededToLevelUp above is not used)
     int32 chance = skillValue < 75 ? 100 : int32(2500 / (skillValue - 50));
     uint32 gatheringSkillGain = sWorld->getIntConfig(CONFIG_SKILL_GAIN_GATHERING);
     return UpdateSkillPro(fishingSkill, chance * 10, gatheringSkillGain);
@@ -27712,6 +27712,16 @@ void Player::AtExitCombat()
 {
     Unit::AtExitCombat();
     m_regenInterruptTimestamp = GameTime::Now();
+
+    // Classic 1.60 (client 70374) warrior talent Lingering Rage 1323964: "Increases the time before your Rage begins to decay after leaving
+    // combat by ${$s1/1000} sec." (2-10 sec by rank). Its entered-combat proc (1323966) is only a marker; on leaving combat the Lingering
+    // Rage buff 1323965 (SPELL_AURA_INTERRUPT_REGEN: rage keeps its combat regen, no decay) runs for the talent value.
+    if (AuraEffect const* lingeringRage = GetAuraEffect(1323964, EFFECT_0))
+    {
+        RemoveAurasDueToSpell(1323966);
+        if (int32 const duration = int32(lingeringRage->GetAmount()); duration > 0)
+            CastSpell(this, 1323965, CastSpellExtraArgs(TRIGGERED_FULL_MASK).AddSpellMod(SPELLVALUE_DURATION, duration));
+    }
 }
 
 float Player::GetBlockPercent(uint8 attackerLevel) const

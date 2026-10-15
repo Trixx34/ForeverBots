@@ -753,6 +753,19 @@ enum AuraType : uint32
     TOTAL_AURAS
 };
 
+// Classic 1.60 client data (70374) uses aura types beyond TOTAL_AURAS for effects that used a retail aura before: they are handled as
+// that aura. 674: armor buffs and debuffs (Mark of the Wild, Devotion Aura, Sunder Armor, Faerie Fire, Expose Armor, Curse of
+// Recklessness: physical school mask, flat value; all were SPELL_AURA_MOD_RESISTANCE). 673: Thick Hide (armor from items in %).
+inline int32 GetClassicAuraType(int32 aura)
+{
+    switch (aura)
+    {
+        case 673: return SPELL_AURA_MOD_BASE_RESISTANCE_PCT;
+        case 674: return SPELL_AURA_MOD_RESISTANCE;
+        default:  return aura;
+    }
+}
+
 enum AuraObjectType
 {
     UNIT_AURA_TYPE,

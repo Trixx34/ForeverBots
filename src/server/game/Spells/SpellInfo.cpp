@@ -418,7 +418,7 @@ SpellEffectInfo::SpellEffectInfo(SpellInfo const* spellInfo, SpellEffectEntry co
     _spellInfo = spellInfo;
     EffectIndex = SpellEffIndex(_effect.EffectIndex);
     Effect = SpellEffects(_effect.Effect);
-    ApplyAuraName = AuraType(_effect.EffectAura);
+    ApplyAuraName = AuraType(GetClassicAuraType(_effect.EffectAura));
     ApplyAuraPeriod = _effect.EffectAuraPeriod;
     BasePoints = _effect.EffectBasePoints;
     RealPointsPerLevel = _effect.EffectRealPointsPerLevel;
