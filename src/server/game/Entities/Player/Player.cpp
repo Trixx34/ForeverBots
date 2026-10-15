@@ -21589,28 +21589,33 @@ void Player::SaveToDB(LoginDatabaseTransaction loginTransaction, CharacterDataba
     if (m_session->isLogingOut() || !sWorld->getBoolConfig(CONFIG_STATS_SAVE_ONLY_ON_LOGOUT))
         _SaveStats(trans);
 
-    // TODO: Move this out
-    GetSession()->GetCollectionMgr()->SaveToDB(loginTransaction);
-    GetSession()->GetBattlePetMgr()->SaveToDB(loginTransaction);
-    GetSession()->SavePlayerDataAccount(loginTransaction);
+    // A bot session has no Battle.net account (id 0): its account-level rows would only fail the foreign keys of the login database
+    // (thousands of errors in DBErrors.log per soak) and cost a login-database write per bot on every save.
+    if (!GetSession()->IsBot())
+    {
+        // TODO: Move this out
+        GetSession()->GetCollectionMgr()->SaveToDB(loginTransaction);
+        GetSession()->GetBattlePetMgr()->SaveToDB(loginTransaction);
+        GetSession()->SavePlayerDataAccount(loginTransaction);
 
-    Battlenet::RealmHandle currentRealmId = sRealmList->GetCurrentRealmId();
+        Battlenet::RealmHandle currentRealmId = sRealmList->GetCurrentRealmId();
 
-    LoginDatabasePreparedStatement* loginStmt = LoginDatabase.GetPreparedStatement(LOGIN_DEL_BNET_LAST_PLAYER_CHARACTERS);
-    loginStmt->setUInt32(0, GetSession()->GetAccountId());
-    loginStmt->setUInt8(1, currentRealmId.Region);
-    loginStmt->setUInt8(2, currentRealmId.Site);
-    loginTransaction->Append(loginStmt);
+        LoginDatabasePreparedStatement* loginStmt = LoginDatabase.GetPreparedStatement(LOGIN_DEL_BNET_LAST_PLAYER_CHARACTERS);
+        loginStmt->setUInt32(0, GetSession()->GetAccountId());
+        loginStmt->setUInt8(1, currentRealmId.Region);
+        loginStmt->setUInt8(2, currentRealmId.Site);
+        loginTransaction->Append(loginStmt);
 
-    loginStmt = LoginDatabase.GetPreparedStatement(LOGIN_INS_BNET_LAST_PLAYER_CHARACTERS);
-    loginStmt->setUInt32(0, GetSession()->GetAccountId());
-    loginStmt->setUInt8(1, currentRealmId.Region);
-    loginStmt->setUInt8(2, currentRealmId.Site);
-    loginStmt->setUInt32(3, currentRealmId.Realm);
-    loginStmt->setString(4, GetName());
-    loginStmt->setUInt64(5, GetGUID().GetCounter());
-    loginStmt->setUInt32(6, GameTime::GetGameTime());
-    loginTransaction->Append(loginStmt);
+        loginStmt = LoginDatabase.GetPreparedStatement(LOGIN_INS_BNET_LAST_PLAYER_CHARACTERS);
+        loginStmt->setUInt32(0, GetSession()->GetAccountId());
+        loginStmt->setUInt8(1, currentRealmId.Region);
+        loginStmt->setUInt8(2, currentRealmId.Site);
+        loginStmt->setUInt32(3, currentRealmId.Realm);
+        loginStmt->setString(4, GetName());
+        loginStmt->setUInt64(5, GetGUID().GetCounter());
+        loginStmt->setUInt32(6, GameTime::GetGameTime());
+        loginTransaction->Append(loginStmt);
+    }
 
     // save pet (hunter pet level and experience and all type pets health/mana).
     if (Pet* pet = GetPet())

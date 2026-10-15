@@ -3,6 +3,7 @@
  */
 
 #include "ModuleMgr.h"
+#include <unordered_set>
 #include <map>
 #include <functional>
 #include <chrono>
@@ -931,8 +932,10 @@ void ModuleMgr::OnWorldTick(uint64 tick)
                 bots.push_back(std::move(entry));
             }
             // Forget the nearby cache of bots this module no longer controls.
+            // (a set: with thousands of bots a search of the list per cache entry was quadratic on every snapshot)
+            std::unordered_set<uint64> const ownedSet(owned.begin(), owned.end());
             for (auto it = _nearbyCache.begin(); it != _nearbyCache.end();)
-                it = std::find(owned.begin(), owned.end(), it->first) == owned.end() ? _nearbyCache.erase(it) : std::next(it);
+                it = ownedSet.contains(it->first) ? std::next(it) : _nearbyCache.erase(it);
 
             region->PublishSnapshot(tick, bots);
         }
