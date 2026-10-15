@@ -991,7 +991,8 @@ void ModuleMgr::ApplyModuleActions(ModuleId module, ModuleActionSet const& actio
         std::string reason;
         forever_module::BotActionStatus const status = ApplyBotAction(*bot, action, reason);
         RecordActionResult(action.bot_guid, action, status);
-        if (status != forever_module::BotActionStatus::kApplied)
+        // kNoRoute is not a refusal: the move was applied, and the module reads the status to pick another destination.
+        if (status != forever_module::BotActionStatus::kApplied && status != forever_module::BotActionStatus::kNoRoute)
         {
             TC_LOG_DEBUG("modules", "module {}: action on bot {} refused ({}): {}.", module, action.bot_guid, int(status), reason);
             NoteRefusal(int(action.type), int(status), reason);
