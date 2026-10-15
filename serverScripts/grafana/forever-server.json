@@ -1,0 +1,1820 @@
+{
+ "uid": "forever-server",
+ "title": "Forever server (Linux)",
+ "tags": [
+  "forever",
+  "wow"
+ ],
+ "timezone": "browser",
+ "schemaVersion": 39,
+ "version": 1,
+ "refresh": "30s",
+ "time": {
+  "from": "now-6h",
+  "to": "now"
+ },
+ "editable": true,
+ "graphTooltip": 1,
+ "description": "The Forever prod and sim worldservers, the machine, and the sim's bots. Source: Telegraf job telegraf-forever.",
+ "panels": [
+  {
+   "id": 1,
+   "type": "row",
+   "title": "Servers and machine",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 24,
+    "h": 1
+   },
+   "panels": []
+  },
+  {
+   "id": 2,
+   "type": "stat",
+   "title": "Prod worldserver",
+   "description": "systemd state of forever-prod.service",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "systemd_units_active_code{job=\"telegraf-forever\",name=\"forever-prod.service\"}",
+     "legendFormat": "",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "running",
+         "color": "green",
+         "index": 0
+        },
+        "2": {
+         "text": "stopped",
+         "color": "orange",
+         "index": 1
+        },
+        "3": {
+         "text": "FAILED",
+         "color": "red",
+         "index": 2
+        },
+        "1": {
+         "text": "reloading",
+         "color": "yellow",
+         "index": 3
+        }
+       }
+      }
+     ],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "justifyMode": "center"
+   }
+  },
+  {
+   "id": 3,
+   "type": "stat",
+   "title": "Sim worldserver",
+   "description": "systemd state of forever-sim.service",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 4,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "systemd_units_active_code{job=\"telegraf-forever\",name=\"forever-sim.service\"}",
+     "legendFormat": "",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "running",
+         "color": "green",
+         "index": 0
+        },
+        "2": {
+         "text": "stopped",
+         "color": "orange",
+         "index": 1
+        },
+        "3": {
+         "text": "FAILED",
+         "color": "red",
+         "index": 2
+        },
+        "1": {
+         "text": "reloading",
+         "color": "yellow",
+         "index": 3
+        }
+       }
+      }
+     ],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "justifyMode": "center"
+   }
+  },
+  {
+   "id": 4,
+   "type": "stat",
+   "title": "Login server",
+   "description": "systemd state of forever-prod-bnet.service",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "systemd_units_active_code{job=\"telegraf-forever\",name=\"forever-prod-bnet.service\"}",
+     "legendFormat": "",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "running",
+         "color": "green",
+         "index": 0
+        },
+        "2": {
+         "text": "stopped",
+         "color": "orange",
+         "index": 1
+        },
+        "3": {
+         "text": "FAILED",
+         "color": "red",
+         "index": 2
+        },
+        "1": {
+         "text": "reloading",
+         "color": "yellow",
+         "index": 3
+        }
+       }
+      }
+     ],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "justifyMode": "center"
+   }
+  },
+  {
+   "id": 5,
+   "type": "stat",
+   "title": "Dashboard",
+   "description": "systemd state of forever-dashboard.service",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "systemd_units_active_code{job=\"telegraf-forever\",name=\"forever-dashboard.service\"}",
+     "legendFormat": "",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "running",
+         "color": "green",
+         "index": 0
+        },
+        "2": {
+         "text": "stopped",
+         "color": "orange",
+         "index": 1
+        },
+        "3": {
+         "text": "FAILED",
+         "color": "red",
+         "index": 2
+        },
+        "1": {
+         "text": "reloading",
+         "color": "yellow",
+         "index": 3
+        }
+       }
+      }
+     ],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "justifyMode": "center"
+   }
+  },
+  {
+   "id": 6,
+   "type": "stat",
+   "title": "CPU used",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "100 - cpu_usage_idle{job=\"telegraf-forever\",cpu=\"cpu-total\"}",
+     "legendFormat": "",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 70
+       },
+       {
+        "color": "red",
+        "value": 90
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "justifyMode": "center"
+   }
+  },
+  {
+   "id": 7,
+   "type": "stat",
+   "title": "Memory used",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 20,
+    "y": 1,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "mem_used_percent{job=\"telegraf-forever\"}",
+     "legendFormat": "",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 75
+       },
+       {
+        "color": "red",
+        "value": 90
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "justifyMode": "center"
+   }
+  },
+  {
+   "id": 8,
+   "type": "row",
+   "title": "Bots on the sim (needs the bots exec input)",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 5,
+    "w": 24,
+    "h": 1
+   },
+   "panels": []
+  },
+  {
+   "id": 9,
+   "type": "stat",
+   "title": "Bots online",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 6,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "forever_bots_online{job=\"telegraf-forever\",server=\"sim\"}",
+     "legendFormat": "",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "justifyMode": "center"
+   }
+  },
+  {
+   "id": 10,
+   "type": "stat",
+   "title": "In combat",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 4,
+    "y": 6,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "forever_bots_in_combat{job=\"telegraf-forever\",server=\"sim\"}",
+     "legendFormat": "",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "justifyMode": "center"
+   }
+  },
+  {
+   "id": 11,
+   "type": "stat",
+   "title": "Still level 1",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 6,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "forever_bots_level1{job=\"telegraf-forever\",server=\"sim\"}",
+     "legendFormat": "",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 50
+       },
+       {
+        "color": "red",
+        "value": 150
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "justifyMode": "center"
+   }
+  },
+  {
+   "id": 12,
+   "type": "stat",
+   "title": "Average level",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 6,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "forever_bots_avg_level{job=\"telegraf-forever\",server=\"sim\"}",
+     "legendFormat": "",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "decimals": 1
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "justifyMode": "center"
+   }
+  },
+  {
+   "id": 13,
+   "type": "stat",
+   "title": "World updates / s",
+   "description": "How many times per second the sim's world updates. Under 20 a bot-heavy world starts to feel slow.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 6,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "rate(forever_bots_tick{job=\"telegraf-forever\",server=\"sim\"}[1m])",
+     "legendFormat": "",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "justifyMode": "center"
+   }
+  },
+  {
+   "id": 14,
+   "type": "stat",
+   "title": "Time per world update",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 20,
+    "y": 6,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "1000 / rate(forever_bots_tick{job=\"telegraf-forever\",server=\"sim\"}[1m])",
+     "legendFormat": "",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ms",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 40
+       },
+       {
+        "color": "red",
+        "value": 100
+       }
+      ]
+     },
+     "decimals": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "justifyMode": "center"
+   }
+  },
+  {
+   "id": 15,
+   "type": "timeseries",
+   "title": "Bots",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 10,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "forever_bots_online{job=\"telegraf-forever\",server=\"sim\"}",
+     "legendFormat": "online",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "forever_bots_in_combat{job=\"telegraf-forever\",server=\"sim\"}",
+     "legendFormat": "in combat",
+     "refId": "B",
+     "editorMode": "code",
+     "range": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "forever_bots_level1{job=\"telegraf-forever\",server=\"sim\"}",
+     "legendFormat": "level 1",
+     "refId": "C",
+     "editorMode": "code",
+     "range": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "forever_bots_dead{job=\"telegraf-forever\",server=\"sim\"}",
+     "legendFormat": "dead",
+     "refId": "D",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 16,
+   "type": "timeseries",
+   "title": "World update time vs bots",
+   "description": "The slowdown analysis: how the time per world update grows with the bot count.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 10,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "1000 / rate(forever_bots_tick{job=\"telegraf-forever\",server=\"sim\"}[1m])",
+     "legendFormat": "ms per update",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "forever_bots_online{job=\"telegraf-forever\",server=\"sim\"}",
+     "legendFormat": "bots online",
+     "refId": "B",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 17,
+   "type": "timeseries",
+   "title": "Bot levels",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 18,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "forever_bots_avg_level{job=\"telegraf-forever\",server=\"sim\"}",
+     "legendFormat": "average",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "forever_bots_max_level{job=\"telegraf-forever\",server=\"sim\"}",
+     "legendFormat": "highest",
+     "refId": "B",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 18,
+   "type": "timeseries",
+   "title": "Creatures the bots see / maps in use",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 18,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "forever_bots_units{job=\"telegraf-forever\",server=\"sim\"}",
+     "legendFormat": "creatures listed",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "forever_bots_maps{job=\"telegraf-forever\",server=\"sim\"}",
+     "legendFormat": "maps with bots",
+     "refId": "B",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 19,
+   "type": "row",
+   "title": "Worldserver processes",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 26,
+    "w": 24,
+    "h": 1
+   },
+   "panels": []
+  },
+  {
+   "id": 20,
+   "type": "timeseries",
+   "title": "CPU per worldserver (100 = one full core)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 27,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "procstat_cpu_usage{job=\"telegraf-forever\",server=~\"prod|sim\"}",
+     "legendFormat": "{{server}}",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      }
+     },
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 21,
+   "type": "timeseries",
+   "title": "Memory per worldserver (RSS)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 27,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "procstat_memory_rss{job=\"telegraf-forever\",server=~\"prod|sim\"}",
+     "legendFormat": "{{server}}",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      }
+     },
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 22,
+   "type": "timeseries",
+   "title": "Threads",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 35,
+    "w": 24,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "procstat_num_threads{job=\"telegraf-forever\",server=~\"prod|sim\"}",
+     "legendFormat": "{{server}}",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 23,
+   "type": "row",
+   "title": "Machine",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 43,
+    "w": 24,
+    "h": 1
+   },
+   "panels": []
+  },
+  {
+   "id": 24,
+   "type": "timeseries",
+   "title": "CPU",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 44,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "cpu_usage_user{job=\"telegraf-forever\",cpu=\"cpu-total\"}",
+     "legendFormat": "user",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "cpu_usage_system{job=\"telegraf-forever\",cpu=\"cpu-total\"}",
+     "legendFormat": "system",
+     "refId": "B",
+     "editorMode": "code",
+     "range": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "cpu_usage_iowait{job=\"telegraf-forever\",cpu=\"cpu-total\"}",
+     "legendFormat": "iowait",
+     "refId": "C",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 1,
+      "fillOpacity": 25,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "normal",
+       "group": "A"
+      }
+     },
+     "min": 0,
+     "max": 100
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 25,
+   "type": "timeseries",
+   "title": "Memory",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 44,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "mem_used{job=\"telegraf-forever\"}",
+     "legendFormat": "used",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "mem_cached{job=\"telegraf-forever\"}",
+     "legendFormat": "cache",
+     "refId": "B",
+     "editorMode": "code",
+     "range": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "mem_available{job=\"telegraf-forever\"}",
+     "legendFormat": "available",
+     "refId": "C",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 26,
+   "type": "timeseries",
+   "title": "Load average",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 52,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "system_load1{job=\"telegraf-forever\"}",
+     "legendFormat": "1 min",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "system_load5{job=\"telegraf-forever\"}",
+     "legendFormat": "5 min",
+     "refId": "B",
+     "editorMode": "code",
+     "range": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "system_load15{job=\"telegraf-forever\"}",
+     "legendFormat": "15 min",
+     "refId": "C",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 27,
+   "type": "timeseries",
+   "title": "Network",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 52,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "rate(net_bytes_recv{job=\"telegraf-forever\",interface=\"ens2\"}[1m]) * 8",
+     "legendFormat": "in",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "rate(net_bytes_sent{job=\"telegraf-forever\",interface=\"ens2\"}[1m]) * 8",
+     "legendFormat": "out",
+     "refId": "B",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bps",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 28,
+   "type": "timeseries",
+   "title": "Disk used (/ holds /srv/forever)",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 60,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "disk_used_percent{job=\"telegraf-forever\",path=\"/\"}",
+     "legendFormat": "/",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      }
+     },
+     "min": 0,
+     "max": 100
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 29,
+   "type": "timeseries",
+   "title": "Disk throughput",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "cfuvt9u3mp3i8e"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 60,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "rate(diskio_read_bytes{job=\"telegraf-forever\"}[1m])",
+     "legendFormat": "read {{name}}",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "cfuvt9u3mp3i8e"
+     },
+     "expr": "rate(diskio_write_bytes{job=\"telegraf-forever\"}[1m])",
+     "legendFormat": "write {{name}}",
+     "refId": "B",
+     "editorMode": "code",
+     "range": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "Bps",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 1,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  }
+ ],
+ "templating": {
+  "list": []
+ },
+ "annotations": {
+  "list": []
+ }
+}

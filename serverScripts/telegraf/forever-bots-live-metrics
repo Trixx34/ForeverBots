@@ -1,0 +1,55 @@
+#!/usr/bin/python3 -I
+"""Telegraf exec input: the sim's bots, from the live file the bots module writes (Module.forever-bots.LiveFile).
+
+Prints one line of InfluxDB line protocol and exits. Read-only. The telegraf account needs read access to the file's folder
+(setfacl, see install-telegraf-bots.sh). A missing or old file reports online=0 and stale=1 instead of failing.
+
+Fields: online, in_combat, dead, in_party, avg_level, max_level, level1, units (nearby creatures listed), maps (distinct maps), tick
+(the world tick counter: rate(forever_bots_tick[1m]) is world updates per second), age_s (how old the file is).
+"""
+import json
+import sys
+import time
+
+PATH = sys.argv[1] if len(sys.argv) > 1 else "/var/log/forever/sim/bots-live.json"
+SERVER = sys.argv[2] if len(sys.argv) > 2 else "sim"
+STALE_AFTER_S = 30
+
+
+def main() -> int:
+    tags = f"forever_bots,server={SERVER}"
+    try:
+        with open(PATH, "rb") as f:
+            data = json.loads(f.read().decode("utf-8"))
+        bots = [b for b in data.get("bots", []) if isinstance(b, dict)]
+        age = max(0.0, time.time() - float(data.get("time_ms", 0)) / 1000.0)
+    except (OSError, ValueError, TypeError):
+        print(f"{tags} online=0i,stale=1i")
+        return 0
+    if age > STALE_AFTER_S:
+        print(f"{tags} online=0i,stale=1i,age_s={age:.0f}")
+        return 0
+    levels = [int(b.get("level", 0) or 0) for b in bots]
+    fields = {
+        "online": len(bots),
+        "in_combat": sum(1 for b in bots if b.get("combat")),
+        "dead": sum(1 for b in bots if not b.get("hp")),
+        "in_party": sum(1 for b in bots if b.get("group")),
+        "avg_level": round(sum(levels) / len(levels), 2) if levels else 0,
+        "max_level": max(levels) if levels else 0,
+        "level1": sum(1 for lv in levels if lv <= 1),
+        "units": len(data.get("units", [])),
+        "maps": len({b.get("map") for b in bots}),
+        "tick": int(data.get("tick", 0) or 0),
+        "age_s": round(age, 1),
+        "stale": 0,
+    }
+    parts = []
+    for key, value in fields.items():
+        parts.append(f"{key}={value}i" if isinstance(value, int) else f"{key}={value}")
+    print(f"{tags} " + ",".join(parts))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
