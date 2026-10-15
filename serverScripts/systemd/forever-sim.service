@@ -43,7 +43,7 @@ LimitNOFILE=65536
 
 # The sim must never take memory from prod (same machine). A bot run that grows too big is stopped inside this limit instead of
 # the kernel picking another victim; if the whole machine runs out anyway, the sim is the first to go.
-MemoryMax=7G
+MemoryMax=9G
 OOMScoreAdjust=500
 
 [Install]
