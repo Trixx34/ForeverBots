@@ -25400,6 +25400,12 @@ inline void BeforeVisibilityDestroy<GameObject>(GameObject* t, Player* p)
 
 void Player::UpdateVisibilityOf(Trinity::IteratorPair<WorldObject**> targets)
 {
+    // Bots have no client; skip building update packets and maintaining m_clientGUIDs for them.
+    // The world still ticks around bots (VisitNearbyCellsOf is unaffected), and human players'
+    // visibility of bots is not changed here (those calls come from the human's own session).
+    if (GetSession()->IsBot())
+        return;
+
     if (targets.begin() == targets.end())
         return;
 
@@ -25455,6 +25461,10 @@ void Player::UpdateVisibilityOf(Trinity::IteratorPair<WorldObject**> targets)
 
 void Player::UpdateVisibilityOf(WorldObject* target)
 {
+    // Bots have no client; skip all client-visibility work for the bot as observer.
+    if (GetSession()->IsBot())
+        return;
+
     if (HaveAtClient(target))
     {
         if (!CanSeeOrDetect(target, { .DistanceCheck = true }))
@@ -25581,6 +25591,10 @@ void Player::SendInitialVisiblePackets(WorldObject* target) const
 template<class T>
 void Player::UpdateVisibilityOf(T* target, UpdateData& data, std::set<WorldObject*>& visibleNow)
 {
+    // Bots have no client; skip building update blocks and m_clientGUIDs entries for them.
+    if (GetSession()->IsBot())
+        return;
+
     if (HaveAtClient(target))
     {
         if (!CanSeeOrDetect(target, { .DistanceCheck = true }))

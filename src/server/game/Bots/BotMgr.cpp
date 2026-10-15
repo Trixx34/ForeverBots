@@ -11,6 +11,7 @@
 #include "CryptoRandom.h"
 #include "DatabaseEnv.h"
 #include "Log.h"
+#include "ModuleBotSnapshot.h"
 #include "ModuleMgr.h"
 #include "Map.h"
 #include "MovementPackets.h"
@@ -936,6 +937,9 @@ void BotMgr::LogoutBot(BotInfo& bot, char const* reason)
     bot.Session = nullptr;
     bot.State = BOT_OFFLINE;
     bot.NotBeforeMs = _uptimeMs + _reloginDelayMs;
+
+    // Release the vendor-lookup cache entry so the map stays bounded to online bots.
+    ClearVendorLookup(bot.Guid);
 
     TC_LOG_INFO("server.worldserver", "BotMgr: bot {} (guid {}) logged out ({}).", bot.Name, bot.Guid, reason);
 }

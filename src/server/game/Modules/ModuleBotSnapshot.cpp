@@ -205,13 +205,16 @@ struct VendorLookup
     VendorSpot Repairman{};
 };
 
+// Process-lifetime cache of the nearest-vendor lookup for each bot. Keyed by character counter. Erased in
+// ClearVendorLookup on bot logout so the map never grows beyond the number of currently-online bots.
+std::unordered_map<uint64, VendorLookup> g_vendorLookups;
+
 // Fills the nearest-vendor fields (layout 6, M6) and the nearest-repairman fields (layout 9). The position is 2D for the distance:
 // vendors sit at different heights in the same town, and the walk is on the ground. Only vendors the bot's faction is not hostile to
 // count: a Horde bot must not be sent to Stormwind.
 void FillNearestVendor(Player& bot, BotSnapshot& entry)
 {
-    static std::unordered_map<uint64, VendorLookup> lookups; // bot counter -> its last lookup
-    VendorLookup& last = lookups[bot.GetGUID().GetCounter()];
+    VendorLookup& last = g_vendorLookups[bot.GetGUID().GetCounter()];
 
     float const x = bot.GetPositionX();
     float const y = bot.GetPositionY();
@@ -519,4 +522,12 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
 bool BotMayFight(Player const& bot, Unit const& unit)
 {
     return CanBeFought(bot, unit);
+}
+
+// Removes the vendor-lookup cache entry for a bot that has logged out. The static map is keyed by character
+// counter and never erased otherwise, so without this call it would grow to one entry per ever-created bot.
+// Called by BotMgr::LogoutBot after the session has been torn down.
+void ClearVendorLookup(uint64 botCounter)
+{
+    g_vendorLookups.erase(botCounter);
 }
