@@ -1,4 +1,5 @@
 #include "ModuleBotActions.h"
+#include "BotGearRules.h"
 #include "ModuleBotSnapshot.h"
 #include <cmath>
 #include "BotMgr.h"
@@ -337,34 +338,10 @@ std::vector<ItemTemplate const*> const& GearCandidates()
     return candidates;
 }
 
-// The heaviest armour a class wears at a level (ITEM_SUBCLASS_ARMOR_*): cloth, leather, mail or plate. Lighter armour is allowed too.
-uint32 MaxArmorSubclass(uint8 classId, uint32 level)
-{
-    switch (classId)
-    {
-        case CLASS_WARRIOR:
-        case CLASS_PALADIN: return level >= 40 ? ITEM_SUBCLASS_ARMOR_PLATE : ITEM_SUBCLASS_ARMOR_MAIL;
-        case CLASS_HUNTER:
-        case CLASS_SHAMAN: return level >= 40 ? ITEM_SUBCLASS_ARMOR_MAIL : ITEM_SUBCLASS_ARMOR_LEATHER;
-        case CLASS_ROGUE:
-        case CLASS_DRUID: return ITEM_SUBCLASS_ARMOR_LEATHER;
-        default: return ITEM_SUBCLASS_ARMOR_CLOTH; // priest, mage, warlock
-    }
-}
-
-// True for armour in the body slots that is heavier than the class wears. Jewellery, cloaks and shields are not judged here.
+// True for armour in the body slots that is heavier than the class wears (rules in BotGearRules.h).
 bool ArmorTooHeavy(Player const& bot, ItemTemplate const& item)
 {
-    if (item.GetClass() != ITEM_CLASS_ARMOR)
-        return false;
-    uint32 const sub = item.GetSubClass();
-    switch (item.GetInventoryType())
-    {
-        case INVTYPE_HEAD: case INVTYPE_SHOULDERS: case INVTYPE_CHEST: case INVTYPE_ROBE: case INVTYPE_WAIST: case INVTYPE_LEGS:
-        case INVTYPE_FEET: case INVTYPE_WRISTS: case INVTYPE_HANDS:
-            return sub > ITEM_SUBCLASS_ARMOR_MISCELLANEOUS && sub <= ITEM_SUBCLASS_ARMOR_PLATE && sub > MaxArmorSubclass(bot.GetClass(), bot.GetLevel());
-        default: return false;
-    }
+    return BotGearRules::ArmorTooHeavy(bot.GetClass(), bot.GetLevel(), item.GetClass(), item.GetSubClass(), item.GetInventoryType());
 }
 
 // What a class wants from its gear, as item-mod stats: the stats it uses, in no order.

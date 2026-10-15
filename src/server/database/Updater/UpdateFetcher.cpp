@@ -21,6 +21,7 @@
 #include "Field.h"
 #include "Log.h"
 #include "QueryResult.h"
+#include "SqlFileHashes.h"
 #include "Util.h"
 #include <boost/filesystem/directory.hpp>
 #include <boost/filesystem/operations.hpp>
@@ -173,26 +174,9 @@ std::string UpdateFetcher::ReadSQLUpdate(boost::filesystem::path const& file) co
 
 namespace
 {
-// Classic 1.60 fork: a SQL file has two possible stored hashes. Before 2026-10-14 the file was read in text mode, which turns
-// CRLF into LF only on Windows: files with CRLF bytes in their git copy (the world baselines have line breaks inside text
-// strings) were stored with the LF hash by Windows and the raw hash by Linux. Both mean "already applied"; the LF hash is the one
-// stored from now on, so a database moved between Windows and Linux never re-runs a file just because of line endings.
-struct SqlFileHashes
-{
-    std::string Normalized; // CRLF -> LF, the hash stored from now on
-    std::string Raw;        // bytes as they are (what Linux stored before)
-
-    bool Matches(std::string const& stored) const { return stored == Normalized || stored == Raw; }
-};
-
 SqlFileHashes HashSqlFile(std::string const& raw)
 {
-    std::string normalized = raw;
-    std::size_t out = 0;
-    for (std::size_t i = 0; i < normalized.size(); ++i)
-        if (normalized[i] != '\r' || i + 1 >= normalized.size() || normalized[i + 1] != '\n')
-            normalized[out++] = normalized[i];
-    normalized.resize(out);
+    std::string const normalized = NormalizeSqlLineEndings(raw);
 
     return { ByteArrayToHexStr(Trinity::Crypto::SHA1::GetDigestOf(normalized)), ByteArrayToHexStr(Trinity::Crypto::SHA1::GetDigestOf(raw)) };
 }

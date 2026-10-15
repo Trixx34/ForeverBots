@@ -3,6 +3,7 @@
  */
 
 #include "BotLootRoll.h"
+#include "BotLootRollRules.h"
 #include "Config.h"
 #include "Item.h"
 #include "ItemTemplate.h"
@@ -11,47 +12,20 @@
 #include "WorldSession.h"
 #include <algorithm>
 
+// The slot numbers of the pure rules are copies: they must stay equal to the real ones.
+static_assert(BotLootRollRules::Slot::None == NULL_SLOT && BotLootRollRules::Slot::Head == EQUIPMENT_SLOT_HEAD &&
+    BotLootRollRules::Slot::Neck == EQUIPMENT_SLOT_NECK && BotLootRollRules::Slot::Shoulders == EQUIPMENT_SLOT_SHOULDERS &&
+    BotLootRollRules::Slot::Chest == EQUIPMENT_SLOT_CHEST && BotLootRollRules::Slot::Waist == EQUIPMENT_SLOT_WAIST &&
+    BotLootRollRules::Slot::Legs == EQUIPMENT_SLOT_LEGS && BotLootRollRules::Slot::Feet == EQUIPMENT_SLOT_FEET &&
+    BotLootRollRules::Slot::Wrists == EQUIPMENT_SLOT_WRISTS && BotLootRollRules::Slot::Hands == EQUIPMENT_SLOT_HANDS &&
+    BotLootRollRules::Slot::Finger1 == EQUIPMENT_SLOT_FINGER1 && BotLootRollRules::Slot::Finger2 == EQUIPMENT_SLOT_FINGER2 &&
+    BotLootRollRules::Slot::Trinket1 == EQUIPMENT_SLOT_TRINKET1 && BotLootRollRules::Slot::Trinket2 == EQUIPMENT_SLOT_TRINKET2 &&
+    BotLootRollRules::Slot::Back == EQUIPMENT_SLOT_BACK && BotLootRollRules::Slot::MainHand == EQUIPMENT_SLOT_MAINHAND &&
+    BotLootRollRules::Slot::OffHand == EQUIPMENT_SLOT_OFFHAND && BotLootRollRules::Slot::Ranged == EQUIPMENT_SLOT_RANGED,
+    "BotLootRollRules::Slot is out of step with EQUIPMENT_SLOT_*");
+
 namespace
 {
-// The equipment slots an item of this inventory type competes for; 0 slots for a type that is not worn.
-struct SlotSet
-{
-    uint8 Slots[2] = { NULL_SLOT, NULL_SLOT };
-    bool TwoHand = false;
-};
-
-SlotSet SlotsFor(InventoryType type)
-{
-    SlotSet set;
-    switch (type)
-    {
-        case INVTYPE_HEAD: set.Slots[0] = EQUIPMENT_SLOT_HEAD; break;
-        case INVTYPE_NECK: set.Slots[0] = EQUIPMENT_SLOT_NECK; break;
-        case INVTYPE_SHOULDERS: set.Slots[0] = EQUIPMENT_SLOT_SHOULDERS; break;
-        case INVTYPE_CHEST:
-        case INVTYPE_ROBE: set.Slots[0] = EQUIPMENT_SLOT_CHEST; break;
-        case INVTYPE_WAIST: set.Slots[0] = EQUIPMENT_SLOT_WAIST; break;
-        case INVTYPE_LEGS: set.Slots[0] = EQUIPMENT_SLOT_LEGS; break;
-        case INVTYPE_FEET: set.Slots[0] = EQUIPMENT_SLOT_FEET; break;
-        case INVTYPE_WRISTS: set.Slots[0] = EQUIPMENT_SLOT_WRISTS; break;
-        case INVTYPE_HANDS: set.Slots[0] = EQUIPMENT_SLOT_HANDS; break;
-        case INVTYPE_FINGER: set.Slots[0] = EQUIPMENT_SLOT_FINGER1; set.Slots[1] = EQUIPMENT_SLOT_FINGER2; break;
-        case INVTYPE_TRINKET: set.Slots[0] = EQUIPMENT_SLOT_TRINKET1; set.Slots[1] = EQUIPMENT_SLOT_TRINKET2; break;
-        case INVTYPE_CLOAK: set.Slots[0] = EQUIPMENT_SLOT_BACK; break;
-        case INVTYPE_WEAPON:
-        case INVTYPE_WEAPONMAINHAND: set.Slots[0] = EQUIPMENT_SLOT_MAINHAND; break;
-        case INVTYPE_2HWEAPON: set.Slots[0] = EQUIPMENT_SLOT_MAINHAND; set.TwoHand = true; break;
-        case INVTYPE_WEAPONOFFHAND:
-        case INVTYPE_SHIELD:
-        case INVTYPE_HOLDABLE: set.Slots[0] = EQUIPMENT_SLOT_OFFHAND; break;
-        case INVTYPE_RANGED:
-        case INVTYPE_THROWN:
-        case INVTYPE_RANGEDRIGHT: set.Slots[0] = EQUIPMENT_SLOT_RANGED; break;
-        default: break;
-    }
-    return set;
-}
-
 // Item level of what the player wears in a slot (0 for an empty slot).
 uint32 WornItemLevel(Player const* player, uint8 slot)
 {
@@ -67,16 +41,14 @@ bool IsUpgrade(Player* player, ItemTemplate const* item)
     if (item->GetBaseRequiredLevel() > int32(player->GetLevel()) || player->CanUseItem(item) != EQUIP_ERR_OK)
         return false;
 
-    SlotSet const slots = SlotsFor(InventoryType(item->GetInventoryType()));
-    if (slots.Slots[0] == NULL_SLOT)
+    BotLootRollRules::SlotSet const slots = BotLootRollRules::SlotsFor(InventoryType(item->GetInventoryType()));
+    if (slots.Slots[0] == BotLootRollRules::Slot::None)
         return false;
 
-    uint32 worn = WornItemLevel(player, slots.Slots[0]);
-    if (slots.Slots[1] != NULL_SLOT)
-        worn = std::min(worn, WornItemLevel(player, slots.Slots[1]));
-    if (slots.TwoHand && player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
-        return false; // a two-hander would cost the off hand: not an automatic upgrade
-    return item->GetBaseItemLevel() > worn;
+    uint32 const worn0 = WornItemLevel(player, slots.Slots[0]);
+    uint32 const worn1 = slots.Slots[1] != BotLootRollRules::Slot::None ? WornItemLevel(player, slots.Slots[1]) : 0;
+    bool const offHandWorn = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND) != nullptr;
+    return BotLootRollRules::BeatsWorn(slots, item->GetBaseItemLevel(), worn0, worn1, offHandWorn);
 }
 }
 
