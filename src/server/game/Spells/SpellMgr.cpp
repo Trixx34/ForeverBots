@@ -2511,12 +2511,13 @@ void SpellMgr::LoadSpellInfoStore()
     for (SpellEffectEntry const* effect : sSpellEffectStore)
     {
         ASSERT(effect->EffectIndex < MAX_SPELL_EFFECTS, "MAX_SPELL_EFFECTS must be at least %d", effect->EffectIndex + 1);
-        if (effect->Effect >= TOTAL_SPELL_EFFECTS || effect->EffectAura < 0 || effect->EffectAura >= int32(TOTAL_AURAS)
+        int32 const effectAura = GetClassicAuraType(effect->EffectAura);
+        if (effect->Effect >= TOTAL_SPELL_EFFECTS || effectAura < 0 || effectAura >= int32(TOTAL_AURAS)
             || effect->ImplicitTarget[0] >= TOTAL_SPELL_TARGETS || effect->ImplicitTarget[1] >= TOTAL_SPELL_TARGETS)
         {
             if (effect->Effect >= TOTAL_SPELL_EFFECTS)
                 ++unknownEffectValues["Effect"][effect->Effect];
-            if (effect->EffectAura < 0 || effect->EffectAura >= int32(TOTAL_AURAS))
+            if (effectAura < 0 || effectAura >= int32(TOTAL_AURAS))
                 ++unknownEffectValues["EffectAura"][effect->EffectAura];
             for (int32 target : { int32(effect->ImplicitTarget[0]), int32(effect->ImplicitTarget[1]) })
                 if (target >= TOTAL_SPELL_TARGETS)

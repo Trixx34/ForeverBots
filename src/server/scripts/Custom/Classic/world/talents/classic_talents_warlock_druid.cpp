@@ -20,6 +20,7 @@
 // so the scripts read aurEff->GetAmount() and never hardcode rank values. Tooltip formulas quoted below are the raw client Spell.db2 ones.
 
 #include "ScriptMgr.h"
+#include "GameTime.h"
 #include "ObjectAccessor.h"
 #include "Pet.h"
 #include "Player.h"
@@ -30,6 +31,8 @@
 #include "SpellMgr.h"
 #include "SpellScript.h"
 #include "Unit.h"
+#include <mutex>
+#include <unordered_map>
 
 enum ClassicWarlockDruidTalentSpells
 {
@@ -908,9 +911,77 @@ class classic_talent_warl_create_healthstone : public SpellScript
 ## Druid
 ######*/
 
+// Classic 1.60 (client 70374) Furor, second part: "Shapeshifting into Cat Form restores ${100*($m2/100)}% of the Energy you had when last
+// in Cat Form, plus ${10*($m2/100)} Energy per sec spent outside Cat Form, up to ${100*($m2/100)} Energy. Bear Form and Dire Bear Form
+// forfeit this Energy and halt its restoration while active." ($m2 = effect 1 of 17056, 20% per rank)
+namespace ClassicFurorCat
+{
+    struct State
+    {
+        int32 Energy = 0;               // energy when the druid last left Cat Form (0 after a bear form)
+        TimePoint CountingSince;        // start of the time that restores energy (left Cat Form, or left a bear form)
+        bool Counting = false;          // false while in a bear form
+    };
+
+    static std::unordered_map<ObjectGuid, State> States;
+    static std::mutex StatesLock;
+
+    static void LeftCatForm(Unit* druid)
+    {
+        std::lock_guard<std::mutex> guard(StatesLock);
+        State& state = States[druid->GetGUID()];
+        state.Energy = druid->GetPower(POWER_ENERGY);
+        state.CountingSince = GameTime::Now();
+        state.Counting = true;
+    }
+
+    static void EnteredBearForm(Unit* druid)
+    {
+        std::lock_guard<std::mutex> guard(StatesLock);
+        auto itr = States.find(druid->GetGUID());
+        if (itr != States.end())
+            itr->second = State();      // energy forfeited, restoration halted
+    }
+
+    static void LeftBearForm(Unit* druid)
+    {
+        std::lock_guard<std::mutex> guard(StatesLock);
+        auto itr = States.find(druid->GetGUID());
+        if (itr != States.end())
+        {
+            itr->second.CountingSince = GameTime::Now();
+            itr->second.Counting = true;
+        }
+    }
+
+    static void EnteredCatForm(Unit* druid)
+    {
+        AuraEffect const* furor = druid->GetAuraEffect(SPELL_CWD_FUROR, EFFECT_1);
+        State state;
+        {
+            std::lock_guard<std::mutex> guard(StatesLock);
+            auto itr = States.find(druid->GetGUID());
+            if (itr == States.end())
+                return;
+            state = itr->second;
+        }
+        if (!furor || furor->GetAmount() <= 0)
+            return;
+
+        float const factor = float(furor->GetAmount()) / 100.0f;
+        float energy = state.Energy * factor;
+        if (state.Counting)
+            energy += 10.0f * factor * std::chrono::duration<float>(GameTime::Now() - state.CountingSince).count();
+        energy = std::min(energy, 100.0f * factor);
+        if (int32(energy) > druid->GetPower(POWER_ENERGY))
+            druid->SetPower(POWER_ENERGY, int32(energy));
+    }
+}
+
 // 768 - Cat Form, 5487 - Bear Form, 9634 - Dire Bear Form, 24858 - Moonkin Form
 // 16929 - Thick Hide: base armor while in these forms (UpdateThickHide).
-// 17056 - Furor: "Gives you a $m1% chance to gain 10 Rage when shapeshifting into Bear Form or Dire Bear Form." (17057: 10 rage)
+// 17056 - Furor: "Gives you a $m1% chance to gain 10 Rage when shapeshifting into Bear Form or Dire Bear Form." (17057: 10 rage), and the
+// Cat Form energy (ClassicFurorCat)
 class classic_talent_dru_form_talents : public AuraScript
 {
     bool Validate(SpellInfo const* /*spellInfo*/) override
@@ -925,14 +996,26 @@ class classic_talent_dru_form_talents : public AuraScript
 
         ShapeshiftForm const form = ShapeshiftForm(aurEff->GetMiscValue());
         if (form == FORM_BEAR_FORM || form == FORM_DIRE_BEAR_FORM)
+        {
+            ClassicFurorCat::EnteredBearForm(druid);
             if (AuraEffect const* furor = druid->GetAuraEffect(SPELL_CWD_FUROR, EFFECT_0))
                 if (roll_chance(furor->GetAmount()))
                     druid->CastSpell(druid, SPELL_CWD_FUROR_RAGE, CastSpellExtraArgs(TRIGGERED_FULL_MASK));
+        }
+        else if (form == FORM_CAT_FORM)
+            ClassicFurorCat::EnteredCatForm(druid);
     }
 
-    void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    void HandleRemove(AuraEffect const* aurEff, AuraEffectHandleModes /*mode*/)
     {
-        GetTarget()->RemoveAurasDueToSpell(SPELL_CWD_THICK_HIDE_ARMOR);
+        Unit* druid = GetTarget();
+        druid->RemoveAurasDueToSpell(SPELL_CWD_THICK_HIDE_ARMOR);
+
+        ShapeshiftForm const form = ShapeshiftForm(aurEff->GetMiscValue());
+        if (form == FORM_CAT_FORM)
+            ClassicFurorCat::LeftCatForm(druid);
+        else if (form == FORM_BEAR_FORM || form == FORM_DIRE_BEAR_FORM)
+            ClassicFurorCat::LeftBearForm(druid);
     }
 
     void Register() override
