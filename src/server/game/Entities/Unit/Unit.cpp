@@ -6461,15 +6461,16 @@ void Unit::SetMinion(Minion *minion, bool apply)
             {
                 if (properties->GetFlags().HasFlag(SummonPropertiesFlags::SummonFromBattlePetJournal))
                 {
-                    if (BattlePets::BattlePet const* pet = thisPlayer->GetSession()->GetBattlePetMgr()->GetPet(thisPlayer->GetSummonedBattlePetGUID()))
-                    {
-                        minion->SetBattlePetCompanionGUID(thisPlayer->GetSummonedBattlePetGUID());
-                        minion->SetBattlePetCompanionNameTimestamp(pet->NameTimestamp);
-                        minion->SetWildBattlePetLevel(pet->PacketInfo.Level);
+                    if (auto* battlePetMgr = thisPlayer->GetSession()->GetBattlePetMgr())
+                        if (BattlePets::BattlePet const* pet = battlePetMgr->GetPet(thisPlayer->GetSummonedBattlePetGUID()))
+                        {
+                            minion->SetBattlePetCompanionGUID(thisPlayer->GetSummonedBattlePetGUID());
+                            minion->SetBattlePetCompanionNameTimestamp(pet->NameTimestamp);
+                            minion->SetWildBattlePetLevel(pet->PacketInfo.Level);
 
-                        if (uint32 display = pet->PacketInfo.DisplayID)
-                            minion->SetDisplayId(display, true);
-                    }
+                            if (uint32 display = pet->PacketInfo.DisplayID)
+                                minion->SetDisplayId(display, true);
+                        }
                 }
             }
         }

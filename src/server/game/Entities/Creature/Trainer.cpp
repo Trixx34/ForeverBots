@@ -86,11 +86,12 @@ namespace Trainer
         BattlePetSpeciesEntry const* speciesEntry = BattlePets::BattlePetMgr::GetBattlePetSpeciesBySpell(trainerSpell->SpellId);
         if (speciesEntry)
         {
-            if (player->GetSession()->GetBattlePetMgr()->HasMaxPetCount(speciesEntry, player->GetGUID()))
-            {
-                // Don't send any error to client (intended)
-                return;
-            }
+            if (auto* battlePetMgr = player->GetSession()->GetBattlePetMgr())
+                if (battlePetMgr->HasMaxPetCount(speciesEntry, player->GetGUID()))
+                {
+                    // Don't send any error to client (intended)
+                    return;
+                }
 
             sendSpellVisual = false;
         }
@@ -122,8 +123,9 @@ namespace Trainer
 
             if (speciesEntry)
             {
-                player->GetSession()->GetBattlePetMgr()->AddPet(speciesEntry->ID, BattlePets::BattlePetMgr::SelectPetDisplay(speciesEntry),
-                    BattlePets::BattlePetMgr::RollPetBreed(speciesEntry->ID), BattlePets::BattlePetMgr::GetDefaultPetQuality(speciesEntry->ID));
+                if (auto* battlePetMgr = player->GetSession()->GetBattlePetMgr())
+                    battlePetMgr->AddPet(speciesEntry->ID, BattlePets::BattlePetMgr::SelectPetDisplay(speciesEntry),
+                        BattlePets::BattlePetMgr::RollPetBreed(speciesEntry->ID), BattlePets::BattlePetMgr::GetDefaultPetQuality(speciesEntry->ID));
                 // If the spell summons a battle pet, we fake that it has been learned and the battle pet is added
                 // marking as dependent prevents saving the spell to database (intended)
                 dependent = true;
