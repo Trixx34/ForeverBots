@@ -1028,6 +1028,85 @@ void ModuleMgr::NoteRefusal(int actionType, int status, std::string const& reaso
     counts.clear();
 }
 
+void ModuleMgr::NoteRefusal(int actionType, int status, std::string const& reason)
+{
+    std::string const actionName = ActionTypeName(actionType);
+    std::string const statusName = ActionStatusName(status);
+    static std::map<std::string, uint32> counts;
+    static std::chrono::steady_clock::time_point lastReport = std::chrono::steady_clock::now();
+    ++counts[actionName + " / " + statusName + ": " + reason];
+
+    auto const now = std::chrono::steady_clock::now();
+    if (now - lastReport < std::chrono::minutes(1))
+        return;
+    lastReport = now;
+
+    std::vector<std::pair<uint32, std::string>> ranked;
+    for (auto const& [text, count] : counts)
+        ranked.emplace_back(count, text);
+    std::sort(ranked.begin(), ranked.end(), std::greater<>());
+    uint32 total = 0;
+    for (auto const& entry : ranked)
+        total += entry.first;
+    TC_LOG_INFO("server.worldserver", "Modules: {} action(s) refused in the last minute; the commonest reasons:", total);
+    for (size_t i = 0; i < ranked.size() && i < 12; ++i)
+        TC_LOG_INFO("server.worldserver", "Modules:   {} x {}", ranked[i].first, ranked[i].second);
+    counts.clear();
+}
+
+// Helper to get action type name from number.
+static std::string ActionTypeName(int type)
+{
+    switch (type)
+    {
+        case 0: return "CastSpell";
+        case 1: return "MoveTo";
+        case 2: return "AttackTarget";
+        case 3: return "Follow";
+        case 4: return "Stop";
+        case 5: return "Rest";
+        case 6: return "Vendor";
+        case 7: return "Train";
+        case 8: return "Group";
+        case 9: return "Loot";
+        case 10: return "Quest";
+        case 11: return "Teleport";
+        case 12: return "Grant";
+        case 13: return "AutoGear";
+        case 14: return "ReleaseSpirit";
+        case 15: return "Resurrect";
+        case 16: return "ReclaimCorpse";
+        case 17: return "Summon";
+        case 18: return "Revive";
+        case 19: return "Mount";
+        case 20: return "Craft";
+        case 21: return "Gather";
+        default: return "Unknown(" + std::to_string(type) + ")";
+    }
+}
+
+// Helper to get action status name from number.
+static std::string ActionStatusName(int status)
+{
+    switch (status)
+    {
+        case 0: return "None";
+        case 1: return "Applied";
+        case 2: return "Refused";
+        case 3: return "UnknownSpell";
+        case 4: return "NotKnown";
+        case 5: return "OutOfRange";
+        case 6: return "OnCooldown";
+        case 7: return "NotEnoughPower";
+        case 8: return "NoLineOfSight";
+        case 9: return "InvalidTarget";
+        case 10: return "NotOnline";
+        case 11: return "Busy";
+        case 12: return "Moving";
+        default: return "Unknown(" + std::to_string(status) + ")";
+    }
+}
+
 void ModuleMgr::Unload()
 {
     // Stop new restarts and events from running before the modules are stopped. The lifecycle lock

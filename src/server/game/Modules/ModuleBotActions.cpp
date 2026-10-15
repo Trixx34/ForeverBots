@@ -413,6 +413,84 @@ char const* GearResultName(GearResult result)
     return "unknown";
 }
 
+// Human-readable name for an InventoryResult (equip error code).
+char const* InventoryResultName(uint32 code)
+{
+    switch (static_cast<InventoryResult>(code))
+    {
+        case EQUIP_ERR_OK: return "OK";
+        case EQUIP_ERR_INV_FULL: return "inventory_full";
+        case EQUIP_ERR_CANT_EQUIP: return "cannot_equip";
+        case EQUIP_ERR_CANT_BE_EQUIPPED: return "cannot_be_equipped";
+        case EQUIP_ERR_ITEM_DOESNT_GO_INTO_SLOT: return "wrong_slot_type";
+        case EQUIP_ERR_WRONG_SLOT: return "wrong_slot";
+        case EQUIP_ERR_NOT_EQUIPABLE: return "not_equippable";
+        case EQUIP_ERR_NONEMPTY_BAG_OVER_OTHER: return "bag_over_other_bag";
+        case EQUIP_ERR_NOT_IN_COMBAT: return "not_in_combat";
+        case EQUIP_ERR_NO_EQUIP_LEVEL: return "level_too_low";
+        case EQUIP_ERR_WRONG_WEATHER: return "wrong_weather";
+        case EQUIP_ERR_CANT_CARRY_MORE_OF_THIS: return "unique_limit";
+        case EQUIP_ERR_CANT_DUAL_WIELD: return "cannot_dual_wield";
+        case EQUIP_ERR_RACE_CANT_EQUIP: return "race_cannot_equip";
+        case EQUIP_ERR_CANT_BE_EQUIPPED_HERE: return "cannot_equip_here";
+        case EQUIP_ERR_NOT_DURING_ARENA_MATCH: return "not_during_arena";
+        case EQUIP_ERR_ITEM_BOUND: return "item_bound";
+        case EQUIP_ERR_RESTRICTED_PVP_ITEM: return "restricted_pvp";
+        case EQUIP_ERR_ITEM_UNIQUE: return "unique_item";
+        case EQUIP_ERR_ITEM_UNIQUE_EQUIPPABLE: return "unique_equippable";
+        case EQUIP_ERR_ITEM_UNIQUE_OWNER: return "unique_owner";
+        case EQUIP_ERR_ITEM_LIMIT_CATEGORY_EXCEEDED: return "limit_category_exceeded";
+        case EQUIP_ERR_ITEM_LEVEL_TOO_LOW: return "item_level_too_low";
+        case EQUIP_ERR_ITEM_LEVEL_TOO_HIGH: return "item_level_too_high";
+        case EQUIP_ERR_TOO_FEW_TO_SPLIT: return "too_few_to_split";
+        case EQUIP_ERR_ITEM_MAX_COUNT_EXCEEDED: return "max_count_exceeded";
+        case EQUIP_ERR_NOT_A_BAG: return "not_a_bag";
+        case EQUIP_ERR_ONLY_AMMO_CAN_GO_HERE: return "only_ammo_here";
+        case EQUIP_ERR_CANT_STACK: return "cannot_stack";
+        case EQUIP_ERR_CANT_SWAP: return "cannot_swap";
+        case EQUIP_ERR_ITEM_DOESNT_GO_INTO_BAG: return "doesnt_go_into_bag";
+        case EQUIP_ERR_BAG_FULL: return "bag_full";
+        case EQUIP_ERR_LOOT_CANT_LOOT_THAT: return "cannot_loot_that";
+        case EQUIP_ERR_LOOT_DIDNT_KILL: return "didnt_kill";
+        case EQUIP_ERR_LOOT_MASTER_INST: return "master_loot";
+        case EQUIP_ERR_LOOT_PLAYER: return "player_loot";
+        case EQUIP_ERR_LOOT_FREE_FOR_ALL: return "free_for_all_loot";
+        case EQUIP_ERR_LOOT_ROLL: return "loot_roll";
+        case EQUIP_ERR_LOOT_FFA_ROLL: return "ffa_roll";
+        case EQUIP_ERR_LOOT_FFA_ROLL_ANOTHER: return "ffa_roll_another";
+        case EQUIP_ERR_LOOT_MASTER_INST_ANOTHER: return "master_loot_another";
+        case EQUIP_ERR_LOOT_PLAYER_ANOTHER: return "player_loot_another";
+        case EQUIP_ERR_LOOT_ROLL_ANOTHER: return "roll_another";
+        case EQUIP_ERR_LOOT_ROLL_NEED: return "roll_need";
+        case EQUIP_ERR_LOOT_ROLL_GREED: return "roll_greed";
+        case EQUIP_ERR_LOOT_ROLL_ANOTHER_NEED: return "roll_another_need";
+        case EQUIP_ERR_LOOT_ROLL_ANOTHER_GREED: return "roll_another_greed";
+        case EQUIP_ERR_LOOT_ROLL_ANOTHER_NEED_GREED: return "roll_another_need_greed";
+        case EQUIP_ERR_LOOT_MASTER_INST_ANOTHER_NEED: return "master_loot_another_need";
+        case EQUIP_ERR_LOOT_PLAYER_ANOTHER_NEED: return "player_loot_another_need";
+        case EQUIP_ERR_LOOT_ROLL_ANOTHER_NEED_GREED: return "roll_another_need_greed";
+        case EQUIP_ERR_CANT_SPLIT: return "cannot_split";
+        case EQUIP_ERR_AUTO_EQUIP_ITEM_SLOT: return "auto_equip_slot";
+        case EQUIP_ERR_LEGACY_RAID: return "legacy_raid";
+        case EQUIP_ERR_CANT_USE_ITEM: return "cannot_use_item";
+        case EQUIP_ERR_ITEM_MAX_COUNT_SOCKETED: return "max_socketed_exceeded";
+        case EQUIP_ERR_MUST_BE_IN_COMBAT: return "must_be_in_combat";
+        case EQUIP_ERR_CANT_EQUIP_NEED_TALENT: return "need_talent";
+        case EQUIP_ERR_CANT_EQUIP_NEED_SKILL: return "need_skill";
+        case EQUIP_ERR_CANT_EQUIP_NEED_REPUTATION: return "need_reputation";
+        case EQUIP_ERR_CANT_EQUIP_NEED_ARENA_RATING: return "need_arena_rating";
+        case EQUIP_ERR_ITEM_NOT_FOR_YOUR_RACE: return "race_mismatch";
+        case EQUIP_ERR_ITEM_REQUIRES_PROFESSION: return "requires_profession";
+        case EQUIP_ERR_ITEM_REQUIRES_LEVEL: return "requires_level";
+        case EQUIP_ERR_CANT_EQUIP_CLASSIC: return "classic_cannot_equip";
+        case EQUIP_ERR_CANT_EQUIP_ITEM_SLOT: return "item_slot_mismatch";
+        case EQUIP_ERR_CANT_EQUIP_RANK: return "rank_too_low";
+        case EQUIP_ERR_ITEM_MOD_APPEARANCE_GROUP_LIMITED: return "appearance_limit";
+        case EQUIP_ERR_ITEM_MAX_COUNT_EQUIPPED_SOCKETED: return "max_equipped_socketed";
+        default: return "unknown(" + std::to_string(code) + ")";
+    }
+}
+
 // Creates the item in the bags and moves it into `slot`, unless the slot already holds an item of at least this item level.
 GearResult GiveAndEquip(Player& bot, ItemTemplate const& item, uint8 slot, uint32& equipError)
 {
@@ -539,9 +617,22 @@ BotActionStatus AutoGearAction(Player& bot, uint32 flags, std::string& reason)
         equipped += result == GearResult::Equipped;
         keptBetter += result == GearResult::KeptBetter;
         failed += result == GearResult::NoBagSpace || result == GearResult::CannotEquip;
-        TC_LOG_INFO("server.worldserver", "BotMgr: autogear pick bot={} slot={} item={} quality={} ilvl={} reqlevel={} armor_subclass={} result={} equip_error={}", bot.GetName(), uint32(slot),
+        std::string failureDetail;
+        if (result == GearResult::CannotEquip)
+        {
+            failureDetail = " equip_error=" + std::to_string(equipError) + " (" + InventoryResultName(equipError) + ")";
+        }
+        else if (result == GearResult::NoBagSpace)
+        {
+            failureDetail = " no_bag_space";
+        }
+        else if (result == GearResult::KeptBetter)
+        {
+            failureDetail = " kept_better_item";
+        }
+        TC_LOG_INFO("server.worldserver", "BotMgr: autogear pick bot={} slot={} item={} quality={} ilvl={} reqlevel={} armor_subclass={} result={}{}", bot.GetName(), uint32(slot),
             pick.Item->GetId(), uint32(pick.Item->GetQuality()), pick.Item->GetBaseItemLevel(), pick.Item->GetBaseRequiredLevel(),
-            pick.Item->GetClass() == ITEM_CLASS_ARMOR ? int32(pick.Item->GetSubClass()) : -1, GearResultName(result), equipError);
+            pick.Item->GetClass() == ITEM_CLASS_ARMOR ? int32(pick.Item->GetSubClass()) : -1, GearResultName(result), failureDetail);
     };
     if (main.Item)
         apply(main, EQUIPMENT_SLOT_MAINHAND);
