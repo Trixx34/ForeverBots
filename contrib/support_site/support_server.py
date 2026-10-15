@@ -485,7 +485,7 @@ def ra_quote(text):
 
 # ---------------------------------------------------------------- sessions
 
-def start_session(token_row):
+def start_session(token_row, weak=False):
     sid = secrets.token_urlsafe(32)
     session = {
         'bnet': token_row['battlenetAccountId'],
@@ -494,6 +494,7 @@ def start_session(token_row):
         'char': token_row['characterGuid'],
         'expires': token_row['expires'],
         'csrf': secrets.token_urlsafe(24),
+        'weak': weak,           # guessed from the visitor's address: actions that move value ask for the on-screen code first
         'staff': staff_level(token_row['accountId'], token_row['realmId']) >= int(CFG.get('staff_min_level', 2)),
         'level': staff_level(token_row['accountId'], token_row['realmId']),
     }
@@ -787,7 +788,7 @@ class Handler(BaseHTTPRequestHandler):
         # address could be signed in as the game master. Staff accounts always confirm with the code shown on their character's screen.
         if not verified and staff_level(row['accountId'], row['realmId']) >= int(CFG.get('staff_min_level', 2)):
             return self.send_code(row, target)
-        sid = start_session(row)
+        sid = start_session(row, weak=not verified)
         self.redirect(target, [('Set-Cookie', 'fsid=%s; Path=/; HttpOnly; Secure; SameSite=Lax' % sid)])
 
     def verify_form(self, candidates, target, note=''):
@@ -1496,6 +1497,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.shop_page(alert('bad', 'Your account can not sell gold.'))
         if not rate_ok(self.client_address[0], 'goldlist', 10):
             return self.shop_page(alert('bad', 'Too many tries. Wait a minute and try again.'))
+        if s.get('weak'):
+            # this session was guessed from the address, so someone sharing it could be here: confirm with the code on the character's screen
+            return self.send_code({'battlenetAccountId': s['bnet'], 'accountId': s['account'], 'realmId': s['realm'],
+                                   'characterGuid': s['char'], 'expires': s['expires']}, '/shop')
         guid, gold, price = to_int(self.form.get('guid')), to_int(self.form.get('gold')), to_int(self.form.get('price'))
         char = query_one(characters_db(s['realm']), 'SELECT guid, name, money FROM characters WHERE guid = %s AND account = %s AND deleteInfos_Account IS NULL',
                          (guid, s['account']))
