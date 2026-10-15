@@ -35,8 +35,15 @@ reset() {
     echo "refused: forever-sim is running (stop it first)" >&2
     exit 1
   fi
-  if ! find "$DIR" -maxdepth 1 -name "sim-$db-*.sql.gz" -size +1k -mmin -1440 2>/dev/null | grep -q .; then
-    echo "refused: no backup of $db from the last 24 hours (run: forever-sim-db backup)" >&2
+  local f ok=0 stopped=0 ts
+  # The sim only writes while it runs, so a good backup was taken after its last stop (when it has run at all).
+  ts="$(systemctl show forever-sim -p ActiveExitTimestamp --value 2>/dev/null || true)"
+  [[ -n "$ts" ]] && stopped="$(date -d "$ts" +%s 2>/dev/null || echo 0)"
+  while IFS= read -r f; do
+    if gzip -t "$f" 2>/dev/null && (( $(stat -c %Y "$f") >= stopped )); then ok=1; break; fi
+  done < <(find "$DIR" -maxdepth 1 -name "sim-$db-*.sql.gz" -size +1k -mmin -1440 2>/dev/null)
+  if (( ! ok )); then
+    echo "refused: no intact backup of $db made after the sim last stopped, within 24 hours (run: forever-sim-db backup)" >&2
     exit 1
   fi
   mysql -e "DROP DATABASE IF EXISTS \`$db\`"

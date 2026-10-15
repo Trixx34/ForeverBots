@@ -23,24 +23,25 @@ def main() -> int:
             data = json.loads(f.read().decode("utf-8"))
         bots = [b for b in data.get("bots", []) if isinstance(b, dict)]
         age = max(0.0, time.time() - float(data.get("time_ms", 0)) / 1000.0)
-    except (OSError, ValueError, TypeError):
+        levels = [int(float(b.get("level") or 0)) for b in bots]
+        tick = int(float(data.get("tick") or 0))
+    except (OSError, ValueError, TypeError, AttributeError):
         print(f"{tags} online=0i,stale=1i")
         return 0
     if age > STALE_AFTER_S:
         print(f"{tags} online=0i,stale=1i,age_s={age:.0f}")
         return 0
-    levels = [int(b.get("level", 0) or 0) for b in bots]
     fields = {
         "online": len(bots),
         "in_combat": sum(1 for b in bots if b.get("combat")),
-        "dead": sum(1 for b in bots if not b.get("hp")),
+        "dead": sum(1 for b in bots if "hp" in b and not b["hp"]),
         "in_party": sum(1 for b in bots if b.get("group")),
-        "avg_level": round(sum(levels) / len(levels), 2) if levels else 0,
+        "avg_level": round(sum(levels) / len(levels), 2) if levels else 0.0,
         "max_level": max(levels) if levels else 0,
         "level1": sum(1 for lv in levels if lv <= 1),
         "units": len(data.get("units", [])),
         "maps": len({b.get("map") for b in bots}),
-        "tick": int(data.get("tick", 0) or 0),
+        "tick": tick,
         "age_s": round(age, 1),
         "stale": 0,
     }

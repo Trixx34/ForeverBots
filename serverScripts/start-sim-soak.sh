@@ -38,7 +38,7 @@ done
 
 [[ "$BOTS" =~ ^[0-9]+$ && "$MINUTES" =~ ^[0-9]+$ && "$SEED" =~ ^[0-9]+$ ]] || { echo "numbers only" >&2; exit 2; }
 (( BOTS >= 1 && BOTS <= 1500 )) || { echo "--bots must be 1..1500" >&2; exit 2; }
-(( MINUTES >= 5 )) || { echo "--minutes must be at least 5" >&2; exit 2; }
+(( MINUTES >= 5 && MINUTES <= 1380 )) || { echo "--minutes must be 5..1380 (the stop time is a clock time, so a run stays under one day)" >&2; exit 2; }
 
 SIM=/srv/forever/sim
 CONF=$SIM/conf/worldserver.conf
@@ -97,9 +97,16 @@ fi
 for f in "$CONF" "$SIM/modules_runtime/forever-bots/forever-bots" "${DATA_FILES[@]}"; do
   [[ -e "$f" ]] || { echo "missing: $f" >&2; exit 1; }
 done
-# This script runs as root; the data files may be written by a normal user, so never follow a link.
+# This script runs as root; the data files may be written by a normal user. Copy them to a root-only folder (links are copied as
+# links, then refused) and use only the copies from here on.
+STAGE="$(mktemp -d /tmp/forever-sim-soak.XXXXXX)"
+trap 'rm -rf "$STAGE"' EXIT
+STAGED=()
 for f in "${DATA_FILES[@]}"; do
-  [[ -f "$f" && ! -L "$f" ]] || { echo "not a regular file: $f" >&2; exit 1; }
+  cp -P --no-preserve=all "$f" "$STAGE/" 2>/dev/null || { echo "cannot copy: $f" >&2; exit 1; }
+  c="$STAGE/$(basename "$f")"
+  [[ -f "$c" && ! -L "$c" ]] || { echo "not a regular file: $f" >&2; exit 1; }
+  STAGED+=("$c")
 done
 grep -qE '^Modules\.Enabled *= *1' "$CONF" || { echo "Modules.Enabled is not 1 in $CONF" >&2; exit 1; }
 
@@ -107,7 +114,7 @@ systemctl stop forever-sim
 
 # Data files for the module.
 install -d -o forever-sim -g forever-sim -m 0750 "$MODDIR/data"
-install -o forever-sim -g forever-sim -m 0640 "${DATA_FILES[@]}" "$MODDIR/data/"
+install -o forever-sim -g forever-sim -m 0640 "${STAGED[@]}" "$MODDIR/data/"
 
 # Module settings.
 [[ -f "$MODCONF" ]] && cp -a "$MODCONF" "$MODCONF.bak"
@@ -117,6 +124,7 @@ chmod 0640 "$MODCONF"
 
 # Core stop time.
 sed -i -E "s/^Bot\.Run\.StopTime *=.*/Bot.Run.StopTime = $END/" "$CONF"
+grep -qE '^Bot\.Run\.StopTime' "$CONF" || echo "Bot.Run.StopTime = $END" >> "$CONF"
 grep -E '^Bot\.Run\.StopTime' "$CONF"
 
 # Keep the last run's telemetry.

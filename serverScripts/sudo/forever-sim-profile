@@ -20,9 +20,11 @@ pid="$(systemctl show forever-sim -p MainPID --value)"
 OUT=/srv/forever/build/sim-logs
 install -d -o "$owner" -g forever-build -m 0750 "$OUT"
 stamp="$(date +%Y%m%d-%H%M%S)"
-report="$OUT/perf-$stamp.txt"
-data="$(mktemp /tmp/forever-sim-perf.XXXXXX)"
-trap 'rm -f "$data"' EXIT
+# Work in a root-only folder: $OUT belongs to the calling user, who could plant a symlink at the report path.
+work="$(mktemp -d /tmp/forever-sim-perf.XXXXXX)"
+trap 'rm -rf "$work"' EXIT
+report="$work/report.txt"
+data="$work/perf.data"
 
 {
   echo "# sim worldserver profile: pid $pid, $secs s at 499 Hz, $(date '+%F %T')"
@@ -48,6 +50,6 @@ perf record -q -F 499 -p "$pid" -o "$data" -- sleep "$secs" >/dev/null 2>&1 || {
   [[ -n "$busiest" ]] && perf report -i "$data" --stdio --no-children --tid "$busiest" --sort sym 2>/dev/null | grep -v '^#' | grep -v '^$' | head -50
 } >> "$report"
 
-chown "$owner:forever-build" "$report"
-chmod 0640 "$report"
-echo "wrote $report"
+final="$OUT/perf-$stamp.txt"
+install -o "$owner" -g forever-build -m 0640 "$report" "$final"
+echo "wrote $final"

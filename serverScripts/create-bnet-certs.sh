@@ -59,7 +59,7 @@ x509_extensions = v3_ca
 
 [dn]
 O = Forever Repack
-CN = Forever Repack Root CA $(hostname) (forever.actual.battle.net only)
+CN = Forever Repack Root CA $(hostname) ($PORTAL only)
 
 [v3_ca]
 basicConstraints = critical,CA:TRUE,pathlen:0

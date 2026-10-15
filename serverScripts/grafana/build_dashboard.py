@@ -6,8 +6,13 @@ Upload with the Grafana HTTP API (POST /api/dashboards/db with {"dashboard": <th
 The bot panels need the exec input from ../telegraf/install-telegraf-bots.sh.
 """
 import json
+import os
 
-DS = {"type": "prometheus", "uid": "cfuvt9u3mp3i8e"}
+# Prometheus datasource uid and network interface of the machine; override for another Grafana or host:
+#   GRAFANA_DS_UID=<uid> NET_IFACE=eth0 python3 -I build_dashboard.py > forever-server.json
+# Besides the bots exec input, the other panels need Telegraf's procstat (tag "server" = prod|sim), systemd_units, net, cpu, mem and disk inputs.
+DS = {"type": "prometheus", "uid": os.environ.get("GRAFANA_DS_UID", "cfuvt9u3mp3i8e")}
+IFACE = os.environ.get("NET_IFACE", "ens2")
 JOB = 'job="telegraf-forever"'
 _id = [0]
 
@@ -106,7 +111,7 @@ panels += [
                    target(f'cpu_usage_iowait{{{JOB},cpu="cpu-total"}}', "iowait")], 0, 44, unit="percent", stack=True, minimum=0, maximum=100),
     series("Memory", [target(f'mem_used{{{JOB}}}', "used"), target(f'mem_cached{{{JOB}}}', "cache"), target(f'mem_available{{{JOB}}}', "available")], 12, 44, unit="bytes"),
     series("Load average", [target(f'system_load1{{{JOB}}}', "1 min"), target(f'system_load5{{{JOB}}}', "5 min"), target(f'system_load15{{{JOB}}}', "15 min")], 0, 52),
-    series("Network", [target(f'rate(net_bytes_recv{{{JOB},interface="ens2"}}[1m]) * 8', "in"), target(f'rate(net_bytes_sent{{{JOB},interface="ens2"}}[1m]) * 8', "out")],
+    series("Network", [target(f'rate(net_bytes_recv{{{JOB},interface="{IFACE}"}}[1m]) * 8', "in"), target(f'rate(net_bytes_sent{{{JOB},interface="{IFACE}"}}[1m]) * 8', "out")],
            12, 52, unit="bps"),
     series("Disk used (/ holds /srv/forever)", [target(f'disk_used_percent{{{JOB},path="/"}}', "/")], 0, 60, unit="percent", minimum=0, maximum=100),
     series("Disk throughput", [target(f'rate(diskio_read_bytes{{{JOB}}}[1m])', "read {{name}}"), target(f'rate(diskio_write_bytes{{{JOB}}}[1m])', "write {{name}}")], 12, 60, unit="Bps"),

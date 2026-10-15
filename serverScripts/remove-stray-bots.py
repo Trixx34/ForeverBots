@@ -119,7 +119,14 @@ def main() -> int:
         chars.close()
 
     remove, kept = pick_accounts(accounts, by_account, keep_names)
+    # An account that is logged in would be deleted under a live character, which saves again at logout.
+    def is_online(acc):
+        return bool(acc["online"]) or any(c["online"] for c in by_account.get(acc["id"], []))
+    online = [a for a in remove if is_online(a)]
+    remove = [a for a in remove if not is_online(a)]
     skipped = [a for a in accounts if not is_bot_account(a)]
+    for acc in online:
+        print(f"  ONLINE: {acc['username']} (id {acc['id']}) is logged in; left alone, run again when it is offline")
     print(f"Bot accounts on prod: {len(bots)} ({len(remove)} to remove, {len(kept)} kept)")
     for acc in remove + kept:
         tag = "KEEP  " if acc in kept else "remove"
@@ -163,14 +170,18 @@ def main() -> int:
             print("   ." + cmd)
 
     # Verify against the database, and only then clear the module's saved rows for the characters that are really gone.
-    time.sleep(1)
-    auth = connect(dsn(args.prod_env, "TC_LOGIN_DATABASE_INFO"))
-    try:
-        with auth.cursor() as cur:
-            cur.execute("SELECT username FROM account WHERE username IN (%s)" % ",".join(["%s"] * len(remove)), tuple(a["username"] for a in remove))
-            left = {r["username"] for r in cur.fetchall()}
-    finally:
-        auth.close()
+    left = set()
+    for _ in range(10):                      # the commands run asynchronously in the core: poll, up to about 10 seconds
+        time.sleep(1)
+        auth = connect(dsn(args.prod_env, "TC_LOGIN_DATABASE_INFO"))
+        try:
+            with auth.cursor() as cur:
+                cur.execute("SELECT username FROM account WHERE username IN (%s)" % ",".join(["%s"] * len(remove)), tuple(a["username"] for a in remove))
+                left = {r["username"] for r in cur.fetchall()}
+        finally:
+            auth.close()
+        if not left:
+            break
     gone = [a for a in remove if a["username"] not in left]
     print(f"\nRemoved: {len(gone)} of {len(remove)}." + (f" Still there: {', '.join(sorted(left))}" if left else ""))
     guids = [c["guid"] for a in gone for c in by_account.get(a["id"], [])]
@@ -190,7 +201,7 @@ def main() -> int:
         except pymysql.MySQLError as e:
             print(f"Could not clear the module's saved rows ({e.args[1] if len(e.args) > 1 else e}). Run on the prod world database:\n"
                   "   DELETE FROM module_store WHERE module = 'forever-bots' AND `key` LIKE 'bot/%';")
-    return 1 if left else 0
+    return 1 if (left or online) else 0
 
 
 if __name__ == "__main__":

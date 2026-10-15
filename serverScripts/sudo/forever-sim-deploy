@@ -11,6 +11,17 @@ OWNER=forever-sim:forever-sim
 
 command -v rsync >/dev/null || { echo "rsync is not installed" >&2; exit 1; }
 
+work="$(mktemp -d /tmp/forever-sim-deploy.XXXXXX)"
+trap 'rm -rf "$work"' EXIT
+
+# DB logins belong in /etc/forever/credentials, never in the server config.
+refuse_credentials() {
+  if grep -rqiE '^[[:space:]]*(Login|World|Character|Hotfix)DatabaseInfo' "$1"; then
+    echo "refused: $2 contains a *DatabaseInfo line (credentials must come from the env file)" >&2
+    exit 1
+  fi
+}
+
 regular_file() { [[ -f "$1" && ! -L "$1" ]] || { echo "not a regular file: $1" >&2; exit 1; }; }
 regular_dir()  { [[ -d "$1" && ! -L "$1" ]] || { echo "not a directory: $1" >&2; exit 1; }; }
 
@@ -18,16 +29,20 @@ case "${1:-}" in
   conf)
     src=/srv/forever/build/test-run/etc/worldserver.conf
     regular_file "$src"
-    # DB logins belong in /etc/forever/credentials, never in the server config.
-    if grep -qE '^(Login|World|Character|Hotfix)DatabaseInfo' "$src"; then
-      echo "refused: $src contains a *DatabaseInfo line (credentials must come from the env file)" >&2
-      exit 1
-    fi
-    install -o forever-sim -g forever-sim -m 0640 "$src" "$SIM/conf/worldserver.conf"
+    # Check and install the same root-owned copy: the staging files can change under us.
+    rsync -t --no-links "$src" "$work/worldserver.conf"
+    [[ -f "$work/worldserver.conf" ]] || { echo "not a regular file: $src" >&2; exit 1; }
+    refuse_credentials "$work/worldserver.conf" "$src"
     d=/srv/forever/build/sim-staging/conf/worldserver.conf.d
     if [[ -e "$d" ]]; then
       regular_dir "$d"
-      rsync -rt --no-links --chown=$OWNER --chmod=D750,F640 "$d/" "$SIM/conf/worldserver.conf.d/"
+      mkdir "$work/d"
+      rsync -rt --no-links "$d/" "$work/d/"
+      refuse_credentials "$work/d" "$d"
+    fi
+    install -o forever-sim -g forever-sim -m 0640 "$work/worldserver.conf" "$SIM/conf/worldserver.conf"
+    if [[ -d "$work/d" ]]; then
+      rsync -rt --no-links --chown=$OWNER --chmod=D750,F640 "$work/d/" "$SIM/conf/worldserver.conf.d/"
     fi
     echo "deployed sim config"
     ;;
