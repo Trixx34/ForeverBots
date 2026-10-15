@@ -9,6 +9,10 @@ Usage:
   py -3 support_server.py [config.json]                      run the site (default config: support_site.json next to this file)
   py -3 support_server.py --make-token <bnetAccountId> <realmId> [config.json]
                                                               issue a 1 hour test token and print the URL (desktop browser test)
+Who is signed in: a token link (/s?token=) is a real login. When the Help window opens a plain URL, the site guesses the player from
+the visitor's address (the token this address got a moment ago, or the character online from it). A guessed session is weak:
+staff accounts (staff_min_level) always confirm with a 6-digit code shown on their character's screen before they get a session, and
+a weak session must confirm the same code before it lists gold on the Gold Market. Several players on one address always confirm.
 Account page (/account): Battle.net account, game accounts, characters on every realm, and the authenticator (TOTP, any
 authenticator app). bnetserver asks for its code at login; secured accounts get the +4 backpack slots in game.
 Shop (/shop): shop points, premium status, selling gold on the Gold Market (premium accounts; ".shop goldlist" through RA).

@@ -11,8 +11,10 @@ The layout they create is described in the Forever Linux migration plan (Phase 4
 | 2 | `setup-directories.sh` | root | Creates the users, groups, directories and access rights. Run with `--check` first. `--admin <login>` adds an admin to `forever-ops`. |
 | 3 | `create-bnet-certs.sh` | your account | Creates the self-signed root CA and the server certificate for `trinity.actual.battle.net`. See below. |
 | 4 | `install-services.sh` | root | Checks the prerequisites, then installs the systemd units (`forever-prod`, `forever-prod-bnet`, `forever-sim`). Enables and starts nothing. Run with `--check` first. |
-| 5 | `start-sim-soak.sh` | root | Starts a timed bot run on the **sim**: `--bots N` (default 200), `--minutes M` (default 90), `--seed S`. Ramps bots up (50, then +50 every 5 minutes), sets the core's `Bot.Run.StopTime` so the sim shuts down cleanly at the end, and restarts `forever-sim`. `--dry-run` shows what it would write and changes nothing. Prod is never touched. |
+| 5 | `start-sim-soak.sh` | root | Starts a timed bot run on the **sim**: `--bots N` (default 200), `--minutes M` (default 90, 5 to 1380: the stop time is a clock time, so a run stays under one day), `--seed S`. Ramps bots up (50, then +50 every 5 minutes), sets the core's `Bot.Run.StopTime` so the sim shuts down cleanly at the end, and restarts `forever-sim`. `--dry-run` shows what it would write and changes nothing. Prod is never touched. The data files are copied to a root-only folder before they are checked, and `Bot.Run.StopTime` is added to `worldserver.conf` if the line is missing. |
 | 6 | `copy-account-to-sim.py` | root | Copies one account (login, password hash, GM access) from the prod auth database to the sim, with new ids there. Prod is only read. Dry run unless you add `--apply`. |
+
+`remove-stray-bots.py` (root) lists the `BOT` accounts on prod and, with `--delete`, removes them through Remote Access. Accounts or characters that are online are skipped and reported (run it again when they are offline); it exits 1 if any were skipped or are still there after about 10 seconds.
 
 Start services by hand with `systemctl start`. Prod stays off until the owner approves the start window.
 
@@ -24,6 +26,12 @@ Start services by hand with `systemctl start`. Prod stays off until the owner ap
 - `deferred/`: not installed. `forever-sim-mysql.service` is a separate MySQL 8.4 instance on port 3307. Kept for later.
 
 Database logins come from `/etc/forever/credentials/*.env`, not from the server configs. The core reads each value from an environment variable named `TC_<KEY>` (for example `TC_LOGIN_DATABASE_INFO`).
+
+## Monitoring (`telegraf/`, `grafana/`)
+
+- `telegraf/install-telegraf-bots.sh` (root) installs `forever-bots-live-metrics`, a Telegraf exec input that reports the sim's bots (online, in combat, dead, levels, world ticks) from `bots-live.json`. A missing or old file reports `online=0,stale=1`; so does a file whose `level` or `tick` is not a number.
+- `grafana/build_dashboard.py > forever-server.json` builds the dashboard. Set `GRAFANA_DS_UID=<uid>` to the uid of your Prometheus datasource and `NET_IFACE=<name>` to the machine's network interface (defaults: the uid of the original Grafana, `ens2`).
+- Besides the bots input, the other panels need Telegraf's `procstat` (tagged `server` = `prod` or `sim`), `systemd_units`, `net`, `cpu`, `mem` and `disk` inputs. Nothing in this repo configures them; without them those panels stay empty.
 
 ## Battle.net certificates (`create-bnet-certs.sh`)
 
