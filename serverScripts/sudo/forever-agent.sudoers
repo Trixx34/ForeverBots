@@ -20,7 +20,9 @@ Cmnd_Alias FOREVER_SIM_DB = \
 Cmnd_Alias FOREVER_SIM_LOGS = \
     /usr/local/sbin/forever-agent/forever-sim-logs export, \
     /usr/local/sbin/forever-agent/forever-sim-logs tail-server
+# The profile wrapper only watches the sim worldserver (perf) and validates its one number.
+Cmnd_Alias FOREVER_SIM_PROFILE = /usr/local/sbin/forever-agent/forever-sim-profile *
 # The soak wrapper validates its own options (numbers only).
 Cmnd_Alias FOREVER_SIM_SOAK = /usr/local/sbin/forever-agent/forever-sim-soak *
 
-AGENT_USER ALL=(root) NOPASSWD: FOREVER_SIM_CTL, FOREVER_SIM_DEPLOY, FOREVER_SIM_DB, FOREVER_SIM_LOGS, FOREVER_SIM_SOAK
+AGENT_USER ALL=(root) NOPASSWD: FOREVER_SIM_CTL, FOREVER_SIM_DEPLOY, FOREVER_SIM_DB, FOREVER_SIM_LOGS, FOREVER_SIM_SOAK, FOREVER_SIM_PROFILE

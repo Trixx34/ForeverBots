@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# forever-sim-profile [seconds]
+# Samples where the running sim worldserver spends its CPU time (perf, 10 to 120 seconds, default 30) and writes a text report to
+# /srv/forever/build/sim-logs/perf-<time>.txt, readable by the calling user. Read-only: it only watches the process. Run it while many
+# bots are online. Release builds have no frame pointers, so the report is a flat list (self time per function and per thread).
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+umask 027
+
+owner="${SUDO_USER:-}"
+[[ -n "$owner" && "$owner" != root ]] || { echo "run through sudo from your own account" >&2; exit 1; }
+secs="${1:-30}"
+[[ "$secs" =~ ^[0-9]{1,3}$ ]] && (( secs >= 10 && secs <= 120 )) || { echo "seconds must be 10..120" >&2; exit 2; }
+command -v perf >/dev/null || { echo "perf is not installed" >&2; exit 1; }
+
+pid="$(systemctl show forever-sim -p MainPID --value)"
+[[ "$pid" =~ ^[0-9]+$ ]] && (( pid > 0 )) || { echo "forever-sim is not running" >&2; exit 1; }
+[[ "$(readlink /proc/$pid/exe)" == /srv/forever/sim/bin/worldserver* ]] || { echo "pid $pid is not the sim worldserver" >&2; exit 1; }
+
+OUT=/srv/forever/build/sim-logs
+install -d -o "$owner" -g forever-build -m 0750 "$OUT"
+stamp="$(date +%Y%m%d-%H%M%S)"
+report="$OUT/perf-$stamp.txt"
+data="$(mktemp /tmp/forever-sim-perf.XXXXXX)"
+trap 'rm -f "$data"' EXIT
+
+{
+  echo "# sim worldserver profile: pid $pid, $secs s at 499 Hz, $(date '+%F %T')"
+  echo "# bots online (last pump line): $(journalctl -u forever-sim -n 300 --no-pager -o cat 2>/dev/null | grep 'pump:' | tail -1)"
+  echo "# load: $(cut -d' ' -f1-3 /proc/loadavg)  cpus: $(nproc)"
+  echo
+} > "$report"
+
+perf record -q -F 499 -p "$pid" -o "$data" -- sleep "$secs" >/dev/null 2>&1 || { echo "perf record failed" >&2; exit 1; }
+
+{
+  echo "## CPU time per thread (share of all samples)"
+  perf report -i "$data" --stdio --no-children --sort comm,tid 2>/dev/null | grep -v '^#' | grep -v '^$' | head -20
+  echo
+  echo "## Top functions (self time)"
+  perf report -i "$data" --stdio --no-children --sort sym 2>/dev/null | grep -v '^#' | grep -v '^$' | head -70
+  echo
+  echo "## By library (self time)"
+  perf report -i "$data" --stdio --no-children --sort dso 2>/dev/null | grep -v '^#' | grep -v '^$' | head -15
+  echo
+  echo "## Top functions on the busiest thread"
+  busiest="$(perf report -i "$data" --stdio --no-children --sort tid 2>/dev/null | grep -v '^#' | grep -v '^$' | head -1 | awk '{print $2}')"
+  [[ -n "$busiest" ]] && perf report -i "$data" --stdio --no-children --tid "$busiest" --sort sym 2>/dev/null | grep -v '^#' | grep -v '^$' | head -50
+} >> "$report"
+
+chown "$owner:forever-build" "$report"
+chmod 0640 "$report"
+echo "wrote $report"

@@ -41,7 +41,7 @@ id -u "$USER_NAME" >/dev/null 2>&1 || { echo "no such account: $USER_NAME" >&2; 
 command -v visudo >/dev/null || { echo "visudo not found" >&2; exit 1; }
 command -v rsync >/dev/null || echo "WARN: rsync is not installed; forever-sim-deploy will not work until it is" >&2
 
-WRAPPERS=(forever-sim-ctl forever-sim-deploy forever-sim-db forever-sim-logs forever-sim-soak)
+WRAPPERS=(forever-sim-ctl forever-sim-deploy forever-sim-db forever-sim-logs forever-sim-soak forever-sim-profile)
 SOAK="$HERE/../start-sim-soak.sh"
 
 for f in "${WRAPPERS[@]}" ; do

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # forever-sim-logs <export|tail-server>
-#   export       copies the sim's logs and bot telemetry to /srv/forever/build/sim-logs, readable by the
+#   export       copies the sim's logs, bot telemetry and the live picture (bots-live.json) to /srv/forever/build/sim-logs, readable by the
 #                calling user, so reports can be made without root.
 #   tail-server  prints the last 300 lines of the sim's Server.log.
 # Symlinks are never followed.
@@ -19,7 +19,7 @@ case "${1:-}" in
     n=0
     shopt -s nullglob
     for f in "$LOGS"/Server.log "$LOGS"/DBErrors.log "$LOGS"/GM.log "$LOGS"/scenario-results.log \
-             "$LOGS"/forever-bots-telemetry.csv "$LOGS"/forever-bots-telemetry.csv.[0-9]*; do
+             "$LOGS"/forever-bots-telemetry.csv "$LOGS"/forever-bots-telemetry.csv.[0-9]* "$LOGS"/bots-live.json; do
       [[ -f "$f" && ! -L "$f" ]] || continue
       install -o "$owner" -g forever-build -m 0640 "$f" "$OUT/$(basename "$f")"
       n=$((n + 1))
