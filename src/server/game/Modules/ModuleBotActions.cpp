@@ -418,7 +418,7 @@ char const* GearResultName(GearResult result)
         case GearResult::Equipped: return "equipped";
         case GearResult::KeptBetter: return "kept_worn_item_level_not_lower";
         case GearResult::NoBagSpace: return "no_bag_space";
-        case GearResult::CannotEquip: return "cannot_equip_stays_in_bags";
+        case GearResult::CannotEquip: return "cannot_equip_removed";
     }
     return "unknown";
 }
@@ -444,7 +444,9 @@ GearResult GiveAndEquip(Player& bot, ItemTemplate const& item, uint8 slot, uint3
     if (canEquip != EQUIP_ERR_OK)
     {
         equipError = uint32(canEquip);
-        return GearResult::CannotEquip; // stays in the bags
+        // Not left in the bags: the same pick comes back at every gear pass and would fill the bags with copies.
+        bot.DestroyItem(created->GetBagSlot(), created->GetSlot(), true);
+        return GearResult::CannotEquip;
     }
     bot.SwapItem(uint16(created->GetBagSlot()) << 8 | created->GetSlot(), target);
     return bot.GetItemByPos(INVENTORY_SLOT_BAG_0, slot) == created ? GearResult::Equipped : GearResult::CannotEquip;
