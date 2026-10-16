@@ -108,6 +108,16 @@ bool ClassicOpcodes::IsBuild70291OrLater()
     return ExtraGroupShift() != 0;
 }
 
+bool ClassicOpcodes::IsBuild70425OrLater()
+{
+    static bool const later = []()
+    {
+        std::shared_ptr<Realm const> realm = sRealmList->GetCurrentRealm();
+        return realm && realm->Build >= 70425;
+    }();
+    return later;
+}
+
 uint32 ClassicOpcodes::TranslateClientOpcode(uint32 classicOpcode)
 {
     if (uint32 shift = ExtraGroupShift())

@@ -38,6 +38,9 @@ namespace ClassicOpcodes
     /// client 70291 or later (Classic.OpcodeGroupShift / realm build): also selects that build's changed packet and update field layouts
     TC_GAME_API bool IsBuild70291OrLater();
 
+    /// client 70425 or later (realm build): selects that build's update field layouts
+    TC_GAME_API bool IsBuild70425OrLater();
+
     /// server opcodes whose Classic number is not known yet and that crash the client when sent with the shifted retail number
     TC_GAME_API bool IsServerOpcodeBlocked(uint32 coreOpcode);
 
