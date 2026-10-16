@@ -27,6 +27,7 @@
 #include "Map.h"
 #include "MotionMaster.h"
 #include "Opcodes.h"
+#include "PathGenerator.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -1410,9 +1411,16 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
             return BotActionStatus::kApplied;
 
         case ActionType::kMoveTo:
+        {
+            // The navmesh is asked first. Without a full route MovePoint walks a straight line that runs into water and walls, so the
+            // module is told (kNoRoute) and can leave that destination alone. Moves are sent when the target changes, not every tick.
+            PathGenerator path(&bot);
+            bool const routed = path.CalculatePath(action.dest_x, action.dest_y, action.dest_z, false) &&
+                                !(path.GetPathType() & (PATHFIND_NOPATH | PATHFIND_INCOMPLETE));
             bot.GetMotionMaster()->Clear();
             bot.GetMotionMaster()->MovePoint(0, action.dest_x, action.dest_y, action.dest_z);
-            return BotActionStatus::kApplied;
+            return routed ? BotActionStatus::kApplied : BotActionStatus::kNoRoute;
+        }
 
         case ActionType::kFollow:
         {
