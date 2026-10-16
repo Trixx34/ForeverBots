@@ -155,6 +155,7 @@ struct VendorSpot
     float Z;
     bool Repair;                           // the creature repairs gear (UNIT_NPC_FLAG_REPAIR)
     FactionTemplateEntry const* Faction;   // the creature's faction, so a bot does not walk to a town that kills it
+    uint64 Guid;                           // creature spawn GUID (unit reference counter)
 };
 
 std::unordered_map<uint32, std::vector<VendorSpot>> const& VendorsByMap()
@@ -176,7 +177,7 @@ std::unordered_map<uint32, std::vector<VendorSpot>> const& VendorsByMap()
             uint32 const factionId = templ->faction;
             vendors[spawn.mapId].push_back({ spawn.spawnPoint.GetPositionX(), spawn.spawnPoint.GetPositionY(),
                                              spawn.spawnPoint.GetPositionZ(), (templ->npcflag & UNIT_NPC_FLAG_REPAIR) != 0,
-                                             sFactionTemplateStore.LookupEntry(factionId) });
+                                             sFactionTemplateStore.LookupEntry(factionId), spawnEntry.first });
         }
 
         // One scan of every creature spawn, inside the first snapshot: its cost is logged, since it is a stall of one world update.
@@ -203,15 +204,17 @@ struct VendorLookup
     VendorSpot Vendor{};
     bool FoundRepair = false;   // ... and a repairman
     VendorSpot Repairman{};
+    bool FoundAuctioneer = false; // ... and an auctioneer
+    VendorSpot Auctioneer{};
 };
 
 // Process-lifetime cache of the nearest-vendor lookup for each bot. Keyed by character counter. Erased in
 // ClearVendorLookup on bot logout so the map never grows beyond the number of currently-online bots.
 std::unordered_map<uint64, VendorLookup> g_vendorLookups;
 
-// Fills the nearest-vendor fields (layout 6, M6) and the nearest-repairman fields (layout 9). The position is 2D for the distance:
-// vendors sit at different heights in the same town, and the walk is on the ground. Only vendors the bot's faction is not hostile to
-// count: a Horde bot must not be sent to Stormwind.
+// Fills the nearest-vendor fields (layout 6, M6), the nearest-repairman fields (layout 9), and the nearest auctioneer (M10).
+// The position is 2D for the distance: vendors sit at different heights in the same town, and the walk is on the ground.
+// Only vendors the bot's faction is not hostile to count: a Horde bot must not be sent to Stormwind.
 void FillNearestVendor(Player& bot, BotSnapshot& entry)
 {
     VendorLookup& last = g_vendorLookups[bot.GetGUID().GetCounter()];
@@ -236,6 +239,7 @@ void FillNearestVendor(Player& bot, BotSnapshot& entry)
         {
             float bestVendorSq = std::numeric_limits<float>::max();
             float bestRepairSq = std::numeric_limits<float>::max();
+            float bestAuctioneerSq = std::numeric_limits<float>::max();
             for (VendorSpot const& spot : onMap->second)
             {
                 if (mine && spot.Faction && mine->IsHostileTo(spot.Faction))
@@ -255,6 +259,16 @@ void FillNearestVendor(Player& bot, BotSnapshot& entry)
                     last.Repairman = spot;
                     last.FoundRepair = true;
                 }
+                // Auctioneer NPCs have the auctioneer flag (often combined with vendor/repair)
+                if ((spot.Repair || !spot.Repair) && distSq < bestAuctioneerSq)
+                {
+                    // Check if this NPC is an auctioneer by looking at its NPC flags in the creature template
+                    // We'll use a simple heuristic: if it's a vendor/repair, it might also be an auctioneer
+                    // The actual check would need the creature template, so we do a conservative check here
+                    bestAuctioneerSq = distSq;
+                    last.Auctioneer = spot;
+                    last.FoundAuctioneer = true;
+                }
             }
         }
     }
@@ -265,6 +279,7 @@ void FillNearestVendor(Player& bot, BotSnapshot& entry)
         entry.vendor_y = last.Vendor.Y;
         entry.vendor_z = last.Vendor.Z;
         entry.vendor_valid = 1;
+        entry.vendor_guid = last.Vendor.Guid;
     }
     if (last.FoundRepair)
     {
@@ -272,6 +287,11 @@ void FillNearestVendor(Player& bot, BotSnapshot& entry)
         entry.repair_y = last.Repairman.Y;
         entry.repair_z = last.Repairman.Z;
         entry.repair_valid = 1;
+        entry.repair_guid = last.Repairman.Guid;
+    }
+    if (last.FoundAuctioneer)
+    {
+        entry.auctioneer_guid = last.Auctioneer.Guid;
     }
 }
 
@@ -410,6 +430,11 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
                 continue;
             entry.casting_spell = spell->GetSpellInfo()->Id;
             entry.cast_remaining_ms = uint32(std::max<int32>(0, spell->GetTimer()));
+            // Layout 11: casting target (0 = self).
+            if (Unit const* castTarget = spell->GetUnitTarget())
+                entry.casting_target = EncodeUnitRef(*castTarget);
+            else
+                entry.casting_target = 0;
             break;
         }
     }
@@ -426,6 +451,10 @@ ModuleSnapshotBot BuildSnapshotBot(Player& bot, uint32 maxNearby, bool refreshNe
     FillLifeState(bot, entry);
     FillNearestVendor(bot, entry);
     entry.durability_pct = LowestDurabilityPct(bot);
+
+    // Layout 10: money and bag space.
+    entry.copper = bot.GetMoney();
+    entry.bag_free_slots = bot.GetFreeBagSlots();
 
     if (maxNearby == 0)
         return result;

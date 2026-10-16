@@ -788,8 +788,13 @@ void CriteriaHandler::UpdateCriteria(Criteria const* criteria, uint64 miscValue1
             break;
         }
         case CriteriaType::UniquePetsOwned:
-            SetCriteriaProgress(criteria, referencePlayer->GetSession()->GetBattlePetMgr()->GetPetUniqueSpeciesCount(), referencePlayer);
+        {
+            uint32 uniquePets = 0;
+            if (auto* battlePetMgr = referencePlayer->GetSession()->GetBattlePetMgr())
+                uniquePets = battlePetMgr->GetPetUniqueSpeciesCount();
+            SetCriteriaProgress(criteria, uniquePets, referencePlayer);
             break;
+        }
         case CriteriaType::GuildAttainedLevel:
             SetCriteriaProgress(criteria, miscValue1, referencePlayer);
             break;
@@ -1933,10 +1938,13 @@ bool CriteriaHandler::ModifierSatisfied(ModifierTreeEntry const* modifier, uint6
             break;
         }
         case ModifierTreeType::BattlePetTeamLevel: // 34
-            for (WorldPackets::BattlePet::BattlePetSlot const& slot : referencePlayer->GetSession()->GetBattlePetMgr()->GetSlots())
-                if (slot.Pet.Level < reqValue)
-                    return false;
+        {
+            if (auto* battlePetMgr = referencePlayer->GetSession()->GetBattlePetMgr())
+                for (WorldPackets::BattlePet::BattlePetSlot const& slot : battlePetMgr->GetSlots())
+                    if (slot.Pet.Level < reqValue)
+                        return false;
             break;
+        }
         case ModifierTreeType::PlayerIsNotInParty: // 35
             if (referencePlayer->GetGroup())
                 return false;
@@ -2152,9 +2160,14 @@ bool CriteriaHandler::ModifierSatisfied(ModifierTreeEntry const* modifier, uint6
             break;
         }
         case ModifierTreeType::UniqueBattlePetsEqualOrGreaterThan: // 77
-            if (referencePlayer->GetSession()->GetBattlePetMgr()->GetPetUniqueSpeciesCount() < reqValue)
+        {
+            uint32 uniquePets = 0;
+            if (auto* battlePetMgr = referencePlayer->GetSession()->GetBattlePetMgr())
+                uniquePets = battlePetMgr->GetPetUniqueSpeciesCount();
+            if (uniquePets < reqValue)
                 return false;
             break;
+        }
         case ModifierTreeType::BattlePetType: // 78
         {
             BattlePetSpeciesEntry const* speciesEntry = sBattlePetSpeciesStore.LookupEntry(miscValue1);
@@ -2218,9 +2231,12 @@ bool CriteriaHandler::ModifierSatisfied(ModifierTreeEntry const* modifier, uint6
                 return false;
             break;
         case ModifierTreeType::PlayerHasBattlePetJournalLock: // 93
-            if (!referencePlayer->GetSession()->GetBattlePetMgr()->HasJournalLock())
-                return false;
+        {
+            if (auto* battlePetMgr = referencePlayer->GetSession()->GetBattlePetMgr())
+                if (!battlePetMgr->HasJournalLock())
+                    return false;
             break;
+        }
         case ModifierTreeType::FriendshipRepReactionIsMet: // 94
         {
             FriendshipRepReactionEntry const* friendshipRepReaction = sFriendshipRepReactionStore.LookupEntry(reqValue);
@@ -2739,9 +2755,10 @@ bool CriteriaHandler::ModifierSatisfied(ModifierTreeEntry const* modifier, uint6
         case ModifierTreeType::BattlePetTeamWithSpeciesEqualOrGreaterThan: // 151
         {
             uint32 count = 0;
-            for (WorldPackets::BattlePet::BattlePetSlot const& slot : referencePlayer->GetSession()->GetBattlePetMgr()->GetSlots())
-                if (slot.Pet.Species == secondaryAsset)
-                    ++count;
+            if (auto* battlePetMgr = referencePlayer->GetSession()->GetBattlePetMgr())
+                for (WorldPackets::BattlePet::BattlePetSlot const& slot : battlePetMgr->GetSlots())
+                    if (slot.Pet.Species == secondaryAsset)
+                        ++count;
             if (count < reqValue)
                 return false;
             break;
@@ -2749,10 +2766,11 @@ bool CriteriaHandler::ModifierSatisfied(ModifierTreeEntry const* modifier, uint6
         case ModifierTreeType::BattlePetTeamWithTypeEqualOrGreaterThan: // 152
         {
             uint32 count = 0;
-            for (WorldPackets::BattlePet::BattlePetSlot const& slot : referencePlayer->GetSession()->GetBattlePetMgr()->GetSlots())
-                if (BattlePetSpeciesEntry const* species = sBattlePetSpeciesStore.LookupEntry(slot.Pet.Species))
-                    if (species->PetTypeEnum == int32(secondaryAsset))
-                        ++count;
+            if (auto* battlePetMgr = referencePlayer->GetSession()->GetBattlePetMgr())
+                for (WorldPackets::BattlePet::BattlePetSlot const& slot : battlePetMgr->GetSlots())
+                    if (BattlePetSpeciesEntry const* species = sBattlePetSpeciesStore.LookupEntry(slot.Pet.Species))
+                        if (species->PetTypeEnum == int32(secondaryAsset))
+                            ++count;
             if (count < reqValue)
                 return false;
             break;
@@ -2763,9 +2781,10 @@ bool CriteriaHandler::ModifierSatisfied(ModifierTreeEntry const* modifier, uint6
         case ModifierTreeType::BattlePetTeamWithAliveEqualOrGreaterThan: // 155
         {
             uint32 count = 0;
-            for (WorldPackets::BattlePet::BattlePetSlot const& slot : referencePlayer->GetSession()->GetBattlePetMgr()->GetSlots())
-                if (slot.Pet.Health > 0)
-                    ++count;
+            if (auto* battlePetMgr = referencePlayer->GetSession()->GetBattlePetMgr())
+                for (WorldPackets::BattlePet::BattlePetSlot const& slot : battlePetMgr->GetSlots())
+                    if (slot.Pet.Health > 0)
+                        ++count;
             if (count < reqValue)
                 return false;
             break;
@@ -2958,15 +2977,16 @@ bool CriteriaHandler::ModifierSatisfied(ModifierTreeEntry const* modifier, uint6
             return false;
         case ModifierTreeType::PlayerHasMount: // 183
         {
-            for (auto&& p : referencePlayer->GetSession()->GetCollectionMgr()->GetAccountMounts())
-            {
-                MountEntry const* mount = sDB2Manager.GetMount(p.first);
-                if (!mount)
-                    continue;
+            if (auto* collectionMgr = referencePlayer->GetSession()->GetCollectionMgr())
+                for (auto&& p : collectionMgr->GetAccountMounts())
+                {
+                    MountEntry const* mount = sDB2Manager.GetMount(p.first);
+                    if (!mount)
+                        continue;
 
-                if (mount->ID == reqValue)
-                    return true;
-            }
+                    if (mount->ID == reqValue)
+                        return true;
+                }
             return false;
         }
         case ModifierTreeType::GarrisonFollowerCountWithInactiveWithItemLevelEqualOrGreaterThan: // 184
@@ -3027,18 +3047,26 @@ bool CriteriaHandler::ModifierSatisfied(ModifierTreeEntry const* modifier, uint6
         case ModifierTreeType::PlayerIsInstanceOwner: // 196 NYI
             return false;
         case ModifierTreeType::PlayerHasHeirloom: // 197
-            if (!Trinity::Containers::MapGetValuePtr(referencePlayer->GetSession()->GetCollectionMgr()->GetAccountHeirlooms(), reqValue))
-                return false;
+        {
+            if (auto* collectionMgr = referencePlayer->GetSession()->GetCollectionMgr())
+                if (!Trinity::Containers::MapGetValuePtr(collectionMgr->GetAccountHeirlooms(), reqValue))
+                    return false;
             break;
+        }
         case ModifierTreeType::TeamPoints: // 198 NYI
             return false;
         case ModifierTreeType::PlayerHasToy: // 199
-            if (!referencePlayer->GetSession()->GetCollectionMgr()->HasToy(reqValue))
-                return false;
+        {
+            if (auto* collectionMgr = referencePlayer->GetSession()->GetCollectionMgr())
+                if (!collectionMgr->HasToy(reqValue))
+                    return false;
             break;
+        }
         case ModifierTreeType::PlayerHasTransmog: // 200
         {
-            std::pair<bool, bool> hasAppearance = referencePlayer->GetSession()->GetCollectionMgr()->HasItemAppearance(reqValue);
+            std::pair<bool, bool> hasAppearance = { false, false };
+            if (auto* collectionMgr = referencePlayer->GetSession()->GetCollectionMgr())
+                hasAppearance = collectionMgr->HasItemAppearance(reqValue);
             if (!hasAppearance.first || hasAppearance.second)
                 return false;
             break;

@@ -662,9 +662,10 @@ bool Condition::Meets(ConditionSourceInfo& sourceInfo) const
         case CONDITION_BATTLE_PET_COUNT:
         {
             if (Player const* player = object->ToPlayer())
-                condMeets = CompareValues(static_cast<ComparisionType>(ConditionValue3),
-                    player->GetSession()->GetBattlePetMgr()->GetPetCount(sBattlePetSpeciesStore.AssertEntry(ConditionValue1), player->GetGUID()),
-                    static_cast<uint8>(ConditionValue2));
+                if (auto* battlePetMgr = player->GetSession()->GetBattlePetMgr())
+                    condMeets = CompareValues(static_cast<ComparisionType>(ConditionValue3),
+                        battlePetMgr->GetPetCount(sBattlePetSpeciesStore.AssertEntry(ConditionValue1), player->GetGUID()),
+                        static_cast<uint8>(ConditionValue2));
             break;
         }
         case CONDITION_SCENE_IN_PROGRESS:
@@ -3171,8 +3172,10 @@ bool ConditionMgr::IsPlayerMeetingCondition(Player const* player, PlayerConditio
             if (foundItemCount)
                 return true;
 
-            if (itemCount == 1 && sDB2Manager.IsToyItem(itemId) && player->GetSession()->GetCollectionMgr()->HasToy(itemId))
-                return true;
+            if (itemCount == 1 && sDB2Manager.IsToyItem(itemId))
+                if (auto* collectionMgr = player->GetSession()->GetCollectionMgr())
+                    if (collectionMgr->HasToy(itemId))
+                        return true;
 
             return false;
         }, player, condition->ItemID, condition->ItemCount);

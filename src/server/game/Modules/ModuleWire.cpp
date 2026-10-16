@@ -577,6 +577,112 @@ bool Decode(std::string_view bytes, ActionRequestMsg& out)
                     return false;
             }
         }
+        else if (field == 18 && wire == WireLengthDelimited)
+        {
+            // BuyItemAction (18): vendor_guid=1, item_entry=2, count=3.
+            std::string_view buyBytes;
+            if (!r.ReadBytes(buyBytes))
+                return false;
+            out.Kind = ActionKind::BuyItem;
+
+            Reader a(buyBytes);
+            while (!a.AtEnd())
+            {
+                uint32 af = 0, aw = 0;
+                if (!a.ReadTag(af, aw))
+                    return false;
+                if (af == 1 && aw == WireVarint)
+                {
+                    if (!a.ReadVarint(out.VendorGuid))
+                        return false;
+                }
+                else if (af == 2 && aw == WireVarint)
+                {
+                    uint64 entry = 0;
+                    if (!a.ReadVarint(entry))
+                        return false;
+                    out.ItemEntry = static_cast<uint32>(entry);
+                }
+                else if (af == 3 && aw == WireVarint)
+                {
+                    uint64 count = 0;
+                    if (!a.ReadVarint(count))
+                        return false;
+                    out.Count = static_cast<uint32>(count);
+                }
+                else if (!a.Skip(aw))
+                    return false;
+            }
+        }
+        else if (field == 19 && wire == WireLengthDelimited)
+        {
+            // AuctionHouseAction (19): op=1, auctioneer_guid=2, item_guid=3, auction_guid=4,
+            // item_entry=5, count=6, bid=7, buyout=8.
+            std::string_view ahBytes;
+            if (!r.ReadBytes(ahBytes))
+                return false;
+            out.Kind = ActionKind::AuctionHouse;
+
+            Reader a(ahBytes);
+            while (!a.AtEnd())
+            {
+                uint32 af = 0, aw = 0;
+                if (!a.ReadTag(af, aw))
+                    return false;
+                if (af == 1 && aw == WireVarint)
+                {
+                    uint64 op = 0;
+                    if (!a.ReadVarint(op))
+                        return false;
+                    out.AhOp = static_cast<uint32>(op);
+                }
+                else if (af == 2 && aw == WireVarint)
+                {
+                    if (!a.ReadVarint(out.AuctioneerGuid))
+                        return false;
+                }
+                else if (af == 3 && aw == WireVarint)
+                {
+                    if (!a.ReadVarint(out.ItemGuid))
+                        return false;
+                }
+                else if (af == 4 && aw == WireVarint)
+                {
+                    if (!a.ReadVarint(out.AuctionGuid))
+                        return false;
+                }
+                else if (af == 5 && aw == WireVarint)
+                {
+                    uint64 entry = 0;
+                    if (!a.ReadVarint(entry))
+                        return false;
+                    out.ItemEntry = static_cast<uint32>(entry);
+                }
+                else if (af == 6 && aw == WireVarint)
+                {
+                    uint64 count = 0;
+                    if (!a.ReadVarint(count))
+                        return false;
+                    out.Count = static_cast<uint32>(count);
+                }
+                else if (af == 7 && aw == WireVarint)
+                {
+                    uint64 bid = 0;
+                    if (!a.ReadVarint(bid))
+                        return false;
+                    out.Bid = static_cast<uint32>(bid);
+                }
+                else if (af == 8 && aw == WireVarint)
+                {
+                    uint64 buyout = 0;
+                    if (!a.ReadVarint(buyout))
+                        return false;
+                    out.Buyout = static_cast<uint32>(buyout);
+                }
+                else if (!a.Skip(aw))
+                    return false;
+            }
+        }
         else if ((field == 10 || field == 11) && wire == WireLengthDelimited)
         {
             // SellItemAction (10): player_guid=1, item_guid=2, item_entry=3, count=4.
@@ -755,6 +861,7 @@ std::string Encode(ActionReplyMsg const& msg)
     if (!msg.Reason.empty())
         AppendBytesField(out, 3, msg.Reason);
     AppendVarintField(out, 4, msg.CopperGained);
+    AppendVarintField(out, 9, msg.CopperSpent);
     if (msg.Found)
         AppendVarintField(out, 5, 1);
     if (!msg.Value.empty())

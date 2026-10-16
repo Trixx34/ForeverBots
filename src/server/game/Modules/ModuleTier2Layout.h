@@ -24,7 +24,7 @@ namespace forever_module {
 
 // Explicit layout version, checked by the module when it attaches to the region. Lets a mismatch
 // be detected from the shared memory itself, independent of the Tier 1 handshake.
-inline constexpr std::uint32_t kTier2LayoutVersion = 11;
+inline constexpr std::uint32_t kTier2LayoutVersion = 13;
 
 // Small, fixed cap -- see doc/module-system/07-phase5-reference-module-design.md, this value is
 // still open pending real measurement from a spell-casting test module.
@@ -133,12 +133,20 @@ struct BotSnapshot {
     float repair_z = 0.0f;
     std::uint8_t repair_valid = 0;
     std::uint8_t durability_pct = 100;
-    // Layout 10: what the bot is doing, so a module does not try what is certain to fail. moving is 1 while the bot is moving. casting_spell is the
+    // Layout 10: the bot's money and bag space (M10).
+    std::uint64_t copper = 0;
+    std::uint32_t bag_free_slots = 0;
+    // Layout 10 (cont.): vendor, repairman, and auctioneer GUIDs (M10). The positions are in layouts 6 and 9.
+    std::uint64_t vendor_guid = 0;
+    std::uint64_t repair_guid = 0;
+    std::uint64_t auctioneer_guid = 0;
+    // Layout 11: what the bot is doing, so a module does not try what is certain to fail. moving is 1 while the bot is moving. casting_spell is the
     // spell id of the cast or channel in progress (0 when none) and cast_remaining_ms what is left of it (a cast with a cast time cannot be
-    // started while moving, and no cast can be started while another is in progress).
+    // started while moving, and no cast can be started while another is in progress). casting_target is the target of the cast in progress.
     std::uint8_t moving = 0;
     std::uint32_t casting_spell = 0;
     std::uint32_t cast_remaining_ms = 0;
+    std::uint64_t casting_target = 0;
     // Layout 11: death state. life_state is 0 alive, 1 dead (corpse, spirit not released), 2 ghost (released). A ghost has health 1, so
     // test life_state, not health. corpse_valid is 1 when corpse_map and corpse_x/y/z are set (a ghost: where its corpse lies, which can be
     // another map than map_id; a dead bot: its own position). reclaim_wait_ms is the time until the corpse may be reclaimed (0 = now; ghosts
@@ -198,7 +206,11 @@ enum class ActionType : std::uint32_t {
     kRevive = 18,        // a chat order: resurrect the dead bot (corpse or ghost) at 35% health and put it next to the player target_guid names (as kSummon).
                          // Refused on a hardcore realm. Needs Bot.Chat.Orders.Enabled.
     kMount = 19,         // spell_id 1 mounts the bot on its fastest learned ground mount, 0 dismounts it. Refused in combat.
-    kLastActionType = kMount, // the highest valid value; PublishActions refuses anything above it
+    kCraft = 20,         // craft using a profession spell/recipe: spell_id = the spell, target_guid = optional target (0=self).
+                         // The core checks reagents, consumes them, and adds the crafted item to the bot's bags. Refused in combat.
+    kGather = 21,        // gather a node: target_guid = the game object unit ref, spell_id = optional gathering spell.
+                         // Adds the gathered item to the bot's bags and may deplete the node. Refused in combat or out of range.
+    kLastActionType = kGather, // the highest valid value; PublishActions refuses anything above it
 };
 
 // A unit as one 64-bit value (BotAction::target_guid, NearbyUnit::guid). See MakeUnitRef.

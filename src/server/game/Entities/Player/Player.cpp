@@ -353,9 +353,13 @@ Player::Player(WorldSession* session) : Unit(true), m_sceneMgr(this)
 
     _cinematicMgr = std::make_unique<CinematicMgr>(this);
 
-    m_achievementMgr = std::make_unique<PlayerAchievementMgr>(this);
+    // Bots have no client and never use achievements or quest-objective criteria: skip allocating the managers.
+    if (!session->IsBot())
+    {
+        m_achievementMgr = std::make_unique<PlayerAchievementMgr>(this);
+        m_questObjectiveCriteriaMgr = std::make_unique<QuestObjectiveCriteriaMgr>(this);
+    }
     m_reputationMgr = std::make_unique<ReputationMgr>(this);
-    m_questObjectiveCriteriaMgr = std::make_unique<QuestObjectiveCriteriaMgr>(this);
 
     for (uint8 i = 0; i < MAX_CUF_PROFILES; ++i)
         _CUFProfiles[i] = nullptr;
@@ -1037,7 +1041,8 @@ void Player::Update(uint32 p_time)
         }
     }
 
-    m_achievementMgr->UpdateTimedCriteria(Milliseconds(p_time));
+    if (m_achievementMgr)
+        m_achievementMgr->UpdateTimedCriteria(Milliseconds(p_time));
 
     DoMeleeAttackIfReady();
 
@@ -3251,7 +3256,8 @@ bool Player::AddSpell(uint32 spellId, bool active, bool learning, bool dependent
 
     // needs to be when spell is already learned, to prevent infinite recursion crashes
     if (sDB2Manager.GetMount(spellId))
-        GetSession()->GetCollectionMgr()->AddMount(spellId, MOUNT_STATUS_NONE, false, IsInWorld() ? false : true);
+        if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+            collectionMgr->AddMount(spellId, MOUNT_STATUS_NONE, false, IsInWorld() ? false : true);
 
     // return true (for send learn packet) only if spell active (in case ranked spells) and not replace old spell
     return active && !disabled && !superceded_old;
@@ -6531,7 +6537,7 @@ bool Player::IsActionButtonDataValid(uint8 button, uint64 action, uint8 type) co
             break;
         case ACTION_BUTTON_COMPANION:
         {
-            if (!GetSession()->GetBattlePetMgr()->GetPet(ObjectGuid::Create<HighGuid::BattlePet>(action)))
+            if (!GetSession()->GetBattlePetMgr() || !GetSession()->GetBattlePetMgr()->GetPet(ObjectGuid::Create<HighGuid::BattlePet>(action)))
             {
                 TC_LOG_ERROR("entities.player", "Player::IsActionButtonDataValid: Companion action {} not added into button {} for player {} ({}): companion does not exist",
                     action, button, GetName(), GetGUID().ToString());
@@ -12003,7 +12009,8 @@ Item* Player::StoreNewItem(ItemPosCountVec const& pos, uint32 itemId, bool updat
         }
 
         if (addToCollection)
-            GetSession()->GetCollectionMgr()->OnItemAdded(item);
+            if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+                collectionMgr->OnItemAdded(item);
 
         if (ItemChildEquipmentEntry const* childItemEntry = sDB2Manager.GetItemChildEquipment(itemId))
         {
@@ -12567,7 +12574,8 @@ void Player::VisualizeItem(uint8 slot, Item* pItem)
     {
         pItem->SetBinding(true);
         if (IsInWorld())
-            GetSession()->GetCollectionMgr()->AddItemAppearance(pItem);
+            if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+                collectionMgr->AddItemAppearance(pItem);
     }
 
     TC_LOG_DEBUG("entities.player.items", "Player::SetVisibleItemSlot: Player '{}' ({}), Slot: {}, Item: {}",
@@ -12685,7 +12693,8 @@ void Player::MoveItemFromInventory(uint8 bag, uint8 slot, bool update)
         ItemRemovedQuestCheck(it->GetEntry(), it->GetCount());
         it->SetNotRefundable(this, false, nullptr, false);
         RemoveItemFromUpdateQueueOf(it, this);
-        GetSession()->GetCollectionMgr()->RemoveTemporaryAppearance(it);
+        if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+            collectionMgr->RemoveTemporaryAppearance(it);
         if (it->IsInWorld())
         {
             it->RemoveFromWorld();
@@ -15599,7 +15608,8 @@ void Player::AddQuest(Quest const* quest, Object* questGiver)
                     GetReputationMgr().SetVisible(factionEntry);
                 break;
             case QUEST_OBJECTIVE_CRITERIA_TREE:
-                m_questObjectiveCriteriaMgr->ResetCriteriaTree(&obj);
+                if (m_questObjectiveCriteriaMgr)
+                    m_questObjectiveCriteriaMgr->ResetCriteriaTree(&obj);
                 break;
             default:
                 break;
@@ -15777,7 +15787,8 @@ void Player::RewardQuestPackage(uint32 questPackageId, ItemContext context, uint
             }
 
             // Unlock the item appearance for the other reward items as well of possible
-            GetSession()->GetCollectionMgr()->AddItemAppearance(questPackageItem->ItemID);
+            if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+                collectionMgr->AddItemAppearance(questPackageItem->ItemID);
         }
     }
 
@@ -15928,7 +15939,8 @@ void Player::RewardQuest(Quest const* quest, LootItemType rewardType, uint32 rew
                         }
 
                         // Add the remaining item appearances for the quest if possible
-                        GetSession()->GetCollectionMgr()->AddItemAppearance(quest->RewardChoiceItemId[i]);
+                        if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+                            collectionMgr->AddItemAppearance(quest->RewardChoiceItemId[i]);
                     }
                 }
             }
@@ -17133,7 +17145,7 @@ void Player::AdjustQuestObjectiveProgress(Quest const* quest)
                 break;
             }
             case QUEST_OBJECTIVE_CRITERIA_TREE:
-                if (m_questObjectiveCriteriaMgr->HasCompletedObjective(&obj))
+                if (m_questObjectiveCriteriaMgr && m_questObjectiveCriteriaMgr->HasCompletedObjective(&obj))
                     SetQuestObjectiveData(obj, 1);
                 break;
             default:
@@ -18986,8 +18998,10 @@ bool Player::LoadFromDB(ObjectGuid guid, CharacterDatabaseQueryHolder const& hol
     SetObjectScale(1.0f);
 
     // load achievements before anything else to prevent multiple gains for the same achievement/criteria on every loading (as loading does call UpdateCriteria)
-    m_achievementMgr->LoadFromDB(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_ACHIEVEMENTS), holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_CRITERIA_PROGRESS));
-    m_questObjectiveCriteriaMgr->LoadFromDB(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_QUEST_STATUS_OBJECTIVES_CRITERIA), holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_QUEST_STATUS_OBJECTIVES_CRITERIA_PROGRESS));
+    if (m_achievementMgr)
+        m_achievementMgr->LoadFromDB(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_ACHIEVEMENTS), holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_CRITERIA_PROGRESS));
+    if (m_questObjectiveCriteriaMgr)
+        m_questObjectiveCriteriaMgr->LoadFromDB(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_QUEST_STATUS_OBJECTIVES_CRITERIA), holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_QUEST_STATUS_OBJECTIVES_CRITERIA_PROGRESS));
 
     SetMoney(std::min(fields.money, MAX_MONEY_AMOUNT));
 
@@ -19418,7 +19432,8 @@ bool Player::LoadFromDB(ObjectGuid guid, CharacterDatabaseQueryHolder const& hol
     _LoadTalents(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_TALENTS));
     _LoadPvpTalents(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_PVP_TALENTS));
     _LoadSpells(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_SPELLS), holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_SPELL_FAVORITES));
-    GetSession()->GetCollectionMgr()->LoadCharacterData();
+    if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+        collectionMgr->LoadCharacterData();
 
     LearnSpecializationSpells();
 
@@ -19636,11 +19651,14 @@ bool Player::LoadFromDB(ObjectGuid guid, CharacterDatabaseQueryHolder const& hol
     }
 
     // Unlock battle pet system if it's enabled in bnet account
-    if (GetSession()->GetBattlePetMgr()->IsBattlePetSystemEnabled())
-        LearnSpell(BattlePets::SPELL_BATTLE_PET_TRAINING, false);
+    if (auto* battlePetMgr = GetSession()->GetBattlePetMgr())
+        if (battlePetMgr->IsBattlePetSystemEnabled())
+            LearnSpell(BattlePets::SPELL_BATTLE_PET_TRAINING, false);
 
-    m_achievementMgr->CheckAllAchievementCriteria(this);
-    m_questObjectiveCriteriaMgr->CheckAllQuestObjectiveCriteria(this);
+    if (m_achievementMgr)
+        m_achievementMgr->CheckAllAchievementCriteria(this);
+    if (m_questObjectiveCriteriaMgr)
+        m_questObjectiveCriteriaMgr->CheckAllQuestObjectiveCriteria(this);
 
     PushQuests();
 
@@ -19649,13 +19667,15 @@ bool Player::LoadFromDB(ObjectGuid guid, CharacterDatabaseQueryHolder const& hol
         if (!transmogIllusion->GetFlags().HasFlag(TransmogIllusionFlags::PlayerConditionGrantsOnLogin))
             continue;
 
-        if (GetSession()->GetCollectionMgr()->HasTransmogIllusion(transmogIllusion->ID))
-            continue;
+        if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+            if (collectionMgr->HasTransmogIllusion(transmogIllusion->ID))
+                continue;
 
         if (!ConditionMgr::IsPlayerMeetingCondition(this, transmogIllusion->UnlockConditionID))
             continue;
 
-        GetSession()->GetCollectionMgr()->AddTransmogIllusion(transmogIllusion->ID);
+        if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+            collectionMgr->AddTransmogIllusion(transmogIllusion->ID);
     }
 
     return true;
@@ -20006,8 +20026,11 @@ void Player::_LoadInventory(PreparedQueryResult result, PreparedQueryResult arti
                 ObjectGuid bagGuid = fields[52].GetUInt64() ? ObjectGuid::Create<HighGuid::Item>(fields[52].GetUInt64()) : ObjectGuid::Empty;
                 uint8 slot = fields[53].GetUInt8();
 
-                GetSession()->GetCollectionMgr()->CheckHeirloomUpgrades(item);
-                GetSession()->GetCollectionMgr()->AddItemAppearance(item);
+                if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+                {
+                    collectionMgr->CheckHeirloomUpgrades(item);
+                    collectionMgr->AddItemAppearance(item);
+                }
 
                 InventoryResult err = EQUIP_ERR_OK;
                 if (item->HasItemFlag(ITEM_FIELD_FLAG_CHILD))
@@ -20574,15 +20597,19 @@ void Player::_LoadQuestStatusRewarded(PreparedQueryResult result)
                 if (!quest->IsDailyOrWeekly() && !quest->IsMonthly() && !quest->IsSeasonal())
                     SetQuestCompletedBit(quest_id, true);
 
-                for (uint32 i = 0; i < quest->GetRewChoiceItemsCount(); ++i)
-                    GetSession()->GetCollectionMgr()->AddItemAppearance(quest->RewardChoiceItemId[i]);
+                if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+                {
+                    for (uint32 i = 0; i < quest->GetRewChoiceItemsCount(); ++i)
+                        collectionMgr->AddItemAppearance(quest->RewardChoiceItemId[i]);
 
-                for (uint32 i = 0; i < quest->GetRewItemsCount(); ++i)
-                    GetSession()->GetCollectionMgr()->AddItemAppearance(quest->RewardItemId[i]);
+                    for (uint32 i = 0; i < quest->GetRewItemsCount(); ++i)
+                        collectionMgr->AddItemAppearance(quest->RewardItemId[i]);
+                }
 
                 if (std::vector<QuestPackageItemEntry const*> const* questPackageItems = sDB2Manager.GetQuestPackageItems(quest->GetQuestPackageID()))
-                    for (QuestPackageItemEntry const* questPackageItem : *questPackageItems)
-                        GetSession()->GetCollectionMgr()->AddItemAppearance(questPackageItem->ItemID);
+                    if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+                        for (QuestPackageItemEntry const* questPackageItem : *questPackageItems)
+                            collectionMgr->AddItemAppearance(questPackageItem->ItemID);
 
                 if (quest->CanIncreaseRewardedQuestCounters())
                     m_RewardedQuests.insert(quest_id);
@@ -21569,9 +21596,11 @@ void Player::SaveToDB(LoginDatabaseTransaction loginTransaction, CharacterDataba
     _SaveAuras(trans);
     _SaveSkills(trans);
     _SaveStoredAuraTeleportLocations(trans);
-    m_achievementMgr->SaveToDB(trans);
+    if (m_achievementMgr)
+        m_achievementMgr->SaveToDB(trans);
     m_reputationMgr->SaveToDB(trans);
-    m_questObjectiveCriteriaMgr->SaveToDB(trans);
+    if (m_questObjectiveCriteriaMgr)
+        m_questObjectiveCriteriaMgr->SaveToDB(trans);
     _SaveEquipmentSets(trans);
     _SaveTransmogOutfits(trans);
     _SaveCharacterSelectOutfit(trans);
@@ -24330,7 +24359,8 @@ inline bool Player::_StoreOrEquipNewItem(uint32 vendorslot, uint32 item, uint8 c
             AddRefundReference(it->GetGUID());
         }
 
-        GetSession()->GetCollectionMgr()->OnItemAdded(it);
+        if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+            collectionMgr->OnItemAdded(it);
     }
     return true;
 }
@@ -25829,8 +25859,10 @@ void Player::SendInitialPacketsBeforeAddToMap()
     /// SMSG_EQUIPMENT_SET_LIST
     SendEquipmentSetList();
 
-    m_achievementMgr->SendAllData(this);
-    m_questObjectiveCriteriaMgr->SendAllData(this);
+    if (m_achievementMgr)
+        m_achievementMgr->SendAllData(this);
+    if (m_questObjectiveCriteriaMgr)
+        m_questObjectiveCriteriaMgr->SendAllData(this);
 
     /// SMSG_LOGIN_SETTIMESPEED
     static float const TimeSpeed = 0.01666667f;
@@ -25856,31 +25888,34 @@ void Player::SendInitialPacketsBeforeAddToMap()
     // Spell modifiers
     SendSpellModifiers();
 
-    // SMSG_ACCOUNT_MOUNT_UPDATE
-    WorldPackets::Misc::AccountMountUpdate mountUpdate;
-    mountUpdate.IsFullUpdate = true;
-    mountUpdate.Mounts = &GetSession()->GetCollectionMgr()->GetAccountMounts();
-    SendDirectMessage(mountUpdate.Write());
+    if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+    {
+        // SMSG_ACCOUNT_MOUNT_UPDATE
+        WorldPackets::Misc::AccountMountUpdate mountUpdate;
+        mountUpdate.IsFullUpdate = true;
+        mountUpdate.Mounts = &collectionMgr->GetAccountMounts();
+        SendDirectMessage(mountUpdate.Write());
 
-    // SMSG_ACCOUNT_TOYS_UPDATE
-    WorldPackets::Toy::AccountToyUpdate toyUpdate;
-    toyUpdate.IsFullUpdate = true;
-    toyUpdate.Toys = &GetSession()->GetCollectionMgr()->GetAccountToys();
-    SendDirectMessage(toyUpdate.Write());
+        // SMSG_ACCOUNT_TOYS_UPDATE
+        WorldPackets::Toy::AccountToyUpdate toyUpdate;
+        toyUpdate.IsFullUpdate = true;
+        toyUpdate.Toys = &collectionMgr->GetAccountToys();
+        SendDirectMessage(toyUpdate.Write());
 
-    // SMSG_ACCOUNT_HEIRLOOM_UPDATE
-    WorldPackets::Misc::AccountHeirloomUpdate heirloomUpdate;
-    heirloomUpdate.IsFullUpdate = true;
-    heirloomUpdate.Heirlooms = &GetSession()->GetCollectionMgr()->GetAccountHeirlooms();
-    SendDirectMessage(heirloomUpdate.Write());
+        // SMSG_ACCOUNT_HEIRLOOM_UPDATE
+        WorldPackets::Misc::AccountHeirloomUpdate heirloomUpdate;
+        heirloomUpdate.IsFullUpdate = true;
+        heirloomUpdate.Heirlooms = &collectionMgr->GetAccountHeirlooms();
+        SendDirectMessage(heirloomUpdate.Write());
 
-    GetSession()->GetCollectionMgr()->SendFavoriteAppearances();
+        collectionMgr->SendFavoriteAppearances();
 
-    // SMSG_ACCOUNT_WARBAND_SCENE_UPDATE
-    WorldPackets::Misc::AccountWarbandSceneUpdate warbandSceneUpdate;
-    warbandSceneUpdate.IsFullUpdate = true;
-    warbandSceneUpdate.WarbandScenes = &GetSession()->GetCollectionMgr()->GetWarbandScenes();
-    SendDirectMessage(warbandSceneUpdate.Write());
+        // SMSG_ACCOUNT_WARBAND_SCENE_UPDATE
+        WorldPackets::Misc::AccountWarbandSceneUpdate warbandSceneUpdate;
+        warbandSceneUpdate.IsFullUpdate = true;
+        warbandSceneUpdate.WarbandScenes = &collectionMgr->GetWarbandScenes();
+        SendDirectMessage(warbandSceneUpdate.Write());
+    }
 
     WorldPackets::Character::InitialSetup initialSetup;
     initialSetup.ServerExpansionLevel = sWorld->getIntConfig(CONFIG_EXPANSION);
@@ -28421,44 +28456,57 @@ void Player::HandleFall()
 
 void Player::ResetAchievements()
 {
-    m_achievementMgr->Reset();
+    if (m_achievementMgr)
+        m_achievementMgr->Reset();
 }
 
 void Player::SendRespondInspectAchievements(Player* player) const
 {
-    m_achievementMgr->SendAchievementInfo(player);
+    if (m_achievementMgr)
+        m_achievementMgr->SendAchievementInfo(player);
 }
 
 uint32 Player::GetAchievementPoints() const
 {
+    if (!m_achievementMgr)
+        return 0;
     return m_achievementMgr->GetAchievementPoints();
 }
 
 std::vector<uint32> Player::GetCompletedAchievementIds() const
 {
+    if (!m_achievementMgr)
+        return {};
     return m_achievementMgr->GetCompletedAchievementIds();
 }
 
 bool Player::HasAchieved(uint32 achievementId) const
 {
+    if (!m_achievementMgr)
+        return false;
     return m_achievementMgr->HasAchieved(achievementId);
 }
 
 void Player::StartCriteria(CriteriaStartEvent startEvent, uint32 entry, Milliseconds timeLost/* = Milliseconds::zero()*/)
 {
-    m_achievementMgr->StartCriteria(startEvent, entry, timeLost);
+    if (m_achievementMgr)
+        m_achievementMgr->StartCriteria(startEvent, entry, timeLost);
 }
 
 void Player::FailCriteria(CriteriaFailEvent condition, int32 failAsset)
 {
-    m_achievementMgr->FailCriteria(condition, failAsset);
-    m_questObjectiveCriteriaMgr->FailCriteria(condition, failAsset);
+    if (m_achievementMgr)
+        m_achievementMgr->FailCriteria(condition, failAsset);
+    if (m_questObjectiveCriteriaMgr)
+        m_questObjectiveCriteriaMgr->FailCriteria(condition, failAsset);
 }
 
 void Player::UpdateCriteria(CriteriaType type, uint64 miscValue1 /*= 0*/, uint64 miscValue2 /*= 0*/, uint64 miscValue3 /*= 0*/, WorldObject* ref /*= nullptr*/)
 {
-    m_achievementMgr->UpdateCriteria(type, miscValue1, miscValue2, miscValue3, ref, this);
-    m_questObjectiveCriteriaMgr->UpdateCriteria(type, miscValue1, miscValue2, miscValue3, ref, this);
+    if (m_achievementMgr)
+        m_achievementMgr->UpdateCriteria(type, miscValue1, miscValue2, miscValue3, ref, this);
+    if (m_questObjectiveCriteriaMgr)
+        m_questObjectiveCriteriaMgr->UpdateCriteria(type, miscValue1, miscValue2, miscValue3, ref, this);
 
     // Update only individual achievement criteria here, otherwise we may get multiple updates
     // from a single boss kill
@@ -28474,11 +28522,14 @@ void Player::UpdateCriteria(CriteriaType type, uint64 miscValue1 /*= 0*/, uint64
 
 void Player::CompletedAchievement(AchievementEntry const* entry)
 {
-    m_achievementMgr->CompletedAchievement(entry, this);
+    if (m_achievementMgr)
+        m_achievementMgr->CompletedAchievement(entry, this);
 }
 
 bool Player::ModifierTreeSatisfied(uint32 modifierTreeId) const
 {
+    if (!m_achievementMgr)
+        return false;
     return m_achievementMgr->ModifierTreeSatisfied(modifierTreeId);
 }
 
@@ -28898,7 +28949,8 @@ void Player::UnsummonBattlePetTemporaryIfAny(bool onFlyingMount /*= false*/)
     if (battlepet->ToTempSummon()->IsAutoResummoned())
         m_temporaryUnsummonedBattlePet = battlepet->GetBattlePetCompanionGUID();
 
-    GetSession()->GetBattlePetMgr()->DismissPet();
+    if (auto* battlePetMgr = GetSession()->GetBattlePetMgr())
+        battlePetMgr->DismissPet();
 }
 
 void Player::ResummonBattlePetTemporaryUnSummonedIfAny()
@@ -28910,7 +28962,8 @@ void Player::ResummonBattlePetTemporaryUnSummonedIfAny()
     if (IsPetNeedBeTemporaryUnsummoned())
         return;
 
-    GetSession()->GetBattlePetMgr()->SummonPet(m_temporaryUnsummonedBattlePet);
+    if (auto* battlePetMgr = GetSession()->GetBattlePetMgr())
+        battlePetMgr->SummonPet(m_temporaryUnsummonedBattlePet);
 
     m_temporaryUnsummonedBattlePet.Clear();
 }
@@ -30998,7 +31051,8 @@ void Player::RefundItem(Item* item)
 
     // Delete any references to the refund data
     item->SetNotRefundable(this, true, &trans, false);
-    GetSession()->GetCollectionMgr()->RemoveTemporaryAppearance(item);
+    if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+        collectionMgr->RemoveTemporaryAppearance(item);
 
     // Destroy item
     DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
@@ -32841,7 +32895,8 @@ bool Player::ProcessItemCast(SpellCastRequest& castRequest, SpellCastTargets con
         {
             item->SetState(ITEM_CHANGED, this);
             item->SetBinding(true);
-            GetSession()->GetCollectionMgr()->AddItemAppearance(item);
+            if (auto* collectionMgr = GetSession()->GetCollectionMgr())
+                collectionMgr->AddItemAppearance(item);
         }
     }
 

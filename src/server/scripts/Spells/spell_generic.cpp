@@ -4889,18 +4889,21 @@ class spell_gen_trainer_heal_cooldown : public AuraScript
         Player* target = GetUnitOwner()->ToPlayer();
         SpellInfo const* reviveBattlePetSpellInfo = sSpellMgr->AssertSpellInfo(BattlePets::SPELL_REVIVE_BATTLE_PETS, DIFFICULTY_NONE);
 
-        if (target->GetSession()->GetBattlePetMgr()->IsBattlePetSystemEnabled())
+        if (auto* battlePetMgr = target->GetSession()->GetBattlePetMgr())
         {
-            Milliseconds expectedCooldown = Milliseconds(GetAura()->GetMaxDuration());
-            SpellHistory::Duration remainingCooldown = target->GetSpellHistory()->GetRemainingCategoryCooldown(reviveBattlePetSpellInfo);
-            if (remainingCooldown > SpellHistory::Duration::zero())
+            if (battlePetMgr->IsBattlePetSystemEnabled())
             {
-                if (remainingCooldown < expectedCooldown)
-                    target->GetSpellHistory()->ModifyCooldown(reviveBattlePetSpellInfo, expectedCooldown - remainingCooldown);
-            }
-            else
-            {
-                target->GetSpellHistory()->StartCooldown(reviveBattlePetSpellInfo, 0, nullptr, false, expectedCooldown);
+                Milliseconds expectedCooldown = Milliseconds(GetAura()->GetMaxDuration());
+                SpellHistory::Duration remainingCooldown = target->GetSpellHistory()->GetRemainingCategoryCooldown(reviveBattlePetSpellInfo);
+                if (remainingCooldown > SpellHistory::Duration::zero())
+                {
+                    if (remainingCooldown < expectedCooldown)
+                        target->GetSpellHistory()->ModifyCooldown(reviveBattlePetSpellInfo, expectedCooldown - remainingCooldown);
+                }
+                else
+                {
+                    target->GetSpellHistory()->StartCooldown(reviveBattlePetSpellInfo, 0, nullptr, false, expectedCooldown);
+                }
             }
         }
     }

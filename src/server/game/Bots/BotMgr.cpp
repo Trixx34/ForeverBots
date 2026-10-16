@@ -80,7 +80,7 @@ bool IsHordeRace(uint8 raceId)
 WorldSession* MakeBotSession(uint32 accountId, std::string name)
 {
     WorldSession* session = new WorldSession(accountId, std::move(name), 0, std::string(), nullptr, SEC_PLAYER, uint8(0), time_t(0),
-        std::string(), Minutes(0), 0u, ClientBuild::VariantId{}, LOCALE_enUS, 0u, false);
+        std::string(), Minutes(0), 0u, ClientBuild::VariantId{}, LOCALE_enUS, 0u, false, true);
     session->SetBot();
     return session;
 }

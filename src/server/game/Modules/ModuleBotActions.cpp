@@ -5,8 +5,12 @@
 #include "BotMgr.h"
 #include "Cell.h"
 #include "Corpse.h"
+#include "GameObject.h"
 #include "GameTime.h"
 #include "InstanceScript.h"
+#include "Loot.h"
+#include "LootPackets.h"
+#include "Map.h"
 #include "MiscPackets.h"
 #include "MapManager.h"
 #include "Config.h"
@@ -20,8 +24,6 @@
 #include "Item.h"
 #include "ItemTemplate.h"
 #include "Log.h"
-#include "Loot.h"
-#include "LootPackets.h"
 #include "Map.h"
 #include "MotionMaster.h"
 #include "Opcodes.h"
@@ -29,6 +31,7 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "QuestDef.h"
+#include "SpellEffects.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Trainer.h"
@@ -68,6 +71,16 @@ Unit* ResolveUnit(Player& bot, uint64 ref)
                                                                           forever_module::UnitRefEntry(ref),
                                                                           forever_module::UnitRefCounter(ref));
             return map->GetCreature(guid);
+        }
+
+        case HighGuid::GameObject:
+        {
+            Map* map = bot.GetMap();
+            if (!map)
+                return nullptr;
+            ObjectGuid const guid = ObjectGuid::Create<HighGuid::GameObject>(forever_module::UnitRefEntry(ref),
+                                                                           forever_module::UnitRefCounter(ref));
+            return map->GetGameObject(guid);
         }
 
         default:
@@ -400,6 +413,84 @@ char const* GearResultName(GearResult result)
     return "unknown";
 }
 
+// Human-readable name for an InventoryResult (equip error code).
+char const* InventoryResultName(uint32 code)
+{
+    switch (static_cast<InventoryResult>(code))
+    {
+        case EQUIP_ERR_OK: return "OK";
+        case EQUIP_ERR_INV_FULL: return "inventory_full";
+        case EQUIP_ERR_CANT_EQUIP: return "cannot_equip";
+        case EQUIP_ERR_CANT_BE_EQUIPPED: return "cannot_be_equipped";
+        case EQUIP_ERR_ITEM_DOESNT_GO_INTO_SLOT: return "wrong_slot_type";
+        case EQUIP_ERR_WRONG_SLOT: return "wrong_slot";
+        case EQUIP_ERR_NOT_EQUIPABLE: return "not_equippable";
+        case EQUIP_ERR_NONEMPTY_BAG_OVER_OTHER: return "bag_over_other_bag";
+        case EQUIP_ERR_NOT_IN_COMBAT: return "not_in_combat";
+        case EQUIP_ERR_NO_EQUIP_LEVEL: return "level_too_low";
+        case EQUIP_ERR_WRONG_WEATHER: return "wrong_weather";
+        case EQUIP_ERR_CANT_CARRY_MORE_OF_THIS: return "unique_limit";
+        case EQUIP_ERR_CANT_DUAL_WIELD: return "cannot_dual_wield";
+        case EQUIP_ERR_RACE_CANT_EQUIP: return "race_cannot_equip";
+        case EQUIP_ERR_CANT_BE_EQUIPPED_HERE: return "cannot_equip_here";
+        case EQUIP_ERR_NOT_DURING_ARENA_MATCH: return "not_during_arena";
+        case EQUIP_ERR_ITEM_BOUND: return "item_bound";
+        case EQUIP_ERR_RESTRICTED_PVP_ITEM: return "restricted_pvp";
+        case EQUIP_ERR_ITEM_UNIQUE: return "unique_item";
+        case EQUIP_ERR_ITEM_UNIQUE_EQUIPPABLE: return "unique_equippable";
+        case EQUIP_ERR_ITEM_UNIQUE_OWNER: return "unique_owner";
+        case EQUIP_ERR_ITEM_LIMIT_CATEGORY_EXCEEDED: return "limit_category_exceeded";
+        case EQUIP_ERR_ITEM_LEVEL_TOO_LOW: return "item_level_too_low";
+        case EQUIP_ERR_ITEM_LEVEL_TOO_HIGH: return "item_level_too_high";
+        case EQUIP_ERR_TOO_FEW_TO_SPLIT: return "too_few_to_split";
+        case EQUIP_ERR_ITEM_MAX_COUNT_EXCEEDED: return "max_count_exceeded";
+        case EQUIP_ERR_NOT_A_BAG: return "not_a_bag";
+        case EQUIP_ERR_ONLY_AMMO_CAN_GO_HERE: return "only_ammo_here";
+        case EQUIP_ERR_CANT_STACK: return "cannot_stack";
+        case EQUIP_ERR_CANT_SWAP: return "cannot_swap";
+        case EQUIP_ERR_ITEM_DOESNT_GO_INTO_BAG: return "doesnt_go_into_bag";
+        case EQUIP_ERR_BAG_FULL: return "bag_full";
+        case EQUIP_ERR_LOOT_CANT_LOOT_THAT: return "cannot_loot_that";
+        case EQUIP_ERR_LOOT_DIDNT_KILL: return "didnt_kill";
+        case EQUIP_ERR_LOOT_MASTER_INST: return "master_loot";
+        case EQUIP_ERR_LOOT_PLAYER: return "player_loot";
+        case EQUIP_ERR_LOOT_FREE_FOR_ALL: return "free_for_all_loot";
+        case EQUIP_ERR_LOOT_ROLL: return "loot_roll";
+        case EQUIP_ERR_LOOT_FFA_ROLL: return "ffa_roll";
+        case EQUIP_ERR_LOOT_FFA_ROLL_ANOTHER: return "ffa_roll_another";
+        case EQUIP_ERR_LOOT_MASTER_INST_ANOTHER: return "master_loot_another";
+        case EQUIP_ERR_LOOT_PLAYER_ANOTHER: return "player_loot_another";
+        case EQUIP_ERR_LOOT_ROLL_ANOTHER: return "roll_another";
+        case EQUIP_ERR_LOOT_ROLL_NEED: return "roll_need";
+        case EQUIP_ERR_LOOT_ROLL_GREED: return "roll_greed";
+        case EQUIP_ERR_LOOT_ROLL_ANOTHER_NEED: return "roll_another_need";
+        case EQUIP_ERR_LOOT_ROLL_ANOTHER_GREED: return "roll_another_greed";
+        case EQUIP_ERR_LOOT_ROLL_ANOTHER_NEED_GREED: return "roll_another_need_greed";
+        case EQUIP_ERR_LOOT_MASTER_INST_ANOTHER_NEED: return "master_loot_another_need";
+        case EQUIP_ERR_LOOT_PLAYER_ANOTHER_NEED: return "player_loot_another_need";
+        case EQUIP_ERR_LOOT_ROLL_ANOTHER_NEED_GREED: return "roll_another_need_greed";
+        case EQUIP_ERR_CANT_SPLIT: return "cannot_split";
+        case EQUIP_ERR_AUTO_EQUIP_ITEM_SLOT: return "auto_equip_slot";
+        case EQUIP_ERR_LEGACY_RAID: return "legacy_raid";
+        case EQUIP_ERR_CANT_USE_ITEM: return "cannot_use_item";
+        case EQUIP_ERR_ITEM_MAX_COUNT_SOCKETED: return "max_socketed_exceeded";
+        case EQUIP_ERR_MUST_BE_IN_COMBAT: return "must_be_in_combat";
+        case EQUIP_ERR_CANT_EQUIP_NEED_TALENT: return "need_talent";
+        case EQUIP_ERR_CANT_EQUIP_NEED_SKILL: return "need_skill";
+        case EQUIP_ERR_CANT_EQUIP_NEED_REPUTATION: return "need_reputation";
+        case EQUIP_ERR_CANT_EQUIP_NEED_ARENA_RATING: return "need_arena_rating";
+        case EQUIP_ERR_ITEM_NOT_FOR_YOUR_RACE: return "race_mismatch";
+        case EQUIP_ERR_ITEM_REQUIRES_PROFESSION: return "requires_profession";
+        case EQUIP_ERR_ITEM_REQUIRES_LEVEL: return "requires_level";
+        case EQUIP_ERR_CANT_EQUIP_CLASSIC: return "classic_cannot_equip";
+        case EQUIP_ERR_CANT_EQUIP_ITEM_SLOT: return "item_slot_mismatch";
+        case EQUIP_ERR_CANT_EQUIP_RANK: return "rank_too_low";
+        case EQUIP_ERR_ITEM_MOD_APPEARANCE_GROUP_LIMITED: return "appearance_limit";
+        case EQUIP_ERR_ITEM_MAX_COUNT_EQUIPPED_SOCKETED: return "max_equipped_socketed";
+        default: return "unknown(" + std::to_string(code) + ")";
+    }
+}
+
 // Creates the item in the bags and moves it into `slot`, unless the slot already holds an item of at least this item level.
 GearResult GiveAndEquip(Player& bot, ItemTemplate const& item, uint8 slot, uint32& equipError)
 {
@@ -526,9 +617,22 @@ BotActionStatus AutoGearAction(Player& bot, uint32 flags, std::string& reason)
         equipped += result == GearResult::Equipped;
         keptBetter += result == GearResult::KeptBetter;
         failed += result == GearResult::NoBagSpace || result == GearResult::CannotEquip;
-        TC_LOG_INFO("server.worldserver", "BotMgr: autogear pick bot={} slot={} item={} quality={} ilvl={} reqlevel={} armor_subclass={} result={} equip_error={}", bot.GetName(), uint32(slot),
+        std::string failureDetail;
+        if (result == GearResult::CannotEquip)
+        {
+            failureDetail = " equip_error=" + std::to_string(equipError) + " (" + InventoryResultName(equipError) + ")";
+        }
+        else if (result == GearResult::NoBagSpace)
+        {
+            failureDetail = " no_bag_space";
+        }
+        else if (result == GearResult::KeptBetter)
+        {
+            failureDetail = " kept_better_item";
+        }
+        TC_LOG_INFO("server.worldserver", "BotMgr: autogear pick bot={} slot={} item={} quality={} ilvl={} reqlevel={} armor_subclass={} result={}{}", bot.GetName(), uint32(slot),
             pick.Item->GetId(), uint32(pick.Item->GetQuality()), pick.Item->GetBaseItemLevel(), pick.Item->GetBaseRequiredLevel(),
-            pick.Item->GetClass() == ITEM_CLASS_ARMOR ? int32(pick.Item->GetSubClass()) : -1, GearResultName(result), equipError);
+            pick.Item->GetClass() == ITEM_CLASS_ARMOR ? int32(pick.Item->GetSubClass()) : -1, GearResultName(result), failureDetail);
     };
     if (main.Item)
         apply(main, EQUIPMENT_SLOT_MAINHAND);
@@ -1494,6 +1598,133 @@ BotActionStatus ApplyBotAction(Player& bot, BotAction const& action, std::string
                 reason = "cast of spell " + std::to_string(castId) + " returned result " + std::to_string(int32(result));
             return StatusForCast(result);
         }
+
+        case ActionType::kCraft:
+        {
+            if (bot.IsInCombat())
+            {
+                reason = "bot is in combat";
+                return BotActionStatus::kRefused;
+            }
+
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(action.spell_id, DIFFICULTY_NONE);
+            if (!info)
+            {
+                reason = "unknown spell " + std::to_string(action.spell_id);
+                return BotActionStatus::kUnknownSpell;
+            }
+            if (!bot.HasSpell(action.spell_id))
+            {
+                reason = "bot does not know spell " + std::to_string(action.spell_id);
+                return BotActionStatus::kNotKnown;
+            }
+
+            // Check reagents before consuming anything.
+            for (uint32 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+            {
+                uint32 reagentEntry = info->Reagent[i];
+                int16 reagentCount = info->ReagentCount[i];
+                if (!reagentEntry || reagentCount <= 0)
+                    continue;
+                if (bot.GetItemCount(reagentEntry) < uint32(reagentCount))
+                {
+                    reason = "not enough reagents for spell " + std::to_string(action.spell_id);
+                    return BotActionStatus::kRefused;
+                }
+            }
+            // Consume reagents.
+            for (uint32 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+            {
+                uint32 reagentEntry = info->Reagent[i];
+                int16 reagentCount = info->ReagentCount[i];
+                if (!reagentEntry || reagentCount <= 0)
+                    continue;
+                bot.DestroyItemCount(reagentEntry, uint32(reagentCount), true);
+            }
+
+            // Find the item the spell creates (SPELL_EFFECT_CREATE_ITEM).
+            uint32 itemEntry = 0;
+            uint32 itemCount = 1;
+            for (uint32 i = 0; i < 3; ++i)
+            {
+                if (info->Effects[i].IsEffect(SPELL_EFFECT_CREATE_ITEM))
+                {
+                    itemEntry = info->Effects[i].ItemType;
+                    itemCount = info->Effects[i].BasePoints > 0 ? uint32(info->Effects[i].BasePoints) : 1u;
+                    break;
+                }
+            }
+            if (!itemEntry)
+            {
+                reason = "spell " + std::to_string(action.spell_id) + " creates no item";
+                return BotActionStatus::kRefused;
+            }
+
+            ItemPosCountVec dest;
+            if (bot.CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemEntry, itemCount) != EQUIP_ERR_OK)
+            {
+                reason = "not enough bag space for crafted item";
+                return BotActionStatus::kRefused;
+            }
+            Item* item = bot.StoreNewItem(dest, itemEntry, true);
+            if (!item)
+            {
+                reason = "could not add crafted item to bags";
+                return BotActionStatus::kRefused;
+            }
+            bot.SendNewItem(item, itemCount, true, false);
+
+            reason = "crafted item " + std::to_string(itemEntry);
+            return BotActionStatus::kApplied;
+        }
+
+        case ActionType::kGather:
+        {
+            if (bot.IsInCombat())
+            {
+                reason = "bot is in combat";
+                return BotActionStatus::kRefused;
+            }
+
+            Unit* target = ResolveUnit(bot, action.target_guid);
+            if (!target || target->GetTypeId() != TYPEID_GAMEOBJECT)
+            {
+                reason = "gather target is not a game object";
+                return BotActionStatus::kInvalidTarget;
+            }
+            GameObject* go = target->ToGameObject();
+
+            if (!bot.IsWithinDist(go, INTERACTION_DISTANCE))
+            {
+                reason = "gather target is out of interaction range";
+                return BotActionStatus::kOutOfRange;
+            }
+
+            // If a gathering spell is named, cast it on the node; otherwise use the game object's Use.
+            if (action.spell_id)
+            {
+                SpellInfo const* gatherSpell = sSpellMgr->GetSpellInfo(action.spell_id, DIFFICULTY_NONE);
+                if (!gatherSpell || !bot.HasSpell(action.spell_id))
+                {
+                    reason = "bot does not know gathering spell " + std::to_string(action.spell_id);
+                    return BotActionStatus::kNotKnown;
+                }
+                SpellCastResult const castResult = bot.CastSpell(go, action.spell_id, false);
+                if (castResult != SPELL_CAST_OK)
+                {
+                    reason = "gather spell cast returned " + std::to_string(int32(castResult));
+                    return StatusForCast(castResult);
+                }
+            }
+            else
+            {
+                go->Use(&bot);
+            }
+
+            reason = "gathered from " + go->GetName();
+            return BotActionStatus::kApplied;
+        }
+
     }
 
     reason = "unknown action type";

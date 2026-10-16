@@ -129,7 +129,7 @@ int main()
     CHECK(region->ReadNewActions(actions));
     CHECK(actions.Tick == 8);
 
-    // The layout-11 death actions round-trip.
+    // The layout-13 death actions round-trip.
     forever_module::BotAction release; release.bot_guid = 42; release.type = forever_module::ActionType::kReleaseSpirit;
     forever_module::BotAction revive; revive.bot_guid = 42; revive.type = forever_module::ActionType::kResurrect;
     revive.target_guid = forever_module::MakeUnitRef(2, 0, 7);

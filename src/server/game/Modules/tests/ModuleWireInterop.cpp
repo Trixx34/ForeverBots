@@ -48,7 +48,7 @@ int main()
         forever_module::HandshakeRequest* req = sdk.mutable_handshake_request();
         req->set_module_name("minimal-module");
         req->set_module_version("0.1.0");
-        req->set_protocol_version("5");
+        req->set_protocol_version("6");
         req->add_tier1_hooks("WorldScript.OnStartup");
         req->add_tier1_hooks("CommandScript");
         req->set_sdk_package_version("0.1.0");
@@ -68,7 +68,7 @@ int main()
         CHECK(ModuleWire::Decode(env.Payload, core));
         CHECK(core.ModuleName == "minimal-module");
         CHECK(core.ModuleVersion == "0.1.0");
-        CHECK(core.ProtocolVersion == "5");
+        CHECK(core.ProtocolVersion == "6");
         CHECK(core.Tier1Hooks.size() == 2);
         CHECK(core.Tier1Hooks.size() == 2 && core.Tier1Hooks[0] == "WorldScript.OnStartup");
         CHECK(core.Tier1Hooks.size() == 2 && core.Tier1Hooks[1] == "CommandScript");

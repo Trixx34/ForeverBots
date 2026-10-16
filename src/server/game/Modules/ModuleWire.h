@@ -184,6 +184,8 @@ enum class ActionKind : uint8
     StoreList = 6,
     ShareQuestItem = 7,
     Log = 8,
+    BuyItem = 9,
+    AuctionHouse = 10,
 };
 
 struct ActionRequestMsg
@@ -204,6 +206,15 @@ struct ActionRequestMsg
     // Store: Key for get, set and delete; the prefix for list; Value for set
     std::string Key;
     std::string Value;
+    // BuyItemAction (actions.proto field 18): vendor_guid=1, item_entry=2, count=3
+    uint64 VendorGuid = 0;
+    // AuctionHouseAction (actions.proto field 19): op=1, auctioneer_guid=2, item_guid=3,
+    // auction_guid=4, item_entry=5, count=6, bid=7, buyout=8
+    uint64 AuctioneerGuid = 0;
+    uint32 AhOp = 0;        // 0=Browse, 1=Bid, 2=Buyout, 3=List, 4=Cancel
+    uint64 AuctionGuid = 0;
+    uint32 Bid = 0;         // copper
+    uint32 Buyout = 0;      // copper
 };
 
 // Core -> module reply to an ActionRequest.
@@ -212,7 +223,8 @@ struct ActionReplyMsg
     uint64 MessageId = 0;
     bool Success = false;
     std::string Reason;
-    uint64 CopperGained = 0;
+    uint64 CopperGained = 0;   // SellItem: copper credited to the player
+    uint64 CopperSpent = 0;    // BuyItem/AuctionHouse: copper spent by the player
     // ShareQuestItem: how many party members were given the item
     uint32 Recipients = 0;
     // Store
